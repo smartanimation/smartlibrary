@@ -1,0 +1,44 @@
+anchors:
+  project_name: "PROJECTCODE"
+  project_root: "D:/Projects/PROJECTCODE"
+  fps: 24
+  resolution: [1920, 1080]
+
+# Shot用の部署リスト
+shot_depts:
+  - layout
+  - anim
+  - fx
+  - light
+  - comp
+
+# Asset用の部署リスト
+asset_depts:
+  - model
+  - rig
+  - look
+
+#softwares:
+#  maya:
+#    path: "C:/Program Files/Autodesk/Maya2026/bin/maya.exe"
+#    icon: ""
+
+enabled_softwares:
+  - maya
+
+templates:
+  # プロジェクト直下の主要フォルダ
+  assets_root: "{project_root}/assets"
+  editorial_root: "{project_root}/editorial"
+  production_root: "{project_root}/production"
+  sequences_root: "{project_root}/sequences"
+  shots_root: "{project_root}/shots"
+  setting_root: "{project_root}/settings"
+  delivery_root: "{project_root}/delivery"
+  library_root: "{project_root}/library"
+
+  # さらにその下の階層も必要なら追加
+  tool_dir: "{setting_root}/tools"
+  contract_dir: "{production_root}/contracts"
+  storyboard_dir: "{production_root}/storyboards"
+  reference_dir: "{production_root}/reference"

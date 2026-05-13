@@ -1,0 +1,10 @@
+softwares:
+  maya:
+    path: "C:/Program Files/Autodesk/Maya2024/bin/maya.exe"
+    icon: ""
+  maya2026:
+    path: "C:/Program Files/Autodesk/Maya2026/bin/maya.exe"
+    icon: ""
+  nuke:
+    path: "C:/Program Files/The Foundry/Nuke15.1v1/Nuke15.1.exe"
+    icon: ""
