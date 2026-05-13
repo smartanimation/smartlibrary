@@ -1,0 +1,16 @@
+# Maya専用環境設定
+env_vars:
+  MY_TEST_VAR: "Hello_Project_A"
+  MAYA_UI_LANGUAGE: "en_US"        # 英語UIで起動
+  MAYA_DISABLE_CLIC_IPM: "1"       # 起動時のサインイン画面を抑制
+  MAYA_SKIP_BLOCKCHECK: "1"        # 起動速度アップ
+  PYTHONDONTWRITEBYTECODE: "1"     # .pycファイルを作らせない
+
+paths:
+  MAYA_PLUG_IN_PATH:
+    - "{project_root}/tools/maya/plugins"
+    - "Z:/Common/mtoa/2024/5.3.0"
+  MAYA_MODULE_PATH:
+    - "{project_root}/tools/maya/modules"
+  PYTHONPATH:
+    - "{project_root}/tools/maya/scripts"

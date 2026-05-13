@@ -1,0 +1,25 @@
+anchors:
+  project_name: SLV
+  project_root: D://SLV
+  fps: 24
+  resolution:
+  - 1920
+  - 1080
+enabled_softwares:
+- maya
+shot_depts:
+- anim
+asset_depts:
+- model
+- rig
+templates:
+  assets_root: '{project_root}/assets'
+  editorial_root: '{project_root}/editorial'
+  production_root: '{project_root}/production'
+  sequences_root: '{project_root}/sequences'
+  shots_root: '{project_root}/shots'
+  setting_root: '{project_root}/settings'
+  delivery_root: '{project_root}/delivery'
+  library_root: '{project_root}/library'
+  tool_dir: '{setting_root}/tools'
+  reference_dir: '{production_root}/reference'

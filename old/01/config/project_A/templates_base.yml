@@ -1,0 +1,36 @@
+anchors:
+  project_name: "MyMovie_2026"
+  project_root: "D:/Projects/project_A"
+  fps: 24
+  resolution: [1920, 1080]
+
+# Shot用の部署リスト
+  shot_depts:
+    - layout
+    - anim
+    - fx
+    - light
+    - comp
+
+  # Asset用の部署リスト
+  asset_depts:
+    - model
+    - rig
+    - look
+
+templates:
+  # プロジェクト直下の主要フォルダ
+  assets_root: "{project_root}/assets"
+  docs_root: "{project_root}/docs"
+  editorial_root: "{project_root}/editorial"
+  production_root: "{project_root}/production"
+  sequences_root: "{project_root}/sequences"
+  shots_root: "{project_root}/shots"
+  tools_root: "{project_root}/tools"
+  delivery_root: "{project_root}/delivery"
+  library_root: "{project_root}/library"
+
+  # さらにその下の階層も必要なら追加
+  contract_dir: "{production_root}/contracts"
+  storyboard_dir: "{production_root}/storyboards"
+  reference_dir: "{production_root}/reference"
