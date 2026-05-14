@@ -1,6 +1,6 @@
 anchors:
   project_name: SLV
-  project_root: D://SLV
+  project_root: D:/Projects/SLV
   fps: 24
   resolution:
   - 1920

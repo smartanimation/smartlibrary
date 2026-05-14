@@ -1,22 +1,20 @@
-# Maya専用環境設定
 env_vars:
-  MAYA_UI_LANGUAGE: "en_US"        # 英語UIで起動
-  MAYA_DISABLE_CLIC_IPM: "1"       # 起動時のサインイン画面を抑制
-  MAYA_SKIP_BLOCKCHECK: "1"        # 起動速度アップ
-  PYTHONDONTWRITEBYTECODE: "1"     # .pycファイルを作らせない
-
+  MAYA_UI_LANGUAGE: en_US
+  MAYA_DISABLE_CLIC_IPM: '1'
+  MAYA_SKIP_BLOCKCHECK: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
 paths:
   MAYA_PLUG_IN_PATH:
-    - "D:/smartlibrary/maya/plug-ins"
-    - "I:/ELCD/lib/smartpipeline/tools/maya/plug-ins"
-    - "I:/ELCD/lib/smartpipeline/tools/maya/plug-ins"
-    - "D:/smartlibrary/maya/plug-ins/ngskintools2/Contents/plug-ins/2024"
+  - D:/smartlibrary/maya/plug-ins
+  - I:/ELCD/lib/smartpipeline/tools/maya/plug-ins
+  - I:/ELCD/lib/smartpipeline/tools/maya/plug-ins
+  - D:/smartlibrary/maya/plug-ins/ngskintools2/Contents/plug-ins/2024
   MAYA_MODULE_PATH:
-    - "D:/smartlibrary/maya/modules/mgear_5.1.0"
+  - D:/smartlibrary/maya/modules/mgear_5.1.0
   PYTHONPATH:
-    - "D:/smartlibrary/maya/scripts"
-    - "D:/smartlibrary/maya/scripts/studiolibrary-2.20.2/src"
-    - "D:/smartlibrary/maya/plug-ins/ngskintools2/Contents/scripts"
-    - "D:/smartpipeline/tools/maya/scripts"
-    - "I:/ELCD/lib/smartpipeline/tools/python/scripts"
-    - "I:/ELCD/lib/smartpipeline/tools/maya/scripts"
+  - D:/smartlibrary/maya/scripts
+  - D:/smartlibrary/maya/scripts/studiolibrary-2.20.2/src
+  - D:/smartlibrary/maya/plug-ins/ngskintools2/Contents/scripts
+  - D:/smartpipeline/tools/maya/scripts
+  - I:/ELCD/lib/smartpipeline/tools/python/scripts
+  - I:/ELCD/lib/smartpipeline/tools/maya/scripts
