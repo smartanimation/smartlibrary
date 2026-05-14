@@ -4,3 +4,8 @@ env_vars:
   MAYA_DISABLE_CLIC_IPM: "1"       # 起動時のサインイン画面を抑制
   MAYA_SKIP_BLOCKCHECK: "1"        # 起動速度アップ
   PYTHONDONTWRITEBYTECODE: "1"     # .pycファイルを作らせない
+
+paths:
+  MAYA_PLUG_IN_PATH:
+  MAYA_MODULE_PATH:
+  PYTHONPATH:
