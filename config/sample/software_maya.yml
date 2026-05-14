@@ -1,0 +1,11 @@
+env_vars:
+  MAYA_UI_LANGUAGE: en_US
+  MAYA_DISABLE_CLIC_IPM: '1'
+  MAYA_SKIP_BLOCKCHECK: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  MAYA_PLUG_IN_PATH: ''
+  MAYA_MODULE_PATH: ''
+  PYTHONPATH: ''
+paths: {}
+path: C:/Program Files/Autodesk/Maya2024/bin/maya.exe
+icon: ''
