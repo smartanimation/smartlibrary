@@ -29,7 +29,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def __init__(self, target_project=None):
         super().__init__()
         self.setWindowTitle("Project Config Creator")
-        self.setMinimumWidth(1100); self.setMinimumHeight(900)
+        #self.setMinimumWidth(1100); self.setMinimumHeight(900)
         
         self.target_project = target_project
         self.software_configs = {} # sid をキーに {path: "", env_vars: {}, paths: {}} を保持
