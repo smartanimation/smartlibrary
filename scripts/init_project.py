@@ -49,8 +49,11 @@ def main():
 
     anchors = cfg.get('anchors', {})
     project_root = anchors.get('project_root', '')
-    shot_depts = anchors.get('shot_depts', [])
-    asset_depts = anchors.get('asset_depts', [])
+    
+    # 修正：cfg 直下から取得する
+    shot_depts = cfg.get('shot_depts', []) 
+    asset_depts = cfg.get('asset_depts', [])
+    
     raw_templates = cfg.get('templates', {})
 
     # 3. テンプレートパスの解決
@@ -74,8 +77,6 @@ def main():
         # 両方の部署リストを結合
         all_depts = list(set(shot_depts + asset_depts))
         
-        print(all_depts)
-        return
         for dept in all_depts:
             dept_path = os.path.join(library_path, dept)
             try:
