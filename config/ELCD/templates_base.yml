@@ -5,14 +5,8 @@ anchors:
   resolution:
   - 1280
   - 720
-enabled_softwares: []
-softwares:
-  maya:
-    path: "C:/Program Files/Autodesk/Maya2024/bin/maya.exe"
-    icon: ""
-  aftereffects:
-    path: "I:/ELCD/tools/env/AfterEffects.bat"
-    icon: ""
+enabled_softwares:
+- usdview
 shot_depts:
 - layout
 - anim
