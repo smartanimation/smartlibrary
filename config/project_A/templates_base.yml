@@ -10,6 +10,7 @@ anchors:
 enabled_softwares:
 - maya2026
 - usdview
+- AfterEffects2024
 shot_depts:
 - anim
 asset_depts:

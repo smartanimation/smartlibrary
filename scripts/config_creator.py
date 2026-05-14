@@ -29,10 +29,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def __init__(self, target_project=None):
         super().__init__()
         self.setWindowTitle("Project Config Creator")
-        #self.setMinimumWidth(1100); self.setMinimumHeight(900)
+        self.setMinimumWidth(1100); self.setMinimumHeight(900)
+        
+        # OSのアイコンを取得するためのプロバイダー
+        self.icon_provider = QtWidgets.QFileIconProvider()
         
         self.target_project = target_project
-        self.software_configs = {} # sid をキーに {path: "", env_vars: {}, paths: {}} を保持
+        self.software_configs = {} # sid をキーに設定データを保持
 
         self.setup_ui()
 
@@ -59,11 +62,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         main_layout.addLayout(form)
 
         self.tabs = QtWidgets.QTabWidget()
-        
-        # --- Software タブ (上下分割) ---
         self.soft_tab = self.setup_software_tab()
-        
-        # 他のタブ
         self.anchors_table = self.create_table_page("Anchors", ["Key", "Value"])
         self.shot_depts_list = self.create_list_page("Shot Depts")
         self.asset_depts_list = self.create_list_page("Asset Depts")
@@ -85,27 +84,30 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def setup_software_tab(self):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(page)
-        
-        # --- 左側：上下分割リスト ---
         left_layout = QtWidgets.QVBoxLayout()
         
-        # 上段：Global マスター
+        icon_size = QtCore.QSize(24, 24)
+        list_style = "QListWidget::item { height: 32px; }"
+
+        # 上段
         left_layout.addWidget(QtWidgets.QLabel("<b>Global Software List (Master)</b>"))
         self.global_list = QtWidgets.QListWidget()
+        self.global_list.setIconSize(icon_size)
+        self.global_list.setStyleSheet(list_style)
         left_layout.addWidget(self.global_list)
         
-        # 中央：追加ボタン
         self.add_to_proj_btn = QtWidgets.QPushButton("▼ Add to Project ▼")
         self.add_to_proj_btn.clicked.connect(self.add_to_selected)
         left_layout.addWidget(self.add_to_proj_btn)
         
-        # 下段：Project Selected (このプロジェクトで有効なソフト)
+        # 下段
         left_layout.addWidget(QtWidgets.QLabel("<b>Project Custom / Enabled</b>"))
         self.selected_list = QtWidgets.QListWidget()
+        self.selected_list.setIconSize(icon_size)
+        self.selected_list.setStyleSheet(list_style)
         self.selected_list.currentItemChanged.connect(self.on_soft_selection_changed)
         left_layout.addWidget(self.selected_list)
         
-        # 操作ボタン
         sel_btns = QtWidgets.QHBoxLayout()
         self.rem_soft_btn = QtWidgets.QPushButton("▲ Remove ▲")
         self.rem_soft_btn.clicked.connect(self.remove_from_selected)
@@ -114,7 +116,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         sel_btns.addWidget(self.rem_soft_btn); sel_btns.addWidget(self.add_custom_exe_btn)
         left_layout.addLayout(sel_btns)
 
-        # --- 右側：環境変数エディタ ---
+        # 右側
         right_layout = QtWidgets.QVBoxLayout()
         self.env_tree = QtWidgets.QTreeWidget()
         self.env_tree.setColumnCount(2)
@@ -134,8 +136,31 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         layout.addLayout(left_layout, 1); layout.addLayout(right_layout, 2)
         return page
 
+    def _add_item_with_icon(self, list_widget, sid, icon_name, exe_path=""):
+        """アイコン名がなければ実行ファイルからアイコンを抽出してアイテムを追加"""
+        item = QtWidgets.QListWidgetItem(sid)
+        icon = None
+
+        # 1. 指定アイコンがある場合
+        if icon_name:
+            icon_path = os.path.normpath(os.path.join(CURRENT_DIR, "..", "icons", icon_name))
+            if os.path.exists(icon_path):
+                icon = QtGui.QIcon(icon_path)
+
+        # 2. なければ実行ファイルのOS標準アイコンを取得
+        if not icon and exe_path:
+            clean_path = os.path.normpath(exe_path)
+            if os.path.exists(clean_path):
+                file_info = QtCore.QFileInfo(clean_path)
+                icon = self.icon_provider.icon(file_info)
+
+        if icon:
+            item.setIcon(icon)
+        
+        list_widget.addItem(item)
+        return item
+
     def on_soft_selection_changed(self, current, previous):
-        """下段の選択が切り替わる際にメモリへ保存し、新しいデータを表示"""
         if previous:
             self._save_tree_to_memory(previous.text())
         if not current:
@@ -143,85 +168,137 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             
         soft_id = current.text()
         if soft_id not in self.software_configs:
-            # 既存ファイルがあるか確認
             proj_dir = os.path.join(PROJECTS_ROOT, self.name_input.text().strip())
             spec_path = os.path.join(proj_dir, f"software_{soft_id}.yml")
             if os.path.exists(spec_path):
                 self.software_configs[soft_id] = load_yml(spec_path)
             else:
-                # なければデフォルト
                 def_path = os.path.join(DEFAULT_DIR, f"software_{soft_id}.yml")
                 self.software_configs[soft_id] = load_yml(def_path)
         
         self._populate_tree(self.software_configs[soft_id])
 
     def add_to_selected(self):
-        """上段から下段へ追加：即座にデフォルト設定をロードして編集可能にする"""
         curr = self.global_list.currentItem()
-        if not curr:
-            return
+        if not curr: return
         sid = curr.text()
         
-        # 重複チェック
         for i in range(self.selected_list.count()):
-            if self.selected_list.item(i).text() == sid:
-                return
+            if self.selected_list.item(i).text() == sid: return
             
-        self.selected_list.addItem(sid)
-        
-        # --- 1. デフォルト設定をロードしてメモリに展開 ---
-        default_path = os.path.join(DEFAULT_DIR, f"software_{sid}.yml")
-        # defaultフォルダから env_vars や paths を読み込む
-        base_config = load_yml(default_path)
-        
-        # --- 2. マスターから実行パス情報を補完 ---
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         master_info = master_data.get(sid, {})
         
-        # path キーをマージ（これがないとランチャーが困るため）
+        # アイコンまたはパスからアイコン付きアイテムを作成
+        self._add_item_with_icon(self.selected_list, sid, master_info.get('icon', ""), master_info.get('path', ""))
+        
+        default_path = os.path.join(DEFAULT_DIR, f"software_{sid}.yml")
+        base_config = load_yml(default_path)
         base_config['path'] = master_info.get('path', "")
         base_config['icon'] = master_info.get('icon', "")
         
-        # メモリにセット (ここがポイント：保存前でも編集可能になる)
         self.software_configs[sid] = base_config
-            
-        # --- 3. UIの更新 ---
-        # 追加したアイテムを選択状態にする（これで on_soft_selection_changed が走り、右側に中身が出る）
-        last_row = self.selected_list.count() - 1
-        self.selected_list.setCurrentRow(last_row)
-        
-        # 強制的にツリーを更新
+        self.selected_list.setCurrentRow(self.selected_list.count() - 1)
         self._populate_tree(self.software_configs[sid])
+
+    def add_custom_software(self):
+        p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Exe/Bat", "", "Executables (*.exe *.bat *.cmd)")
+        if p:
+            sid = os.path.splitext(os.path.basename(p))[0]
+            for i in range(self.selected_list.count()):
+                if self.selected_list.item(i).text() == sid: return
+
+            # カスタムツールはパスからアイコンを抽出
+            self._add_item_with_icon(self.selected_list, sid, "", p)
+            
+            self.software_configs[sid] = {
+                'path': p.replace("\\", "/"),
+                'icon': "",
+                'env_vars': {},
+                'paths': {}
+            }
+            self.selected_list.setCurrentRow(self.selected_list.count()-1)
+            self._populate_tree(self.software_configs[sid])
+
+    def save_config(self):
+        self._save_tree_to_memory()
+        name = self.name_input.text().strip()
+        base = self.path_input.text().strip()
+        if not name or not base: return
+        
+        proj_dir = os.path.join(PROJECTS_ROOT, name); os.makedirs(proj_dir, exist_ok=True)
+        config = {
+            'anchors': {'project_name': name, 'project_root': f"{base}/{name}".replace("\\", "/")},
+            'enabled_softwares': [],
+            'shot_depts': [self.shot_depts_list["list"].item(i).text() for i in range(self.shot_depts_list["list"].count())],
+            'asset_depts': [self.asset_depts_list["list"].item(i).text() for i in range(self.asset_depts_list["list"].count())],
+            'templates': {}
+        }
+        
+        for i in range(self.selected_list.count()):
+            sid = self.selected_list.item(i).text()
+            config['enabled_softwares'].append(sid)
+            if sid in self.software_configs:
+                save_yml(os.path.join(proj_dir, f"software_{sid}.yml"), self.software_configs[sid])
+        
+        # Anchors/Templates の保存 (省略せず記述)
+        a_tab = self.anchors_table["table"]; res = [1920, 1080]
+        for r in range(a_tab.rowCount()):
+            k_item = a_tab.item(r, 0); v_item = a_tab.item(r, 1)
+            k = k_item.text() if k_item else ""; v = v_item.text() if v_item else ""
+            if "resolution X" in k: res[0] = int(v) if v.isdigit() else 1920
+            elif "resolution Y" in k: res[1] = int(v) if v.isdigit() else 1080
+            elif k: config['anchors'][k] = int(v) if v.isdigit() else v
+        config['anchors']['resolution'] = res
+
+        t_tab = self.template_table["table"]
+        for r in range(t_tab.rowCount()):
+            k_item = t_tab.item(r, 0); v_item = t_tab.item(r, 1)
+            k = k_item.text() if k_item else ""; v = v_item.text() if v_item else ""
+            if k: config['templates'][k] = v
+
+        save_yml(os.path.join(proj_dir, "templates_base.yml"), config)
+        self.config_saved.emit()
+        QtWidgets.QMessageBox.information(self, "Saved", "Success")
+        self.close()
+
+    def load_project_config(self, project_name):
+        proj_dir = os.path.join(PROJECTS_ROOT, project_name)
+        data = load_yml(os.path.join(proj_dir, "templates_base.yml"))
+        self.name_input.setText(project_name)
+        root = data.get('anchors', {}).get('project_root', "")
+        if root: self.path_input.setText(os.path.dirname(root).replace("\\", "/"))
+        
+        # リスト初期化
+        self.global_list.clear(); self.selected_list.clear()
+        master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
+        for sid in sorted(master.keys()):
+            self._add_item_with_icon(self.global_list, sid, master[sid].get('icon', ""), master[sid].get('path', ""))
+            
+        for sid in data.get('enabled_softwares', []):
+            p = os.path.join(proj_dir, f"software_{sid}.yml")
+            conf = load_yml(p) if os.path.exists(p) else {}
+            self._add_item_with_icon(self.selected_list, sid, conf.get('icon', ""), conf.get('path', ""))
+            self.software_configs[sid] = conf
+            
+        self._apply_data_to_ui(data)
+
+    def init_ui_from_default(self):
+        master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
+        self.global_list.clear()
+        for sid in sorted(master.keys()):
+            self._add_item_with_icon(self.global_list, sid, master[sid].get('icon', ""), master[sid].get('path', ""))
+        self._apply_data_to_ui(load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")))
 
     def remove_from_selected(self):
         row = self.selected_list.currentRow()
         if row >= 0: self.selected_list.takeItem(row)
-
-    def add_custom_software(self):
-        """カスタムソフト追加：パスを含めてメモリに保持"""
-        p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Exe/Bat", "", "Executables (*.exe *.bat *.cmd)")
-        if p:
-            sid = os.path.splitext(os.path.basename(p))[0]
-            # 重複してなければ追加
-            exists = False
-            for i in range(self.selected_list.count()):
-                if self.selected_list.item(i).text() == sid: exists = True; break
-            if not exists:
-                self.selected_list.addItem(sid)
-                self.software_configs[sid] = {
-                    'path': p.replace("\\", "/"),
-                    'icon': "",
-                    'env_vars': {},
-                    'paths': {}
-                }
-                self.selected_list.setCurrentRow(self.selected_list.count()-1)
 
     def _save_tree_to_memory(self, soft_id=None):
         if not soft_id:
             curr = self.selected_list.currentItem()
             if not curr: return
             soft_id = curr.text()
-
         env_vars = {}; paths = {}
         for i in range(self.env_tree.topLevelItemCount()):
             it = self.env_tree.topLevelItem(i)
@@ -229,10 +306,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 paths[it.text(0)] = [it.child(j).text(0) for j in range(it.childCount())]
             else:
                 env_vars[it.text(0)] = it.text(1)
-        
-        # 既存の path 情報を消さないように更新
-        if soft_id not in self.software_configs:
-            self.software_configs[soft_id] = {}
+        if soft_id not in self.software_configs: self.software_configs[soft_id] = {}
         self.software_configs[soft_id]['env_vars'] = env_vars
         self.software_configs[soft_id]['paths'] = paths
 
@@ -252,73 +326,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                     child.setFlags(child.flags() | QtCore.Qt.ItemFlag.ItemIsEditable | QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
                     parent.addChild(child)
             parent.setExpanded(True)
-
-    def save_config(self):
-        """保存処理：カスタムパスも含めて書き出し"""
-        self._save_tree_to_memory()
-        name = self.name_input.text().strip()
-        base = self.path_input.text().strip()
-        if not name or not base: return
-        
-        proj_dir = os.path.join(PROJECTS_ROOT, name); os.makedirs(proj_dir, exist_ok=True)
-        config = {
-            'anchors': {'project_name': name, 'project_root': f"{base}/{name}".replace("\\", "/")},
-            'enabled_softwares': [],
-            'shot_depts': [self.shot_depts_list["list"].item(i).text() for i in range(self.shot_depts_list["list"].count())],
-            'asset_depts': [self.asset_depts_list["list"].item(i).text() for i in range(self.asset_depts_list["list"].count())],
-            'templates': {}
-        }
-        
-        # Softwares
-        for i in range(self.selected_list.count()):
-            sid = self.selected_list.item(i).text()
-            config['enabled_softwares'].append(sid)
-            if sid in self.software_configs:
-                save_yml(os.path.join(proj_dir, f"software_{sid}.yml"), self.software_configs[sid])
-        
-        # (Anchors, Templates の保存処理 - 省略せず記述)
-        a_tab = self.anchors_table["table"]; res = [1920, 1080]
-        for r in range(a_tab.rowCount()):
-            k = a_tab.item(r, 0).text() if a_tab.item(r, 0) else ""
-            v = a_tab.item(r, 1).text() if a_tab.item(r, 1) else ""
-            if "resolution X" in k: res[0] = int(v) if v.isdigit() else 1920
-            elif "resolution Y" in k: res[1] = int(v) if v.isdigit() else 1080
-            elif k: config['anchors'][k] = int(v) if v.isdigit() else v
-        config['anchors']['resolution'] = res
-
-        t_tab = self.template_table["table"]
-        for r in range(t_tab.rowCount()):
-            k = t_tab.item(r, 0).text() if t_tab.item(r, 0) else ""
-            v = t_tab.item(r, 1).text() if t_tab.item(r, 1) else ""
-            if k: config['templates'][k] = v
-
-        save_yml(os.path.join(proj_dir, "templates_base.yml"), config)
-        self.config_saved.emit()
-        QtWidgets.QMessageBox.information(self, "Saved", "Success")
-        self.close()
-
-    # --- 以下、リスト作成用等の補助メソッド ---
-    def load_project_config(self, project_name):
-        proj_dir = os.path.join(PROJECTS_ROOT, project_name)
-        data = load_yml(os.path.join(proj_dir, "templates_base.yml"))
-        self.name_input.setText(project_name)
-        root = data.get('anchors', {}).get('project_root', "")
-        if root: self.path_input.setText(os.path.dirname(root).replace("\\", "/"))
-        
-        self.global_list.clear(); self.selected_list.clear()
-        master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
-        for sid in sorted(master.keys()): self.global_list.addItem(sid)
-        for sid in data.get('enabled_softwares', []):
-            self.selected_list.addItem(sid)
-            p = os.path.join(proj_dir, f"software_{sid}.yml")
-            if os.path.exists(p): self.software_configs[sid] = load_yml(p)
-        self._apply_data_to_ui(data)
-
-    def init_ui_from_default(self):
-        master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
-        self.global_list.clear()
-        for sid in sorted(master.keys()): self.global_list.addItem(sid)
-        self._apply_data_to_ui(load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")))
 
     def create_table_page(self, title, headers):
         w = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(w)
