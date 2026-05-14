@@ -29,7 +29,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def __init__(self, target_project=None):
         super().__init__()
         self.setWindowTitle("Project Config Creator")
-        self.setMinimumWidth(1100); self.setMinimumHeight(900)
+        #self.setMinimumWidth(1100); self.setMinimumHeight(900)
         
         # OSのアイコンを取得するためのプロバイダー
         self.icon_provider = QtWidgets.QFileIconProvider()
@@ -393,4 +393,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             tab.setItem(r, 0, QtWidgets.QTableWidgetItem(k)); tab.setItem(r, 1, QtWidgets.QTableWidgetItem(v))
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv); win = ConfigCreatorApp(); win.show(); sys.exit(app.exec())
+    app = QtWidgets.QApplication(sys.argv)
+    win = ConfigCreatorApp()
+    win.show()
+    sys.exit(app.exec())
