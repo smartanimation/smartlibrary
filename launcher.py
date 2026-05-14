@@ -326,7 +326,16 @@ class SmartLauncher(QtWidgets.QMainWindow):
     def setup_menus(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("FILE")
+        
+        # 既存のアクション
         file_menu.addAction("New Project", self.open_config_creator)
+        
+        # --- 追加: Run Pipeline Setup ---
+        setup_action = file_menu.addAction("Run Pipeline Setup", self.run_pipeline_setup)
+        setup_action.setToolTip("Execute init_project.py for the current project")
+        
+        file_menu.addSeparator() # 区切り線
+        
         file_menu.addAction("Delete Current Project", self.delete_current_project)
         file_menu.addAction("Refresh", self.refresh_projects)
 
