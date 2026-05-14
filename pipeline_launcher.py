@@ -9,7 +9,7 @@ class PipelineLauncher(QtWidgets.QMainWindow):
 
         # --- 設定エリア ---
         # 1. ライブラリがインストールされているPythonのパス
-        self.python_exe = r"C:\Users\smart\AppData\Local\Programs\Python\Python312\python.exe"
+        self.python_exe = r"C:/Users/smart/AppData/Local/Programs/Python/Python312/python.exe"
         
         # 2. パス解決のロジック
         # このスクリプト(pipeline_launcher.py)の絶対パスを取得
