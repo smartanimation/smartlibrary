@@ -61,6 +61,10 @@ def validate_token(name: str, value: str) -> None:
         raise ValueError(f"{name} must contain only letters, numbers, '_' or '-': {value}")
 
 
+def to_forward_slash_path(path: str | os.PathLike[str]) -> str:
+    return str(path).replace("\\", "/")
+
+
 def create_context(
     episode: str,
     sequence: str,
@@ -82,7 +86,7 @@ def create_context(
         shot=shot,
         task=task,
         artist=artist,
-        project_root=str(project_root),
+        project_root=to_forward_slash_path(project_root) if project_root else "",
         extra=extra or {},
     )
     save_context(context, path=path)
@@ -94,9 +98,11 @@ def save_context(context: WorkContext, *, path: str | os.PathLike[str] | None = 
     context_path.parent.mkdir(parents=True, exist_ok=True)
 
     data = asdict(context)
+    if data.get("project_root"):
+        data["project_root"] = to_forward_slash_path(data["project_root"])
     data["shot_code"] = context.shot_code
     if context.shot_root:
-        data["shot_root"] = str(context.shot_root)
+        data["shot_root"] = to_forward_slash_path(context.shot_root)
 
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{context_path.name}.",
@@ -161,10 +167,10 @@ if __name__ == "__main__":
     ctx = create_context(
         "EP001",
         "SQ010",
-        "SH020",
-        task="comp",
+        "SH010",
+        task="anim",
         artist=os.environ.get("USERNAME") or os.environ.get("USER") or "",
-        project_root="P:/show/my_project/shots",
+        project_root="/my_project/shots",
     )
     print_context(ctx)
     print(f"Saved to: {get_context_path()}")
