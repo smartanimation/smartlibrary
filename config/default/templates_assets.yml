@@ -1,0 +1,12 @@
+templates:
+  # ルート定義
+  asset_root: "{project_root}/assets/{category}/{group}/{asset_name}"
+
+  # workの下に各部署(model, rig等)を展開する
+  dept_work: "{asset_root}/work/{dept}"
+
+  # アセット直下の共通フォルダ (dept_で始めることで生成対象になります)
+  dept_data: "{asset_root}/data"
+  dept_publish: "{asset_root}/publish"
+  dept_render: "{asset_root}/render"
+  dept_texture: "{asset_root}/Texture"
