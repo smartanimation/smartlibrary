@@ -9,8 +9,10 @@ anchors:
   - 1080
 enabled_softwares:
 - maya2026
-shot_depts: []
-asset_depts: []
+shot_depts:
+- anim
+asset_depts:
+- model
 templates:
   assets_root: '{project_root}/assets'
   docs_root: '{project_root}/docs'
