@@ -74,6 +74,8 @@ def main():
         # 両方の部署リストを結合
         all_depts = list(set(shot_depts + asset_depts))
         
+        print(all_depts)
+        return
         for dept in all_depts:
             dept_path = os.path.join(library_path, dept)
             try:

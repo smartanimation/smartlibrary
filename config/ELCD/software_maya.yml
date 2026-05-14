@@ -8,4 +8,4 @@ env_vars:
   PYTHONPATH: ''
 paths: {}
 path: C:/Program Files/Autodesk/Maya2024/bin/maya.exe
-icon: ''
+icon: C:/Program Files/Autodesk/Maya2024/bin/maya.exe

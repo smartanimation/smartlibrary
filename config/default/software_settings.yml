@@ -2,9 +2,24 @@ softwares:
   maya:
     path: "C:/Program Files/Autodesk/Maya2024/bin/maya.exe"
     icon: ""
+  maya2024:
+    path: "C:/Program Files/Autodesk/Maya2024/bin/maya.exe"
+    icon: ""
   maya2026:
     path: "C:/Program Files/Autodesk/Maya2026/bin/maya.exe"
     icon: ""
-  nuke:
-    path: "C:/Program Files/The Foundry/Nuke15.1v1/Nuke15.1.exe"
+  AfterEffects2024:
+    path: "C:/Program Files/Adobe/Adobe After Effects 2024/Support Files/AfterFX.exe"
+    icon: ""
+  AfterEffects2025:
+    path: "C:/Program Files/Adobe/Adobe After Effects 2025/Support Files/AfterFX.exe"
+    icon: ""
+  Blender5.0:
+    path: "C:/Program Files/Blender Foundation/Blender 5.0/blender.exe"
+    icon: ""
+  Houdini21.0.440:
+    path: "C:/Program Files/Side Effects Software/Houdini 21.0.440/bin/houdini.exe"
+    icon: ""
+  UE5.3:
+    path: "C:/Program Files/Epic Games/UE_5.3/Engine/Binaries/Win64/UnrealEditor.exe"
     icon: ""
