@@ -156,13 +156,42 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._populate_tree(self.software_configs[soft_id])
 
     def add_to_selected(self):
+        """上段から下段へ追加：即座にデフォルト設定をロードして編集可能にする"""
         curr = self.global_list.currentItem()
-        if not curr: return
+        if not curr:
+            return
         sid = curr.text()
+        
         # 重複チェック
         for i in range(self.selected_list.count()):
-            if self.selected_list.item(i).text() == sid: return
+            if self.selected_list.item(i).text() == sid:
+                return
+            
         self.selected_list.addItem(sid)
+        
+        # --- 1. デフォルト設定をロードしてメモリに展開 ---
+        default_path = os.path.join(DEFAULT_DIR, f"software_{sid}.yml")
+        # defaultフォルダから env_vars や paths を読み込む
+        base_config = load_yml(default_path)
+        
+        # --- 2. マスターから実行パス情報を補完 ---
+        master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
+        master_info = master_data.get(sid, {})
+        
+        # path キーをマージ（これがないとランチャーが困るため）
+        base_config['path'] = master_info.get('path', "")
+        base_config['icon'] = master_info.get('icon', "")
+        
+        # メモリにセット (ここがポイント：保存前でも編集可能になる)
+        self.software_configs[sid] = base_config
+            
+        # --- 3. UIの更新 ---
+        # 追加したアイテムを選択状態にする（これで on_soft_selection_changed が走り、右側に中身が出る）
+        last_row = self.selected_list.count() - 1
+        self.selected_list.setCurrentRow(last_row)
+        
+        # 強制的にツリーを更新
+        self._populate_tree(self.software_configs[sid])
 
     def remove_from_selected(self):
         row = self.selected_list.currentRow()

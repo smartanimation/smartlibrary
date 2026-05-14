@@ -193,87 +193,74 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.app_model.appendRow(item)
 
     def launch_selected(self):
-        """アプリ起動：batファイルはOS標準環境で、EXEは構築した環境で起動"""
+        """アプリ起動：個別設定のパスを最優先し、batはクリーンに起動する"""
         idx = self.ui.appview.selectedIndexes()
-        if not idx:
-            return
-            
+        if not idx: return
         soft_id = idx[0].data(QtCore.Qt.UserRole)
         display_project = self.ui.projectCombo.currentText()
         folder_name = self.project_map.get(display_project)
-        if not folder_name:
+        if not folder_name: return
+
+        # --- 1. パスの決定 (個別設定を最優先) ---
+        # プロジェクト固有の software_xxx.yml をロード
+        specific_conf_path = os.path.join(PROJECTS_ROOT, folder_name, f"software_{soft_id}.yml")
+        spec_data = load_yml(specific_conf_path)
+        
+        # マスターデータをロード
+        master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
+        master_info = master_data.get(soft_id, {})
+
+        # 個別設定のpathがあればそれを使う、なければマスターを使う
+        raw_exe_path = spec_data.get('path') or master_info.get('path', "")
+        
+        if not raw_exe_path:
+            QtWidgets.QMessageBox.warning(self, "Error", f"Executable path not defined for: {soft_id}")
             return
 
-        # 1. パス情報の取得 (マスター vs 個別設定)
-        master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
-        soft_info = master_data.get(soft_id, {})
-        
-        # まずマスターからパスを探す
-        raw_exe_path = soft_info.get('path', "")
-        
-        # 個別設定ファイルを読み込む
-        specific_conf_path = os.path.join(PROJECTS_ROOT, folder_name, f"software_{soft_id}.yml")
-        spec_data = load_yml(specific_conf_path) if os.path.exists(specific_conf_path) else {}
-
-        # マスターにパスがなければ、個別設定(Customで追加した際)のパスを使う
-        if not raw_exe_path:
-            raw_exe_path = spec_data.get('path', "")
-
-        # 変数置換とパスの正規化
         exe_p = os.path.normpath(raw_exe_path.replace("{project_root}", self.projectroot))
 
-        if not exe_p or not os.path.exists(exe_p):
-            QtWidgets.QMessageBox.warning(self, "Error", f"Executable not found:\n{exe_p}")
+        if not os.path.exists(exe_p):
+            QtWidgets.QMessageBox.warning(self, "Error", f"Executable not found: {exe_p}")
             return
 
-        # 拡張子チェック
+        # --- 2. 起動準備 ---
         is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
 
         try:
             if is_batch:
-                # --- BAT起動：環境変数を渡さず、ディレクトリをBATの場所にする ---
-                working_dir = os.path.dirname(exe_p)
+                # BATファイル：環境変数を一切渡さず、OS標準の環境で実行
+                print(f"[LAUNCH] Batch Mode (Clean Env): {exe_p}")
                 subprocess.Popen(
-                    f'"{exe_p}"', 
-                    cwd=working_dir,
+                    f'"{exe_p}"',
+                    cwd=os.path.dirname(exe_p),
                     shell=True,
                     creationflags=subprocess.CREATE_NEW_CONSOLE
-                    # envを指定しないことでシステム環境変数をそのまま使用
+                    # env引数を渡さないことで現在のOS環境をそのまま使用
                 )
-                print(f"[LAUNCH] Batch mode: {exe_p}")
-                
             else:
-                # --- EXE起動：環境変数を構築して渡す ---
+                # EXEファイル：環境変数を構築して実行
+                print(f"[LAUNCH] EXE Mode (Custom Env): {exe_p}")
                 full_env = os.environ.copy()
                 
-                # 個別設定(software_xxx.yml)がある場合のみ環境変数を上書き・追加
-                if spec_data:
-                    # env_vars の反映
-                    env_vars = spec_data.get('env_vars', {})
-                    for k, v in env_vars.items():
-                        full_env[str(k)] = str(v).replace("{project_root}", self.projectroot)
-
-                    # paths (PYTHONPATHなど) の反映
-                    paths_dict = spec_data.get('paths', {})
-                    for k, p_list in paths_dict.items():
-                        if isinstance(p_list, list):
-                            formatted_paths = [p.replace("{project_root}", self.projectroot) for p in p_list]
-                            existing = full_env.get(k, "")
-                            if existing:
-                                full_env[str(k)] = os.pathsep.join(formatted_paths) + os.pathsep + existing
-                            else:
-                                full_env[str(k)] = os.pathsep.join(formatted_paths)
+                # env_vars の反映
+                for k, v in spec_data.get('env_vars', {}).items():
+                    full_env[str(k)] = str(v).replace("{project_root}", self.projectroot)
+                
+                # paths の反映
+                for k, p_list in spec_data.get('paths', {}).items():
+                    if isinstance(p_list, list):
+                        formatted = [p.replace("{project_root}", self.projectroot) for p in p_list]
+                        existing = full_env.get(k, "")
+                        full_env[str(k)] = os.pathsep.join(formatted) + (os.pathsep + existing if existing else "")
 
                 subprocess.Popen(
                     [exe_p],
                     env=full_env,
-                    cwd=self.projectroot,
+                    cwd=self.projectroot if os.path.exists(self.projectroot) else None,
                     creationflags=subprocess.CREATE_NEW_CONSOLE
                 )
-                print(f"[LAUNCH] Exe mode: {exe_p}")
-
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Launch failed:\n{e}")
+            QtWidgets.QMessageBox.critical(self, "Error", f"Launch failed: {e}")
 
     def delete_current_project(self):
         """プロジェクト削除 (コンフィグのみ / フォルダ含め全ての選択)"""
