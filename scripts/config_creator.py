@@ -3,7 +3,7 @@ import yaml
 import sys
 from PySide6 import QtWidgets, QtCore, QtGui
 
-# パス設定 (もともとの config_creator1.0.0.py のロジックを維持)
+# パス設定
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECTS_ROOT = os.path.normpath(os.path.join(CURRENT_DIR, "..", "config"))
 DEFAULT_DIR = os.path.join(PROJECTS_ROOT, "default")
@@ -21,10 +21,10 @@ def load_yml(path):
 def save_yml(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
+        # allow_unicode=Trueで日本語等も維持
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 class ConfigCreatorApp(QtWidgets.QMainWindow):
-    # ランチャー側に更新を伝えるためのカスタムシグナル
     config_saved = QtCore.Signal()
 
     def __init__(self, target_project=None):
@@ -33,11 +33,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.setMinimumWidth(1000); self.setMinimumHeight(900)
         
         self.target_project = target_project
-        self.software_configs = {} # メモリ保持用
+        self.software_configs = {} # sid をキーに {env_vars: {}, paths: {}} を保持
 
         self.setup_ui()
 
-        # 起動時のデータロード
         if self.target_project:
             self.load_project_config(self.target_project)
         else:
@@ -48,7 +47,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QtWidgets.QVBoxLayout(central_widget)
 
-        # --- 1. 基本設定 ---
         form = QtWidgets.QFormLayout()
         self.name_input = QtWidgets.QLineEdit()
         self.path_input = QtWidgets.QLineEdit()
@@ -63,10 +61,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         form.addRow("Base Directory:", path_layout)
         main_layout.addLayout(form)
 
-        # --- 2. タブエリア ---
         self.tabs = QtWidgets.QTabWidget()
         self.anchors_table = self.create_table_page("Anchors", ["Key", "Value"])
-        self.soft_tab = self.setup_software_tab() # 環境変数エディタ
+        self.soft_tab = self.setup_software_tab()
         self.shot_depts_list = self.create_list_page("Shot Depts")
         self.asset_depts_list = self.create_list_page("Asset Depts")
         self.template_table = self.create_table_page("Templates", ["Key", "Path Value"])
@@ -78,7 +75,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs.addTab(self.template_table["widget"], "Templates")
         main_layout.addWidget(self.tabs)
 
-        # --- 3. 保存ボタン ---
         self.save_btn = QtWidgets.QPushButton("SAVE CONFIG")
         self.save_btn.setFixedHeight(50)
         self.save_btn.setStyleSheet("background-color: #2d5a27; color: white; font-weight: bold;")
@@ -89,10 +85,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(page)
         
-        # 左: ソフトリスト
         left_layout = QtWidgets.QVBoxLayout()
         self.soft_list_widget = QtWidgets.QListWidget()
-        self.soft_list_widget.currentRowChanged.connect(self.on_soft_selection_changed)
+        # 選択変更前に現在のツリーをメモリに保存するようシグナル調整
+        self.soft_list_widget.currentItemChanged.connect(self.on_soft_selection_changed)
         
         btn_layout = QtWidgets.QHBoxLayout()
         self.add_soft_btn = QtWidgets.QPushButton("+ Add")
@@ -105,7 +101,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         left_layout.addWidget(self.soft_list_widget)
         left_layout.addLayout(btn_layout)
         
-        # 右: 環境変数ツリー (画像にあった機能)
         right_layout = QtWidgets.QVBoxLayout()
         self.env_tree = QtWidgets.QTreeWidget()
         self.env_tree.setColumnCount(2)
@@ -125,58 +120,75 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         layout.addLayout(left_layout, 1); layout.addLayout(right_layout, 2)
         return page
 
-    def on_soft_selection_changed(self, row):
-        """ソフト選択時にメモリまたはディスクからロード"""
-        self._save_tree_to_memory()
-        item = self.soft_list_widget.item(row)
-        if not item: return
-        soft_id = item.text()
+    def on_soft_selection_changed(self, current, previous):
+        """ソフト選択時にメモリまたはディスクからロード (階層なし対応)"""
+        if previous:
+            # 以前選択していたソフトの編集内容を保存
+            self._save_tree_to_memory(previous.text())
+            
+        if not current: return
+        soft_id = current.text()
         
         # メモリになければ読み込み
         if soft_id not in self.software_configs:
             proj_dir = os.path.join(PROJECTS_ROOT, self.name_input.text().strip())
             spec_path = os.path.join(proj_dir, f"software_{soft_id}.yml")
+            
             if os.path.exists(spec_path):
-                self.software_configs[soft_id] = load_yml(spec_path).get('softwares', {}).get(soft_id, {})
+                # --- 修正: 階層なしでロード ---
+                self.software_configs[soft_id] = load_yml(spec_path)
             else:
                 def_path = os.path.join(DEFAULT_DIR, f"software_{soft_id}.yml")
-                self.software_configs[soft_id] = load_yml(def_path).get('softwares', {}).get(soft_id, {'env_vars':{}, 'paths':{}})
+                # デフォルトも階層なしで取得
+                self.software_configs[soft_id] = load_yml(def_path)
         
         self._populate_tree(self.software_configs[soft_id])
 
     def _populate_tree(self, conf):
         self.env_tree.clear()
+        # env_vars
         for k, v in conf.get('env_vars', {}).items():
             it = QtWidgets.QTreeWidgetItem([str(k), str(v)])
-            it.setFlags(it.flags() | QtCore.Qt.ItemIsEditable); self.env_tree.addTopLevelItem(it)
+            it.setFlags(it.flags() | QtCore.Qt.ItemIsEditable)
+            self.env_tree.addTopLevelItem(it)
+        # paths
         for k, paths in conf.get('paths', {}).items():
             parent = QtWidgets.QTreeWidgetItem([str(k), ""])
-            parent.setFlags(parent.flags() | QtCore.Qt.ItemIsEditable); self.env_tree.addTopLevelItem(parent)
-            for p in paths:
-                child = QtWidgets.QTreeWidgetItem([str(p), ""])
-                child.setFlags(child.flags() | QtCore.Qt.ItemIsEditable); parent.addChild(child)
+            parent.setFlags(parent.flags() | QtCore.Qt.ItemIsEditable)
+            self.env_tree.addTopLevelItem(parent)
+            if isinstance(paths, list):
+                for p in paths:
+                    child = QtWidgets.QTreeWidgetItem([str(p), ""])
+                    child.setFlags(child.flags() | QtCore.Qt.ItemIsEditable)
+                    parent.addChild(child)
             parent.setExpanded(True)
 
-    def _save_tree_to_memory(self):
-        row = self.soft_list_widget.currentRow()
-        if row < 0: return
-        soft_id = self.soft_list_widget.item(row).text()
+    def _save_tree_to_memory(self, soft_id=None):
+        if not soft_id:
+            curr = self.soft_list_widget.currentItem()
+            if not curr: return
+            soft_id = curr.text()
+
         env_vars = {}; paths = {}
         for i in range(self.env_tree.topLevelItemCount()):
             it = self.env_tree.topLevelItem(i)
+            # 子要素があれば paths、なければ env_vars と判定
             if it.childCount() > 0:
                 paths[it.text(0)] = [it.child(j).text(0) for j in range(it.childCount())]
             else:
+                # Value(列1)が空でなければ env_vars、空でもキーとして保持
                 env_vars[it.text(0)] = it.text(1)
-        if soft_id not in self.software_configs: self.software_configs[soft_id] = {}
-        self.software_configs[soft_id].update({'env_vars': env_vars, 'paths': paths})
+        
+        self.software_configs[soft_id] = {'env_vars': env_vars, 'paths': paths}
 
     def load_project_config(self, project_name):
         proj_dir = os.path.join(PROJECTS_ROOT, project_name)
         data = load_yml(os.path.join(proj_dir, "templates_base.yml"))
         self.name_input.setText(project_name)
         root = data.get('anchors', {}).get('project_root', "")
-        if root: self.path_input.setText(os.path.dirname(root.rstrip("/")))
+        if root: 
+            # D:/path/to/project_code からベースディレクトリを抽出
+            self.path_input.setText(os.path.dirname(root).replace("\\", "/"))
         
         self.soft_list_widget.clear()
         master_soft = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
@@ -189,15 +201,14 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             it.setCheckState(QtCore.Qt.Checked if sid in enabled else QtCore.Qt.Unchecked)
             self.soft_list_widget.addItem(it)
             
-            # 既存プロジェクトなら個別ファイルを即メモリへ
+            # 階層なしでメモリへロード
             spec_path = os.path.join(proj_dir, f"software_{sid}.yml")
             if os.path.exists(spec_path):
-                self.software_configs[sid] = load_yml(spec_path).get('softwares', {}).get(sid, {})
+                self.software_configs[sid] = load_yml(spec_path)
 
         self._apply_data_to_ui(data)
 
     def _apply_data_to_ui(self, data):
-        # Anchors
         tab = self.anchors_table["table"]; tab.setRowCount(0)
         for k, v in data.get('anchors', {}).items():
             if k in ["project_name", "project_root"]: continue
@@ -209,12 +220,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             else:
                 r = tab.rowCount(); tab.insertRow(r)
                 tab.setItem(r, 0, QtWidgets.QTableWidgetItem(k)); tab.setItem(r, 1, QtWidgets.QTableWidgetItem(str(v)))
-        # Depts
         for key, obj in [('shot_depts', self.shot_depts_list), ('asset_depts', self.asset_depts_list)]:
             obj["list"].clear()
             for t in data.get(key, []):
                 li = QtWidgets.QListWidgetItem(str(t)); li.setFlags(li.flags() | QtCore.Qt.ItemIsEditable); obj["list"].addItem(li)
-        # Templates
         tab = self.template_table["table"]; tab.setRowCount(0)
         for k, v in data.get('templates', {}).items():
             r = tab.rowCount(); tab.insertRow(r)
@@ -233,31 +242,34 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             'asset_depts': [self.asset_depts_list["list"].item(i).text() for i in range(self.asset_depts_list["list"].count())],
             'templates': {}
         }
-        # テーブル解析
+        
         a_tab = self.anchors_table["table"]; res = [1920, 1080]
         for r in range(a_tab.rowCount()):
-            k = a_tab.item(r, 0).text(); v = a_tab.item(r, 1).text()
+            k_item = a_tab.item(r, 0); v_item = a_tab.item(r, 1)
+            if not k_item or not v_item: continue
+            k = k_item.text(); v = v_item.text()
             if "resolution X" in k: res[0] = int(v)
             elif "resolution Y" in k: res[1] = int(v)
             else: config['anchors'][k] = int(v) if v.isdigit() else v
         config['anchors']['resolution'] = res
+
         for r in range(self.template_table["table"].rowCount()):
-            k = self.template_table["table"].item(r, 0).text(); v = self.template_table["table"].item(r, 1).text()
-            if k: config['templates'][k] = v
+            k_i = self.template_table["table"].item(r, 0); v_i = self.template_table["table"].item(r, 1)
+            if k_i and v_i: config['templates'][k_i.text()] = v_i.text()
 
         for i in range(self.soft_list_widget.count()):
             it = self.soft_list_widget.item(i); sid = it.text()
             if it.checkState() == QtCore.Qt.Checked:
                 config['enabled_softwares'].append(sid)
                 if sid in self.software_configs:
-                    save_yml(os.path.join(proj_dir, f"software_{sid}.yml"), {"softwares": {sid: self.software_configs[sid]}})
+                    # --- 修正: 階層なしで保存 ---
+                    save_yml(os.path.join(proj_dir, f"software_{sid}.yml"), self.software_configs[sid])
         
         save_yml(os.path.join(proj_dir, "templates_base.yml"), config)
         self.config_saved.emit()
         QtWidgets.QMessageBox.information(self, "Saved", "Success")
         self.close()
 
-    # --- 共通UI作成 ---
     def create_table_page(self, title, headers):
         w = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(w)
         t = QtWidgets.QTableWidget(0, 2); t.setHorizontalHeaderLabels(headers)
@@ -287,7 +299,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         for sid in master.keys():
             it = QtWidgets.QListWidgetItem(sid)
-            it.setFlags(it.flags()|QtCore.Qt.ItemIsUserCheckable|QtCore.Qt.ItemIsEnabled|QtCore.Qt.ItemIsSelectable)
+            it.setFlags(it.flags()|QtCore.Qt.ItemUserCheckable|QtCore.Qt.ItemIsEnabled|QtCore.Qt.ItemIsSelectable)
             it.setCheckState(QtCore.Qt.Unchecked); self.soft_list_widget.addItem(it)
         self._apply_data_to_ui(load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")))
 
@@ -296,9 +308,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         if p:
             sid = os.path.splitext(os.path.basename(p))[0]
             it = QtWidgets.QListWidgetItem(sid)
-            it.setFlags(it.flags()|QtCore.Qt.ItemIsUserCheckable|QtCore.Qt.ItemIsEnabled|QtCore.Qt.ItemIsSelectable)
+            it.setFlags(it.flags()|QtCore.Qt.ItemUserCheckable|QtCore.Qt.ItemIsEnabled|QtCore.Qt.ItemIsSelectable)
             it.setCheckState(QtCore.Qt.Checked); self.soft_list_widget.addItem(it)
-            self.software_configs[sid] = {'path': p.replace("\\", "/"), 'env_vars':{}, 'paths':{}}
+            self.software_configs[sid] = {'env_vars':{}, 'paths':{}}
 
     def remove_software(self):
         r = self.soft_list_widget.currentRow()
