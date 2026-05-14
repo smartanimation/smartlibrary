@@ -327,17 +327,29 @@ class SmartLauncher(QtWidgets.QMainWindow):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("FILE")
         
-        # 既存のアクション
-        file_menu.addAction("New Project", self.open_config_creator)
+        # 1. New Project
+        new_action = file_menu.addAction("New Project", self.open_config_creator)
+        new_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon))
+        new_action.setShortcut("Ctrl+N")
         
-        # --- 追加: Run Pipeline Setup ---
+        # 2. Run Pipeline Setup
+        # 直接 self.run_pipeline_setup を指定します。
+        # すでに内部でプロジェクト名の取得などの処理が含まれているため、これで動作します。
         setup_action = file_menu.addAction("Run Pipeline Setup", self.run_pipeline_setup)
+        setup_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay))
         setup_action.setToolTip("Execute init_project.py for the current project")
+        setup_action.setShortcut("Ctrl+R")
         
-        file_menu.addSeparator() # 区切り線
+        file_menu.addSeparator()
         
-        file_menu.addAction("Delete Current Project", self.delete_current_project)
-        file_menu.addAction("Refresh", self.refresh_projects)
+        # 3. Delete Current Project
+        del_action = file_menu.addAction("Delete Current Project", self.delete_current_project)
+        del_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_TrashIcon))
+        
+        # 4. Refresh
+        ref_action = file_menu.addAction("Refresh", self.refresh_projects)
+        ref_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_BrowserReload))
+        ref_action.setShortcut("F5")
 
     def toggle_favorite(self):
         project = self.ui.projectCombo.currentText()
