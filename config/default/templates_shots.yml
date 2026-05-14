@@ -1,0 +1,11 @@
+templates:
+  # ショットのルート定義
+  shot_root: "{project_root}/shots/{episode}/{seq}/{shot}"
+
+  # work の下に各部署（anim, lighting等）を展開
+  dept_work: "{shot_root}/work/{dept}"
+
+  # ショット直下の共通フォルダ
+  dept_data: "{shot_root}/data"
+  dept_publish: "{shot_root}/publish"
+  dept_render: "{shot_root}/render"

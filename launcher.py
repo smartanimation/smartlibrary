@@ -151,6 +151,36 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.ui.info_label.setOpenExternalLinks(False) 
             self.ui.info_label.linkActivated.connect(self.open_explorer) # クリック時の関数を接続
 
+        if hasattr(self.ui, 'info_label'):
+            self.ui.info_label.setWordWrap(True)
+            self.ui.info_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+            self.ui.info_label.setOpenExternalLinks(False) 
+            self.ui.info_label.linkActivated.connect(self.open_explorer)
+            
+            # --- [追加] 右クリックメニューの設定 ---
+            self.ui.info_label.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            self.ui.info_label.customContextMenuRequested.connect(self.show_context_menu)
+
+    def show_context_menu(self, pos):
+        """右クリックメニューの表示"""
+        menu = QtWidgets.QMenu(self)
+        
+        # 再セットアップアクション
+        re_setup_action = menu.addAction("🔄 Force Re-Setup Project")
+        
+        # メニューを表示した位置で実行
+        action = menu.exec(self.ui.info_label.mapToGlobal(pos))
+        
+        if action == re_setup_action:
+            # 念のため確認ダイアログを出す
+            confirm = QtWidgets.QMessageBox.question(
+                self, "Confirm Re-Setup",
+                "Are you sure you want to run the setup pipeline again?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+            )
+            if confirm == QtWidgets.QMessageBox.Yes:
+                self.run_pipeline_setup()
+
     def load_user_settings(self):
         data = load_yml(USER_SETTINGS_PATH)
         default = {"recent_projects": [], "favorites": [], "last_window_size": [1000, 800]}
@@ -406,9 +436,17 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 self.creator_win.show()
 
     def check_project_status(self, project_root):
+        """セットアップ状態を確認し、ボタンの表示を切り替える"""
         is_ready = os.path.exists(project_root) if project_root else False
-        self.ui.setup_button.setText("✅ READY" if is_ready else "⚠️ SETUP")
-        self.ui.setup_button.setStyleSheet("color: #55aa55;" if is_ready else "color: orange;")
+        
+        if is_ready:
+            # セットアップ済みならボタンを隠す
+            self.ui.setup_button.hide()
+        else:
+            # 未完了ならボタンを表示して注意を促す
+            self.ui.setup_button.show()
+            self.ui.setup_button.setText("⚠️ SETUP PROJECT")
+            self.ui.setup_button.setStyleSheet("color: orange; font-weight: bold; background-color: #332200;")
 
     def run_pipeline_setup(self):
         folder_name = self.project_map.get(self.ui.projectCombo.currentText())
