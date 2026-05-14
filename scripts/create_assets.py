@@ -3,6 +3,9 @@ import yaml
 import gspread
 import sys
 
+
+creds_path = r"C:/Users/smart/Downloads/credentials.json"
+
 class SimpleTemplate:
     """Python 3.12対応: 変数置換を行う自作クラス"""
     def __init__(self, name, pattern):
@@ -59,8 +62,8 @@ def main():
         print("ERROR: PROJECT_CONFIG_DIR が未設定です。")
         return
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    creds_path = os.path.join(script_dir, 'credentials.json')
+    #script_dir = os.path.dirname(os.path.abspath(__file__))
+    #creds_path = os.path.join(script_dir, 'credentials.json')
 
     try:
         templates, depts = load_asset_configs(config_dir)

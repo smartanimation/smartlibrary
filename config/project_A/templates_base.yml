@@ -9,6 +9,7 @@ anchors:
   - 1080
 enabled_softwares:
 - maya2026
+- usdview
 shot_depts:
 - anim
 asset_depts:
