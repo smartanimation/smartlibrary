@@ -41,6 +41,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("Smart Launcher")
         self.load_ui()
         self.project_map = {}
         self.projectroot = ""
@@ -164,7 +165,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
             anchors = cfg.get('anchors', {})
             self.projectroot = anchors.get('project_root', '')
             
-            lines = [f"<b><span style='color: #ffffff; font-size: 14px;'>{display_name}</span></b>"]
+            #lines = [f"<b><span style='color: #ffffff; font-size: 14px;'>{display_name}</span></b>"]
+            lines = []
             if 'fps' in anchors: lines.append(f"FPS: <span style='color: #aaaaaa;'>{anchors['fps']}</span>")
             res = anchors.get('resolution')
             if isinstance(res, list) and len(res) >= 2:
