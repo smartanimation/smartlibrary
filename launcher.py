@@ -191,7 +191,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.app_model.appendRow(item)
 
     def launch_selected(self):
-        """アプリ起動 (階層なしYAML対応・bat起動強化版)"""
+        """アプリ起動 (batファイルは環境変数を汚さずそのまま実行)"""
         idx = self.ui.appview.selectedIndexes()
         if not idx: return
         soft_id = idx[0].data(QtCore.Qt.UserRole)
@@ -209,67 +209,55 @@ class SmartLauncher(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Error", f"Executable not found: {exe_p}")
             return
 
-        # --- 環境変数の構築 (現在のOS環境をコピー) ---
-        full_env = os.environ.copy()
-        
-        # 固有設定ファイルパス: config/{folder_name}/software_maya.yml
-        specific_conf_path = os.path.join(PROJECTS_ROOT, folder_name, f"software_{soft_id}.yml")
-        
-        if os.path.exists(specific_conf_path):
-            spec_data = load_yml(specific_conf_path)
-            
-            # 1. env_vars (MAYA_UI_LANGUAGE等) の読み込み
-            # 提示されたYAMLはルート直下に env_vars がある前提
-            env_vars = spec_data.get('env_vars', {})
-            for k, v in env_vars.items():
-                val = str(v).replace("{project_root}", self.projectroot)
-                full_env[str(k)] = val
+        is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
 
-            # 2. paths (PYTHONPATH等) の読み込み
-            # 提示されたYAMLはルート直下に paths がある前提
-            paths_dict = spec_data.get('paths', {})
-            for k, p_list in paths_dict.items():
-                if not isinstance(p_list, list): continue
-                # パス内の変数を展開
-                formatted_paths = [p.replace("{project_root}", self.projectroot) for p in p_list]
-                
-                existing = full_env.get(k, "")
-                if existing:
-                    # 新しいパスを先頭に追加 (区切り文字 os.pathsep を使用)
-                    full_env[str(k)] = os.pathsep.join(formatted_paths) + os.pathsep + existing
-                else:
-                    full_env[str(k)] = os.pathsep.join(formatted_paths)
-        
         # --- 起動処理 ---
         try:
-            is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
-            
-            # batファイルの場合はその階層を、それ以外はプロジェクトルートを作業ディレクトリに
-            working_dir = os.path.dirname(exe_p) if is_batch else self.projectroot
-            if not working_dir or not os.path.exists(working_dir):
-                working_dir = self.projectroot
-
             if is_batch:
-                # [重要] batファイルは shell=True かつ、コマンド全体をダブルクォートで囲む必要がある
-                # また、環境変数を確実に引き継ぐために env=full_env を指定
+                # ---------------------------------------------------------
+                # batファイルの場合：環境変数を一切指定せず、OS標準で叩く
+                # ---------------------------------------------------------
+                working_dir = os.path.dirname(exe_p)
+                
                 subprocess.Popen(
                     f'"{exe_p}"', 
-                    env=full_env,
                     cwd=working_dir,
                     shell=True,
                     creationflags=subprocess.CREATE_NEW_CONSOLE
+                    # env引数を渡さないことで、現在のOS環境がそのまま使われます
                 )
             else:
-                # EXEなどはリスト形式で渡すのが安全
+                # ---------------------------------------------------------
+                # EXE（Maya等）の場合：これまで通り環境変数を構築して渡す
+                # ---------------------------------------------------------
+                full_env = os.environ.copy()
+                specific_conf_path = os.path.join(PROJECTS_ROOT, folder_name, f"software_{soft_id}.yml")
+                
+                if os.path.exists(specific_conf_path):
+                    spec_data = load_yml(specific_conf_path)
+                    
+                    # env_vars
+                    env_vars = spec_data.get('env_vars', {})
+                    for k, v in env_vars.items():
+                        full_env[str(k)] = str(v).replace("{project_root}", self.projectroot)
+
+                    # paths
+                    paths_dict = spec_data.get('paths', {})
+                    for k, p_list in paths_dict.items():
+                        if isinstance(p_list, list):
+                            formatted_paths = [p.replace("{project_root}", self.projectroot) for p in p_list]
+                            existing = full_env.get(k, "")
+                            full_env[str(k)] = os.pathsep.join(formatted_paths) + (os.pathsep + existing if existing else "")
+
                 subprocess.Popen(
                     [exe_p],
                     env=full_env,
-                    cwd=working_dir,
+                    cwd=self.projectroot,
                     creationflags=subprocess.CREATE_NEW_CONSOLE
                 )
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Launch failed: {e}")
-            
+
     def delete_current_project(self):
         """プロジェクト削除 (コンフィグのみ / フォルダ含め全ての選択)"""
         display_name = self.ui.projectCombo.currentText()
