@@ -23,3 +23,6 @@ softwares:
   UE5.3:
     path: "C:/Program Files/Epic Games/UE_5.3/Engine/Binaries/Win64/UnrealEditor.exe"
     icon: ""
+  DaVinciResolve:
+    path: "C:/Program Files/Blackmagic Design/DaVinci Resolve/Resolve.exe"
+    icon: ""
