@@ -7,7 +7,8 @@ anchors:
   - 1080
 enabled_softwares:
 - maya
-- AE2025
+- DaVinciResolve
+- AfterEffects2025
 shot_depts:
 - anim
 asset_depts:
