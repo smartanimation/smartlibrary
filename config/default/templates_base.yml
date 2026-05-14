@@ -20,7 +20,7 @@ asset_depts:
 
 templates:
   # プロジェクト直下の主要フォルダ
-  atr_root: "{project_root}/atr"
+  art_root: "{project_root}/art"
   assets_root: "{project_root}/assets"
   editorial_root: "{project_root}/editorial"
   prepro_root: "{project_root}/prepro"
@@ -29,6 +29,8 @@ templates:
   setting_root: "{project_root}/settings"
   delivery_root: "{project_root}/delivery"
   library_root: "{project_root}/library"
+  users_root: "{project_root}/users"
+  workspace_root: "{project_root}/workspace"
 
   # さらにその下の階層も必要なら追加
   tool_dir: "{setting_root}/tools"
