@@ -299,8 +299,18 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         for sid in master.keys():
             it = QtWidgets.QListWidgetItem(sid)
-            it.setFlags(it.flags()|QtCore.Qt.ItemUserCheckable|QtCore.Qt.ItemIsEnabled|QtCore.Qt.ItemIsSelectable)
-            it.setCheckState(QtCore.Qt.Unchecked); self.soft_list_widget.addItem(it)
+            
+            # --- ここを修正：確実に PySide6 で通るフラグ指定 ---
+            flags = (
+                QtCore.Qt.ItemFlag.ItemIsUserCheckable | 
+                QtCore.Qt.ItemFlag.ItemIsEnabled | 
+                QtCore.Qt.ItemFlag.ItemIsSelectable
+            )
+            it.setFlags(flags)
+            
+            it.setCheckState(QtCore.Qt.CheckState.Unchecked) 
+            self.soft_list_widget.addItem(it)
+            
         self._apply_data_to_ui(load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")))
 
     def add_custom_software(self):
