@@ -191,11 +191,12 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.app_model.appendRow(item)
 
     def launch_selected(self):
-        """アプリ起動 (環境変数の確実な反映)"""
+        """アプリ起動 (提示されたYAML構造に合わせて環境変数を反映)"""
         idx = self.ui.appview.selectedIndexes()
         if not idx: return
         soft_id = idx[0].data(QtCore.Qt.UserRole)
-        folder_name = self.project_map.get(self.ui.projectCombo.currentText())
+        display_project = self.ui.projectCombo.currentText()
+        folder_name = self.project_map.get(display_project)
         
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         soft_info = master_data.get(soft_id, {})
@@ -205,24 +206,45 @@ class SmartLauncher(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Error", f"Executable not found: {exe_p}")
             return
 
-        # 環境変数の構築
+        # --- 環境変数の構築 ---
         full_env = os.environ.copy()
+        
+        # 固有設定ファイルパス: config/{folder_name}/software_maya.yml
         specific_conf_path = os.path.join(PROJECTS_ROOT, folder_name, f"software_{soft_id}.yml")
+        
         if os.path.exists(specific_conf_path):
-            spec_data = load_yml(specific_conf_path).get('softwares', {}).get(soft_id, {})
-            # env_vars: 単純上書き
-            for k, v in spec_data.get('env_vars', {}).items():
-                full_env[str(k)] = str(v).replace("{project_root}", self.projectroot)
-            # paths: 既存の変数の先頭に追加
-            for k, p_list in spec_data.get('paths', {}).items():
-                if not isinstance(p_list, list): continue
-                formatted = [p.replace("{project_root}", self.projectroot) for p in p_list]
-                existing = full_env.get(k, "")
-                if existing:
-                    full_env[k] = os.pathsep.join(formatted) + os.pathsep + existing
-                else:
-                    full_env[k] = os.pathsep.join(formatted)
+            spec_data = load_yml(specific_conf_path) # ルートから直接読み込む
+            
+            # 1. env_vars: 単純上書き
+            env_vars = spec_data.get('env_vars', {})
+            if env_vars:
+                for k, v in env_vars.items():
+                    val = str(v).replace("{project_root}", self.projectroot)
+                    full_env[str(k)] = val
+                    print(f"[ENV SET] {k} = {val}")
 
+            # 2. paths: 既存の変数の先頭に追加
+            paths_dict = spec_data.get('paths', {})
+            if paths_dict:
+                for k, p_list in paths_dict.items():
+                    if not isinstance(p_list, list): continue
+                    
+                    # パス内の変数を展開
+                    formatted_paths = [p.replace("{project_root}", self.projectroot) for p in p_list]
+                    
+                    existing = full_env.get(k, "")
+                    if existing:
+                        # 新しいパスを既存のパスの前に結合
+                        new_val = os.pathsep.join(formatted_paths) + os.pathsep + existing
+                    else:
+                        new_val = os.pathsep.join(formatted_paths)
+                    
+                    full_env[str(k)] = new_val
+                    print(f"[PATH ADD] {k} = {new_val}")
+        else:
+            print(f"[DEBUG] 設定ファイルが見つかりません: {specific_conf_path}")
+
+        # 起動
         try:
             is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
             subprocess.Popen(
