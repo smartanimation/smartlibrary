@@ -7,9 +7,10 @@ templates:
   dept_publish: "{asset_root}/publish"
   dept_reference: "{asset_root}/reference"
 
-  # work is DCC-first and keeps take numbers in file names.
+  # work scene naming. Work files keep take numbers.
   work_scene_dir: "{asset_root}/work/{dcc}/{department}/{variant}"
   work_scene_file: "{project_name}_{asset_name}_{department}_{variant}_{version}_{take}.{ext}"
+
   work_maya_model_hires: "{dept_work}/maya/model/hires"
   work_maya_model_proxy: "{dept_work}/maya/model/hires/proxy"
   work_maya_model_render: "{dept_work}/maya/model/hires/render"
@@ -21,14 +22,12 @@ templates:
   work_zbrush: "{dept_work}/zbrush"
   work_houdini: "{dept_work}/houdini"
 
-  # data stores reusable build/cache inputs.
   data_rig_skin: "{dept_data}/rig/skin"
   data_rig_guide: "{dept_data}/rig/guide"
   data_rig_build: "{dept_data}/rig/build"
   data_groom: "{dept_data}/groom"
   data_sim: "{dept_data}/sim"
 
-  # publish is versioned and take-less.
   publish_model_hires_ma: "{dept_publish}/model/hires/ma"
   publish_model_hires_fbx: "{dept_publish}/model/hires/fbx"
   publish_model_hires_abc: "{dept_publish}/model/hires/abc"

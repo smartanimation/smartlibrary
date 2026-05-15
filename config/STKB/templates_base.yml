@@ -1,16 +1,26 @@
 anchors:
-  project_name: NEWPROJ
-  project_root: D:/Projects/NEWPROJ
+  project_name: STKB
+  project_root: D:/Projects/STKB
   fps: 24
   resolution:
   - 1920
   - 1080
-enabled_softwares: []
+enabled_softwares:
+- maya2026
+- DaVinciResolve
+- Blender5.0
+- AfterEffects2025
+- Houdini21.0.440
 shot_depts:
+- layout
 - anim
+- fx
+- light
+- comp
 asset_depts:
 - model
 - rig
+- look
 templates:
   art_root: '{project_root}/art'
   assets_root: '{project_root}/assets'

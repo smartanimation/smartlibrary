@@ -3,6 +3,11 @@ import yaml
 import gspread
 import sys
 
+try:
+    from scripts.asset_manager import AssetManager
+except ImportError:
+    from asset_manager import AssetManager
+
 
 creds_path = r"C:/Users/smart/Downloads/credentials.json"
 
@@ -67,6 +72,7 @@ def main():
 
     try:
         templates, depts = load_asset_configs(config_dir)
+        asset_manager = AssetManager(config_dir)
         gc = gspread.service_account(filename=creds_path)
         sh = gc.open("Asset_List").sheet1 
         rows = sh.get_all_records()
@@ -97,6 +103,9 @@ def main():
         }
 
         try:
+            asset = asset_manager.get_asset(category, group, asset_name)
+            asset_manager.ensure_asset_structure(asset)
+
             # 1. 共通フォルダの生成 (dept を含まないテンプレート)
             for t_name, template in templates.items():
                 if t_name.startswith("dept_") and "{dept}" not in template.pattern:
