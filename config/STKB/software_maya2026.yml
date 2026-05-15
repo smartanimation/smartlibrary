@@ -4,8 +4,9 @@ env_vars:
   MAYA_SKIP_BLOCKCHECK: '1'
   PYTHONDONTWRITEBYTECODE: '1'
   MAYA_PLUG_IN_PATH: ''
-  MAYA_MODULE_PATH: ''
 paths:
+  MAYA_MODULE_PATH:
+  - D:/smartlibrary/maya/modules/mgear_5.1.0
   PYTHONPATH:
   - P:/dev/smartlibrary/scripts
 path: C:/Program Files/Autodesk/Maya2026/bin/maya.exe

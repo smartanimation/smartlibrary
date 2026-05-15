@@ -51,6 +51,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         root_layout.addWidget(splitter, 1)
 
         self.asset_list = QtWidgets.QListWidget()
+        self.asset_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         splitter.addWidget(self.asset_list)
 
         right = QtWidgets.QWidget()
@@ -63,20 +64,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         right_layout.addWidget(QtWidgets.QLabel("Publish Files"))
         self.publish_list = QtWidgets.QListWidget()
+        self.publish_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         right_layout.addWidget(self.publish_list, 1)
 
         action_layout = QtWidgets.QHBoxLayout()
-        self.open_data_btn = QtWidgets.QPushButton("Open Data")
-        self.open_work_btn = QtWidgets.QPushButton("Open Work")
-        self.open_publish_btn = QtWidgets.QPushButton("Open Publish")
-        self.copy_path_btn = QtWidgets.QPushButton("Copy Path")
         self.open_scene_btn = QtWidgets.QPushButton("Open Scene")
         self.save_scene_btn = QtWidgets.QPushButton("Save Scene")
         self.import_btn = QtWidgets.QPushButton("Import Latest")
-        action_layout.addWidget(self.open_data_btn)
-        action_layout.addWidget(self.open_work_btn)
-        action_layout.addWidget(self.open_publish_btn)
-        action_layout.addWidget(self.copy_path_btn)
+        action_layout.addStretch(1)
         action_layout.addWidget(self.open_scene_btn)
         action_layout.addWidget(self.save_scene_btn)
         action_layout.addWidget(self.import_btn)
@@ -88,22 +83,26 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.search_edit.textChanged.connect(self._apply_filter)
         self.refresh_btn.clicked.connect(self.refresh_assets)
         self.asset_list.currentRowChanged.connect(self._show_current_asset)
-        self.open_data_btn.clicked.connect(lambda: self._open_current("data"))
-        self.open_work_btn.clicked.connect(lambda: self._open_current("work"))
-        self.open_publish_btn.clicked.connect(lambda: self._open_current("publish"))
-        self.copy_path_btn.clicked.connect(self._copy_selected_path)
+        self.asset_list.customContextMenuRequested.connect(self._show_asset_context_menu)
+        self.work_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.work_list.customContextMenuRequested.connect(self._show_work_context_menu)
+        self.publish_list.customContextMenuRequested.connect(self._show_publish_context_menu)
         self.open_scene_btn.clicked.connect(self._open_selected_scene)
         self.save_scene_btn.clicked.connect(self._save_scene)
         self.import_btn.clicked.connect(self._import_latest_publish)
 
-    def refresh_assets(self) -> None:
+    def refresh_assets(self, keep_selection: bool = True) -> None:
+        selected_key = self._current_asset_key() if keep_selection else None
         self.assets = self.manager.list_assets()
-        self._apply_filter()
+        self._apply_filter(selected_key=selected_key)
         self.status_label.setText(f"{len(self.assets)} assets")
 
-    def _apply_filter(self) -> None:
+    def _apply_filter(self, selected_key: tuple[str, str, str] | None = None) -> None:
+        if selected_key is None:
+            selected_key = self._current_asset_key()
         text = self.search_edit.text().strip().lower()
         self.asset_list.clear()
+        row_to_select = -1
         for asset in self.assets:
             label = f"{asset.category}/{asset.group}/{asset.name}"
             if text and text not in label.lower():
@@ -111,7 +110,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
             item = QtWidgets.QListWidgetItem(label)
             item.setData(QtCore.Qt.UserRole, asset)
             self.asset_list.addItem(item)
-        if self.asset_list.count():
+            if self._asset_key(asset) == selected_key:
+                row_to_select = self.asset_list.count() - 1
+        if row_to_select >= 0:
+            self.asset_list.setCurrentRow(row_to_select)
+        elif self.asset_list.count():
             self.asset_list.setCurrentRow(0)
 
     def _current_asset(self) -> Asset | None:
@@ -119,6 +122,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not item:
             return None
         return item.data(QtCore.Qt.UserRole)
+
+    @staticmethod
+    def _asset_key(asset: Asset) -> tuple[str, str, str]:
+        return (asset.category, asset.group, asset.name)
+
+    def _current_asset_key(self) -> tuple[str, str, str] | None:
+        asset = self._current_asset()
+        if not asset:
+            return None
+        return self._asset_key(asset)
 
     def _show_current_asset(self) -> None:
         asset = self._current_asset()
@@ -166,6 +179,81 @@ class AssetManagerWindow(QtWidgets.QDialog):
             QtWidgets.QApplication.clipboard().setText(text)
             self.status_label.setText(f"Copied: {text}")
 
+    def _copy_text(self, text: str) -> None:
+        if text:
+            QtWidgets.QApplication.clipboard().setText(text)
+            self.status_label.setText(f"Copied: {text}")
+
+    def _show_asset_context_menu(self, pos) -> None:
+        item = self.asset_list.itemAt(pos)
+        if item:
+            self.asset_list.setCurrentItem(item)
+        asset = self._current_asset()
+        if not asset:
+            return
+        menu = QtWidgets.QMenu(self)
+        open_root = menu.addAction("Open Asset Root")
+        open_data = menu.addAction("Open Data")
+        open_work = menu.addAction("Open Work")
+        open_publish = menu.addAction("Open Publish")
+        menu.addSeparator()
+        copy_root = menu.addAction("Copy Asset Root")
+        copy_data = menu.addAction("Copy Data Path")
+        copy_work = menu.addAction("Copy Work Path")
+        copy_publish = menu.addAction("Copy Publish Path")
+        action = menu.exec(self.asset_list.mapToGlobal(pos))
+        if action == open_root:
+            self._open_current("root")
+        elif action == open_data:
+            self._open_current("data")
+        elif action == open_work:
+            self._open_current("work")
+        elif action == open_publish:
+            self._open_current("publish")
+        elif action == copy_root:
+            self._copy_text(str(asset.root))
+        elif action == copy_data:
+            self._copy_text(str(asset.data_dir))
+        elif action == copy_work:
+            self._copy_text(str(asset.work_dir))
+        elif action == copy_publish:
+            self._copy_text(str(asset.publish_dir))
+
+    def _show_work_context_menu(self, pos) -> None:
+        item = self.work_list.itemAt(pos)
+        if not item or not item.data(QtCore.Qt.UserRole):
+            return
+        path = Path(item.data(QtCore.Qt.UserRole))
+        menu = QtWidgets.QMenu(self)
+        open_scene = menu.addAction("Open Scene")
+        open_folder = menu.addAction("Open Folder")
+        copy_path = menu.addAction("Copy Path")
+        action = menu.exec(self.work_list.mapToGlobal(pos))
+        if action == open_scene:
+            self.work_list.setCurrentItem(item)
+            self._open_selected_scene()
+        elif action == open_folder:
+            self.manager.open_in_explorer(path.parent)
+        elif action == copy_path:
+            self._copy_text(str(path))
+
+    def _show_publish_context_menu(self, pos) -> None:
+        item = self.publish_list.itemAt(pos)
+        if not item or not item.data(QtCore.Qt.UserRole):
+            return
+        path = Path(item.data(QtCore.Qt.UserRole))
+        menu = QtWidgets.QMenu(self)
+        import_file = menu.addAction("Import")
+        open_folder = menu.addAction("Open Folder")
+        copy_path = menu.addAction("Copy Path")
+        action = menu.exec(self.publish_list.mapToGlobal(pos))
+        if action == import_file:
+            import_file_to_current_dcc(path)
+        elif action == open_folder:
+            self.manager.open_in_explorer(path.parent)
+        elif action == copy_path:
+            self._copy_text(str(path))
+
     def _open_selected_scene(self) -> None:
         item = self.work_list.currentItem()
         if not item:
@@ -210,7 +298,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             target.parent.mkdir(parents=True, exist_ok=True)
             save_scene_in_current_dcc(target)
             self.status_label.setText(f"Saved: {target.name}")
-            self.refresh_assets()
+            self.refresh_assets(keep_selection=True)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Scene Failed", str(exc))
 
