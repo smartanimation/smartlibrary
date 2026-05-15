@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -40,16 +41,25 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _build_ui(self) -> None:
         root_layout = QtWidgets.QVBoxLayout(self)
 
+        splitter = QtWidgets.QSplitter()
+        root_layout.addWidget(splitter, 1)
+
+        self.asset_panel = QtWidgets.QWidget()
+        asset_panel_layout = QtWidgets.QVBoxLayout(self.asset_panel)
         filter_layout = QtWidgets.QHBoxLayout()
         self.search_edit = QtWidgets.QLineEdit()
         self.search_edit.setPlaceholderText("Search asset")
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
         filter_layout.addWidget(self.search_edit)
         filter_layout.addWidget(self.refresh_btn)
-        root_layout.addLayout(filter_layout)
-
-        splitter = QtWidgets.QSplitter()
-        root_layout.addWidget(splitter, 1)
+        asset_panel_layout.addLayout(filter_layout)
+        asset_view_layout = QtWidgets.QHBoxLayout()
+        asset_view_layout.addStretch(1)
+        self.asset_card_btn = QtWidgets.QPushButton("Card")
+        self.asset_table_btn = QtWidgets.QPushButton("Table")
+        asset_view_layout.addWidget(self.asset_card_btn)
+        asset_view_layout.addWidget(self.asset_table_btn)
+        asset_panel_layout.addLayout(asset_view_layout)
 
         self.asset_list = QtWidgets.QListWidget()
         self.asset_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -79,54 +89,92 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 background: #424242;
             }
         """)
-        splitter.addWidget(self.asset_list)
+        asset_panel_layout.addWidget(self.asset_list)
+        splitter.addWidget(self.asset_panel)
 
         right = QtWidgets.QWidget()
+        self.detail_panel = right
         right_layout = QtWidgets.QVBoxLayout(right)
         splitter.addWidget(right)
 
-        right_layout.addWidget(QtWidgets.QLabel("Work Scenes"))
+        detail_header = QtWidgets.QHBoxLayout()
+        self.back_to_assets_btn = QtWidgets.QPushButton("Back")
+        detail_header.addWidget(self.back_to_assets_btn)
+        detail_header.addStretch(1)
+        right_layout.addLayout(detail_header)
+
+        asset_info_layout = QtWidgets.QHBoxLayout()
+        self.detail_thumbnail = QtWidgets.QLabel()
+        self.detail_thumbnail.setFixedSize(150, 84)
+        self.detail_thumbnail.setStyleSheet("background: #2f343a; border: 1px solid #4a4a4a;")
+        self.detail_thumbnail.setAlignment(QtCore.Qt.AlignCenter)
+        self.detail_info = QtWidgets.QLabel("")
+        self.detail_info.setTextFormat(QtCore.Qt.RichText)
+        self.detail_info.setAlignment(QtCore.Qt.AlignTop)
+        asset_info_layout.addWidget(self.detail_thumbnail)
+        asset_info_layout.addWidget(self.detail_info, 1)
+        right_layout.addLayout(asset_info_layout)
+
+        self.detail_tabs = QtWidgets.QTabWidget()
+        right_layout.addWidget(self.detail_tabs, 1)
+
+        work_tab = QtWidgets.QWidget()
+        work_layout = QtWidgets.QVBoxLayout(work_tab)
         self.dept_tabs = QtWidgets.QTabBar()
         self.dept_tabs.setExpanding(False)
         for dept in self.manager.asset_depts:
             self.dept_tabs.addTab(dept)
         if not self.manager.asset_depts:
             self.dept_tabs.addTab("model")
-        right_layout.addWidget(self.dept_tabs)
+        work_layout.addWidget(self.dept_tabs)
 
         self.variant_list = QtWidgets.QListWidget()
         self.variant_list.setMaximumHeight(72)
-        right_layout.addWidget(self.variant_list)
+        work_layout.addWidget(self.variant_list)
 
         self.dependency_label = QtWidgets.QLabel("")
-        right_layout.addWidget(self.dependency_label)
+        work_layout.addWidget(self.dependency_label)
 
-        self.work_list = QtWidgets.QTableWidget(0, 5)
-        self.work_list.setHorizontalHeaderLabels(["File", "Version", "Take", "Published", "Comment"])
+        self.work_list = QtWidgets.QTableWidget(0, 4)
+        self.work_list.setHorizontalHeaderLabels(["Action", "File", "Updated", "Comment"])
         self.work_list.horizontalHeader().setStretchLastSection(True)
         self.work_list.verticalHeader().setVisible(False)
         self.work_list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        right_layout.addWidget(self.work_list, 1)
-
-        right_layout.addWidget(QtWidgets.QLabel("Data Files"))
-        self.data_list = QtWidgets.QListWidget()
-        self.data_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        right_layout.addWidget(self.data_list, 1)
-
-        action_layout = QtWidgets.QHBoxLayout()
-        self.open_scene_btn = QtWidgets.QPushButton("Open Scene")
-        self.save_scene_btn = QtWidgets.QPushButton("Save Scene")
+        work_layout.addWidget(self.work_list)
+        button_grid = QtWidgets.QGridLayout()
+        self.open_scene_btn = QtWidgets.QPushButton("OPEN")
+        self.reference_btn = QtWidgets.QPushButton("REFERENCE")
+        self.save_scene_btn = QtWidgets.QPushButton("SAVE")
         self.publish_btn = QtWidgets.QPushButton("Publish")
-        self.export_data_btn = QtWidgets.QPushButton("Export Data")
-        self.import_btn = QtWidgets.QPushButton("Import Latest")
-        action_layout.addStretch(1)
-        action_layout.addWidget(self.open_scene_btn)
-        action_layout.addWidget(self.save_scene_btn)
-        action_layout.addWidget(self.publish_btn)
-        action_layout.addWidget(self.export_data_btn)
-        action_layout.addWidget(self.import_btn)
-        right_layout.addLayout(action_layout)
+        button_grid.addWidget(self.open_scene_btn, 0, 0)
+        button_grid.addWidget(self.reference_btn, 0, 1, 1, 2)
+        button_grid.addWidget(self.save_scene_btn, 1, 0)
+        button_grid.addWidget(self.publish_btn, 1, 1, 1, 2)
+        work_layout.addLayout(button_grid)
+        self.detail_tabs.addTab(work_tab, "Work Scene")
+
+        data_tab = QtWidgets.QWidget()
+        data_layout = QtWidgets.QVBoxLayout(data_tab)
+        self.data_list = QtWidgets.QTreeWidget()
+        self.data_list.setHeaderLabels(["Name", "Version", "Date", "Comment"])
+        self.data_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        data_layout.addWidget(self.data_list)
+        data_buttons = QtWidgets.QHBoxLayout()
+        self.export_mesh_btn = QtWidgets.QPushButton("Export Mesh")
+        self.export_guide_btn = QtWidgets.QPushButton("Export Guide")
+        self.export_skin_btn = QtWidgets.QPushButton("Export Skin")
+        self.import_data_btn = QtWidgets.QPushButton("Import")
+        data_buttons.addStretch(1)
+        data_buttons.addWidget(self.export_mesh_btn)
+        data_buttons.addWidget(self.export_guide_btn)
+        data_buttons.addWidget(self.export_skin_btn)
+        data_buttons.addWidget(self.import_data_btn)
+        data_layout.addLayout(data_buttons)
+        self.detail_tabs.addTab(data_tab, "Data")
+
+        self.publish_list = QtWidgets.QListWidget()
+        self.publish_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
 
         self.status_label = QtWidgets.QLabel("")
         root_layout.addWidget(self.status_label)
@@ -134,6 +182,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.search_edit.textChanged.connect(self._apply_filter)
         self.refresh_btn.clicked.connect(self.refresh_assets)
         self.asset_list.currentRowChanged.connect(self._show_current_asset)
+        self.asset_list.itemDoubleClicked.connect(lambda _item: self._show_detail_mode())
+        self.asset_card_btn.clicked.connect(self._set_asset_card_view)
+        self.asset_table_btn.clicked.connect(self._set_asset_table_view)
+        self.back_to_assets_btn.clicked.connect(self._show_asset_mode)
         self.dept_tabs.currentChanged.connect(self._on_department_changed)
         self.variant_list.currentRowChanged.connect(lambda _row: self._show_current_asset())
         self.asset_list.customContextMenuRequested.connect(self._show_asset_context_menu)
@@ -141,19 +193,52 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.customContextMenuRequested.connect(self._show_work_context_menu)
         self.work_list.itemChanged.connect(self._on_work_item_changed)
         self.data_list.customContextMenuRequested.connect(self._show_data_context_menu)
+        self.publish_list.customContextMenuRequested.connect(self._show_publish_context_menu)
         self.open_scene_btn.clicked.connect(self._open_selected_scene)
+        self.reference_btn.clicked.connect(self._reference_latest_publish)
         self.save_scene_btn.clicked.connect(self._save_scene)
         self.publish_btn.clicked.connect(self._publish_selected_work)
-        self.export_data_btn.clicked.connect(self._show_export_data_menu)
-        self.import_btn.clicked.connect(self._import_latest_publish)
+        self.export_mesh_btn.clicked.connect(lambda: self._show_export_data_menu("mesh"))
+        self.export_guide_btn.clicked.connect(lambda: self._show_export_data_menu("guide"))
+        self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
+        self.import_data_btn.clicked.connect(self._import_selected_data)
+        self._show_asset_mode()
 
     def refresh_assets(self, keep_selection: bool = True) -> None:
         selected_key = self._current_asset_key() if keep_selection else None
-        self.assets = self.manager.list_assets()
+        self.assets = self.manager.list_assets_from_sheet(fallback_to_filesystem=True)
         self._apply_filter(selected_key=selected_key)
         self._populate_variants()
         self._show_current_asset()
-        self.status_label.setText(f"{len(self.assets)} assets")
+        if self.manager.last_asset_source == "spreadsheet":
+            self.status_label.setText(f"{len(self.assets)} assets from spreadsheet")
+        elif self.manager.last_asset_source_error:
+            self.status_label.setText(
+                f"{len(self.assets)} assets from folders. {self.manager.last_asset_source_error}"
+            )
+        else:
+            self.status_label.setText(f"{len(self.assets)} assets from folders")
+
+    def _show_detail_mode(self) -> None:
+        self.asset_panel.setVisible(False)
+        self.detail_panel.setVisible(True)
+        self._show_current_asset()
+
+    def _show_asset_mode(self) -> None:
+        self.asset_panel.setVisible(True)
+        self.detail_panel.setVisible(False)
+
+    def _set_asset_card_view(self) -> None:
+        self.asset_list.setViewMode(QtWidgets.QListView.IconMode)
+        self.asset_list.setIconSize(QtCore.QSize(150, 84))
+        self.asset_list.setGridSize(QtCore.QSize(190, 190))
+        self.asset_list.setUniformItemSizes(True)
+
+    def _set_asset_table_view(self) -> None:
+        self.asset_list.setViewMode(QtWidgets.QListView.ListMode)
+        self.asset_list.setIconSize(QtCore.QSize(80, 45))
+        self.asset_list.setGridSize(QtCore.QSize())
+        self.asset_list.setUniformItemSizes(False)
 
     def _apply_filter(self, selected_key: tuple[str, str, str] | None = None) -> None:
         if selected_key is None:
@@ -241,6 +326,25 @@ class AssetManagerWindow(QtWidgets.QDialog):
         painter.end()
         return canvas
 
+    def _update_detail_asset_info(self, asset: Asset | None) -> None:
+        if not asset:
+            self.detail_thumbnail.clear()
+            self.detail_info.setText("")
+            return
+        metadata = self.manager.load_asset_metadata(asset)
+        self.detail_thumbnail.setPixmap(self._asset_icon(asset, metadata).pixmap(150, 84))
+        status = metadata.get("status", "")
+        asset_type = metadata.get("asset_type") or metadata.get("type") or asset.category
+        description = metadata.get("description", "")
+        self.detail_info.setText(
+            f"<b>{asset.name}</b><br>"
+            f"Category: {asset.category}<br>"
+            f"Group: {asset.group}<br>"
+            f"Type: {asset_type}<br>"
+            f"Status: {status}<br>"
+            f"{description}"
+        )
+
     def _current_asset(self) -> Asset | None:
         item = self.asset_list.currentItem()
         if not item:
@@ -263,7 +367,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.setRowCount(0)
         self.work_list.blockSignals(False)
         self.data_list.clear()
+        self.publish_list.clear()
         self._update_dependency_label(asset)
+        self._update_detail_asset_info(asset)
         if not asset:
             return
 
@@ -284,25 +390,33 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.work_list.insertRow(row)
             parsed = self.manager.parse_work_file(path) or {}
             publish_record = self.manager.publish_record_for_work_file(asset, path)
-            file_item = QtWidgets.QTableWidgetItem(path.relative_to(asset.root).as_posix())
+            action_button = QtWidgets.QPushButton("+")
+            action_button.setFixedWidth(42)
+            action_button.clicked.connect(lambda _checked=False, row=row: self._show_work_row_action_menu(row))
+            self.work_list.setCellWidget(row, 0, action_button)
+            file_item = QtWidgets.QTableWidgetItem(path.name)
             if publish_record:
                 file_item.setIcon(self.published_work_icon)
                 file_item.setToolTip(
                     f"Published official version: v{int(publish_record['version']):03d}"
                 )
             file_item.setData(QtCore.Qt.UserRole, str(path))
-            self.work_list.setItem(row, 0, file_item)
-            self.work_list.setItem(row, 1, QtWidgets.QTableWidgetItem(f"v{parsed.get('version', 0):03d}" if parsed else ""))
-            self.work_list.setItem(row, 2, QtWidgets.QTableWidgetItem(str(parsed.get("take", ""))))
-            self.work_list.setItem(row, 3, QtWidgets.QTableWidgetItem("yes" if publish_record else ""))
+            file_item.setFlags(file_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            updated_item = QtWidgets.QTableWidgetItem(self._format_updated(path))
+            updated_item.setFlags(updated_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.work_list.setItem(row, 1, file_item)
+            self.work_list.setItem(row, 2, updated_item)
             comment_item = QtWidgets.QTableWidgetItem(self.manager.file_comment(path))
-            self.work_list.setItem(row, 4, comment_item)
+            self.work_list.setItem(row, 3, comment_item)
         self.work_list.blockSignals(False)
+        self.work_list.resizeColumnsToContents()
 
-        for path in self.manager.list_data_files(asset):
+        self._populate_data_tree(asset)
+
+        for path in self.manager.list_publish_files(asset):
             item = QtWidgets.QListWidgetItem(path.relative_to(asset.root).as_posix())
             item.setData(QtCore.Qt.UserRole, str(path))
-            self.data_list.addItem(item)
+            self.publish_list.addItem(item)
 
     def _open_current(self, path_type: str) -> None:
         asset = self._current_asset()
@@ -337,6 +451,70 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 latest_key = key
                 latest_path = path
         return latest_path
+
+    def _format_updated(self, path: Path) -> str:
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            return ""
+
+    def _data_version_for_path(self, path: Path) -> str:
+        for part in reversed(path.parts):
+            if part.lower().startswith("v") and part[1:].isdigit():
+                return part.lower()
+        parsed = self.manager.parse_work_file(path)
+        if parsed:
+            return f"v{parsed['version']:03d}"
+        return ""
+
+    def _data_comment_for_path(self, path: Path) -> str:
+        comment = self.manager.file_comment(path)
+        if comment:
+            return comment
+        publish_json = path.parent / "publish.json"
+        if publish_json.exists():
+            try:
+                import json
+                with publish_json.open("r", encoding="utf-8") as f:
+                    return str((json.load(f) or {}).get("comment", ""))
+            except Exception:
+                return ""
+        return ""
+
+    def _populate_data_tree(self, asset: Asset) -> None:
+        self.data_list.clear()
+        roots: dict[Path, QtWidgets.QTreeWidgetItem] = {}
+        ignored = {"publish.json", "latest.json", "versions.json"}
+        files = [
+            path for path in self.manager.list_data_files(asset)
+            if path.name not in ignored and not path.name.endswith(".json")
+        ]
+
+        def get_dir_item(dir_path: Path) -> QtWidgets.QTreeWidgetItem:
+            if dir_path in roots:
+                return roots[dir_path]
+            if dir_path == asset.data_dir:
+                item = self.data_list.invisibleRootItem()
+                roots[dir_path] = item
+                return item
+            parent = get_dir_item(dir_path.parent)
+            item = QtWidgets.QTreeWidgetItem([dir_path.name, "", "", ""])
+            parent.addChild(item)
+            item.setExpanded(True)
+            roots[dir_path] = item
+            return item
+
+        for path in files:
+            parent = get_dir_item(path.parent)
+            item = QtWidgets.QTreeWidgetItem([
+                path.name,
+                self._data_version_for_path(path),
+                self._format_updated(path),
+                self._data_comment_for_path(path),
+            ])
+            item.setData(0, QtCore.Qt.UserRole, str(path))
+            parent.addChild(item)
+        self.data_list.expandAll()
 
     def _latest_published_scene(self) -> Path | None:
         asset = self._current_asset()
@@ -395,7 +573,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if work_path:
             text = work_path
         elif self.data_list.currentItem():
-            text = self.data_list.currentItem().data(QtCore.Qt.UserRole)
+            text = self.data_list.currentItem().data(0, QtCore.Qt.UserRole)
+        elif self.publish_list.currentItem():
+            text = self.publish_list.currentItem().data(QtCore.Qt.UserRole)
         else:
             asset = self._current_asset()
             text = str(asset.root) if asset else ""
@@ -470,74 +650,124 @@ class AssetManagerWindow(QtWidgets.QDialog):
         elif action == copy_path:
             self._copy_text(str(path))
 
+    def _show_work_row_action_menu(self, row: int) -> None:
+        self.work_list.selectRow(row)
+        path_text = self._selected_work_path()
+        if not path_text:
+            return
+        path = Path(path_text)
+        menu = QtWidgets.QMenu(self)
+        open_scene = menu.addAction("Open")
+        reference_scene = menu.addAction("Reference")
+        publish_scene = menu.addAction("Publish")
+        menu.addSeparator()
+        open_folder = menu.addAction("Open Folder")
+        copy_path = menu.addAction("Copy Path")
+        action = menu.exec(QtGui.QCursor.pos())
+        if action == open_scene:
+            self._open_work_path(path)
+        elif action == reference_scene:
+            asset = self._current_asset()
+            reference_file_to_current_dcc(path, namespace=asset.name if asset else None)
+        elif action == publish_scene:
+            self._publish_selected_work()
+        elif action == open_folder:
+            self.manager.open_in_explorer(path.parent)
+        elif action == copy_path:
+            self._copy_text(str(path))
+
     def _show_data_context_menu(self, pos) -> None:
         item = self.data_list.itemAt(pos)
+        if not item or not item.data(0, QtCore.Qt.UserRole):
+            return
+        path = Path(item.data(0, QtCore.Qt.UserRole))
+        menu = QtWidgets.QMenu(self)
+        import_file = menu.addAction("Import")
+        open_folder = menu.addAction("Open Folder")
+        copy_path = menu.addAction("Copy Path")
+        action = menu.exec(self.data_list.mapToGlobal(pos))
+        if action == import_file:
+            import_data_file_to_current_dcc(path)
+        elif action == open_folder:
+            self.manager.open_in_explorer(path.parent)
+        elif action == copy_path:
+            self._copy_text(str(path))
+
+    def _selected_data_path(self) -> Path | None:
+        item = self.data_list.currentItem()
+        if not item:
+            return None
+        path = item.data(0, QtCore.Qt.UserRole)
+        return Path(path) if path else None
+
+    def _import_selected_data(self) -> None:
+        path = self._selected_data_path()
+        if not path:
+            self.status_label.setText("Select a data file first")
+            return
+        try:
+            import_data_file_to_current_dcc(path)
+            self.status_label.setText(f"Imported: {path.name}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Import Data Failed", str(exc))
+
+    def _show_publish_context_menu(self, pos) -> None:
+        item = self.publish_list.itemAt(pos)
         if not item or not item.data(QtCore.Qt.UserRole):
             return
         path = Path(item.data(QtCore.Qt.UserRole))
         menu = QtWidgets.QMenu(self)
+        import_file = menu.addAction("Import")
         open_folder = menu.addAction("Open Folder")
         copy_path = menu.addAction("Copy Path")
-        action = menu.exec(self.data_list.mapToGlobal(pos))
-        if action == open_folder:
+        action = menu.exec(self.publish_list.mapToGlobal(pos))
+        if action == import_file:
+            import_file_to_current_dcc(path)
+        elif action == open_folder:
             self.manager.open_in_explorer(path.parent)
         elif action == copy_path:
             self._copy_text(str(path))
 
     def _open_selected_scene(self) -> None:
-        asset = self._current_asset()
-        if not asset:
-            self.status_label.setText("Select an asset first")
-            return
-
         selected_path = self._selected_work_path()
-        work_files = self.manager.list_work_files(
-            asset,
-            department=self._current_department(),
-            variant=self._current_variant(),
-            extensions=["ma", "mb", "hip", "hiplc", "hipnc"],
-        )
-        latest_work = self._latest_work_file(work_files)
-        published_scene = self._latest_published_scene()
-
-        menu = QtWidgets.QMenu(self)
-        selected_action = menu.addAction("Selected Work Scene")
-        selected_action.setEnabled(bool(selected_path))
-        latest_action = menu.addAction("Latest Work Scene")
-        latest_action.setEnabled(bool(latest_work))
-        published_action = menu.addAction("Published Scene")
-        published_action.setEnabled(bool(published_scene))
-        action = menu.exec(QtGui.QCursor.pos())
-        if not action:
-            return
-        if action == selected_action:
-            path = selected_path
-        elif action == latest_action:
-            path = latest_work
-        elif action == published_action:
-            path = published_scene
-        else:
+        if not selected_path:
+            self.status_label.setText("Select a work scene first")
             return
 
         try:
-            open_scene_in_current_dcc(path)
-            self.status_label.setText(f"Opened: {Path(path).name}")
+            self._open_work_path(selected_path)
+            self.status_label.setText(f"Opened: {Path(selected_path).name}")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Open Scene Failed", str(exc))
+
+    def _open_work_path(self, path: str | os.PathLike[str]) -> None:
+        open_scene_in_current_dcc(path)
+
+    def _reference_latest_publish(self) -> None:
+        asset = self._current_asset()
+        path = self._latest_published_scene()
+        if not path:
+            self.status_label.setText("No published scene found")
+            return
+        try:
+            reference_file_to_current_dcc(path, namespace=asset.name if asset else None)
+            self.status_label.setText(f"Referenced: {Path(path).name}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Reference Failed", str(exc))
 
     def _selected_work_path(self) -> str | None:
         row = self.work_list.currentRow()
         if row < 0:
             return None
-        item = self.work_list.item(row, 0)
+        item = self.work_list.item(row, 1)
         if not item:
             return None
         return item.data(QtCore.Qt.UserRole)
 
     def _on_work_item_changed(self, item) -> None:
-        if item.column() != 4:
+        if item.column() != 3:
             return
-        path = self.work_list.item(item.row(), 0).data(QtCore.Qt.UserRole)
+        path = self.work_list.item(item.row(), 1).data(QtCore.Qt.UserRole)
         if path:
             self.manager.set_file_comment(path, item.text())
 
@@ -669,20 +899,24 @@ class AssetManagerWindow(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Publish Failed", str(exc))
 
-    def _show_export_data_menu(self) -> None:
+    def _show_export_data_menu(self, export_kind: str = "mesh") -> None:
         asset = self._current_asset()
         if not asset:
             self.status_label.setText("Select an asset first")
             return
 
         menu = QtWidgets.QMenu(self)
-        export_fbx = menu.addAction("Selected Mesh: .fbx")
-        export_abc = menu.addAction("Selected Mesh: .abc")
-        export_usd = menu.addAction("Selected Mesh: .usd")
-        menu.addSeparator()
-        export_guide = menu.addAction("mGear Guide")
-        export_skin_high = menu.addAction("mGear Skin: high")
-        export_skin_low = menu.addAction("mGear Skin: low")
+        export_fbx = export_abc = export_usd = None
+        export_guide = export_skin_high = export_skin_low = None
+        if export_kind == "mesh":
+            export_fbx = menu.addAction("Selected Mesh: .fbx")
+            export_abc = menu.addAction("Selected Mesh: .abc")
+            export_usd = menu.addAction("Selected Mesh: .usd")
+        elif export_kind == "guide":
+            export_guide = menu.addAction("mGear Guide")
+        elif export_kind == "skin":
+            export_skin_high = menu.addAction("mGear Skin: high")
+            export_skin_low = menu.addAction("mGear Skin: low")
         action = menu.exec(QtGui.QCursor.pos())
         if not action:
             return
@@ -708,6 +942,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             for path in paths:
                 self.manager.set_file_comment(path, comment)
             self.status_label.setText("Exported: " + ", ".join(path.name for path in paths))
+            current_asset = self._current_asset()
+            if current_asset:
+                self._populate_data_tree(current_asset)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Export Data Failed", str(exc))
 
@@ -928,6 +1165,46 @@ def open_scene_in_current_dcc(path: str | os.PathLike[str]) -> None:
     raise RuntimeError("Open Scene is available inside Maya or Houdini.")
 
 
+def reference_file_to_current_dcc(
+    path: str | os.PathLike[str],
+    namespace: str | None = None,
+) -> None:
+    file_path = str(Path(path))
+    try:
+        import maya.cmds as cmds
+
+        namespace = namespace or Path(file_path).stem
+        namespace = namespace.replace(".", "_").replace("-", "_")
+        cmds.file(
+            file_path,
+            reference=True,
+            ignoreVersion=True,
+            mergeNamespacesOnClash=False,
+            namespace=namespace,
+        )
+        return
+    except ImportError:
+        pass
+
+    try:
+        import hou
+
+        ext = Path(file_path).suffix.lower()
+        if ext in {".hip", ".hiplc", ".hipnc"}:
+            hou.hipFile.merge(file_path)
+        else:
+            obj = hou.node("/obj") or hou.node("/")
+            geo = obj.createNode("geo", node_name=Path(file_path).stem)
+            file_sop = geo.createNode("file")
+            file_sop.parm("file").set(file_path)
+            geo.layoutChildren()
+        return
+    except ImportError:
+        pass
+
+    raise RuntimeError("Reference is available inside Maya or Houdini.")
+
+
 def import_file_to_current_dcc(path: str | os.PathLike[str]) -> None:
     file_path = str(Path(path))
     try:
@@ -962,6 +1239,50 @@ def import_file_to_current_dcc(path: str | os.PathLike[str]) -> None:
         pass
 
     raise RuntimeError("This import action is available inside Maya or Houdini.")
+
+
+def import_data_file_to_current_dcc(path: str | os.PathLike[str]) -> None:
+    file_path = str(Path(path))
+    ext = Path(file_path).suffix.lower()
+
+    if ext in {".fbx", ".abc", ".usd", ".ma", ".mb"}:
+        import_file_to_current_dcc(file_path)
+        return
+
+    try:
+        import maya.cmds as cmds
+    except ImportError:
+        raise RuntimeError("Data import is available inside Maya for this file type.")
+
+    if ext == ".sgt":
+        try:
+            from mgear.shifter import io as shifter_io
+        except ImportError:
+            raise RuntimeError("mGear shifter io module was not found in this Maya session.")
+        for candidate in ("import_guide_template", "importGuideTemplate"):
+            importer = getattr(shifter_io, candidate, None)
+            if importer:
+                importer(file_path)
+                return
+        raise RuntimeError("mGear guide import API was not found. Check your mGear version.")
+
+    if ext == ".gskinpack":
+        try:
+            from mgear.core import skin
+        except ImportError:
+            raise RuntimeError("mGear skin module was not found in this Maya session.")
+        selection = cmds.ls(selection=True, long=True) or []
+        for candidate in ("importSkinPack", "importSkin", "importSkinPackBinary"):
+            importer = getattr(skin, candidate, None)
+            if importer:
+                try:
+                    importer(file_path, selection)
+                except TypeError:
+                    importer(file_path)
+                return
+        raise RuntimeError("mGear skin import API was not found. Check your mGear version.")
+
+    raise RuntimeError(f"Unsupported data file type: {ext}")
 
 
 _WINDOW = None

@@ -17,6 +17,7 @@ except ImportError:
 
 CONFIG_ENV_VAR = "PROJECT_CONFIG_DIR"
 ROOT_ENV_VAR = "SMARTLIBRARY_ROOT"
+CREDENTIALS_ENV_VARS = ("CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "CREDENTIALS_DIR")
 WORK_SCENE_RE = re.compile(
     r"^(?:(?P<prefix>.+?)_)?(?P<asset>.+?)_(?P<department>[^_]+)_(?P<variant>[^_]+)_v(?P<version>\d+)_(?P<take>\d+)\.(?P<ext>[^.]+)$"
 )
@@ -215,6 +216,10 @@ class AssetManager:
         self.config_dir = self._resolve_config_dir(config_dir)
         base_cfg = _load_yaml(self.config_dir / "templates_base.yml")
         asset_cfg = _load_yaml(self.config_dir / "templates_assets.yml")
+        self.base_config = base_cfg
+        self._sheet_metadata: dict[tuple[str, str, str], dict] = {}
+        self.last_asset_source = "filesystem"
+        self.last_asset_source_error = ""
 
         anchors = base_cfg.get("anchors", {})
         self.project_name = anchors.get("project_name", self.config_dir.name)
@@ -275,6 +280,119 @@ class AssetManager:
                     )
         return sorted(assets, key=lambda a: (a.category.lower(), a.group.lower(), a.name.lower()))
 
+    def list_assets_from_sheet(self, *, fallback_to_filesystem: bool = True) -> list[Asset]:
+        self.last_asset_source = "filesystem"
+        self.last_asset_source_error = ""
+        sheet_id = self._asset_sheet_id()
+        credentials_path = self._credentials_path()
+        cached_assets = self._list_assets_from_sheet_cache()
+        if cached_assets:
+            self.last_asset_source = "spreadsheet cache"
+            return cached_assets
+        if not sheet_id:
+            self.last_asset_source_error = "google_sheets.asset_list_id is not set"
+            return self.list_assets() if fallback_to_filesystem else []
+        if not credentials_path:
+            self.last_asset_source_error = (
+                "Credentials path is not set. Use CREDENTIALS_PATH, "
+                "GOOGLE_APPLICATION_CREDENTIALS, or CREDENTIALS_DIR."
+            )
+            return self.list_assets() if fallback_to_filesystem else []
+        if not credentials_path.exists():
+            self.last_asset_source_error = f"Credentials file does not exist: {credentials_path}"
+            return self.list_assets() if fallback_to_filesystem else []
+
+        try:
+            import gspread
+        except ImportError as exc:
+            self.last_asset_source_error = f"gspread import failed: {exc}"
+            return self.list_assets() if fallback_to_filesystem else []
+
+        try:
+            gc = gspread.service_account(filename=str(credentials_path))
+            rows = gc.open_by_key(sheet_id).sheet1.get_all_records()
+        except Exception as exc:
+            self.last_asset_source_error = f"Spreadsheet read failed: {exc}"
+            return self.list_assets() if fallback_to_filesystem else []
+
+        assets: list[Asset] = []
+        self._sheet_metadata.clear()
+        for row in rows:
+            category = str(self._row_value(row, "Category", "category") or "").strip()
+            group = str(self._row_value(row, "Group", "group") or "").strip()
+            asset_name = str(
+                self._row_value(row, "AssetName", "Asset Name", "asset", "name") or ""
+            ).strip()
+            if not category or not group or not asset_name:
+                continue
+            asset = self.get_asset(category, group, asset_name)
+            assets.append(asset)
+            metadata = {
+                "asset": asset.name,
+                "name": asset.name,
+                "category": category,
+                "group": group,
+                "asset_type": self._row_value(row, "AssetType", "Asset Type", "Type") or category,
+                "status": self._row_value(row, "Status", "status") or "",
+                "description": self._row_value(row, "Description", "description") or "",
+                "published_by": self._row_value(row, "PublishedBy", "Published By") or "",
+            }
+            self._sheet_metadata[(category, group, asset_name)] = metadata
+
+        self.last_asset_source = "spreadsheet"
+        return sorted(assets, key=lambda a: (a.category.lower(), a.group.lower(), a.name.lower()))
+
+    def _sheet_cache_path(self) -> Path:
+        return self.config_dir / ".cache" / "asset_list.json"
+
+    def _list_assets_from_sheet_cache(self) -> list[Asset]:
+        cache_path = self._sheet_cache_path()
+        data = _read_json(cache_path, None)
+        if not isinstance(data, list):
+            return []
+
+        assets: list[Asset] = []
+        self._sheet_metadata.clear()
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            category = str(row.get("category", "")).strip()
+            group = str(row.get("group", "")).strip()
+            asset_name = str(row.get("asset", "") or row.get("name", "")).strip()
+            if not category or not group or not asset_name:
+                continue
+            asset = self.get_asset(category, group, asset_name)
+            assets.append(asset)
+            self._sheet_metadata[(category, group, asset_name)] = row
+        return sorted(assets, key=lambda a: (a.category.lower(), a.group.lower(), a.name.lower()))
+
+    def _asset_sheet_id(self) -> str:
+        google_sheets = self.base_config.get("google_sheets", {})
+        if isinstance(google_sheets, dict):
+            return str(google_sheets.get("asset_list_id", "")).strip()
+        return ""
+
+    @staticmethod
+    def _credentials_path() -> Path | None:
+        for name in CREDENTIALS_ENV_VARS:
+            value = os.environ.get(name)
+            if not value:
+                continue
+            path = _norm(value)
+            if path.is_dir():
+                path = path / "credentials.json"
+            return path
+        return None
+
+    @staticmethod
+    def _row_value(row: dict, *names: str):
+        normalized = {str(key).replace(" ", "").lower(): value for key, value in row.items()}
+        for name in names:
+            key = name.replace(" ", "").lower()
+            if key in normalized:
+                return normalized[key]
+        return None
+
     def get_asset(self, category: str, group: str, asset_name: str) -> Asset:
         data = {"category": category, "group": group, "asset_name": asset_name}
         pattern = self.templates.get("asset_root", "{project_root}/assets/{category}/{group}/{asset_name}")
@@ -298,6 +416,9 @@ class AssetManager:
             "status": "",
             "description": "",
         }
+        sheet_metadata = self._sheet_metadata.get((asset.category, asset.group, asset.name))
+        if sheet_metadata:
+            metadata.update(sheet_metadata)
         for path in self.asset_metadata_paths(asset):
             if not path.exists():
                 continue
