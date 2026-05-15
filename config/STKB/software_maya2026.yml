@@ -3,8 +3,9 @@ env_vars:
   MAYA_DISABLE_CLIC_IPM: '1'
   MAYA_SKIP_BLOCKCHECK: '1'
   PYTHONDONTWRITEBYTECODE: '1'
-  MAYA_PLUG_IN_PATH: ''
 paths:
+  MAYA_PLUG_IN_PATH:
+  - D:/smartlibrary/maya/plug-ins/ngskintools2/Contents/plug-ins/2026
   MAYA_MODULE_PATH:
   - D:/smartlibrary/maya/modules/mgear_5.1.0
   PYTHONPATH:

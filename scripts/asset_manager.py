@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,7 @@ WORK_SCENE_RE = re.compile(
 )
 WORK_DCC_LAYOUT = {
     "maya": {
-        "model": ["hires", "hires/proxy", "hires/render"],
+        "model": ["hires", "proxy", "render"],
         "rig": ["layout", "anim"],
         "groom": [],
     },
@@ -31,7 +32,10 @@ WORK_DCC_LAYOUT = {
     "houdini": [],
 }
 DATA_LAYOUT = {
+    "model": ["hires", "proxy", "render"],
     "rig": ["skin", "guide", "build"],
+    "guide": [],
+    "skin": [],
     "groom": [],
     "sim": [],
 }
@@ -143,6 +147,11 @@ def _write_json(path: Path, data) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+def _sidecar_json_path(path: str | os.PathLike[str]) -> Path:
+    file_path = _norm(path)
+    return file_path.parent / f"{file_path.name}.json"
 
 
 def _resolve_templates(raw_templates: dict[str, str], project_root: str) -> dict[str, str]:
@@ -272,12 +281,96 @@ class AssetManager:
         root = _norm(pattern.format(project_root=self.project_root, **data))
         return Asset(category=category, group=group, name=asset_name, root=root)
 
+    def asset_metadata_paths(self, asset: Asset) -> list[Path]:
+        return [
+            asset.root / "asset.json",
+            asset.root / "asset.yml",
+            asset.root / "asset.yaml",
+        ]
+
+    def load_asset_metadata(self, asset: Asset) -> dict:
+        metadata = {
+            "asset": asset.name,
+            "name": asset.name,
+            "category": asset.category,
+            "group": asset.group,
+            "asset_type": asset.category,
+            "status": "",
+            "description": "",
+        }
+        for path in self.asset_metadata_paths(asset):
+            if not path.exists():
+                continue
+            if path.suffix.lower() == ".json":
+                data = _read_json(path, {})
+            else:
+                data = _load_yaml(path)
+            if isinstance(data, dict):
+                metadata.update(data)
+            break
+        return metadata
+
+    def thumbnail_path_for_asset(self, asset: Asset) -> Path:
+        return asset.root / "thumbnail.jpg"
+
+    def find_asset_thumbnail(self, asset: Asset) -> Path | None:
+        metadata = self.load_asset_metadata(asset)
+        thumbnail = metadata.get("thumbnail")
+        if thumbnail:
+            path = asset.root / thumbnail
+            if path.exists():
+                return path
+
+        direct = self.thumbnail_path_for_asset(asset)
+        if direct.exists():
+            return direct
+
+        publish_thumbnails = sorted(asset.publish_dir.rglob("thumbnail.jpg")) if asset.publish_dir.exists() else []
+        if publish_thumbnails:
+            return publish_thumbnails[-1]
+
+        work_thumbnails = sorted(asset.work_dir.rglob(".thumbnails/*.jpg")) if asset.work_dir.exists() else []
+        if work_thumbnails:
+            return work_thumbnails[-1]
+
+        return None
+
+    def work_variants(self, department: str, *, dcc: str = "maya") -> list[str]:
+        dcc_layout = WORK_DCC_LAYOUT.get(dcc, {})
+        if isinstance(dcc_layout, dict):
+            variants = dcc_layout.get(department, [])
+            if variants:
+                return list(variants)
+        defaults = {
+            "model": ["hires", "proxy", "render"],
+            "rig": ["layout", "anim"],
+            "look": ["main"],
+        }
+        return defaults.get(department, ["main"])
+
     def ensure_asset_dirs(self, asset: Asset) -> None:
         self.ensure_asset_structure(asset)
 
     def ensure_asset_structure(self, asset: Asset) -> None:
         for path in self.asset_structure_paths(asset):
             path.mkdir(parents=True, exist_ok=True)
+        self.ensure_asset_metadata(asset)
+
+    def ensure_asset_metadata(self, asset: Asset) -> Path:
+        path = asset.root / "asset.json"
+        if path.exists():
+            return path
+        metadata = {
+            "asset": asset.name,
+            "category": asset.category,
+            "group": asset.group,
+            "asset_type": asset.category,
+            "status": "wip",
+            "thumbnail": "thumbnail.jpg",
+            "description": "",
+        }
+        _write_json(path, metadata)
+        return path
 
     def asset_structure_paths(self, asset: Asset) -> list[Path]:
         paths = [asset.work_dir, asset.data_dir, asset.publish_dir, asset.reference_dir]
@@ -285,8 +378,13 @@ class AssetManager:
         for dcc, layout in WORK_DCC_LAYOUT.items():
             dcc_root = asset.work_dir / dcc
             paths.append(dcc_root)
+            if dcc == "maya":
+                for department in self.asset_depts:
+                    paths.append(dcc_root / department)
             if isinstance(layout, dict):
                 for department, variants in layout.items():
+                    if dcc == "maya" and self.asset_depts and department not in self.asset_depts:
+                        continue
                     dept_root = dcc_root / department
                     paths.append(dept_root)
                     for variant in variants:
@@ -297,6 +395,10 @@ class AssetManager:
             paths.append(dept_root)
             for folder in folders:
                 paths.append(dept_root / folder)
+
+        for department in self.asset_depts:
+            paths.append(asset.data_dir / department)
+            paths.append(asset.publish_dir / department)
 
         for department, variants in PUBLISH_LAYOUT.items():
             dept_root = asset.publish_dir / department
@@ -310,7 +412,15 @@ class AssetManager:
         for folder in REFERENCE_LAYOUT:
             paths.append(asset.reference_dir / folder)
 
-        return paths
+        unique_paths = []
+        seen = set()
+        for path in paths:
+            key = str(path).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_paths.append(path)
+        return unique_paths
 
     def work_file_path(
         self,
@@ -412,6 +522,34 @@ class AssetManager:
             ext=ext,
         )
 
+    def next_work_version_path(
+        self,
+        asset: Asset,
+        *,
+        current_path: str | os.PathLike[str] | None = None,
+        dcc: str = "maya",
+        department: str = "model",
+        variant: str = "hires",
+        ext: str = "ma",
+    ) -> Path:
+        parsed = self.parse_work_file(current_path) if current_path else None
+        if parsed:
+            department = parsed["department"]
+            variant = parsed["variant"]
+            ext = parsed["ext"]
+            next_version = parsed["version"] + 1
+        else:
+            next_version = 1
+        return self.work_file_path(
+            asset,
+            dcc=dcc,
+            department=department,
+            variant=variant,
+            version=next_version,
+            take=1,
+            ext=ext,
+        )
+
     def publish_base_dir(
         self,
         asset: Asset,
@@ -454,7 +592,21 @@ class AssetManager:
     ) -> Path:
         clean_ext = ext.lstrip(".")
         version_label = _version_label(version)
-        filename = f"{asset.name}_{department}_{variant}_{version_label}.{clean_ext}"
+        data = {
+            "project_name": self.project_name,
+            "asset_name": asset.name,
+            "category": asset.category,
+            "group": asset.group,
+            "department": department,
+            "variant": variant,
+            "version": version_label,
+            "ext": clean_ext,
+        }
+        file_pattern = self.templates.get(
+            "publish_scene_file",
+            "{asset_name}_{variant}_{version}.{ext}",
+        )
+        filename = file_pattern.format(**data)
         return self.publish_version_dir(
             asset,
             department=department,
@@ -462,6 +614,42 @@ class AssetManager:
             publish_format=clean_ext,
             version=version,
         ) / filename
+
+    def publish_work_file(
+        self,
+        asset: Asset,
+        source_workfile: str | os.PathLike[str],
+        *,
+        overwrite: bool = False,
+        comment: str = "",
+    ) -> Path:
+        source = _norm(source_workfile)
+        parsed = self.parse_work_file(source)
+        if not parsed:
+            raise ValueError(f"Work filename does not match the asset rule: {source.name}")
+
+        target = self.publish_file_path(
+            asset,
+            department=parsed["department"],
+            variant=parsed["variant"],
+            version=parsed["version"],
+            ext=parsed["ext"],
+        )
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"Publish already exists: {target}")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        self.register_publish(
+            asset,
+            department=parsed["department"],
+            variant=parsed["variant"],
+            version=parsed["version"],
+            files={parsed["ext"]: target.name},
+            source_workfile=_relative_to_asset(source, asset),
+            comment=comment,
+        )
+        return target
 
     def publish_metadata_path(
         self,
@@ -491,6 +679,7 @@ class AssetManager:
         version: int | str,
         files: dict[str, str | os.PathLike[str]],
         source_workfile: str | os.PathLike[str],
+        comment: str = "",
         status: str = "latest",
     ) -> dict:
         version_label = _version_label(version)
@@ -502,6 +691,7 @@ class AssetManager:
             "version": version_num,
             "files": {key: str(value).replace("\\", "/") for key, value in files.items()},
             "source_workfile": str(source_workfile).replace("\\", "/"),
+            "comment": comment,
         }
 
         for publish_format, filename in record["files"].items():
@@ -554,6 +744,55 @@ class AssetManager:
             return None
         return latest_path.parent / path
 
+    def latest_publish_info(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str,
+        publish_format: str,
+    ) -> dict | None:
+        latest_path = self.publish_metadata_path(
+            asset,
+            department=department,
+            variant=variant,
+            publish_format=publish_format,
+        )["latest"]
+        latest = _read_json(latest_path, None)
+        if not latest:
+            return None
+        result = dict(latest)
+        if latest.get("path"):
+            result["absolute_path"] = str(latest_path.parent / latest["path"])
+        return result
+
+    def publish_record_for_work_file(
+        self,
+        asset: Asset,
+        source_workfile: str | os.PathLike[str],
+    ) -> dict | None:
+        source = _norm(source_workfile)
+        parsed = self.parse_work_file(source)
+        if not parsed:
+            return None
+
+        version_dir = self.publish_version_dir(
+            asset,
+            department=parsed["department"],
+            variant=parsed["variant"],
+            publish_format=parsed["ext"],
+            version=parsed["version"],
+        )
+        record = _read_json(version_dir / "publish.json", None)
+        if not record:
+            return None
+
+        expected = _relative_to_asset(source, asset).replace("\\", "/")
+        recorded = str(record.get("source_workfile", "")).replace("\\", "/")
+        if recorded == expected:
+            return record
+        return None
+
     @staticmethod
     def _update_versions(path: Path, version_label: str, status: str) -> None:
         versions = _read_json(path, [])
@@ -573,13 +812,37 @@ class AssetManager:
     def list_data_files(self, asset: Asset) -> list[Path]:
         return self._list_files(asset.data_dir)
 
+    def file_comment(self, path: str | os.PathLike[str]) -> str:
+        metadata = _read_json(_sidecar_json_path(path), {})
+        if isinstance(metadata, dict):
+            return str(metadata.get("comment", ""))
+        return ""
+
+    def set_file_comment(self, path: str | os.PathLike[str], comment: str) -> None:
+        sidecar = _sidecar_json_path(path)
+        metadata = _read_json(sidecar, {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["comment"] = comment
+        _write_json(sidecar, metadata)
+
     def list_work_files(
         self,
         asset: Asset,
         *,
+        department: str | None = None,
+        variant: str | None = None,
         extensions: Iterable[str] | None = None,
     ) -> list[Path]:
         files = self._list_files(asset.work_dir)
+        if department:
+            dept_root = asset.work_dir / "maya" / department
+            if variant:
+                dept_root = dept_root / variant
+            files = [
+                path for path in files
+                if path == dept_root or dept_root in path.parents
+            ]
         if extensions:
             wanted = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
             files = [path for path in files if path.suffix.lower() in wanted]
@@ -592,6 +855,148 @@ class AssetManager:
     def thumbnail_path_for_publish(self, publish_file: str | os.PathLike[str]) -> Path:
         path = _norm(publish_file)
         return path.parent / "thumbnail.jpg"
+
+    def next_data_version_path(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str = "",
+        ext: str,
+        name: str | None = None,
+    ) -> Path:
+        clean_ext = ext.lstrip(".")
+        base_dir = asset.data_dir / department
+        if variant:
+            base_dir = base_dir / variant
+        stem = name or f"{asset.name}_{department}_{variant}".rstrip("_")
+
+        max_version = 0
+        if base_dir.exists():
+            pattern = re.compile(rf"^{re.escape(stem)}_v(?P<version>\d+)\.{re.escape(clean_ext)}$")
+            for path in base_dir.iterdir():
+                match = pattern.match(path.name)
+                if match:
+                    max_version = max(max_version, int(match.group("version")))
+
+        version_label = _version_label(max_version + 1)
+        return base_dir / f"{stem}_{version_label}.{clean_ext}"
+
+    def data_base_dir(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str = "",
+    ) -> Path:
+        path = asset.data_dir / department
+        if variant:
+            path = path / variant
+        return path
+
+    def data_version_dir(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str = "",
+        version: int | str,
+    ) -> Path:
+        return self.data_base_dir(asset, department=department, variant=variant) / _version_label(version)
+
+    def data_file_path(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str,
+        version: int | str,
+        ext: str,
+        name: str | None = None,
+    ) -> Path:
+        clean_ext = ext.lstrip(".")
+        version_label = _version_label(version)
+        stem = name or f"{asset.name}_{department}_{variant}".rstrip("_")
+        return self.data_version_dir(
+            asset,
+            department=department,
+            variant=variant,
+            version=version,
+        ) / f"{stem}_{version_label}.{clean_ext}"
+
+    def next_data_version(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str = "",
+    ) -> int:
+        base_dir = self.data_base_dir(asset, department=department, variant=variant)
+        max_version = 0
+        if base_dir.exists():
+            for path in base_dir.iterdir():
+                if not path.is_dir():
+                    continue
+                name = path.name.lower()
+                if name.startswith("v") and name[1:].isdigit():
+                    max_version = max(max_version, int(name[1:]))
+        return max_version + 1
+
+    def data_metadata_path(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str = "",
+    ) -> dict[str, Path]:
+        base_dir = self.data_base_dir(asset, department=department, variant=variant)
+        return {
+            "latest": base_dir / "latest.json",
+            "versions": base_dir / "versions.json",
+        }
+
+    def register_data_export(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str,
+        version: int | str,
+        files: dict[str, str | os.PathLike[str]],
+        source_workfile: str | os.PathLike[str],
+        comment: str = "",
+        status: str = "latest",
+    ) -> dict:
+        version_label = _version_label(version)
+        version_num = _version_number(version)
+        record = {
+            "asset": asset.name,
+            "department": department,
+            "variant": variant,
+            "version": version_num,
+            "files": {key: str(value).replace("\\", "/") for key, value in files.items()},
+            "source_workfile": str(source_workfile).replace("\\", "/"),
+            "comment": comment,
+        }
+        version_dir = self.data_version_dir(
+            asset,
+            department=department,
+            variant=variant,
+            version=version,
+        )
+        _write_json(version_dir / "publish.json", record)
+
+        first_file = next(iter(record["files"].values()), "")
+        metadata_paths = self.data_metadata_path(asset, department=department, variant=variant)
+        _write_json(
+            metadata_paths["latest"],
+            {
+                "version": version_label,
+                "path": f"{version_label}/{Path(first_file).name}",
+            },
+        )
+        self._update_versions(metadata_paths["versions"], version_label, status)
+        return record
 
     def list_publish_files(self, asset: Asset) -> list[Path]:
         return self._list_files(asset.publish_dir)
