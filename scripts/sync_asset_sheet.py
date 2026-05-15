@@ -81,6 +81,18 @@ def main() -> int:
     assets = normalize_rows(rows)
 
     cache_path = manager._sheet_cache_path()
+    old_assets = None
+    if cache_path.exists():
+        try:
+            with cache_path.open("r", encoding="utf-8") as f:
+                old_assets = json.load(f)
+        except Exception:
+            old_assets = None
+
+    if old_assets == assets:
+        print(f"Up to date: {cache_path}")
+        return 0
+
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with cache_path.open("w", encoding="utf-8") as f:
         json.dump(assets, f, ensure_ascii=False, indent=2)

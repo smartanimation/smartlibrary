@@ -227,6 +227,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         if not name or not base: return
         
         proj_dir = os.path.join(PROJECTS_ROOT, name); os.makedirs(proj_dir, exist_ok=True)
+        existing_config = load_yml(os.path.join(proj_dir, "templates_base.yml"))
         config = {
             'anchors': {'project_name': name, 'project_root': f"{base}/{name}".replace("\\", "/")},
             'enabled_softwares': [],
@@ -234,6 +235,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             'asset_depts': [self.asset_depts_list["list"].item(i).text() for i in range(self.asset_depts_list["list"].count())],
             'templates': {}
         }
+        if existing_config.get('google_sheets'):
+            config['google_sheets'] = existing_config.get('google_sheets')
         
         for i in range(self.selected_list.count()):
             sid = self.selected_list.item(i).text()
