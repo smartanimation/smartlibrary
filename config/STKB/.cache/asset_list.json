@@ -1,0 +1,68 @@
+[
+  {
+    "asset": "dragon",
+    "name": "dragon",
+    "category": "characters",
+    "group": "hero",
+    "asset_type": "characters",
+    "status": "Wait",
+    "description": "ドラゴン",
+    "published_by": "",
+    "thumbnail": "thumbnail.jpg"
+  },
+  {
+    "asset": "kntS",
+    "name": "kntS",
+    "category": "characters",
+    "group": "hero",
+    "asset_type": "characters",
+    "status": "Wait",
+    "description": "兵士",
+    "published_by": "",
+    "thumbnail": "thumbnail.jpg"
+  },
+  {
+    "asset": "sword_01",
+    "name": "sword_01",
+    "category": "prop",
+    "group": "cp",
+    "asset_type": "prop",
+    "status": "Wait",
+    "description": "武器（剣）",
+    "published_by": "",
+    "thumbnail": "thumbnail.jpg"
+  },
+  {
+    "asset": "sword_02",
+    "name": "sword_02",
+    "category": "prop",
+    "group": "bp",
+    "asset_type": "prop",
+    "status": "Wait",
+    "description": "武器（剣）",
+    "published_by": "",
+    "thumbnail": "thumbnail.jpg"
+  },
+  {
+    "asset": "castle_room",
+    "name": "castle_room",
+    "category": "env",
+    "group": "main",
+    "asset_type": "env",
+    "status": "Wait",
+    "description": "王の間（背景）",
+    "published_by": "",
+    "thumbnail": "thumbnail.jpg"
+  },
+  {
+    "asset": "asset1",
+    "name": "asset1",
+    "category": "new",
+    "group": "group",
+    "asset_type": "new",
+    "status": "Wait",
+    "description": "test",
+    "published_by": "",
+    "thumbnail": "thumbnail.jpg"
+  }
+]
