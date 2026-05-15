@@ -21,6 +21,8 @@ asset_depts:
 - model
 - rig
 - look
+google_sheets:
+  asset_list_id: 1B6gHBx0sGBbtUwuZIHjI_h3M3_lLT1xGvHAz2QKkvq0
 templates:
   art_root: '{project_root}/art'
   assets_root: '{project_root}/assets'

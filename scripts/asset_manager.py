@@ -378,7 +378,7 @@ class AssetManager:
             value = os.environ.get(name)
             if not value:
                 continue
-            path = _norm(value)
+            path = _norm(value.strip().strip('"'))
             if path.is_dir():
                 path = path / "credentials.json"
             return path

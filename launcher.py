@@ -38,6 +38,7 @@ def save_yml(path, data):
 
 class SmartLauncher(QtWidgets.QMainWindow):
     setup_finished_signal = QtCore.Signal()
+    asset_sync_signal = QtCore.Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -66,6 +67,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
         self.ui.runbutton.clicked.connect(self.launch_selected)
         self.ui.appview.doubleClicked.connect(self.launch_selected)
         self.setup_finished_signal.connect(self._finalize_setup)
+        self.asset_sync_signal.connect(self._show_asset_sync_status)
 
         self.setup_menus()
         self.refresh_projects()
@@ -177,6 +179,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.ui.info_label.setText("<br>".join(lines))
         
         self.check_project_status(self.projectroot)
+        self.check_asset_sheet_cache(folder_name)
         
         # --- 2. アプリリストの更新 ---
         enabled = cfg.get('enabled_softwares', [])
@@ -193,6 +196,77 @@ class SmartLauncher(QtWidgets.QMainWindow):
             #    item.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_ApplicationIcon))
             item.setData(soft_id, QtCore.Qt.UserRole)
             self.app_model.appendRow(item)
+
+    def check_asset_sheet_cache(self, folder_name):
+        cfg_dir = os.path.join(PROJECTS_ROOT, folder_name)
+        base_cfg = load_yml(os.path.join(cfg_dir, "templates_base.yml"))
+        sheet_id = (base_cfg.get("google_sheets") or {}).get("asset_list_id")
+        if not sheet_id:
+            self.asset_sync_signal.emit("Asset sheet: not configured")
+            return
+
+        credentials = (
+            os.environ.get("CREDENTIALS_PATH")
+            or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            or os.environ.get("CREDENTIALS_DIR")
+        )
+        if credentials:
+            credentials = credentials.strip().strip('"')
+        if not credentials:
+            cache_path = os.path.join(cfg_dir, ".cache", "asset_list.json")
+            if os.path.exists(cache_path):
+                self.asset_sync_signal.emit("Asset sheet: using cache")
+            else:
+                self.asset_sync_signal.emit("Asset sheet: credentials not set")
+            return
+
+        script = os.path.join(SCRIPTS_DIR, "sync_asset_sheet.py")
+        threading.Thread(
+            target=self._sync_asset_sheet_worker,
+            args=(cfg_dir, credentials, script),
+            daemon=True,
+        ).start()
+
+    def _sync_asset_sheet_worker(self, cfg_dir, credentials, script):
+        env = os.environ.copy()
+        env["PROJECT_CONFIG_DIR"] = cfg_dir
+        if os.path.isdir(credentials):
+            env["CREDENTIALS_DIR"] = credentials
+        else:
+            env["CREDENTIALS_PATH"] = credentials
+
+        try:
+            result = subprocess.run(
+                [sys.executable, script, "--config-dir", cfg_dir, "--credentials", credentials],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception as e:
+            self.asset_sync_signal.emit(f"Asset sheet: sync failed ({e})")
+            return
+
+        output = (result.stdout or result.stderr or "").strip().splitlines()
+        last_line = output[-1] if output else ""
+        if result.returncode == 0:
+            if "Up to date" in last_line:
+                self.asset_sync_signal.emit("Asset sheet: up to date")
+            elif "Synced" in last_line:
+                self.asset_sync_signal.emit(last_line.replace(str(cfg_dir), "cache"))
+            else:
+                self.asset_sync_signal.emit("Asset sheet: checked")
+        else:
+            self.asset_sync_signal.emit(f"Asset sheet: sync failed ({last_line})")
+
+    @QtCore.Slot(str)
+    def _show_asset_sync_status(self, message):
+        if hasattr(self.ui, "info_label"):
+            current = self.ui.info_label.text()
+            lines = current.split("<br>") if current else []
+            lines = [line for line in lines if not line.startswith("ASSETS:")]
+            lines.append(f"ASSETS: <span style='color: #aaaaaa;'>{message}</span>")
+            self.ui.info_label.setText("<br>".join(lines))
 
     def launch_selected(self):
         """アプリ起動：個別設定のパスを最優先し、batはクリーンに起動する"""

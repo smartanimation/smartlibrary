@@ -57,11 +57,22 @@
   {
     "asset": "asset1",
     "name": "asset1",
-    "category": "new",
-    "group": "group",
-    "asset_type": "new",
+    "category": "characters",
+    "group": "sub",
+    "asset_type": "characters",
     "status": "Wait",
-    "description": "test",
+    "description": "test1",
+    "published_by": "",
+    "thumbnail": "thumbnail.jpg"
+  },
+  {
+    "asset": "asset2",
+    "name": "asset2",
+    "category": "characters",
+    "group": "sub",
+    "asset_type": "characters",
+    "status": "Wait",
+    "description": "test2",
     "published_by": "",
     "thumbnail": "thumbnail.jpg"
   }
