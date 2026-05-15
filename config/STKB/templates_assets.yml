@@ -10,10 +10,11 @@ templates:
   # work scene naming. Work files keep take numbers.
   work_scene_dir: "{asset_root}/work/{dcc}/{department}/{variant}"
   work_scene_file: "{project_name}_{asset_name}_{department}_{variant}_{version}_{take}.{ext}"
+  publish_scene_file: "{asset_name}_{variant}_{version}.{ext}"
 
   work_maya_model_hires: "{dept_work}/maya/model/hires"
-  work_maya_model_proxy: "{dept_work}/maya/model/hires/proxy"
-  work_maya_model_render: "{dept_work}/maya/model/hires/render"
+  work_maya_model_proxy: "{dept_work}/maya/model/proxy"
+  work_maya_model_render: "{dept_work}/maya/model/render"
   work_maya_rig_layout: "{dept_work}/maya/rig/layout"
   work_maya_rig_anim: "{dept_work}/maya/rig/anim"
   work_maya_groom: "{dept_work}/maya/groom"
