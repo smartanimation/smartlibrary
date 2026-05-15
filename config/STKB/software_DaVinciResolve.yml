@@ -1,0 +1,10 @@
+paths:
+  MAYA_PLUG_IN_PATH:
+  - '%PROGRAMDATA%/Blackmagic Design/DaVinci Resolve/Support/Developer/Scripting/'
+  MAYA_MODULE_PATH:
+  - '%PROGRAMFILES%/Blackmagic Design/DaVinci Resolve/fusionscript.dll'
+  PYTHONPATH:
+  - '%RESOLVE_SCRIPT_API%/Modules/'
+path: C:/Program Files/Blackmagic Design/DaVinci Resolve/Resolve.exe
+icon: ''
+env_vars: {}

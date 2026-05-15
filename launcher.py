@@ -227,6 +227,24 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
         # --- 2. 起動準備 ---
         is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
+        full_env = os.environ.copy()
+        full_env["PROJECT_CONFIG_DIR"] = os.path.join(PROJECTS_ROOT, folder_name)
+        full_env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+
+        python_paths = [CURRENT_DIR]
+        existing_pythonpath = full_env.get("PYTHONPATH", "")
+        if existing_pythonpath:
+            python_paths.append(existing_pythonpath)
+        full_env["PYTHONPATH"] = os.pathsep.join(python_paths)
+
+        for k, v in spec_data.get('env_vars', {}).items():
+            full_env[str(k)] = str(v).replace("{project_root}", self.projectroot)
+
+        for k, p_list in spec_data.get('paths', {}).items():
+            if isinstance(p_list, list):
+                formatted = [p.replace("{project_root}", self.projectroot) for p in p_list]
+                existing = full_env.get(k, "")
+                full_env[str(k)] = os.pathsep.join(formatted) + (os.pathsep + existing if existing else "")
 
         try:
             if is_batch:
@@ -236,6 +254,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
                     f'"{exe_p}"',
                     cwd=os.path.dirname(exe_p),
                     shell=True,
+                    env=full_env,
                     creationflags=subprocess.CREATE_NEW_CONSOLE
                     # env引数を渡さないことで現在のOS環境をそのまま使用
                 )
@@ -243,6 +262,14 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 # EXEファイル：環境変数を構築して実行
                 print(f"[LAUNCH] EXE Mode (Custom Env): {exe_p}")
                 full_env = os.environ.copy()
+                full_env["PROJECT_CONFIG_DIR"] = os.path.join(PROJECTS_ROOT, folder_name)
+                full_env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+
+                python_paths = [CURRENT_DIR]
+                existing_pythonpath = full_env.get("PYTHONPATH", "")
+                if existing_pythonpath:
+                    python_paths.append(existing_pythonpath)
+                full_env["PYTHONPATH"] = os.pathsep.join(python_paths)
                 
                 # env_vars の反映
                 for k, v in spec_data.get('env_vars', {}).items():
