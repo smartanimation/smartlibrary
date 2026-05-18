@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,65 @@ def _qt_modules():
 QtCore, QtGui, QtWidgets = _qt_modules()
 
 
+def _ensure_smartlib_on_path() -> None:
+    root = (
+        os.environ.get("SMARTPIPELINE_ROOT")
+        or os.environ.get("SMARTLIBRARY_ROOT")
+        or str(Path(__file__).resolve().parents[1])
+    )
+    package_dir = str(Path(root) / "packages")
+    if package_dir not in sys.path:
+        sys.path.insert(0, package_dir)
+
+
+def _asset_service(config_dir: str | os.PathLike[str]):
+    _ensure_smartlib_on_path()
+    from smartlib.apps.asset_manager import AssetCreateRequest, AssetManagerService
+    from smartlib.core.config_loader import ProjectConfig
+
+    return AssetManagerService(ProjectConfig(config_dir)), AssetCreateRequest
+
+
+class AssetRequestDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, *, title: str = "Create Asset"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        layout = QtWidgets.QFormLayout(self)
+        self.category_edit = QtWidgets.QLineEdit("characters")
+        self.group_edit = QtWidgets.QLineEdit("hero")
+        self.name_edit = QtWidgets.QLineEdit()
+        self.variant_edit = QtWidgets.QLineEdit("default")
+        self.description_edit = QtWidgets.QLineEdit()
+        layout.addRow("Category", self.category_edit)
+        layout.addRow("Group", self.group_edit)
+        layout.addRow("Asset", self.name_edit)
+        layout.addRow("Variant", self.variant_edit)
+        layout.addRow("Description", self.description_edit)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def values(self) -> dict[str, str]:
+        return {
+            "category": self.category_edit.text().strip(),
+            "group": self.group_edit.text().strip(),
+            "name": self.name_edit.text().strip(),
+            "variant": self.variant_edit.text().strip() or "default",
+            "description": self.description_edit.text().strip(),
+        }
+
+    def accept(self) -> None:
+        values = self.values()
+        missing = [key for key in ("category", "group", "name") if not values[key]]
+        if missing:
+            QtWidgets.QMessageBox.warning(self, "Create Asset", "Category, Group, and Asset are required.")
+            return
+        super().accept()
+
+
 class AssetManagerWindow(QtWidgets.QDialog):
     def __init__(self, manager: AssetManager | None = None, parent=None):
         super().__init__(parent)
@@ -40,13 +100,19 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _build_ui(self) -> None:
         root_layout = QtWidgets.QVBoxLayout(self)
+        root_layout.setContentsMargins(4, 4, 4, 4)
+        root_layout.setSpacing(4)
 
         splitter = QtWidgets.QSplitter()
         root_layout.addWidget(splitter, 1)
 
         self.asset_panel = QtWidgets.QWidget()
         asset_panel_layout = QtWidgets.QVBoxLayout(self.asset_panel)
+        asset_panel_layout.setContentsMargins(2, 2, 2, 2)
+        asset_panel_layout.setSpacing(4)
         filter_layout = QtWidgets.QHBoxLayout()
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout.setSpacing(4)
         self.search_edit = QtWidgets.QLineEdit()
         self.search_edit.setPlaceholderText("Search asset")
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
@@ -54,9 +120,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
         filter_layout.addWidget(self.refresh_btn)
         asset_panel_layout.addLayout(filter_layout)
         asset_view_layout = QtWidgets.QHBoxLayout()
+        asset_view_layout.setContentsMargins(0, 0, 0, 0)
+        asset_view_layout.setSpacing(4)
         asset_view_layout.addStretch(1)
+        self.create_asset_btn = QtWidgets.QPushButton("Create Asset")
+        self.create_variant_btn = QtWidgets.QPushButton("Create Variant")
         self.asset_card_btn = QtWidgets.QPushButton("Card")
         self.asset_table_btn = QtWidgets.QPushButton("Table")
+        asset_view_layout.addWidget(self.create_asset_btn)
+        asset_view_layout.addWidget(self.create_variant_btn)
         asset_view_layout.addWidget(self.asset_card_btn)
         asset_view_layout.addWidget(self.asset_table_btn)
         asset_panel_layout.addLayout(asset_view_layout)
@@ -66,8 +138,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_list.setViewMode(QtWidgets.QListView.IconMode)
         self.asset_list.setResizeMode(QtWidgets.QListView.Adjust)
         self.asset_list.setMovement(QtWidgets.QListView.Static)
-        self.asset_list.setIconSize(QtCore.QSize(150, 84))
-        self.asset_list.setGridSize(QtCore.QSize(190, 190))
+        self.asset_list.setIconSize(QtCore.QSize(128, 72))
+        self.asset_list.setGridSize(QtCore.QSize(160, 168))
         self.asset_list.setUniformItemSizes(True)
         self.asset_list.setWordWrap(True)
         self.asset_list.setStyleSheet("""
@@ -78,8 +150,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             QListWidget::item {
                 background: #383838;
                 border: 1px solid #4a4a4a;
-                padding: 8px;
-                margin: 6px;
+                padding: 4px;
+                margin: 3px;
+                text-align: left;
             }
             QListWidget::item:selected {
                 background: #4d6f86;
@@ -95,15 +168,25 @@ class AssetManagerWindow(QtWidgets.QDialog):
         right = QtWidgets.QWidget()
         self.detail_panel = right
         right_layout = QtWidgets.QVBoxLayout(right)
+        right_layout.setContentsMargins(2, 2, 2, 2)
+        right_layout.setSpacing(4)
         splitter.addWidget(right)
 
         detail_header = QtWidgets.QHBoxLayout()
+        detail_header.setContentsMargins(0, 0, 0, 0)
+        detail_header.setSpacing(4)
         self.back_to_assets_btn = QtWidgets.QPushButton("Back")
         detail_header.addWidget(self.back_to_assets_btn)
+        detail_header.addWidget(QtWidgets.QLabel("Variant"))
+        self.asset_variant_combo = QtWidgets.QComboBox()
+        self.asset_variant_combo.setMinimumWidth(120)
+        detail_header.addWidget(self.asset_variant_combo)
         detail_header.addStretch(1)
         right_layout.addLayout(detail_header)
 
         asset_info_layout = QtWidgets.QHBoxLayout()
+        asset_info_layout.setContentsMargins(0, 0, 0, 0)
+        asset_info_layout.setSpacing(6)
         self.detail_thumbnail = QtWidgets.QLabel()
         self.detail_thumbnail.setFixedSize(150, 84)
         self.detail_thumbnail.setStyleSheet("background: #2f343a; border: 1px solid #4a4a4a;")
@@ -120,6 +203,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         work_tab = QtWidgets.QWidget()
         work_layout = QtWidgets.QVBoxLayout(work_tab)
+        work_layout.setContentsMargins(4, 4, 4, 4)
+        work_layout.setSpacing(4)
         self.dept_tabs = QtWidgets.QTabBar()
         self.dept_tabs.setExpanding(False)
         for dept in self.manager.asset_depts:
@@ -128,6 +213,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.dept_tabs.addTab("model")
         work_layout.addWidget(self.dept_tabs)
 
+        work_layout.addWidget(QtWidgets.QLabel("Subset"))
         self.variant_list = QtWidgets.QListWidget()
         self.variant_list.setMaximumHeight(72)
         work_layout.addWidget(self.variant_list)
@@ -138,9 +224,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list = QtWidgets.QTableWidget(0, 4)
         self.work_list.setHorizontalHeaderLabels(["Action", "File", "Updated", "Comment"])
         self.work_list.horizontalHeader().setStretchLastSection(True)
+        self.work_list.verticalHeader().setStretchLastSection(False)
         self.work_list.verticalHeader().setVisible(False)
         self.work_list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.work_list.setSortingEnabled(True)
         work_layout.addWidget(self.work_list)
         button_grid = QtWidgets.QGridLayout()
         self.open_scene_btn = QtWidgets.QPushButton("OPEN")
@@ -156,11 +244,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         data_tab = QtWidgets.QWidget()
         data_layout = QtWidgets.QVBoxLayout(data_tab)
+        data_layout.setContentsMargins(4, 4, 4, 4)
+        data_layout.setSpacing(4)
         self.data_list = QtWidgets.QTreeWidget()
         self.data_list.setHeaderLabels(["Name", "Version", "Date", "Comment"])
+        self.data_list.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.data_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         data_layout.addWidget(self.data_list)
         data_buttons = QtWidgets.QHBoxLayout()
+        data_buttons.setContentsMargins(0, 0, 0, 0)
+        data_buttons.setSpacing(4)
         self.export_mesh_btn = QtWidgets.QPushButton("Export Mesh")
         self.export_guide_btn = QtWidgets.QPushButton("Export Guide")
         self.export_skin_btn = QtWidgets.QPushButton("Export Skin")
@@ -185,7 +278,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_list.itemDoubleClicked.connect(lambda _item: self._show_detail_mode())
         self.asset_card_btn.clicked.connect(self._set_asset_card_view)
         self.asset_table_btn.clicked.connect(self._set_asset_table_view)
+        self.create_asset_btn.clicked.connect(self._create_asset)
+        self.create_variant_btn.clicked.connect(self._create_variant)
         self.back_to_assets_btn.clicked.connect(self._show_asset_mode)
+        self.asset_variant_combo.currentIndexChanged.connect(lambda _index: self._show_current_asset())
         self.dept_tabs.currentChanged.connect(self._on_department_changed)
         self.variant_list.currentRowChanged.connect(lambda _row: self._show_current_asset())
         self.asset_list.customContextMenuRequested.connect(self._show_asset_context_menu)
@@ -208,6 +304,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         selected_key = self._current_asset_key() if keep_selection else None
         self.assets = self.manager.list_assets_from_sheet(fallback_to_filesystem=True)
         self._apply_filter(selected_key=selected_key)
+        self._populate_asset_variants()
         self._populate_variants()
         self._show_current_asset()
         if self.manager.last_asset_source == "spreadsheet":
@@ -230,8 +327,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _set_asset_card_view(self) -> None:
         self.asset_list.setViewMode(QtWidgets.QListView.IconMode)
-        self.asset_list.setIconSize(QtCore.QSize(150, 84))
-        self.asset_list.setGridSize(QtCore.QSize(190, 190))
+        self.asset_list.setIconSize(QtCore.QSize(128, 72))
+        self.asset_list.setGridSize(QtCore.QSize(160, 168))
         self.asset_list.setUniformItemSizes(True)
 
     def _set_asset_table_view(self) -> None:
@@ -296,9 +393,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if thumbnail:
             pixmap = QtGui.QPixmap(str(thumbnail))
             if not pixmap.isNull():
-                return QtGui.QIcon(self._thumbnail_canvas(pixmap, asset.name))
+                return QtGui.QIcon(self._thumbnail_canvas(pixmap, asset.name, 128, 72))
 
-        pixmap = QtGui.QPixmap(150, 84)
+        pixmap = QtGui.QPixmap(128, 72)
         pixmap.fill(QtGui.QColor("#2f343a"))
         painter = QtGui.QPainter(pixmap)
         painter.setPen(QtGui.QColor("#9fb6c8"))
@@ -310,12 +407,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         painter.end()
         return QtGui.QIcon(pixmap)
 
-    def _thumbnail_canvas(self, source: QtGui.QPixmap, label: str) -> QtGui.QPixmap:
-        canvas = QtGui.QPixmap(150, 84)
+    def _thumbnail_canvas(self, source: QtGui.QPixmap, label: str, width: int = 150, height: int = 84) -> QtGui.QPixmap:
+        canvas = QtGui.QPixmap(width, height)
         canvas.fill(QtGui.QColor("#2f343a"))
         scaled = source.scaled(
-            142,
-            76,
+            max(1, width - 8),
+            max(1, height - 8),
             QtCore.Qt.KeepAspectRatio,
             QtCore.Qt.SmoothTransformation,
         )
@@ -363,6 +460,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _show_current_asset(self) -> None:
         asset = self._current_asset()
+        self._populate_asset_variants()
+        self.work_list.setSortingEnabled(False)
         self.work_list.blockSignals(True)
         self.work_list.setRowCount(0)
         self.work_list.blockSignals(False)
@@ -374,15 +473,19 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
 
         department = self._current_department()
-        variant = self._current_variant()
+        variant = self._work_variant_arg(asset)
+        subset = self._work_subset_arg(asset)
         work_files = self.manager.list_work_files(
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             extensions=["ma", "mb", "hip", "hiplc", "hipnc"],
         )
         if not work_files:
-            self.status_label.setText(f"No work scenes found under: {asset.work_dir / 'maya' / department / variant}")
+            self.status_label.setText(
+                f"No work scenes found under: {self.manager.work_root_dir(asset, department=department, variant=variant, subset=subset or '')}"
+            )
 
         self.work_list.blockSignals(True)
         for path in work_files:
@@ -409,6 +512,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             comment_item = QtWidgets.QTableWidgetItem(self.manager.file_comment(path))
             self.work_list.setItem(row, 3, comment_item)
         self.work_list.blockSignals(False)
+        self.work_list.setSortingEnabled(True)
         self.work_list.resizeColumnsToContents()
 
         self._populate_data_tree(asset)
@@ -436,8 +540,22 @@ class AssetManagerWindow(QtWidgets.QDialog):
         item = self.variant_list.currentItem()
         if item:
             return item.text()
-        variants = self.manager.work_variants(self._current_department())
+        variants = self.manager.work_subsets(self._current_department())
         return variants[0] if variants else "main"
+
+    def _current_asset_variant(self) -> str:
+        text = self.asset_variant_combo.currentText().strip()
+        return text or "default"
+
+    def _work_variant_arg(self, asset: Asset | None) -> str:
+        if asset and asset.uses_variant_structure(self._current_asset_variant()):
+            return self._current_asset_variant()
+        return self._current_variant()
+
+    def _work_subset_arg(self, asset: Asset | None) -> str | None:
+        if asset and asset.uses_variant_structure(self._current_asset_variant()):
+            return self._current_variant()
+        return None
 
     def _latest_work_file(self, paths: list[Path]) -> Path | None:
         latest_path = None
@@ -485,6 +603,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.data_list.clear()
         roots: dict[Path, QtWidgets.QTreeWidgetItem] = {}
         ignored = {"publish.json", "latest.json", "versions.json"}
+        data_roots = [asset.data_dir]
+        data_roots.extend(asset.variant_root(variant) / "data" for variant in self.manager.asset_variants(asset))
         files = [
             path for path in self.manager.list_data_files(asset)
             if path.name not in ignored and not path.name.endswith(".json")
@@ -493,7 +613,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         def get_dir_item(dir_path: Path) -> QtWidgets.QTreeWidgetItem:
             if dir_path in roots:
                 return roots[dir_path]
-            if dir_path == asset.data_dir:
+            if dir_path in data_roots or dir_path.parent == dir_path:
                 item = self.data_list.invisibleRootItem()
                 roots[dir_path] = item
                 return item
@@ -523,7 +643,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         latest = self.manager.latest_publish_info(
             asset,
             department=self._current_department(),
-            variant=self._current_variant(),
+            variant=self._work_variant_arg(asset),
+            subset=self._work_subset_arg(asset),
             publish_format="ma",
         )
         if latest and latest.get("absolute_path"):
@@ -534,12 +655,27 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._populate_variants()
         self._show_current_asset()
 
+    def _populate_asset_variants(self) -> None:
+        asset = self._current_asset()
+        current = self._current_asset_variant()
+        self.asset_variant_combo.blockSignals(True)
+        self.asset_variant_combo.clear()
+        variants = self.manager.asset_variants(asset) if asset else ["default"]
+        selected = 0
+        for index, variant in enumerate(variants):
+            self.asset_variant_combo.addItem(variant)
+            if variant == current:
+                selected = index
+        if variants:
+            self.asset_variant_combo.setCurrentIndex(selected)
+        self.asset_variant_combo.blockSignals(False)
+
     def _populate_variants(self) -> None:
         current = self._current_variant()
         self.variant_list.blockSignals(True)
         self.variant_list.clear()
         selected_row = 0
-        for index, variant in enumerate(self.manager.work_variants(self._current_department())):
+        for index, variant in enumerate(self.manager.work_subsets(self._current_department())):
             self.variant_list.addItem(variant)
             if variant == current:
                 selected_row = index
@@ -558,7 +694,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         latest = self.manager.latest_publish_info(
             asset,
             department="model",
-            variant="hires",
+            variant=self._current_asset_variant() if asset.uses_variant_structure(self._current_asset_variant()) else "hires",
+            subset="hires" if asset.uses_variant_structure(self._current_asset_variant()) else None,
             publish_format="ma",
         )
         if latest:
@@ -593,22 +730,39 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if item:
             self.asset_list.setCurrentItem(item)
         asset = self._current_asset()
-        if not asset:
-            return
         menu = QtWidgets.QMenu(self)
+        create_asset = menu.addAction("Create Asset")
+        create_variant = menu.addAction("Create Variant")
+        menu.addSeparator()
         open_root = menu.addAction("Open Asset Root")
         open_data = menu.addAction("Open Data")
         open_work = menu.addAction("Open Work")
         open_publish = menu.addAction("Open Publish")
+        open_root.setEnabled(asset is not None)
+        open_data.setEnabled(asset is not None)
+        open_work.setEnabled(asset is not None)
+        open_publish.setEnabled(asset is not None)
+        menu.addSeparator()
+        reference_latest_rig = menu.addAction("Reference Latest Rig")
+        reference_latest_rig.setEnabled(asset is not None)
         menu.addSeparator()
         create_folders = menu.addAction("Create Asset Folders")
+        create_folders.setEnabled(asset is not None)
         menu.addSeparator()
         copy_root = menu.addAction("Copy Asset Root")
         copy_data = menu.addAction("Copy Data Path")
         copy_work = menu.addAction("Copy Work Path")
         copy_publish = menu.addAction("Copy Publish Path")
+        copy_root.setEnabled(asset is not None)
+        copy_data.setEnabled(asset is not None)
+        copy_work.setEnabled(asset is not None)
+        copy_publish.setEnabled(asset is not None)
         action = menu.exec(self.asset_list.mapToGlobal(pos))
-        if action == open_root:
+        if action == create_asset:
+            self._create_asset()
+        elif action == create_variant:
+            self._create_variant()
+        elif action == open_root:
             self._open_current("root")
         elif action == open_data:
             self._open_current("data")
@@ -616,6 +770,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._open_current("work")
         elif action == open_publish:
             self._open_current("publish")
+        elif action == reference_latest_rig:
+            self._reference_latest_rig(asset)
         elif action == create_folders:
             self.manager.ensure_asset_structure(asset)
             self.status_label.setText(f"Created folders: {asset.name}")
@@ -628,6 +784,81 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._copy_text(str(asset.work_dir))
         elif action == copy_publish:
             self._copy_text(str(asset.publish_dir))
+
+    def _create_asset(self) -> None:
+        dialog = AssetRequestDialog(self, title="Create Asset")
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        values = dialog.values()
+        try:
+            service, request_cls = _asset_service(self.manager.config_dir)
+            result = service.create_asset(request_cls(**values))
+            target = self.manager.get_asset(values["category"], values["group"], values["name"])
+            self.status_label.setText(f"Created asset: {result.asset_root}")
+            self.refresh_assets(keep_selection=False)
+            self._select_asset(target)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Create Asset Failed", str(exc))
+
+    def _create_variant(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            QtWidgets.QMessageBox.information(self, "Create Variant", "Select an asset first.")
+            return
+        variant, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Create Variant",
+            "Variant name:",
+            text="default",
+        )
+        if not ok:
+            return
+        variant = variant.strip()
+        if not variant:
+            return
+        try:
+            service, request_cls = _asset_service(self.manager.config_dir)
+            result = service.create_variant(
+                request_cls(
+                    category=asset.category,
+                    group=asset.group,
+                    name=asset.name,
+                    variant=variant,
+                )
+            )
+            self.status_label.setText(f"Created variant: {result.variant_root}")
+            self.refresh_assets(keep_selection=True)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Create Variant Failed", str(exc))
+
+    def _select_asset(self, target: Asset) -> None:
+        key = self._asset_key(target)
+        for row in range(self.asset_list.count()):
+            asset = self.asset_list.item(row).data(QtCore.Qt.UserRole)
+            if asset and self._asset_key(asset) == key:
+                self.asset_list.setCurrentRow(row)
+                return
+
+    def _reference_latest_rig(self, asset: Asset) -> None:
+        latest = None
+        for variant in ("anim", "layout"):
+            latest = self.manager.latest_publish_info(
+                asset,
+                department="rig",
+                variant=self._current_asset_variant() if asset.uses_variant_structure(self._current_asset_variant()) else variant,
+                subset=variant if asset.uses_variant_structure(self._current_asset_variant()) else None,
+                publish_format="ma",
+            )
+            if latest and latest.get("absolute_path"):
+                break
+        if not latest or not latest.get("absolute_path"):
+            self.status_label.setText(f"No latest rig publish found: {asset.name}")
+            return
+        try:
+            reference_file_to_current_dcc(latest["absolute_path"], namespace=asset.name)
+            self.status_label.setText(f"Referenced latest rig: {asset.name}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Reference Rig Failed", str(exc))
 
     def _show_work_context_menu(self, pos) -> None:
         item = self.work_list.itemAt(pos)
@@ -790,7 +1021,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             target = self.manager.next_work_take_path(
                 asset,
                 department=department,
-                variant=self._current_variant(),
+                variant=self._work_variant_arg(asset),
+                subset=self._work_subset_arg(asset),
             )
             comment = self._ask_comment("Save Scene Comment")
             if comment is None:
@@ -798,7 +1030,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 save_scene_in_current_dcc(target)
-                self.manager.set_file_comment(target, comment)
+                self.manager.update_file_metadata(
+                    target,
+                    comment=comment,
+                    scene_info=collect_scene_info(),
+                )
                 self.status_label.setText(f"Saved: {target.name}")
                 self.refresh_assets(keep_selection=True)
             except Exception as exc:
@@ -821,14 +1057,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 asset,
                 current_path=selected_path,
                 department=department,
-                variant=self._current_variant(),
+                variant=self._work_variant_arg(asset),
+                subset=self._work_subset_arg(asset),
             )
         elif msg.clickedButton() == next_version_btn:
             target = self.manager.next_work_version_path(
                 asset,
                 current_path=selected_path,
                 department=department,
-                variant=self._current_variant(),
+                variant=self._work_variant_arg(asset),
+                subset=self._work_subset_arg(asset),
             )
         else:
             return
@@ -839,7 +1077,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             save_scene_in_current_dcc(target)
-            self.manager.set_file_comment(target, comment)
+            self.manager.update_file_metadata(
+                target,
+                comment=comment,
+                scene_info=collect_scene_info(),
+            )
             self.status_label.setText(f"Saved: {target.name}")
             self.refresh_assets(keep_selection=True)
         except Exception as exc:
@@ -868,6 +1110,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             asset,
             department=parsed["department"],
             variant=parsed["variant"],
+            subset=self._work_subset_arg(asset),
             version=parsed["version"],
             ext=parsed["ext"],
         )
@@ -893,6 +1136,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 source_path,
                 overwrite=overwrite,
                 comment=comment,
+                subset=self._work_subset_arg(asset),
             )
             self.status_label.setText(f"Published: {published.name}")
             self._show_current_asset()
@@ -926,17 +1170,17 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         try:
             if action == export_fbx:
-                paths = export_selected_model_data(asset, self.manager, self._current_variant(), "fbx", comment)
+                paths = export_selected_model_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "fbx", comment)
             elif action == export_abc:
-                paths = export_selected_model_data(asset, self.manager, self._current_variant(), "abc", comment)
+                paths = export_selected_model_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "abc", comment)
             elif action == export_usd:
-                paths = export_selected_model_data(asset, self.manager, self._current_variant(), "usd", comment)
+                paths = export_selected_model_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "usd", comment)
             elif action == export_guide:
-                paths = [export_mgear_guide(asset, self.manager)]
+                paths = [export_mgear_guide(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or "guide")]
             elif action == export_skin_high:
-                paths = [export_mgear_skin(asset, self.manager, "high")]
+                paths = [export_mgear_skin(asset, self.manager, self._work_variant_arg(asset), "high")]
             elif action == export_skin_low:
-                paths = [export_mgear_skin(asset, self.manager, "low")]
+                paths = [export_mgear_skin(asset, self.manager, self._work_variant_arg(asset), "low")]
             else:
                 return
             for path in paths:
@@ -984,10 +1228,69 @@ def save_scene_in_current_dcc(path: str | os.PathLike[str]) -> None:
     raise RuntimeError("Save Scene is available inside Maya or Houdini.")
 
 
+def collect_scene_info() -> dict:
+    try:
+        from smartlib.dcc.maya.scene_info import collect_scene_info as collect_maya_scene_info
+
+        return collect_maya_scene_info()
+    except Exception:
+        pass
+
+    try:
+        import maya.cmds as cmds
+    except ImportError:
+        return {}
+
+    renderer = cmds.getAttr("defaultRenderGlobals.currentRenderer") if cmds.objExists("defaultRenderGlobals") else ""
+    cameras = []
+    default_cameras = {"persp", "top", "front", "side"}
+    for shape in cmds.ls(type="camera") or []:
+        try:
+            if cmds.getAttr(f"{shape}.renderable"):
+                parent = cmds.listRelatives(shape, parent=True, fullPath=False) or [shape]
+                camera_name = parent[0].split("|")[-1]
+                if camera_name not in default_cameras:
+                    cameras.append(camera_name)
+        except Exception:
+            continue
+
+    layers = []
+    for layer in cmds.ls(type="renderLayer") or []:
+        if layer != "defaultRenderLayer":
+            layers.append(layer)
+
+    references = []
+    for ref_node in cmds.ls(type="reference") or []:
+        if ref_node == "sharedReferenceNode":
+            continue
+        try:
+            namespace = cmds.referenceQuery(ref_node, namespace=True)
+            references.append(namespace.lstrip(":"))
+        except Exception:
+            continue
+
+    width = int(cmds.getAttr("defaultResolution.width")) if cmds.objExists("defaultResolution") else 0
+    height = int(cmds.getAttr("defaultResolution.height")) if cmds.objExists("defaultResolution") else 0
+
+    return {
+        "unit": cmds.currentUnit(query=True, linear=True),
+        "rendersize": [width, height],
+        "renderer": renderer,
+        "timerange": [
+            float(cmds.playbackOptions(query=True, minTime=True)),
+            float(cmds.playbackOptions(query=True, maxTime=True)),
+        ],
+        "cameras": sorted(set(cameras)),
+        "layers": sorted(set(layers)),
+        "references": sorted(set(references)),
+    }
+
+
 def export_selected_model_data(
     asset: Asset,
     manager: AssetManager,
     variant: str,
+    subset: str,
     data_format: str,
     comment: str = "",
 ) -> list[Path]:
@@ -1000,18 +1303,21 @@ def export_selected_model_data(
     if not selection:
         raise RuntimeError("Select mesh objects to export.")
 
-    variant = variant or "hires"
+    variant = variant or "default"
+    subset = subset or "hires"
     clean_format = data_format.lower().lstrip(".")
-    base_name = f"{asset.name}_model_{variant}"
+    base_name = f"{asset.name}_model_{subset}"
     version = manager.next_data_version(
         asset,
         department="model",
         variant=variant,
+        subset=subset,
     )
     data_path = manager.data_file_path(
         asset,
         department="model",
         variant=variant,
+        subset=subset,
         version=version,
         ext=clean_format,
         name=base_name,
@@ -1055,6 +1361,7 @@ def export_selected_model_data(
         asset,
         department="model",
         variant=variant,
+        subset=subset,
         version=version,
         files={clean_format: data_path.name},
         source_workfile=source_workfile,
@@ -1063,7 +1370,7 @@ def export_selected_model_data(
     return [data_path]
 
 
-def export_mgear_guide(asset: Asset, manager: AssetManager) -> Path:
+def export_mgear_guide(asset: Asset, manager: AssetManager, variant: str = "default", subset: str = "guide") -> Path:
     try:
         import maya.cmds as cmds
     except ImportError:
@@ -1072,6 +1379,8 @@ def export_mgear_guide(asset: Asset, manager: AssetManager) -> Path:
     path = manager.next_data_version_path(
         asset,
         department="guide",
+        variant=variant,
+        subset=subset,
         ext="sgt",
         name="guide",
     )
@@ -1091,16 +1400,35 @@ def export_mgear_guide(asset: Asset, manager: AssetManager) -> Path:
             shifter_io.export_guide_template(str(path))
     except AttributeError:
         raise RuntimeError("mGear guide export API was not found. Check your mGear version.")
+    source_workfile = cmds.file(query=True, sceneName=True) or ""
+    manager.register_data_export(
+        asset,
+        department="guide",
+        variant=variant,
+        subset=subset,
+        version=path.parent.name,
+        files={"sgt": path.name},
+        source_workfile=source_workfile,
+    )
     return path
 
 
-def export_mgear_skin(asset: Asset, manager: AssetManager, variant: str) -> Path:
+def export_mgear_skin(asset: Asset, manager: AssetManager, variant: str, subset: str) -> Path:
     try:
         import maya.cmds as cmds
     except ImportError:
         raise RuntimeError("mGear skin export is available inside Maya.")
 
-    path = asset.data_dir / "skin" / f"{asset.name}_{variant}.gSkinPack"
+    version = manager.next_data_version(asset, department="skin", variant=variant, subset=subset)
+    path = manager.data_file_path(
+        asset,
+        department="skin",
+        variant=variant,
+        subset=subset,
+        version=version,
+        ext="gSkinPack",
+        name=f"{asset.name}_{subset}",
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
 
     selection = cmds.ls(selection=True, long=True) or []
@@ -1112,6 +1440,7 @@ def export_mgear_skin(asset: Asset, manager: AssetManager, variant: str) -> Path
     except ImportError:
         raise RuntimeError("mGear skin module was not found in this Maya session.")
 
+    exported = False
     for candidate in ("exportSkinPack", "exportSkin", "exportSkinPackBinary"):
         exporter = getattr(skin, candidate, None)
         if exporter:
@@ -1119,9 +1448,23 @@ def export_mgear_skin(asset: Asset, manager: AssetManager, variant: str) -> Path
                 exporter(str(path), selection)
             except TypeError:
                 exporter(selection, str(path))
-            return path
+            exported = True
+            break
 
-    raise RuntimeError("mGear skin export API was not found. Check your mGear version.")
+    if not exported:
+        raise RuntimeError("mGear skin export API was not found. Check your mGear version.")
+
+    source_workfile = cmds.file(query=True, sceneName=True) or ""
+    manager.register_data_export(
+        asset,
+        department="skin",
+        variant=variant,
+        subset=subset,
+        version=path.parent.name,
+        files={"gSkinPack": path.name},
+        source_workfile=source_workfile,
+    )
+    return path
 
 
 def open_scene_in_current_dcc(path: str | os.PathLike[str]) -> None:

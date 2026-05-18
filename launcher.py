@@ -36,6 +36,33 @@ def save_yml(path, data):
     with open(path, 'w', encoding='utf-8') as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
+def is_maya_software(soft_id, exe_path):
+    name = str(soft_id or "").lower()
+    exe_name = os.path.basename(str(exe_path or "")).lower()
+    return "maya" in name or exe_name.startswith("maya")
+
+def apply_pipeline_pythonpath(env, *, maya_safe=False):
+    if maya_safe:
+        env.pop("PYTHONPATH", None)
+        return
+    python_paths = [os.path.join(CURRENT_DIR, "packages"), CURRENT_DIR]
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        python_paths.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(python_paths)
+
+def apply_config_env_vars(env, env_vars, projectroot, *, maya_safe=False):
+    for k, v in env_vars.items():
+        key = str(k)
+        value = str(v).replace("{project_root}", projectroot)
+        if maya_safe and key.upper() == "PYTHONPATH":
+            if value.strip():
+                env[key] = value
+            else:
+                env.pop(key, None)
+            continue
+        env[key] = value
+
 class SmartLauncher(QtWidgets.QMainWindow):
     setup_finished_signal = QtCore.Signal()
     asset_sync_signal = QtCore.Signal(str)
@@ -301,18 +328,20 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
         # --- 2. 起動準備 ---
         is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
+        maya_safe = is_maya_software(soft_id, exe_p)
         full_env = os.environ.copy()
         full_env["PROJECT_CONFIG_DIR"] = os.path.join(PROJECTS_ROOT, folder_name)
         full_env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+        full_env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
 
-        python_paths = [CURRENT_DIR]
-        existing_pythonpath = full_env.get("PYTHONPATH", "")
-        if existing_pythonpath:
-            python_paths.append(existing_pythonpath)
-        full_env["PYTHONPATH"] = os.pathsep.join(python_paths)
+        apply_pipeline_pythonpath(full_env, maya_safe=maya_safe)
 
-        for k, v in spec_data.get('env_vars', {}).items():
-            full_env[str(k)] = str(v).replace("{project_root}", self.projectroot)
+        apply_config_env_vars(
+            full_env,
+            spec_data.get('env_vars', {}),
+            self.projectroot,
+            maya_safe=maya_safe,
+        )
 
         for k, p_list in spec_data.get('paths', {}).items():
             if isinstance(p_list, list):
@@ -338,16 +367,17 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 full_env = os.environ.copy()
                 full_env["PROJECT_CONFIG_DIR"] = os.path.join(PROJECTS_ROOT, folder_name)
                 full_env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+                full_env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
 
-                python_paths = [CURRENT_DIR]
-                existing_pythonpath = full_env.get("PYTHONPATH", "")
-                if existing_pythonpath:
-                    python_paths.append(existing_pythonpath)
-                full_env["PYTHONPATH"] = os.pathsep.join(python_paths)
+                apply_pipeline_pythonpath(full_env, maya_safe=maya_safe)
                 
                 # env_vars の反映
-                for k, v in spec_data.get('env_vars', {}).items():
-                    full_env[str(k)] = str(v).replace("{project_root}", self.projectroot)
+                apply_config_env_vars(
+                    full_env,
+                    spec_data.get('env_vars', {}),
+                    self.projectroot,
+                    maya_safe=maya_safe,
+                )
                 
                 # paths の反映
                 for k, p_list in spec_data.get('paths', {}).items():

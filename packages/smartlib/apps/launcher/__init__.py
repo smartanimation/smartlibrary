@@ -1,0 +1,1 @@
+"""Smart Launcher application package."""

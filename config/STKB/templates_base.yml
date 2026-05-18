@@ -8,9 +8,9 @@ anchors:
 enabled_softwares:
 - maya2026
 - DaVinciResolve
-- Blender5.0
 - AfterEffects2025
 - Houdini21.0.440
+- UE5.3
 shot_depts:
 - layout
 - anim
@@ -21,8 +21,6 @@ asset_depts:
 - model
 - rig
 - look
-google_sheets:
-  asset_list_id: 1B6gHBx0sGBbtUwuZIHjI_h3M3_lLT1xGvHAz2QKkvq0
 templates:
   art_root: '{project_root}/art'
   assets_root: '{project_root}/assets'
@@ -38,3 +36,5 @@ templates:
   tool_dir: '{setting_root}/tools'
   storyboard_dir: '{prepro_root}/storyboards'
   reference_dir: '{prepro_root}/reference'
+google_sheets:
+  asset_list_id: 1B6gHBx0sGBbtUwuZIHjI_h3M3_lLT1xGvHAz2QKkvq0
