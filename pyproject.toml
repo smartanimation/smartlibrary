@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartpipeline"
+version = "0.1.0"
+description = "Production pipeline toolkit for CG and animation workflows."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+smartlauncher = "smartlib.apps.launcher.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "packages"}
+
+[tool.setuptools.packages.find]
+where = ["packages"]

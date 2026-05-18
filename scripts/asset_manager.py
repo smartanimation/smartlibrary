@@ -210,6 +210,12 @@ class Asset:
             "reference": self.reference_dir,
         }
 
+    def variant_root(self, variant: str = "default") -> Path:
+        return self.root / variant
+
+    def uses_variant_structure(self, variant: str = "default") -> bool:
+        return (self.variant_root(variant) / "variant.json").exists()
+
 
 class AssetManager:
     def __init__(self, config_dir: str | os.PathLike[str] | None = None):
@@ -288,6 +294,11 @@ class AssetManager:
         cached_assets = self._list_assets_from_sheet_cache()
         if cached_assets:
             self.last_asset_source = "spreadsheet cache"
+            if fallback_to_filesystem:
+                merged_assets = self._merge_assets(cached_assets, self.list_assets())
+                if len(merged_assets) > len(cached_assets):
+                    self.last_asset_source = "spreadsheet cache + folders"
+                return merged_assets
             return cached_assets
         if not sheet_id:
             self.last_asset_source_error = "google_sheets.asset_list_id is not set"
@@ -365,6 +376,15 @@ class AssetManager:
             assets.append(asset)
             self._sheet_metadata[(category, group, asset_name)] = row
         return sorted(assets, key=lambda a: (a.category.lower(), a.group.lower(), a.name.lower()))
+
+    @staticmethod
+    def _merge_assets(primary: list[Asset], secondary: list[Asset]) -> list[Asset]:
+        merged: dict[tuple[str, str, str], Asset] = {}
+        for asset in secondary:
+            merged[(asset.category, asset.group, asset.name)] = asset
+        for asset in primary:
+            merged[(asset.category, asset.group, asset.name)] = asset
+        return sorted(merged.values(), key=lambda a: (a.category.lower(), a.group.lower(), a.name.lower()))
 
     def _asset_sheet_id(self) -> str:
         google_sheets = self.base_config.get("google_sheets", {})
@@ -469,6 +489,54 @@ class AssetManager:
         }
         return defaults.get(department, ["main"])
 
+    def asset_variants(self, asset: Asset) -> list[str]:
+        variants = []
+        if asset.root.exists():
+            for path in asset.root.iterdir():
+                if path.is_dir() and (path / "variant.json").exists():
+                    variants.append(path.name)
+        return sorted(variants) or ["default"]
+
+    def work_subsets(self, department: str, *, dcc: str = "maya") -> list[str]:
+        return self.work_variants(department, dcc=dcc)
+
+    def work_root_dir(
+        self,
+        asset: Asset,
+        *,
+        dcc: str = "maya",
+        department: str,
+        variant: str = "default",
+        subset: str = "",
+    ) -> Path:
+        if asset.uses_variant_structure(variant):
+            path = asset.variant_root(variant) / department / "work"
+            if subset:
+                path = path / subset
+            return path
+        path = asset.work_dir / dcc / department
+        if subset:
+            path = path / subset
+        return path
+
+    def work_subset_for_path(
+        self,
+        asset: Asset,
+        path: str | os.PathLike[str],
+        department: str,
+        variant: str,
+    ) -> str:
+        source = _norm(path)
+        if asset.uses_variant_structure(variant):
+            work_root = asset.variant_root(variant) / department / "work"
+            try:
+                relative = source.parent.relative_to(work_root)
+                if relative.parts:
+                    return relative.parts[0]
+            except ValueError:
+                pass
+        return variant
+
     def ensure_asset_dirs(self, asset: Asset) -> None:
         self.ensure_asset_structure(asset)
 
@@ -550,10 +618,12 @@ class AssetManager:
         dcc: str = "maya",
         department: str,
         variant: str,
+        subset: str | None = None,
         version: int | str,
         take: int | str,
         ext: str = "ma",
     ) -> Path:
+        subset = subset if subset is not None else variant
         version_label = _version_label(version)
         take_label = str(take).zfill(2)
         clean_ext = ext.lstrip(".")
@@ -565,10 +635,24 @@ class AssetManager:
             "dcc": dcc,
             "department": department,
             "variant": variant,
+            "subset": subset,
             "version": version_label,
             "take": take_label,
             "ext": clean_ext,
         }
+        if asset.uses_variant_structure(variant):
+            file_pattern = self.templates.get(
+                "work_scene_file",
+                "{project_name}_{asset_name}_{department}_{variant}_{version}_{take}.{ext}",
+            )
+            data["asset_root"] = str(asset.root).replace("\\", "/")
+            return self.work_root_dir(
+                asset,
+                dcc=dcc,
+                department=department,
+                variant=variant,
+                subset=subset,
+            ) / file_pattern.format(**data)
         dir_pattern = self.templates.get(
             "work_scene_dir",
             "{asset_root}/work/{dcc}/{department}/{variant}",
@@ -597,6 +681,7 @@ class AssetManager:
         dcc: str = "maya",
         department: str = "model",
         variant: str = "hires",
+        subset: str | None = None,
         version: int | str = 1,
         ext: str = "ma",
     ) -> Path:
@@ -613,6 +698,7 @@ class AssetManager:
                 dcc=dcc,
                 department=department,
                 variant=variant,
+                subset=subset,
                 version=version,
                 take=1,
                 ext=ext,
@@ -638,6 +724,7 @@ class AssetManager:
             dcc=dcc,
             department=department,
             variant=variant,
+            subset=subset,
             version=version,
             take=max_take + 1,
             ext=ext,
@@ -651,6 +738,7 @@ class AssetManager:
         dcc: str = "maya",
         department: str = "model",
         variant: str = "hires",
+        subset: str | None = None,
         ext: str = "ma",
     ) -> Path:
         parsed = self.parse_work_file(current_path) if current_path else None
@@ -666,6 +754,7 @@ class AssetManager:
             dcc=dcc,
             department=department,
             variant=variant,
+            subset=subset,
             version=next_version,
             take=1,
             ext=ext,
@@ -677,8 +766,11 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
         publish_format: str = "",
     ) -> Path:
+        if variant and asset.uses_variant_structure(variant):
+            return asset.variant_root(variant) / "publish" / department / (subset or variant)
         path = asset.publish_dir / department
         if variant:
             path = path / variant
@@ -692,6 +784,7 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
         publish_format: str,
         version: int | str,
     ) -> Path:
@@ -699,6 +792,7 @@ class AssetManager:
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             publish_format=publish_format,
         ) / _version_label(version)
 
@@ -708,6 +802,7 @@ class AssetManager:
         *,
         department: str,
         variant: str,
+        subset: str | None = None,
         version: int | str,
         ext: str,
     ) -> Path:
@@ -720,18 +815,23 @@ class AssetManager:
             "group": asset.group,
             "department": department,
             "variant": variant,
+            "subset": subset or variant,
             "version": version_label,
             "ext": clean_ext,
         }
-        file_pattern = self.templates.get(
-            "publish_scene_file",
-            "{asset_name}_{variant}_{version}.{ext}",
-        )
-        filename = file_pattern.format(**data)
+        if asset.uses_variant_structure(variant):
+            filename = f"{department}.{clean_ext}"
+        else:
+            file_pattern = self.templates.get(
+                "publish_scene_file",
+                "{asset_name}_{variant}_{version}.{ext}",
+            )
+            filename = file_pattern.format(**data)
         return self.publish_version_dir(
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             publish_format=clean_ext,
             version=version,
         ) / filename
@@ -743,6 +843,7 @@ class AssetManager:
         *,
         overwrite: bool = False,
         comment: str = "",
+        subset: str | None = None,
     ) -> Path:
         source = _norm(source_workfile)
         parsed = self.parse_work_file(source)
@@ -753,6 +854,7 @@ class AssetManager:
             asset,
             department=parsed["department"],
             variant=parsed["variant"],
+            subset=subset or self.work_subset_for_path(asset, source, parsed["department"], parsed["variant"]),
             version=parsed["version"],
             ext=parsed["ext"],
         )
@@ -765,6 +867,7 @@ class AssetManager:
             asset,
             department=parsed["department"],
             variant=parsed["variant"],
+            subset=subset or self.work_subset_for_path(asset, source, parsed["department"], parsed["variant"]),
             version=parsed["version"],
             files={parsed["ext"]: target.name},
             source_workfile=_relative_to_asset(source, asset),
@@ -778,12 +881,14 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
         publish_format: str,
     ) -> dict[str, Path]:
         base_dir = self.publish_base_dir(
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             publish_format=publish_format,
         )
         return {
@@ -797,6 +902,7 @@ class AssetManager:
         *,
         department: str,
         variant: str,
+        subset: str | None = None,
         version: int | str,
         files: dict[str, str | os.PathLike[str]],
         source_workfile: str | os.PathLike[str],
@@ -809,6 +915,8 @@ class AssetManager:
             "asset": asset.name,
             "department": department,
             "variant": variant,
+            "publish_type": department,
+            "subset": subset or variant,
             "version": version_num,
             "files": {key: str(value).replace("\\", "/") for key, value in files.items()},
             "source_workfile": str(source_workfile).replace("\\", "/"),
@@ -820,6 +928,7 @@ class AssetManager:
                 asset,
                 department=department,
                 variant=variant,
+                subset=subset,
                 publish_format=publish_format,
                 version=version,
             )
@@ -829,6 +938,7 @@ class AssetManager:
                 asset,
                 department=department,
                 variant=variant,
+                subset=subset,
                 publish_format=publish_format,
             )
             publish_path = version_dir / Path(filename).name
@@ -849,12 +959,14 @@ class AssetManager:
         *,
         department: str,
         variant: str,
+        subset: str | None = None,
         publish_format: str,
     ) -> Path | None:
         latest_path = self.publish_metadata_path(
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             publish_format=publish_format,
         )["latest"]
         latest = _read_json(latest_path, None)
@@ -871,12 +983,14 @@ class AssetManager:
         *,
         department: str,
         variant: str,
+        subset: str | None = None,
         publish_format: str,
     ) -> dict | None:
         latest_path = self.publish_metadata_path(
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             publish_format=publish_format,
         )["latest"]
         latest = _read_json(latest_path, None)
@@ -901,6 +1015,7 @@ class AssetManager:
             asset,
             department=parsed["department"],
             variant=parsed["variant"],
+            subset=self.work_subset_for_path(asset, source, parsed["department"], parsed["variant"]),
             publish_format=parsed["ext"],
             version=parsed["version"],
         )
@@ -910,9 +1025,21 @@ class AssetManager:
 
         expected = _relative_to_asset(source, asset).replace("\\", "/")
         recorded = str(record.get("source_workfile", "")).replace("\\", "/")
-        if recorded == expected:
-            return record
-        return None
+        if recorded != expected:
+            return None
+
+        latest = self.latest_publish_info(
+            asset,
+            department=parsed["department"],
+            variant=parsed["variant"],
+            subset=self.work_subset_for_path(asset, source, parsed["department"], parsed["variant"]),
+            publish_format=parsed["ext"],
+        )
+        if not latest:
+            return None
+        if _version_number(latest.get("version", 0)) != parsed["version"]:
+            return None
+        return record
 
     @staticmethod
     def _update_versions(path: Path, version_label: str, status: str) -> None:
@@ -931,7 +1058,10 @@ class AssetManager:
         _write_json(path, next_versions)
 
     def list_data_files(self, asset: Asset) -> list[Path]:
-        return self._list_files(asset.data_dir)
+        files = self._list_files(asset.data_dir)
+        for variant in self.asset_variants(asset):
+            files.extend(self._list_files(asset.variant_root(variant) / "data"))
+        return sorted(set(files), key=lambda path: path.as_posix().lower())
 
     def file_comment(self, path: str | os.PathLike[str]) -> str:
         metadata = _read_json(_sidecar_json_path(path), {})
@@ -947,23 +1077,54 @@ class AssetManager:
         metadata["comment"] = comment
         _write_json(sidecar, metadata)
 
+    def update_file_metadata(self, path: str | os.PathLike[str], **values) -> None:
+        sidecar = _sidecar_json_path(path)
+        metadata = _read_json(sidecar, {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata.update(values)
+        _write_json(sidecar, metadata)
+
     def list_work_files(
         self,
         asset: Asset,
         *,
         department: str | None = None,
         variant: str | None = None,
+        subset: str | None = None,
         extensions: Iterable[str] | None = None,
     ) -> list[Path]:
         files = self._list_files(asset.work_dir)
         if department:
-            dept_root = asset.work_dir / "maya" / department
-            if variant:
-                dept_root = dept_root / variant
+            if variant and asset.uses_variant_structure(variant):
+                dept_root = self.work_root_dir(
+                    asset,
+                    department=department,
+                    variant=variant,
+                    subset=subset or "",
+                )
+            else:
+                dept_root = asset.work_dir / "maya" / department
+                if variant:
+                    dept_root = dept_root / variant
             files = [
                 path for path in files
                 if path == dept_root or dept_root in path.parents
             ]
+            if asset.uses_variant_structure(variant or "default"):
+                variant_files = self._list_files(asset.variant_root(variant or "default") / department / "work")
+                if subset:
+                    subset_root = self.work_root_dir(
+                        asset,
+                        department=department,
+                        variant=variant or "default",
+                        subset=subset,
+                    )
+                    variant_files = [
+                        path for path in variant_files
+                        if path == subset_root or subset_root in path.parents
+                    ]
+                files.extend(variant_files)
         if extensions:
             wanted = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
             files = [path for path in files if path.suffix.lower() in wanted]
@@ -983,25 +1144,34 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
         ext: str,
         name: str | None = None,
     ) -> Path:
         clean_ext = ext.lstrip(".")
-        base_dir = asset.data_dir / department
-        if variant:
-            base_dir = base_dir / variant
+        base_dir = self.data_base_dir(asset, department=department, variant=variant, subset=subset)
         stem = name or f"{asset.name}_{department}_{variant}".rstrip("_")
 
         max_version = 0
         if base_dir.exists():
             pattern = re.compile(rf"^{re.escape(stem)}_v(?P<version>\d+)\.{re.escape(clean_ext)}$")
             for path in base_dir.iterdir():
+                if path.is_dir() and path.name.lower().startswith("v") and path.name[1:].isdigit():
+                    max_version = max(max_version, int(path.name[1:]))
+                    continue
                 match = pattern.match(path.name)
                 if match:
                     max_version = max(max_version, int(match.group("version")))
 
-        version_label = _version_label(max_version + 1)
-        return base_dir / f"{stem}_{version_label}.{clean_ext}"
+        return self.data_file_path(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+            version=max_version + 1,
+            ext=clean_ext,
+            name=stem,
+        )
 
     def data_base_dir(
         self,
@@ -1009,7 +1179,10 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
     ) -> Path:
+        if variant and asset.uses_variant_structure(variant):
+            return asset.variant_root(variant) / "data" / department / (subset or variant)
         path = asset.data_dir / department
         if variant:
             path = path / variant
@@ -1021,9 +1194,10 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
         version: int | str,
     ) -> Path:
-        return self.data_base_dir(asset, department=department, variant=variant) / _version_label(version)
+        return self.data_base_dir(asset, department=department, variant=variant, subset=subset) / _version_label(version)
 
     def data_file_path(
         self,
@@ -1031,6 +1205,7 @@ class AssetManager:
         *,
         department: str,
         variant: str,
+        subset: str | None = None,
         version: int | str,
         ext: str,
         name: str | None = None,
@@ -1042,6 +1217,7 @@ class AssetManager:
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             version=version,
         ) / f"{stem}_{version_label}.{clean_ext}"
 
@@ -1051,8 +1227,9 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
     ) -> int:
-        base_dir = self.data_base_dir(asset, department=department, variant=variant)
+        base_dir = self.data_base_dir(asset, department=department, variant=variant, subset=subset)
         max_version = 0
         if base_dir.exists():
             for path in base_dir.iterdir():
@@ -1069,8 +1246,9 @@ class AssetManager:
         *,
         department: str,
         variant: str = "",
+        subset: str | None = None,
     ) -> dict[str, Path]:
-        base_dir = self.data_base_dir(asset, department=department, variant=variant)
+        base_dir = self.data_base_dir(asset, department=department, variant=variant, subset=subset)
         return {
             "latest": base_dir / "latest.json",
             "versions": base_dir / "versions.json",
@@ -1082,6 +1260,7 @@ class AssetManager:
         *,
         department: str,
         variant: str,
+        subset: str | None = None,
         version: int | str,
         files: dict[str, str | os.PathLike[str]],
         source_workfile: str | os.PathLike[str],
@@ -1094,6 +1273,8 @@ class AssetManager:
             "asset": asset.name,
             "department": department,
             "variant": variant,
+            "publish_type": department,
+            "subset": subset or variant,
             "version": version_num,
             "files": {key: str(value).replace("\\", "/") for key, value in files.items()},
             "source_workfile": str(source_workfile).replace("\\", "/"),
@@ -1103,12 +1284,13 @@ class AssetManager:
             asset,
             department=department,
             variant=variant,
+            subset=subset,
             version=version,
         )
         _write_json(version_dir / "publish.json", record)
 
         first_file = next(iter(record["files"].values()), "")
-        metadata_paths = self.data_metadata_path(asset, department=department, variant=variant)
+        metadata_paths = self.data_metadata_path(asset, department=department, variant=variant, subset=subset)
         _write_json(
             metadata_paths["latest"],
             {
@@ -1120,11 +1302,18 @@ class AssetManager:
         return record
 
     def list_publish_files(self, asset: Asset) -> list[Path]:
-        return self._list_files(asset.publish_dir)
+        files = self._list_files(asset.publish_dir)
+        for variant in self.asset_variants(asset):
+            files.extend(self._list_files(asset.variant_root(variant) / "publish"))
+        return sorted(set(files), key=lambda path: path.as_posix().lower())
 
     def list_latest_publishes(self, asset: Asset) -> list[Path]:
         latest_files = []
-        latest_json_paths = asset.publish_dir.rglob("latest.json") if asset.publish_dir.exists() else []
+        latest_json_paths = list(asset.publish_dir.rglob("latest.json")) if asset.publish_dir.exists() else []
+        for variant in self.asset_variants(asset):
+            root = asset.variant_root(variant) / "publish"
+            if root.exists():
+                latest_json_paths.extend(root.rglob("latest.json"))
         for latest_json in latest_json_paths:
             latest = _read_json(latest_json, None)
             if not latest or not latest.get("path"):

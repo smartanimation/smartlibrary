@@ -2,3 +2,14 @@
 **/*old/**
 **/credentials.json
 *pyc
+.venv/
+venv/
+
+tools/ffmpeg/*
+!tools/ffmpeg/README.md
+
+third_party/python/*
+!third_party/python/README.md
+
+runtime/python/*
+!runtime/python/README.md
