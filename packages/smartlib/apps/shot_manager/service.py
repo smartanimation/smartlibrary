@@ -466,6 +466,40 @@ class ShotManagerService:
             raise ValueError(f"Invalid cast data: {messages}")
         return write_json(self.shot_root(identity) / "cast.json", cast_data)
 
+    def review_layers(self, identity: ShotIdentity) -> dict[str, dict[str, Any]]:
+        return _defaulted_review_layers(self.load_cast(identity).get("review_layers"))
+
+    def write_review_layers(self, identity: ShotIdentity, review_layers: dict[str, Any]) -> Path:
+        cast_data = self.load_cast(identity)
+        cast_data["review_layers"] = _defaulted_review_layers(review_layers)
+        return self.write_cast(identity, cast_data)
+
+    def review_layer_rows(self, identity: ShotIdentity) -> list[dict[str, Any]]:
+        rows = []
+        for layer_name, layer in self.review_layers(identity).items():
+            camera = layer.get("camera") or {}
+            resolution = layer.get("resolution") or {}
+            ae = layer.get("ae") or {}
+            rows.append(
+                {
+                    "layer": layer_name,
+                    "members": ", ".join(layer.get("members") or []),
+                    "camera": camera.get("name", ""),
+                    "camera_publish": camera.get("version", ""),
+                    "publish_type": camera.get("publish_type", "camera"),
+                    "width": resolution.get("width", ""),
+                    "height": resolution.get("height", ""),
+                    "scale": resolution.get("scale", ""),
+                    "ae_slot": ae.get("template_slot", ""),
+                    "comp_name": ae.get("comp_name", layer_name),
+                    "order": layer.get("order", 0),
+                    "three_d_layer": bool(layer.get("three_d_layer", False)),
+                    "frame_range": layer.get("frame_range", "Animation"),
+                    "take": layer.get("take", 1),
+                }
+            )
+        return sorted(rows, key=lambda item: (int(item.get("order") or 0), str(item.get("layer"))))
+
     def cast_from_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         return self.build_cast_data(rows)
 

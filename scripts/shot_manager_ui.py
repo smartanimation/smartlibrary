@@ -8,16 +8,16 @@ from pathlib import Path
 
 def _qt_modules():
     try:
-        from PySide6 import QtCore, QtWidgets
+        from PySide6 import QtCore, QtUiTools, QtWidgets
 
-        return QtCore, QtWidgets
+        return QtCore, QtUiTools, QtWidgets
     except ImportError:
-        from PySide2 import QtCore, QtWidgets
+        from PySide2 import QtCore, QtUiTools, QtWidgets
 
-        return QtCore, QtWidgets
+        return QtCore, QtUiTools, QtWidgets
 
 
-QtCore, QtWidgets = _qt_modules()
+QtCore, QtUiTools, QtWidgets = _qt_modules()
 
 
 def _ensure_smartlib_on_path() -> None:
@@ -106,7 +106,7 @@ class ShotCreateDialog(QtWidgets.QDialog):
         super().accept()
 
 
-class ShotManagerWindow(QtWidgets.QDialog):
+class ShotManagerWindow(QtWidgets.QMainWindow):
     def __init__(self, config_dir: str | os.PathLike[str] | None = None, parent=None):
         super().__init__(parent)
         self.service, self.request_cls, self.identity_cls = _service(config_dir)
@@ -114,170 +114,130 @@ class ShotManagerWindow(QtWidgets.QDialog):
         self.is_maya_session = _is_maya_session()
         self.setWindowTitle(f"Shot Manager - {self.service.project_config.project_name}")
         self.resize(900, 560)
+        self.setMinimumSize(760, 480)
         self._build_ui()
         self.refresh()
 
     def _build_ui(self) -> None:
-        root_layout = QtWidgets.QVBoxLayout(self)
-        root_layout.setContentsMargins(4, 4, 4, 4)
-        root_layout.setSpacing(4)
+        ui_path = Path(__file__).resolve().parent / "ui" / "shot_manager.ui"
+        ui_file = QtCore.QFile(str(ui_path))
+        if not ui_file.open(QtCore.QFile.ReadOnly):
+            raise RuntimeError(f"Could not open UI file: {ui_path}")
+        try:
+            self.ui = QtUiTools.QUiLoader().load(ui_file)
+        finally:
+            ui_file.close()
+        if self.ui is None:
+            raise RuntimeError(f"Could not load UI file: {ui_path}")
 
-        toolbar = QtWidgets.QHBoxLayout()
-        toolbar.setSpacing(4)
-        self.create_btn = QtWidgets.QPushButton("Create Shot")
-        self.refresh_btn = QtWidgets.QPushButton("Refresh")
-        self.add_cast_btn = QtWidgets.QPushButton("Add Cast")
-        self.add_selected_asset_btn = QtWidgets.QPushButton("Add Selected Asset")
-        self.remove_cast_btn = QtWidgets.QPushButton("Remove Cast")
-        self.save_cast_btn = QtWidgets.QPushButton("Save Cast")
-        self.import_cast_btn = QtWidgets.QPushButton("Import Cast CSV")
-        self.export_cast_btn = QtWidgets.QPushButton("Export Cast CSV")
-        self.import_cast_cache_btn = QtWidgets.QPushButton("Import Cast Cache")
-        self.sync_cast_sheet_btn = QtWidgets.QPushButton("Sync Cast Spreadsheet")
-        self.import_cast_sheet_btn = QtWidgets.QPushButton("Import Cast Spreadsheet")
+        self.setCentralWidget(self.ui)
+        self.ui_path = ui_path
+
+        self.main_stack = self._ui_object("main_stack")
+        self.shot_browser_page = self._ui_object("shot_browser_page")
+        self.shot_detail_page = self._ui_object("shot_detail_page")
+        self.back_to_shots_btn = self._ui_object("back_to_shots_btn")
+        self.detail_title_label = self._ui_object("detail_title_label")
+        self.shot_list = self._ui_object("shot_list")
+        self.tabs = self._ui_object("tabs")
+        self.shot_json_view = self._ui_object("shot_json_view")
+        self.work_tab = self._ui_object("work_tab")
+        self.cast_tab = self._ui_object("cast_tab")
+        self.validation_view = self._ui_object("validation_view")
+        self.build_preview_tab = self._ui_object("build_preview_tab")
+        self.cast_json_view = self._ui_object("cast_json_view")
+        self.cast_table = self._ui_object("cast_table")
+        self.build_preview_table = self._ui_object("build_preview_table")
+        self.work_dept_combo = self._ui_object("work_dept_combo")
+        self.open_work_btn = self._ui_object("open_work_btn")
+        self.refresh_work_btn = self._ui_object("refresh_work_btn")
+        self.work_table = self._ui_object("work_table")
+        self.add_cast_btn = self._ui_object("add_cast_btn")
+        self.add_selected_asset_btn = self._ui_object("add_selected_asset_btn")
+        self.remove_cast_btn = self._ui_object("remove_cast_btn")
+        self.validate_btn = self._ui_object("validate_btn")
+        self.save_cast_btn = self._ui_object("save_cast_btn")
+        self.build_preview_btn = self._ui_object("build_preview_btn")
+        self.open_review_layer_ui_btn = self._ui_object("open_review_layer_ui_btn")
+        self.review_layers_btn = self._ui_object("review_layers_btn")
+        self.build_shot_btn = self._ui_object("build_shot_btn")
+        self.save_work_btn = self._ui_object("save_work_btn")
+        self.status_label = self._ui_object("status_label")
+
+        self.create_action = self._ui_object("actionCreate_Shot")
+        self.refresh_action = self._ui_object("actionRefresh")
+        self.import_cast_action = self._ui_object("actionImport_Cast_CSV")
+        self.export_cast_action = self._ui_object("actionExport_Cast_CSV")
+        self.import_cast_cache_action = self._ui_object("actionImport_Cast_Cache")
+        self.sync_cast_sheet_action = self._ui_object("actionSync_Cast_Spreadsheet")
+        self.import_cast_sheet_action = self._ui_object("actionImport_Cast_Spreadsheet")
+
+        self.work_dept_combo.addItems(self.service.shot_departments)
         if self.is_maya_session:
-            self.sync_cast_sheet_btn.setEnabled(False)
-            self.sync_cast_sheet_btn.setToolTip("Use standalone Shot Manager for Spreadsheet sync.")
-            self.import_cast_sheet_btn.setEnabled(False)
-            self.import_cast_sheet_btn.setToolTip("Use standalone Shot Manager for Spreadsheet import.")
-        self.validate_btn = QtWidgets.QPushButton("Validate Cast")
-        self.build_preview_btn = QtWidgets.QPushButton("Build Preview")
-        self.build_shot_btn = QtWidgets.QPushButton("Build Shot From Cast")
-        self.save_work_btn = QtWidgets.QPushButton("Save Work Scene")
-        self.review_layers_btn = QtWidgets.QPushButton("Create Review Layers")
+            self.sync_cast_sheet_action.setEnabled(False)
+            self.sync_cast_sheet_action.setToolTip("Use standalone Shot Manager for Spreadsheet sync.")
+            self.import_cast_sheet_action.setEnabled(False)
+            self.import_cast_sheet_action.setToolTip("Use standalone Shot Manager for Spreadsheet import.")
         if not self.is_maya_session:
             self.save_work_btn.setEnabled(False)
             self.save_work_btn.setToolTip("Available inside Maya.")
             self.review_layers_btn.setEnabled(False)
             self.review_layers_btn.setToolTip("Available inside Maya.")
-        toolbar.addWidget(self.create_btn)
-        toolbar.addWidget(self.refresh_btn)
-        toolbar.addWidget(self.add_cast_btn)
-        toolbar.addWidget(self.add_selected_asset_btn)
-        toolbar.addWidget(self.remove_cast_btn)
-        toolbar.addWidget(self.save_cast_btn)
-        toolbar.addWidget(self.import_cast_btn)
-        toolbar.addWidget(self.export_cast_btn)
-        toolbar.addWidget(self.import_cast_cache_btn)
-        toolbar.addWidget(self.sync_cast_sheet_btn)
-        toolbar.addWidget(self.import_cast_sheet_btn)
-        toolbar.addWidget(self.validate_btn)
-        toolbar.addWidget(self.build_preview_btn)
-        toolbar.addWidget(self.build_shot_btn)
-        toolbar.addWidget(self.save_work_btn)
-        toolbar.addWidget(self.review_layers_btn)
-        toolbar.addStretch(1)
-        root_layout.addLayout(toolbar)
-
-        splitter = QtWidgets.QSplitter()
-        root_layout.addWidget(splitter, 1)
-
-        self.shot_list = QtWidgets.QTreeWidget()
-        self.shot_list.setHeaderLabels(["Episode", "Sequence", "Shot", "Status", "Frames"])
+        self.main_stack.setCurrentWidget(self.shot_browser_page)
         self.shot_list.header().setStretchLastSection(True)
-        self.shot_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        splitter.addWidget(self.shot_list)
-
-        right = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right)
-        right_layout.setContentsMargins(4, 4, 4, 4)
-        right_layout.setSpacing(4)
-        self.tabs = QtWidgets.QTabWidget()
-        self.shot_json_view = QtWidgets.QPlainTextEdit()
-        self.cast_table = QtWidgets.QTableWidget(0, 8)
-        self.cast_table.setHorizontalHeaderLabels([
-            "cast_key",
-            "asset",
-            "variant",
-            "role",
-            "namespace",
-            "asset_publish",
-            "required",
-            "note",
-        ])
+        self.detail_title_label.setStyleSheet("font-weight: bold;")
         self.cast_table.horizontalHeader().setStretchLastSection(True)
         self.cast_table.verticalHeader().setVisible(False)
         self.cast_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.cast_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.cast_json_view = QtWidgets.QPlainTextEdit()
-        self.validation_view = QtWidgets.QPlainTextEdit()
-        self.build_preview_table = QtWidgets.QTableWidget(0, 9)
-        self.build_preview_table.setHorizontalHeaderLabels([
-            "cast_key",
-            "asset",
-            "variant",
-            "namespace",
-            "layer",
-            "asset_publish",
-            "required",
-            "status",
-            "publish_path",
-        ])
         self.build_preview_table.horizontalHeader().setStretchLastSection(True)
         self.build_preview_table.verticalHeader().setVisible(False)
         self.build_preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-
-        self.work_tab = QtWidgets.QWidget()
-        work_layout = QtWidgets.QVBoxLayout(self.work_tab)
-        work_layout.setContentsMargins(4, 4, 4, 4)
-        work_layout.setSpacing(4)
-        work_header = QtWidgets.QHBoxLayout()
-        work_header.setSpacing(4)
-        self.work_dept_combo = QtWidgets.QComboBox()
-        self.work_dept_combo.addItems(self.service.shot_departments)
-        self.open_work_btn = QtWidgets.QPushButton("Open Work Scene")
-        self.refresh_work_btn = QtWidgets.QPushButton("Refresh Work")
-        work_header.addWidget(QtWidgets.QLabel("Dept"))
-        work_header.addWidget(self.work_dept_combo)
-        work_header.addWidget(self.open_work_btn)
-        work_header.addWidget(self.refresh_work_btn)
-        work_header.addStretch(1)
-        self.work_table = QtWidgets.QTableWidget(0, 5)
-        self.work_table.setHorizontalHeaderLabels(["File", "Dept", "Updated", "Comment", "Path"])
         self.work_table.horizontalHeader().setStretchLastSection(True)
         self.work_table.verticalHeader().setVisible(False)
         self.work_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.work_table.setColumnHidden(4, True)
-        work_layout.addLayout(work_header)
-        work_layout.addWidget(self.work_table, 1)
-
         for widget in (self.shot_json_view, self.cast_json_view, self.validation_view):
             widget.setReadOnly(True)
-        self.tabs.addTab(self.shot_json_view, "shot.json")
-        self.tabs.addTab(self.work_tab, "Work Scene")
-        self.tabs.addTab(self.cast_table, "Cast")
-        self.tabs.addTab(self.cast_json_view, "cast.json")
-        self.tabs.addTab(self.validation_view, "Validation")
-        self.tabs.addTab(self.build_preview_table, "Build Preview")
-        right_layout.addWidget(self.tabs)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(1, 1)
 
-        self.status_label = QtWidgets.QLabel("")
-        root_layout.addWidget(self.status_label)
-
-        self.create_btn.clicked.connect(self.create_shot)
-        self.refresh_btn.clicked.connect(self.refresh)
+        self.create_action.triggered.connect(self.create_shot)
+        self.refresh_action.triggered.connect(self.refresh)
         self.add_cast_btn.clicked.connect(self.add_cast_row)
         self.add_selected_asset_btn.clicked.connect(self.add_selected_asset_to_cast)
         self.remove_cast_btn.clicked.connect(self.remove_cast_row)
         self.save_cast_btn.clicked.connect(self.save_cast)
-        self.import_cast_btn.clicked.connect(self.import_cast_csv)
-        self.export_cast_btn.clicked.connect(self.export_cast_csv)
-        self.import_cast_cache_btn.clicked.connect(self.import_cast_cache)
-        self.sync_cast_sheet_btn.clicked.connect(self.sync_cast_spreadsheet)
-        self.import_cast_sheet_btn.clicked.connect(self.import_cast_spreadsheet)
+        self.import_cast_action.triggered.connect(self.import_cast_csv)
+        self.export_cast_action.triggered.connect(self.export_cast_csv)
+        self.import_cast_cache_action.triggered.connect(self.import_cast_cache)
+        self.sync_cast_sheet_action.triggered.connect(self.sync_cast_spreadsheet)
+        self.import_cast_sheet_action.triggered.connect(self.import_cast_spreadsheet)
         self.validate_btn.clicked.connect(self.validate_current_cast)
         self.build_preview_btn.clicked.connect(self.show_build_preview)
         self.build_shot_btn.clicked.connect(self.build_shot_from_cast)
         self.save_work_btn.clicked.connect(self.save_work_scene)
+        self.open_review_layer_ui_btn.clicked.connect(self.open_review_layer_manager)
         self.review_layers_btn.clicked.connect(self.create_review_layers)
         self.open_work_btn.clicked.connect(self.open_work_scene)
         self.refresh_work_btn.clicked.connect(self.refresh_work_files)
         self.work_dept_combo.currentTextChanged.connect(lambda _text: self.refresh_work_files())
         self.work_table.itemDoubleClicked.connect(lambda _item: self.open_work_scene())
         self.shot_list.currentItemChanged.connect(lambda _current, _previous: self.show_current_shot())
+        self.shot_list.itemDoubleClicked.connect(lambda _item, _column: self.show_detail_mode())
+        self.back_to_shots_btn.clicked.connect(self.show_shot_browser)
+
+    def _ui_object(self, name: str):
+        obj = self.ui.findChild(QtCore.QObject, name)
+        if obj is None:
+            raise RuntimeError(f"UI object was not found: {name}")
+        return obj
+
+    def show_detail_mode(self) -> None:
+        if self.current_identity():
+            self.main_stack.setCurrentWidget(self.shot_detail_page)
+
+    def show_shot_browser(self) -> None:
+        self.main_stack.setCurrentWidget(self.shot_browser_page)
 
     def refresh(self) -> None:
         selected = self.current_identity()
@@ -317,6 +277,7 @@ class ShotManagerWindow(QtWidgets.QDialog):
     def show_current_shot(self) -> None:
         identity = self.current_identity()
         if not identity:
+            self.detail_title_label.setText("Shot Detail")
             self.shot_json_view.clear()
             self.cast_table.setRowCount(0)
             self.cast_json_view.clear()
@@ -326,6 +287,13 @@ class ShotManagerWindow(QtWidgets.QDialog):
             return
         shot_data = self.service.load_shot(identity)
         cast_data = self.service.load_cast(identity)
+        editorial = shot_data.get("editorial") or {}
+        frames = ""
+        if editorial.get("cut_in") is not None and editorial.get("cut_out") is not None:
+            frames = f" | {editorial.get('cut_in')}-{editorial.get('cut_out')}"
+        status = shot_data.get("status", "")
+        status_text = f" | {status}" if status else ""
+        self.detail_title_label.setText(f"{identity.episode} / {identity.sequence} / {identity.shot}{frames}{status_text}")
         self.shot_json_view.setPlainText(json.dumps(shot_data, indent=2, ensure_ascii=False))
         self.cast_json_view.setPlainText(json.dumps(cast_data, indent=2, ensure_ascii=False))
         self.populate_cast_table(cast_data)
@@ -417,7 +385,7 @@ class ShotManagerWindow(QtWidgets.QDialog):
         resolved = len([item for item in preview if item.status == "resolved"])
         self.status_label.setText(f"Build preview: {resolved}/{len(preview)} resolved")
         if switch_tab:
-            self.tabs.setCurrentWidget(self.build_preview_table)
+            self.tabs.setCurrentWidget(self.build_preview_tab)
 
     def populate_cast_table(self, cast_data: dict) -> None:
         self.cast_table.setRowCount(0)
@@ -694,6 +662,25 @@ class ShotManagerWindow(QtWidgets.QDialog):
             self.validate_current_cast(update_tab=True)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Create Review Layers Failed", str(exc))
+
+    def open_review_layer_manager(self) -> None:
+        identity = self.current_identity()
+        if not identity:
+            return
+        try:
+            import importlib
+
+            _ensure_smartlib_on_path()
+            scripts_root = str(Path(__file__).resolve().parent)
+            if scripts_root not in sys.path:
+                sys.path.insert(0, scripts_root)
+            import review_layer_ui
+
+            importlib.reload(review_layer_ui)
+            review_layer_ui.show(identity=identity, config_dir=self.service.project_config.config_dir, parent=self)
+            self.status_label.setText(f"Opened Review Layer Manager: {identity.code}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Review Layer Manager Failed", str(exc))
 
     def cast_table_rows(self) -> list[dict]:
         rows = []
