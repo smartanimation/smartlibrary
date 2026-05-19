@@ -1,0 +1,508 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ShotManagerWidget</class>
+ <widget class="QWidget" name="ShotManagerWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>980</width>
+    <height>620</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Shot Manager</string>
+  </property>
+  <layout class="QVBoxLayout" name="root_layout">
+   <property name="spacing">
+    <number>4</number>
+   </property>
+   <property name="leftMargin">
+    <number>4</number>
+   </property>
+   <property name="topMargin">
+    <number>4</number>
+   </property>
+   <property name="rightMargin">
+    <number>4</number>
+   </property>
+   <property name="bottomMargin">
+    <number>4</number>
+   </property>
+   <item>
+    <widget class="QMenuBar" name="menu_bar">
+     <property name="nativeMenuBar">
+      <bool>false</bool>
+     </property>
+     <widget class="QMenu" name="menuFiles">
+      <property name="title">
+       <string>Files</string>
+      </property>
+      <addaction name="actionImport_Cast_CSV"/>
+      <addaction name="actionExport_Cast_CSV"/>
+      <addaction name="separator"/>
+      <addaction name="actionImport_Cast_Cache"/>
+      <addaction name="actionSync_Cast_Spreadsheet"/>
+      <addaction name="actionImport_Cast_Spreadsheet"/>
+     </widget>
+     <widget class="QMenu" name="menuShot">
+      <property name="title">
+       <string>Shot</string>
+      </property>
+      <addaction name="actionCreate_Shot"/>
+      <addaction name="actionRefresh"/>
+     </widget>
+     <addaction name="menuFiles"/>
+     <addaction name="menuShot"/>
+    </widget>
+   </item>
+   <item>
+    <widget class="QStackedWidget" name="main_stack">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <widget class="QWidget" name="shot_browser_page">
+      <layout class="QVBoxLayout" name="shot_browser_layout">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QTreeWidget" name="shot_list">
+         <property name="selectionMode">
+          <enum>QAbstractItemView::SingleSelection</enum>
+         </property>
+         <property name="rootIsDecorated">
+          <bool>false</bool>
+         </property>
+         <column>
+          <property name="text">
+           <string>Episode</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Sequence</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Shot</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Status</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Frames</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="shot_detail_page">
+      <layout class="QVBoxLayout" name="right_layout">
+       <property name="spacing">
+        <number>4</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <layout class="QHBoxLayout" name="detail_header_layout">
+         <property name="spacing">
+          <number>4</number>
+         </property>
+         <item>
+          <widget class="QPushButton" name="back_to_shots_btn">
+           <property name="text">
+            <string>Back</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="detail_title_label">
+           <property name="text">
+            <string>Shot Detail</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="detail_header_spacer">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QTabWidget" name="tabs">
+         <widget class="QPlainTextEdit" name="shot_json_view">
+          <attribute name="title">
+           <string>shot.json</string>
+          </attribute>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+         </widget>
+         <widget class="QWidget" name="work_tab">
+          <attribute name="title">
+           <string>Work Scene</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="work_layout">
+           <property name="spacing">
+            <number>4</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>4</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <layout class="QHBoxLayout" name="work_header_layout">
+             <property name="spacing">
+              <number>4</number>
+             </property>
+             <item>
+              <widget class="QLabel" name="work_dept_label">
+               <property name="text">
+                <string>Dept</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="work_dept_combo"/>
+             </item>
+             <item>
+              <widget class="QPushButton" name="open_work_btn">
+               <property name="text">
+                <string>Open Work Scene</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="build_shot_btn">
+               <property name="text">
+                <string>Build Shot From Cast</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="save_work_btn">
+               <property name="text">
+                <string>Save Work Scene</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="refresh_work_btn">
+               <property name="text">
+                <string>Refresh Work</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="work_header_spacer">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QTableWidget" name="work_table">
+             <property name="selectionBehavior">
+              <enum>QAbstractItemView::SelectRows</enum>
+             </property>
+             <property name="selectionMode">
+              <enum>QAbstractItemView::SingleSelection</enum>
+             </property>
+             <column>
+              <property name="text">
+               <string>File</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Dept</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Updated</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Comment</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Path</string>
+              </property>
+             </column>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+         <widget class="QWidget" name="cast_tab">
+          <attribute name="title">
+           <string>Cast</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="cast_layout">
+           <property name="spacing">
+            <number>4</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>4</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <layout class="QHBoxLayout" name="cast_header_layout">
+             <property name="spacing">
+              <number>4</number>
+             </property>
+             <item>
+              <widget class="QPushButton" name="add_cast_btn">
+               <property name="text">
+                <string>Add Cast</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="add_selected_asset_btn">
+               <property name="text">
+                <string>Add Selected Asset</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="remove_cast_btn">
+               <property name="text">
+                <string>Remove Cast</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="validate_btn">
+               <property name="text">
+                <string>Validate Cast</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="save_cast_btn">
+               <property name="text">
+                <string>Save Cast</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="cast_header_spacer">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QTableWidget" name="cast_table">
+             <property name="selectionBehavior">
+              <enum>QAbstractItemView::SelectRows</enum>
+             </property>
+             <property name="selectionMode">
+              <enum>QAbstractItemView::SingleSelection</enum>
+             </property>
+             <column><property name="text"><string>cast_key</string></property></column>
+             <column><property name="text"><string>asset</string></property></column>
+             <column><property name="text"><string>variant</string></property></column>
+             <column><property name="text"><string>role</string></property></column>
+             <column><property name="text"><string>namespace</string></property></column>
+             <column><property name="text"><string>asset_publish</string></property></column>
+             <column><property name="text"><string>required</string></property></column>
+             <column><property name="text"><string>note</string></property></column>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+         <widget class="QPlainTextEdit" name="cast_json_view">
+          <attribute name="title">
+           <string>cast.json</string>
+          </attribute>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+         </widget>
+         <widget class="QPlainTextEdit" name="validation_view">
+          <attribute name="title">
+           <string>Validation</string>
+          </attribute>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+         </widget>
+         <widget class="QWidget" name="build_preview_tab">
+          <attribute name="title">
+           <string>Build Preview</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="buildpreview_layout">
+           <property name="spacing">
+            <number>4</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>4</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <layout class="QHBoxLayout" name="buildpreview_header_layout">
+             <property name="spacing">
+              <number>4</number>
+             </property>
+             <item>
+              <widget class="QPushButton" name="build_preview_btn">
+               <property name="text">
+                <string>Build Preview</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="open_review_layer_ui_btn">
+               <property name="text">
+                <string>Review Layers...</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="review_layers_btn">
+               <property name="text">
+                <string>Create Review Layers</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="buildpreview_header_spacer">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QTableWidget" name="build_preview_table">
+             <property name="selectionBehavior">
+              <enum>QAbstractItemView::SelectRows</enum>
+             </property>
+             <column><property name="text"><string>cast_key</string></property></column>
+             <column><property name="text"><string>asset</string></property></column>
+             <column><property name="text"><string>variant</string></property></column>
+             <column><property name="text"><string>namespace</string></property></column>
+             <column><property name="text"><string>layer</string></property></column>
+             <column><property name="text"><string>asset_publish</string></property></column>
+             <column><property name="text"><string>required</string></property></column>
+             <column><property name="text"><string>status</string></property></column>
+             <column><property name="text"><string>publish_path</string></property></column>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="status_label">
+     <property name="text">
+      <string/>
+     </property>
+    </widget>
+   </item>
+  </layout>
+  <action name="actionImport_Cast_CSV"><property name="text"><string>Import_Cast_CSV</string></property></action>
+  <action name="actionExport_Cast_CSV"><property name="text"><string>Export_Cast_CSV</string></property></action>
+  <action name="actionImport_Cast_Cache"><property name="text"><string>Import_Cast_Cache</string></property></action>
+  <action name="actionSync_Cast_Spreadsheet"><property name="text"><string>Sync_Cast_Spreadsheet</string></property></action>
+  <action name="actionImport_Cast_Spreadsheet"><property name="text"><string>Import_Cast_Spreadsheet</string></property></action>
+  <action name="actionCreate_Shot"><property name="text"><string>Create Shot</string></property></action>
+  <action name="actionRefresh"><property name="text"><string>Refresh</string></property></action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

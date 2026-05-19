@@ -7,7 +7,7 @@ anchors:
   - 720
 enabled_softwares:
 - usdview
-- maya
+- start_maya2024
 shot_depts:
 - layout
 - anim
