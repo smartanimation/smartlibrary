@@ -6,6 +6,8 @@ env_vars:
   PYTHONDONTWRITEBYTECODE: "1"     # .pycファイルを作らせない
 
 paths:
+  MAYA_SCRIPT_PATH:
+  - "{project_root}/settings/dcc/maya"
   MAYA_PLUG_IN_PATH:
   MAYA_MODULE_PATH:
   PYTHONPATH:

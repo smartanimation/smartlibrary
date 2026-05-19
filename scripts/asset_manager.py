@@ -394,6 +394,12 @@ class AssetManager:
 
     @staticmethod
     def _credentials_path() -> Path | None:
+        try:
+            from smartlib.core.credentials import credentials_path
+
+            return credentials_path()
+        except ImportError:
+            pass
         for name in CREDENTIALS_ENV_VARS:
             value = os.environ.get(name)
             if not value:
@@ -402,7 +408,8 @@ class AssetManager:
             if path.is_dir():
                 path = path / "credentials.json"
             return path
-        return None
+        appdata = os.environ.get("APPDATA")
+        return _norm(appdata) / "credentials.json" if appdata else None
 
     @staticmethod
     def _row_value(row: dict, *names: str):

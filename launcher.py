@@ -54,7 +54,7 @@ def apply_pipeline_pythonpath(env, *, maya_safe=False):
 def apply_config_env_vars(env, env_vars, projectroot, *, maya_safe=False):
     for k, v in env_vars.items():
         key = str(k)
-        value = str(v).replace("{project_root}", projectroot)
+        value = format_config_value(v, projectroot)
         if maya_safe and key.upper() == "PYTHONPATH":
             if value.strip():
                 env[key] = value
@@ -62,6 +62,14 @@ def apply_config_env_vars(env, env_vars, projectroot, *, maya_safe=False):
                 env.pop(key, None)
             continue
         env[key] = value
+
+def format_config_value(value, projectroot):
+    return (
+        str(value)
+        .replace("{project_root}", projectroot)
+        .replace("{smartpipeline_root}", CURRENT_DIR)
+        .replace("{smartlibrary_root}", CURRENT_DIR)
+    )
 
 class SmartLauncher(QtWidgets.QMainWindow):
     setup_finished_signal = QtCore.Signal()
@@ -345,7 +353,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
         for k, p_list in spec_data.get('paths', {}).items():
             if isinstance(p_list, list):
-                formatted = [p.replace("{project_root}", self.projectroot) for p in p_list]
+                formatted = [format_config_value(p, self.projectroot) for p in p_list]
                 existing = full_env.get(k, "")
                 full_env[str(k)] = os.pathsep.join(formatted) + (os.pathsep + existing if existing else "")
 
@@ -382,7 +390,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 # paths の反映
                 for k, p_list in spec_data.get('paths', {}).items():
                     if isinstance(p_list, list):
-                        formatted = [p.replace("{project_root}", self.projectroot) for p in p_list]
+                        formatted = [format_config_value(p, self.projectroot) for p in p_list]
                         existing = full_env.get(k, "")
                         full_env[str(k)] = os.pathsep.join(formatted) + (os.pathsep + existing if existing else "")
 

@@ -67,7 +67,7 @@ def main() -> int:
         return 1
     if not credentials_path or not credentials_path.exists():
         print("ERROR: credentials file was not found")
-        print("Set CREDENTIALS_PATH or CREDENTIALS_DIR.")
+        print("Set CREDENTIALS_PATH, CREDENTIALS_DIR, or %APPDATA%/credentials.json.")
         return 1
 
     try:

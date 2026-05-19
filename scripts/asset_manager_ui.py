@@ -745,6 +745,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         menu.addSeparator()
         reference_latest_rig = menu.addAction("Reference Latest Rig")
         reference_latest_rig.setEnabled(asset is not None)
+        send_to_shot_cast = menu.addAction("Send to Shot Cast")
+        send_to_shot_cast.setEnabled(asset is not None)
         menu.addSeparator()
         create_folders = menu.addAction("Create Asset Folders")
         create_folders.setEnabled(asset is not None)
@@ -772,6 +774,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._open_current("publish")
         elif action == reference_latest_rig:
             self._reference_latest_rig(asset)
+        elif action == send_to_shot_cast:
+            self._send_selected_asset_to_shot_cast(asset)
         elif action == create_folders:
             self.manager.ensure_asset_structure(asset)
             self.status_label.setText(f"Created folders: {asset.name}")
@@ -784,6 +788,28 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._copy_text(str(asset.work_dir))
         elif action == copy_publish:
             self._copy_text(str(asset.publish_dir))
+
+    def _send_selected_asset_to_shot_cast(self, asset: Asset | None) -> None:
+        if not asset:
+            return
+        try:
+            _ensure_smartlib_on_path()
+            from smartlib.core.config_loader import ProjectConfig
+            from smartlib.core.selection_context import write_selected_asset
+
+            metadata = self.manager.load_asset_metadata(asset)
+            payload = {
+                "asset": asset.name,
+                "category": asset.category,
+                "group": asset.group,
+                "variant": self._current_asset_variant(),
+                "asset_type": metadata.get("asset_type") or metadata.get("type") or asset.category,
+                "root": str(asset.root),
+            }
+            path = write_selected_asset(ProjectConfig(self.manager.config_dir), payload)
+            self.status_label.setText(f"Sent to Shot Cast: {asset.name} ({path})")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Send to Shot Cast Failed", str(exc))
 
     def _create_asset(self) -> None:
         dialog = AssetRequestDialog(self, title="Create Asset")
