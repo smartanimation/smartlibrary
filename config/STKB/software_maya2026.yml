@@ -5,6 +5,8 @@ env_vars:
   PYTHONDONTWRITEBYTECODE: '1'
   PYTHONPATH: ''
 paths:
+  MAYA_SCRIPT_PATH:
+  - D:/Projects/STKB/settings/dcc/maya
   MAYA_PLUG_IN_PATH:
   - D:/smartlibrary/maya/plug-ins/ngskintools2/Contents/plug-ins/2026
   MAYA_MODULE_PATH:
