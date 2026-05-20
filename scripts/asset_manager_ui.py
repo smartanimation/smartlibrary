@@ -194,18 +194,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         right_layout.setSpacing(4)
         splitter.addWidget(right)
 
-        detail_header = QtWidgets.QHBoxLayout()
-        detail_header.setContentsMargins(0, 0, 0, 0)
-        detail_header.setSpacing(4)
         self.back_to_assets_btn = QtWidgets.QPushButton("Back")
-        detail_header.addWidget(self.back_to_assets_btn)
         self.asset_variant_header_label = QtWidgets.QLabel("Variant")
-        detail_header.addWidget(self.asset_variant_header_label)
         self.asset_variant_combo = QtWidgets.QComboBox()
         self.asset_variant_combo.setMinimumWidth(120)
-        detail_header.addWidget(self.asset_variant_combo)
-        detail_header.addStretch(1)
-        right_layout.addLayout(detail_header)
 
         self.detail_content_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         right_layout.addWidget(self.detail_content_splitter, 1)
@@ -217,16 +209,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_variant_header_label.setVisible(False)
         self.asset_variant_combo.setVisible(False)
 
+        selector_layout.addWidget(self.back_to_assets_btn)
         selector_layout.addWidget(QtWidgets.QLabel("Variant"))
         self.asset_variant_list = QtWidgets.QListWidget()
-        self.asset_variant_list.setMaximumWidth(130)
         self.asset_variant_list.setMinimumHeight(80)
         self.asset_variant_list.setStyleSheet("QListWidget::item { height: 22px; }")
         selector_layout.addWidget(self.asset_variant_list)
 
         selector_layout.addWidget(QtWidgets.QLabel("dept"))
         self.dept_list = QtWidgets.QListWidget()
-        self.dept_list.setMaximumWidth(130)
         self.dept_list.setMinimumHeight(90)
         self.dept_list.setStyleSheet("QListWidget::item { height: 22px; }")
         for dept in self.manager.asset_depts:
@@ -238,7 +229,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         selector_layout.addWidget(QtWidgets.QLabel("Subset"))
         self.variant_list = QtWidgets.QListWidget()
-        self.variant_list.setMaximumWidth(130)
         self.variant_list.setMinimumHeight(90)
         self.variant_list.setStyleSheet("QListWidget::item { height: 22px; }")
         selector_layout.addWidget(self.variant_list)
@@ -269,8 +259,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
         asset_info_layout.addWidget(self.detail_info, 1)
         right_info_layout.addLayout(asset_info_layout)
 
-        self.file_info_label = QtWidgets.QLabel("File json")
-        right_info_layout.addWidget(self.file_info_label)
         self.file_info_table = QtWidgets.QTableWidget(0, 2)
         self.file_info_table.setHorizontalHeaderLabels(["Key", "Value"])
         self.file_info_table.horizontalHeader().setStretchLastSection(True)
@@ -302,10 +290,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
 
         self.dependency_label = QtWidgets.QLabel("")
-        work_layout.addWidget(self.dependency_label)
+        self.dependency_label.setVisible(False)
 
-        self.work_list = QtWidgets.QTableWidget(0, 4)
-        self.work_list.setHorizontalHeaderLabels(["Action", "File", "Updated", "Comment"])
+        self.work_list = QtWidgets.QTableWidget(0, 3)
+        self.work_list.setHorizontalHeaderLabels(["File", "Updated", "Comment"])
         self.work_list.horizontalHeader().setStretchLastSection(True)
         self.work_list.verticalHeader().setStretchLastSection(False)
         self.work_list.verticalHeader().setVisible(False)
@@ -318,6 +306,20 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.reference_btn = QtWidgets.QPushButton("REFERENCE")
         self.save_scene_btn = QtWidgets.QPushButton("SAVE")
         self.publish_btn = QtWidgets.QPushButton("Publish")
+        green_button_style = (
+            "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #3d835f; }"
+            "QPushButton:disabled { background-color: #4c5a52; color: #b8b8b8; }"
+        )
+        blue_button_style = (
+            "QPushButton { background-color: #2f5f9f; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #3b73b8; }"
+            "QPushButton:disabled { background-color: #4b5665; color: #b8b8b8; }"
+        )
+        self.open_scene_btn.setStyleSheet(green_button_style)
+        self.reference_btn.setStyleSheet(green_button_style)
+        self.save_scene_btn.setStyleSheet(blue_button_style)
+        self.publish_btn.setStyleSheet(blue_button_style)
         button_grid.addWidget(self.open_scene_btn, 0, 0)
         button_grid.addWidget(self.reference_btn, 0, 1, 1, 2)
         button_grid.addWidget(self.save_scene_btn, 1, 0)
@@ -653,10 +655,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.work_list.insertRow(row)
             parsed = self.manager.parse_work_file(path) or {}
             publish_record = self.manager.publish_record_for_work_file(asset, path)
-            action_button = QtWidgets.QPushButton("+")
-            action_button.setFixedWidth(42)
-            action_button.clicked.connect(lambda _checked=False, row=row: self._show_work_row_action_menu(row))
-            self.work_list.setCellWidget(row, 0, action_button)
             file_item = QtWidgets.QTableWidgetItem(path.name)
             if publish_record:
                 file_item.setIcon(self.published_work_icon)
@@ -667,10 +665,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
             file_item.setFlags(file_item.flags() & ~QtCore.Qt.ItemIsEditable)
             updated_item = QtWidgets.QTableWidgetItem(self._format_updated(path))
             updated_item.setFlags(updated_item.flags() & ~QtCore.Qt.ItemIsEditable)
-            self.work_list.setItem(row, 1, file_item)
-            self.work_list.setItem(row, 2, updated_item)
+            self.work_list.setItem(row, 0, file_item)
+            self.work_list.setItem(row, 1, updated_item)
             comment_item = QtWidgets.QTableWidgetItem(self.manager.file_comment(path))
-            self.work_list.setItem(row, 3, comment_item)
+            self.work_list.setItem(row, 2, comment_item)
         self.work_list.blockSignals(False)
         self.work_list.setSortingEnabled(True)
         self.work_list.resizeColumnsToContents()
@@ -803,19 +801,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
             for json_path in self._json_candidates_for_file(path):
                 data = self._read_json_for_table(json_path)
                 if isinstance(data, dict):
-                    self.file_info_label.setText(json_path.name)
                     self._populate_file_info_table(data)
                     return
-            self.file_info_label.setText(path.name)
             self._populate_file_info_table({"path": str(path), "json": "not found"})
             return
 
         asset = self._current_asset()
         if asset:
-            self.file_info_label.setText("asset.json")
             self._populate_file_info_table(self.manager.load_asset_metadata(asset))
         else:
-            self.file_info_label.setText("File json")
             self.file_info_table.setRowCount(0)
 
     def _read_json_for_table(self, path: Path):
@@ -1296,15 +1290,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
         row = self.work_list.currentRow()
         if row < 0:
             return None
-        item = self.work_list.item(row, 1)
+        item = self.work_list.item(row, 0)
         if not item:
             return None
         return item.data(QtCore.Qt.UserRole)
 
     def _on_work_item_changed(self, item) -> None:
-        if item.column() != 3:
+        if item.column() != 2:
             return
-        path = self.work_list.item(item.row(), 1).data(QtCore.Qt.UserRole)
+        path = self.work_list.item(item.row(), 0).data(QtCore.Qt.UserRole)
         if path:
             self.manager.set_file_comment(path, item.text())
 
