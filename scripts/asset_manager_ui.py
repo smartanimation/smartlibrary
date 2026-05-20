@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -198,12 +199,61 @@ class AssetManagerWindow(QtWidgets.QDialog):
         detail_header.setSpacing(4)
         self.back_to_assets_btn = QtWidgets.QPushButton("Back")
         detail_header.addWidget(self.back_to_assets_btn)
-        detail_header.addWidget(QtWidgets.QLabel("Variant"))
+        self.asset_variant_header_label = QtWidgets.QLabel("Variant")
+        detail_header.addWidget(self.asset_variant_header_label)
         self.asset_variant_combo = QtWidgets.QComboBox()
         self.asset_variant_combo.setMinimumWidth(120)
         detail_header.addWidget(self.asset_variant_combo)
         detail_header.addStretch(1)
         right_layout.addLayout(detail_header)
+
+        self.detail_content_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        right_layout.addWidget(self.detail_content_splitter, 1)
+
+        selector_panel = QtWidgets.QWidget()
+        selector_layout = QtWidgets.QVBoxLayout(selector_panel)
+        selector_layout.setContentsMargins(2, 2, 2, 2)
+        selector_layout.setSpacing(4)
+        self.asset_variant_header_label.setVisible(False)
+        self.asset_variant_combo.setVisible(False)
+
+        selector_layout.addWidget(QtWidgets.QLabel("Variant"))
+        self.asset_variant_list = QtWidgets.QListWidget()
+        self.asset_variant_list.setMaximumWidth(130)
+        self.asset_variant_list.setMinimumHeight(80)
+        self.asset_variant_list.setStyleSheet("QListWidget::item { height: 22px; }")
+        selector_layout.addWidget(self.asset_variant_list)
+
+        selector_layout.addWidget(QtWidgets.QLabel("dept"))
+        self.dept_list = QtWidgets.QListWidget()
+        self.dept_list.setMaximumWidth(130)
+        self.dept_list.setMinimumHeight(90)
+        self.dept_list.setStyleSheet("QListWidget::item { height: 22px; }")
+        for dept in self.manager.asset_depts:
+            self.dept_list.addItem(dept)
+        if not self.manager.asset_depts:
+            self.dept_list.addItem("model")
+        self.dept_list.setCurrentRow(0)
+        selector_layout.addWidget(self.dept_list)
+
+        selector_layout.addWidget(QtWidgets.QLabel("Subset"))
+        self.variant_list = QtWidgets.QListWidget()
+        self.variant_list.setMaximumWidth(130)
+        self.variant_list.setMinimumHeight(90)
+        self.variant_list.setStyleSheet("QListWidget::item { height: 22px; }")
+        selector_layout.addWidget(self.variant_list)
+        selector_layout.addStretch(1)
+        self.detail_content_splitter.addWidget(selector_panel)
+
+        center_panel = QtWidgets.QWidget()
+        center_layout = QtWidgets.QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(2, 2, 2, 2)
+        center_layout.setSpacing(4)
+
+        right_info_panel = QtWidgets.QWidget()
+        right_info_layout = QtWidgets.QVBoxLayout(right_info_panel)
+        right_info_layout.setContentsMargins(4, 4, 4, 4)
+        right_info_layout.setSpacing(6)
 
         asset_info_layout = QtWidgets.QHBoxLayout()
         asset_info_layout.setContentsMargins(0, 0, 0, 0)
@@ -215,14 +265,30 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.detail_info = QtWidgets.QLabel("")
         self.detail_info.setTextFormat(QtCore.Qt.RichText)
         self.detail_info.setAlignment(QtCore.Qt.AlignTop)
-        asset_info_layout.addWidget(self.detail_thumbnail)
+        asset_info_layout.addWidget(self.detail_thumbnail, 0, QtCore.Qt.AlignHCenter)
         asset_info_layout.addWidget(self.detail_info, 1)
-        right_layout.addLayout(asset_info_layout)
+        right_info_layout.addLayout(asset_info_layout)
+
+        self.file_info_label = QtWidgets.QLabel("File json")
+        right_info_layout.addWidget(self.file_info_label)
+        self.file_info_table = QtWidgets.QTableWidget(0, 2)
+        self.file_info_table.setHorizontalHeaderLabels(["Key", "Value"])
+        self.file_info_table.horizontalHeader().setStretchLastSection(True)
+        self.file_info_table.verticalHeader().setVisible(False)
+        self.file_info_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.file_info_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        right_info_layout.addWidget(self.file_info_table, 1)
 
         self.detail_tabs = QtWidgets.QTabWidget()
-        right_layout.addWidget(self.detail_tabs, 1)
+        center_layout.addWidget(self.detail_tabs, 1)
+        self.detail_content_splitter.addWidget(center_panel)
+        self.detail_content_splitter.addWidget(right_info_panel)
+        self.detail_content_splitter.setStretchFactor(0, 0)
+        self.detail_content_splitter.setStretchFactor(1, 1)
+        self.detail_content_splitter.setStretchFactor(2, 0)
 
         work_tab = QtWidgets.QWidget()
+        self.work_tab = work_tab
         work_layout = QtWidgets.QVBoxLayout(work_tab)
         work_layout.setContentsMargins(4, 4, 4, 4)
         work_layout.setSpacing(4)
@@ -232,12 +298,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.dept_tabs.addTab(dept)
         if not self.manager.asset_depts:
             self.dept_tabs.addTab("model")
-        work_layout.addWidget(self.dept_tabs)
+        self.dept_tabs.setVisible(False)
 
-        work_layout.addWidget(QtWidgets.QLabel("Subset"))
-        self.variant_list = QtWidgets.QListWidget()
-        self.variant_list.setMaximumHeight(72)
-        work_layout.addWidget(self.variant_list)
 
         self.dependency_label = QtWidgets.QLabel("")
         work_layout.addWidget(self.dependency_label)
@@ -264,6 +326,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.detail_tabs.addTab(work_tab, "Work Scene")
 
         data_tab = QtWidgets.QWidget()
+        self.data_tab = data_tab
         data_layout = QtWidgets.QVBoxLayout(data_tab)
         data_layout.setContentsMargins(4, 4, 4, 4)
         data_layout.setSpacing(4)
@@ -304,13 +367,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.create_variant_btn.clicked.connect(self._create_variant)
         self.back_to_assets_btn.clicked.connect(self._show_asset_mode)
         self.asset_variant_combo.currentIndexChanged.connect(lambda _index: self._show_current_asset())
+        self.asset_variant_list.currentRowChanged.connect(self._on_asset_variant_selected)
         self.dept_tabs.currentChanged.connect(self._on_department_changed)
+        self.dept_list.currentRowChanged.connect(self._on_department_list_changed)
         self.variant_list.currentRowChanged.connect(lambda _row: self._show_current_asset())
+        self.detail_tabs.currentChanged.connect(lambda _index: self._update_selected_file_info())
         self.asset_list.customContextMenuRequested.connect(self._show_asset_context_menu)
         self.work_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.work_list.customContextMenuRequested.connect(self._show_work_context_menu)
         self.work_list.itemChanged.connect(self._on_work_item_changed)
+        self.work_list.itemSelectionChanged.connect(self._update_selected_file_info)
         self.data_list.customContextMenuRequested.connect(self._show_data_context_menu)
+        self.data_list.itemSelectionChanged.connect(self._update_selected_file_info)
         self.publish_list.customContextMenuRequested.connect(self._show_publish_context_menu)
         self.open_scene_btn.clicked.connect(self._open_selected_scene)
         self.reference_btn.clicked.connect(self._reference_latest_publish)
@@ -608,6 +676,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.resizeColumnsToContents()
 
         self._populate_data_tree(asset)
+        self._update_selected_file_info()
 
         for path in self.manager.list_publish_files(asset):
             item = QtWidgets.QListWidgetItem(path.relative_to(asset.root).as_posix())
@@ -623,10 +692,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.manager.open_in_explorer(path)
 
     def _current_department(self) -> str:
+        item = self.dept_list.currentItem()
+        if item:
+            return item.text()
         index = self.dept_tabs.currentIndex()
-        if index < 0:
-            return "model"
-        return self.dept_tabs.tabText(index)
+        if index >= 0:
+            return self.dept_tabs.tabText(index)
+        return "model"
 
     def _current_variant(self) -> str:
         item = self.variant_list.currentItem()
@@ -636,6 +708,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         return variants[0] if variants else "main"
 
     def _current_asset_variant(self) -> str:
+        item = self.asset_variant_list.currentItem()
+        if item:
+            return item.text().strip() or "default"
         text = self.asset_variant_combo.currentText().strip()
         return text or "default"
 
@@ -690,6 +765,92 @@ class AssetManagerWindow(QtWidgets.QDialog):
             except Exception:
                 return ""
         return ""
+
+    def _selected_info_path(self) -> Path | None:
+        if getattr(self, "detail_tabs", None) and self.detail_tabs.currentWidget() == getattr(self, "data_tab", None):
+            data_item = self.data_list.currentItem()
+            if data_item:
+                data_path = data_item.data(0, QtCore.Qt.UserRole)
+                if data_path:
+                    return Path(str(data_path))
+            return None
+        work_path = self._selected_work_path()
+        if work_path:
+            return Path(work_path)
+        data_item = self.data_list.currentItem()
+        if data_item:
+            data_path = data_item.data(0, QtCore.Qt.UserRole)
+            if data_path:
+                return Path(str(data_path))
+        publish_item = self.publish_list.currentItem()
+        if publish_item:
+            publish_path = publish_item.data(QtCore.Qt.UserRole)
+            if publish_path:
+                return Path(str(publish_path))
+        return None
+
+    def _json_candidates_for_file(self, path: Path) -> list[Path]:
+        candidates = [
+            path.parent / f"{path.name}.json",
+            path.with_suffix(".json"),
+            path.parent / "publish.json",
+        ]
+        return [candidate for candidate in candidates if candidate.exists()]
+
+    def _update_selected_file_info(self) -> None:
+        path = self._selected_info_path()
+        if path and path.exists():
+            for json_path in self._json_candidates_for_file(path):
+                data = self._read_json_for_table(json_path)
+                if isinstance(data, dict):
+                    self.file_info_label.setText(json_path.name)
+                    self._populate_file_info_table(data)
+                    return
+            self.file_info_label.setText(path.name)
+            self._populate_file_info_table({"path": str(path), "json": "not found"})
+            return
+
+        asset = self._current_asset()
+        if asset:
+            self.file_info_label.setText("asset.json")
+            self._populate_file_info_table(self.manager.load_asset_metadata(asset))
+        else:
+            self.file_info_label.setText("File json")
+            self.file_info_table.setRowCount(0)
+
+    def _read_json_for_table(self, path: Path):
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _populate_file_info_table(self, data: dict) -> None:
+        self.file_info_table.setRowCount(0)
+        for key, value in self._flatten_table_data(data):
+            row = self.file_info_table.rowCount()
+            self.file_info_table.insertRow(row)
+            key_item = QtWidgets.QTableWidgetItem(key)
+            value_item = QtWidgets.QTableWidgetItem(value)
+            key_item.setFlags(key_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            value_item.setFlags(value_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.file_info_table.setItem(row, 0, key_item)
+            self.file_info_table.setItem(row, 1, value_item)
+        self.file_info_table.resizeColumnsToContents()
+        self.file_info_table.horizontalHeader().setStretchLastSection(True)
+
+    def _flatten_table_data(self, data, prefix: str = "") -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = []
+        if isinstance(data, dict):
+            for key, value in data.items():
+                next_key = f"{prefix}.{key}" if prefix else str(key)
+                if isinstance(value, dict):
+                    rows.extend(self._flatten_table_data(value, next_key))
+                elif isinstance(value, list):
+                    rows.append((next_key, ", ".join(str(item) for item in value)))
+                else:
+                    rows.append((next_key, str(value)))
+        return rows
 
     def _populate_data_tree(self, asset: Asset) -> None:
         self.data_list.clear()
@@ -747,20 +908,47 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._populate_variants()
         self._show_current_asset()
 
+    def _on_department_list_changed(self, _row: int) -> None:
+        department = self._current_department()
+        for index in range(self.dept_tabs.count()):
+            if self.dept_tabs.tabText(index) == department:
+                self.dept_tabs.blockSignals(True)
+                self.dept_tabs.setCurrentIndex(index)
+                self.dept_tabs.blockSignals(False)
+                break
+        self._populate_variants()
+        self._show_current_asset()
+
+    def _on_asset_variant_selected(self, row: int) -> None:
+        if row < 0:
+            return
+        variant = self._current_asset_variant()
+        index = self.asset_variant_combo.findText(variant)
+        if index >= 0:
+            self.asset_variant_combo.blockSignals(True)
+            self.asset_variant_combo.setCurrentIndex(index)
+            self.asset_variant_combo.blockSignals(False)
+        self._show_current_asset()
+
     def _populate_asset_variants(self) -> None:
         asset = self._current_asset()
         current = self._current_asset_variant()
         self.asset_variant_combo.blockSignals(True)
+        self.asset_variant_list.blockSignals(True)
         self.asset_variant_combo.clear()
+        self.asset_variant_list.clear()
         variants = self.manager.asset_variants(asset) if asset else ["default"]
         selected = 0
         for index, variant in enumerate(variants):
             self.asset_variant_combo.addItem(variant)
+            self.asset_variant_list.addItem(variant)
             if variant == current:
                 selected = index
         if variants:
             self.asset_variant_combo.setCurrentIndex(selected)
+            self.asset_variant_list.setCurrentRow(selected)
         self.asset_variant_combo.blockSignals(False)
+        self.asset_variant_list.blockSignals(False)
 
     def _populate_variants(self) -> None:
         current = self._current_variant()
