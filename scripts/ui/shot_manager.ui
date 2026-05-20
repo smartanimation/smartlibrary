@@ -167,15 +167,11 @@
         </layout>
        </item>
        <item>
-        <widget class="QTabWidget" name="tabs">
-         <widget class="QPlainTextEdit" name="shot_json_view">
-          <attribute name="title">
-           <string>shot.json</string>
-          </attribute>
-          <property name="readOnly">
-           <bool>true</bool>
-          </property>
-         </widget>
+        <widget class="QSplitter" name="detail_splitter">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <widget class="QTabWidget" name="tabs">
          <widget class="QWidget" name="work_tab">
           <attribute name="title">
            <string>Work Scene</string>
@@ -210,27 +206,6 @@
              </item>
              <item>
               <widget class="QComboBox" name="work_dept_combo"/>
-             </item>
-             <item>
-              <widget class="QPushButton" name="open_work_btn">
-               <property name="text">
-                <string>Open Work Scene</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="build_shot_btn">
-               <property name="text">
-                <string>Build Shot From Cast</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="save_work_btn">
-               <property name="text">
-                <string>Save Work Scene</string>
-               </property>
-              </widget>
              </item>
              <item>
               <widget class="QPushButton" name="refresh_work_btn">
@@ -288,6 +263,41 @@
               </property>
              </column>
             </widget>
+           </item>
+           <item>
+            <layout class="QVBoxLayout" name="work_button_layout">
+             <property name="spacing">
+              <number>4</number>
+             </property>
+             <item>
+              <widget class="QPushButton" name="build_shot_btn">
+               <property name="text">
+                <string>Build Shot From Cast</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="work_open_save_layout">
+               <property name="spacing">
+                <number>4</number>
+               </property>
+               <item>
+                <widget class="QPushButton" name="open_work_btn">
+                 <property name="text">
+                  <string>Open Work Scene</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="save_work_btn">
+                 <property name="text">
+                  <string>Save Work Scene</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            </layout>
            </item>
           </layout>
          </widget>
@@ -386,14 +396,6 @@
            </item>
           </layout>
          </widget>
-         <widget class="QPlainTextEdit" name="cast_json_view">
-          <attribute name="title">
-           <string>cast.json</string>
-          </attribute>
-          <property name="readOnly">
-           <bool>true</bool>
-          </property>
-         </widget>
          <widget class="QPlainTextEdit" name="validation_view">
           <attribute name="title">
            <string>Validation</string>
@@ -449,6 +451,20 @@
               </widget>
              </item>
              <item>
+              <widget class="QPushButton" name="plan_review_publish_btn">
+               <property name="text">
+                <string>Plan Review Publish</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="export_beauty_playblast_btn">
+               <property name="text">
+                <string>Export Beauty Playblast</string>
+               </property>
+              </widget>
+             </item>
+             <item>
               <spacer name="buildpreview_header_spacer">
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
@@ -477,6 +493,54 @@
              <column><property name="text"><string>required</string></property></column>
              <column><property name="text"><string>status</string></property></column>
              <column><property name="text"><string>publish_path</string></property></column>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+         </widget>
+         <widget class="QWidget" name="info_widget">
+          <layout class="QVBoxLayout" name="info_layout">
+           <property name="spacing">
+            <number>4</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>4</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="shot_json_label">
+             <property name="text">
+              <string>shot.json</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPlainTextEdit" name="shot_json_view">
+             <property name="readOnly">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="cast_json_label">
+             <property name="text">
+              <string>cast.json</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPlainTextEdit" name="cast_json_view">
+             <property name="readOnly">
+              <bool>true</bool>
+             </property>
             </widget>
            </item>
           </layout>

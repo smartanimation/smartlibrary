@@ -23,7 +23,7 @@ WORK_SCENE_RE = re.compile(
 )
 WORK_DCC_LAYOUT = {
     "maya": {
-        "model": ["hires", "proxy", "render"],
+        "model": ["hires", "proxy", "render", "guide"],
         "rig": ["layout", "anim"],
         "groom": [],
     },
@@ -33,7 +33,7 @@ WORK_DCC_LAYOUT = {
     "houdini": [],
 }
 DATA_LAYOUT = {
-    "model": ["hires", "proxy", "render"],
+    "model": ["hires", "proxy", "render", "guide"],
     "rig": ["skin", "guide", "build"],
     "guide": [],
     "skin": [],
@@ -41,7 +41,7 @@ DATA_LAYOUT = {
     "sim": [],
 }
 PUBLISH_LAYOUT = {
-    "model": {"hires": ["ma", "fbx", "abc", "usd"]},
+    "model": {"hires": ["ma", "fbx", "abc", "usd"], "guide": ["ma", "usd"]},
     "rig": {"layout": ["ma"], "anim": ["ma"]},
     "groom": {},
     "surfacing": {},
@@ -490,7 +490,7 @@ class AssetManager:
             if variants:
                 return list(variants)
         defaults = {
-            "model": ["hires", "proxy", "render"],
+            "model": ["hires", "proxy", "render", "guide"],
             "rig": ["layout", "anim"],
             "look": ["main"],
         }

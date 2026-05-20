@@ -1,0 +1,5 @@
+tools:
+  openrv:
+    path: ""
+  ffmpeg:
+    path: "{smartpipeline_root}/tools/ffmpeg/ffmpeg.exe"

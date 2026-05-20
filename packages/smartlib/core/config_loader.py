@@ -20,8 +20,7 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
     """Small YAML fallback for project configs when PyYAML is unavailable."""
 
     data: dict[str, Any] = {}
-    current_section: str | None = None
-    current_list: str | None = None
+    stack: list[tuple[int, Any]] = [(-1, data)]
 
     with path.open("r", encoding="utf-8") as stream:
         for raw_line in stream:
@@ -32,20 +31,29 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
             indent = len(line) - len(line.lstrip(" "))
             stripped = line.strip()
 
-            if indent == 0 and stripped.endswith(":"):
-                key = stripped[:-1]
-                data[key] = [] if key.endswith("_depts") else {}
-                current_section = key
-                current_list = key if isinstance(data[key], list) else None
+            is_list_item = stripped.startswith("- ")
+            while stack and (indent < stack[-1][0] if is_list_item else indent <= stack[-1][0]):
+                stack.pop()
+            parent = stack[-1][1]
+
+            if is_list_item:
+                if isinstance(parent, list):
+                    parent.append(_parse_scalar(stripped[2:].strip()))
                 continue
 
-            if current_list and indent > 0 and stripped.startswith("- "):
-                data[current_list].append(_parse_scalar(stripped[2:].strip()))
+            if ":" not in stripped or not isinstance(parent, dict):
                 continue
 
-            if current_section and isinstance(data.get(current_section), dict) and indent > 0 and ":" in stripped:
-                key, value = stripped.split(":", 1)
-                data[current_section][key.strip()] = _parse_scalar(value.strip())
+            key, value = stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if value:
+                parent[key] = _parse_scalar(value)
+                continue
+
+            next_container: Any = [] if key.endswith("_depts") else {}
+            parent[key] = next_container
+            stack.append((indent, next_container))
 
     return data
 

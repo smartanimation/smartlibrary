@@ -1,8 +1,8 @@
 {
-  "asset": "castle_room",
-  "category": "env",
-  "group": "main",
+  "asset": "testAsset02",
+  "category": "characters",
+  "group": "hero",
   "variant": "default",
-  "asset_type": "env",
-  "root": "D:\\Projects\\STKB\\assets\\env\\main\\castle_room"
+  "asset_type": "characters",
+  "root": "D:\\Projects\\STKB\\assets\\characters\\hero\\testAsset02"
 }

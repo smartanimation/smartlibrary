@@ -121,6 +121,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
         self.app_model = QtGui.QStandardItemModel()
         self.ui.appview.setModel(self.app_model)
         self.ui.appview.setIconSize(QtCore.QSize(40, 40))
+        self.ui.appview.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
 
     def create_symbol_icon(self, char, color_str, size=18):
         pixmap = QtGui.QPixmap(24, 24)
@@ -223,6 +224,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
         for soft_id in enabled:
             info = master_data.get(soft_id, {})
             item = QtGui.QStandardItem(info.get('name', soft_id.upper()))
+            item.setEditable(False)
             raw_path = info.get('path', "")
             exe_path = os.path.normpath(raw_path.replace("{project_root}", self.projectroot)) if raw_path else ""
             if exe_path and os.path.exists(exe_path):

@@ -139,6 +139,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.back_to_shots_btn = self._ui_object("back_to_shots_btn")
         self.detail_title_label = self._ui_object("detail_title_label")
         self.shot_list = self._ui_object("shot_list")
+        self.info_widget = self._ui_object("info_widget")
         self.tabs = self._ui_object("tabs")
         self.shot_json_view = self._ui_object("shot_json_view")
         self.work_tab = self._ui_object("work_tab")
@@ -160,6 +161,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.build_preview_btn = self._ui_object("build_preview_btn")
         self.open_review_layer_ui_btn = self._ui_object("open_review_layer_ui_btn")
         self.review_layers_btn = self._ui_object("review_layers_btn")
+        self.plan_review_publish_btn = self._ui_object("plan_review_publish_btn")
+        self.export_beauty_playblast_btn = self._ui_object("export_beauty_playblast_btn")
         self.build_shot_btn = self._ui_object("build_shot_btn")
         self.save_work_btn = self._ui_object("save_work_btn")
         self.status_label = self._ui_object("status_label")
@@ -183,9 +186,15 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.save_work_btn.setToolTip("Available inside Maya.")
             self.review_layers_btn.setEnabled(False)
             self.review_layers_btn.setToolTip("Available inside Maya.")
+            self.export_beauty_playblast_btn.setEnabled(False)
+            self.export_beauty_playblast_btn.setToolTip("Available inside Maya.")
         self.main_stack.setCurrentWidget(self.shot_browser_page)
         self.shot_list.header().setStretchLastSection(True)
+        self.shot_list.setUniformRowHeights(True)
+        self.shot_list.setIconSize(QtCore.QSize(96, 54))
+        self.shot_list.setStyleSheet("QTreeWidget::item { height: 30px; }")
         self.detail_title_label.setStyleSheet("font-weight: bold;")
+        self.info_widget.setMinimumWidth(260)
         self.cast_table.horizontalHeader().setStretchLastSection(True)
         self.cast_table.verticalHeader().setVisible(False)
         self.cast_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -195,9 +204,21 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.build_preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_table.horizontalHeader().setStretchLastSection(True)
         self.work_table.verticalHeader().setVisible(False)
+        self.work_table.verticalHeader().setDefaultSectionSize(30)
+        self.work_table.verticalHeader().setMinimumSectionSize(28)
         self.work_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.work_table.setColumnHidden(4, True)
+        self.open_work_btn.setStyleSheet(
+            "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #3d835f; }"
+            "QPushButton:disabled { background-color: #4c5a52; color: #b8b8b8; }"
+        )
+        self.save_work_btn.setStyleSheet(
+            "QPushButton { background-color: #2f5f9f; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #3b73b8; }"
+            "QPushButton:disabled { background-color: #4b5665; color: #b8b8b8; }"
+        )
         for widget in (self.shot_json_view, self.cast_json_view, self.validation_view):
             widget.setReadOnly(True)
 
@@ -218,6 +239,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.save_work_btn.clicked.connect(self.save_work_scene)
         self.open_review_layer_ui_btn.clicked.connect(self.open_review_layer_manager)
         self.review_layers_btn.clicked.connect(self.create_review_layers)
+        self.plan_review_publish_btn.clicked.connect(self.plan_review_publish)
+        self.export_beauty_playblast_btn.clicked.connect(self.export_beauty_playblast)
         self.open_work_btn.clicked.connect(self.open_work_scene)
         self.refresh_work_btn.clicked.connect(self.refresh_work_files)
         self.work_dept_combo.currentTextChanged.connect(lambda _text: self.refresh_work_files())
@@ -677,10 +700,100 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             import review_layer_ui
 
             importlib.reload(review_layer_ui)
-            review_layer_ui.show(identity=identity, config_dir=self.service.project_config.config_dir, parent=self)
+            review_layer_ui.show(
+                identity=identity,
+                config_dir=self.service.project_config.config_dir,
+                department=self.work_dept_combo.currentText().strip(),
+                parent=self,
+            )
             self.status_label.setText(f"Opened Review Layer Manager: {identity.code}")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Review Layer Manager Failed", str(exc))
+
+    def plan_review_publish(self) -> None:
+        identity = self.current_identity()
+        if not identity:
+            return
+        department = self.work_dept_combo.currentText().strip() or "anim"
+        comment, accepted = QtWidgets.QInputDialog.getText(self, "Plan Review Publish", "Comment")
+        if not accepted:
+            return
+        try:
+            source_workfile = ""
+            if self.is_maya_session:
+                try:
+                    import maya.cmds as cmds
+
+                    source_workfile = cmds.file(query=True, sceneName=True) or ""
+                except Exception:
+                    source_workfile = ""
+            plan = self.service.plan_review_playblast_take(
+                identity,
+                department,
+                source_workfile=source_workfile,
+                comment=comment,
+                write=True,
+            )
+            self.status_label.setText(f"Planned review publish: {plan.version_dir}")
+            self._show_review_plan_dialog(plan)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Plan Review Publish Failed", str(exc))
+
+    def _show_review_plan_dialog(self, plan) -> None:
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Review Publish Plan")
+        dialog.resize(720, 520)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        path_label = QtWidgets.QLabel(str(plan.version_dir))
+        path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addWidget(path_label)
+        text = QtWidgets.QPlainTextEdit()
+        text.setReadOnly(True)
+        review_data = dict(plan.review_data)
+        review_data.pop("publish", None)
+        text.setPlainText(json.dumps(review_data, indent=2, ensure_ascii=False))
+        layout.addWidget(text, 1)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def export_beauty_playblast(self) -> None:
+        identity = self.current_identity()
+        if not identity:
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, "Export Beauty Playblast", "Export Beauty Playblast is available inside Maya.")
+            return
+        department = self.work_dept_combo.currentText().strip() or "anim"
+        comment, accepted = QtWidgets.QInputDialog.getText(self, "Export Beauty Playblast", "Comment")
+        if not accepted:
+            return
+        try:
+            import maya.cmds as cmds
+            from smartlib.dcc.maya.review_playblast import export_beauty_sequences
+
+            source_workfile = cmds.file(query=True, sceneName=True) or ""
+            plan = self.service.plan_review_publish(
+                identity,
+                department,
+                source_workfile=source_workfile,
+                comment=comment,
+                write=True,
+            )
+            exported = export_beauty_sequences(plan)
+            self.status_label.setText(f"Exported beauty playblast: {plan.version_dir}")
+            QtWidgets.QMessageBox.information(
+                self,
+                "Export Beauty Playblast",
+                "Exported beauty sequences:\n"
+                + "\n".join(
+                    f"{layer}: {data.get('file_count', 0)} frames"
+                    for layer, data in sorted(exported.items())
+                ),
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Export Beauty Playblast Failed", str(exc))
 
     def cast_table_rows(self) -> list[dict]:
         rows = []

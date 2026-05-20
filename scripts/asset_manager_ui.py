@@ -110,15 +110,36 @@ class AssetManagerWindow(QtWidgets.QDialog):
         asset_panel_layout = QtWidgets.QVBoxLayout(self.asset_panel)
         asset_panel_layout.setContentsMargins(2, 2, 2, 2)
         asset_panel_layout.setSpacing(4)
+        asset_browser_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        asset_panel_layout.addWidget(asset_browser_splitter, 1)
+
+        self.asset_filter_tree = QtWidgets.QTreeWidget()
+        self.asset_filter_tree.setHeaderHidden(True)
+        self.asset_filter_tree.setMinimumWidth(120)
+        self.asset_filter_tree.setMaximumWidth(220)
+        self.asset_filter_tree.setRootIsDecorated(True)
+        self.asset_filter_tree.setIndentation(10)
+        self.asset_filter_tree.setStyleSheet("QTreeWidget::item { height: 24px; }")
+        asset_browser_splitter.addWidget(self.asset_filter_tree)
+
+        asset_browser = QtWidgets.QWidget()
+        asset_browser_layout = QtWidgets.QVBoxLayout(asset_browser)
+        asset_browser_layout.setContentsMargins(2, 2, 2, 2)
+        asset_browser_layout.setSpacing(4)
+        asset_browser_splitter.addWidget(asset_browser)
+        asset_browser_splitter.setStretchFactor(0, 0)
+        asset_browser_splitter.setStretchFactor(1, 1)
+
         filter_layout = QtWidgets.QHBoxLayout()
         filter_layout.setContentsMargins(0, 0, 0, 0)
         filter_layout.setSpacing(4)
         self.search_edit = QtWidgets.QLineEdit()
         self.search_edit.setPlaceholderText("Search asset")
+        self.search_edit.setClearButtonEnabled(True)
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
         filter_layout.addWidget(self.search_edit)
         filter_layout.addWidget(self.refresh_btn)
-        asset_panel_layout.addLayout(filter_layout)
+        asset_browser_layout.addLayout(filter_layout)
         asset_view_layout = QtWidgets.QHBoxLayout()
         asset_view_layout.setContentsMargins(0, 0, 0, 0)
         asset_view_layout.setSpacing(4)
@@ -131,7 +152,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         asset_view_layout.addWidget(self.create_variant_btn)
         asset_view_layout.addWidget(self.asset_card_btn)
         asset_view_layout.addWidget(self.asset_table_btn)
-        asset_panel_layout.addLayout(asset_view_layout)
+        asset_browser_layout.addLayout(asset_view_layout)
 
         self.asset_list = QtWidgets.QListWidget()
         self.asset_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -162,7 +183,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 background: #424242;
             }
         """)
-        asset_panel_layout.addWidget(self.asset_list)
+        asset_browser_layout.addWidget(self.asset_list)
         splitter.addWidget(self.asset_panel)
 
         right = QtWidgets.QWidget()
@@ -273,6 +294,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         root_layout.addWidget(self.status_label)
 
         self.search_edit.textChanged.connect(self._apply_filter)
+        self.asset_filter_tree.currentItemChanged.connect(lambda _current, _previous: self._apply_filter())
         self.refresh_btn.clicked.connect(self.refresh_assets)
         self.asset_list.currentRowChanged.connect(self._show_current_asset)
         self.asset_list.itemDoubleClicked.connect(lambda _item: self._show_detail_mode())
@@ -302,7 +324,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def refresh_assets(self, keep_selection: bool = True) -> None:
         selected_key = self._current_asset_key() if keep_selection else None
+        if not keep_selection:
+            self.asset_filter_tree.clear()
         self.assets = self.manager.list_assets_from_sheet(fallback_to_filesystem=True)
+        self._populate_asset_filter_tree()
         self._apply_filter(selected_key=selected_key)
         self._populate_asset_variants()
         self._populate_variants()
@@ -341,9 +366,17 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if selected_key is None:
             selected_key = self._current_asset_key()
         text = self.search_edit.text().strip().lower()
+        category_filter, group_filter, asset_filter = self._selected_asset_filter()
         self.asset_list.clear()
         row_to_select = -1
         for asset in self.assets:
+            category, group, asset_name = self._asset_filter_values(asset)
+            if category_filter and category != category_filter:
+                continue
+            if group_filter and group != group_filter:
+                continue
+            if asset_filter and asset_name != asset_filter:
+                continue
             label = f"{asset.category}/{asset.group}/{asset.name}"
             if text and text not in label.lower():
                 continue
@@ -359,6 +392,65 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.asset_list.setCurrentRow(row_to_select)
         elif self.asset_list.count():
             self.asset_list.setCurrentRow(0)
+
+    def _populate_asset_filter_tree(self) -> None:
+        current_filter = self._selected_asset_filter()
+        self.asset_filter_tree.blockSignals(True)
+        self.asset_filter_tree.clear()
+        all_item = QtWidgets.QTreeWidgetItem(["ALL"])
+        all_item.setData(0, QtCore.Qt.UserRole, ("", "", ""))
+        self.asset_filter_tree.addTopLevelItem(all_item)
+
+        category_items: dict[str, QtWidgets.QTreeWidgetItem] = {}
+        group_items: dict[tuple[str, str], QtWidgets.QTreeWidgetItem] = {}
+        selected_item = all_item
+        for asset in sorted(self.assets, key=lambda item: self._asset_filter_values(item)):
+            category, group, asset_name = self._asset_filter_values(asset)
+            if not category:
+                category = "-"
+            if not group:
+                group = "-"
+            category_item = category_items.get(category)
+            if category_item is None:
+                category_item = QtWidgets.QTreeWidgetItem([category])
+                category_item.setData(0, QtCore.Qt.UserRole, (category, "", ""))
+                self.asset_filter_tree.addTopLevelItem(category_item)
+                category_items[category] = category_item
+
+            group_key = (category, group)
+            group_item = group_items.get(group_key)
+            if group_item is None:
+                group_item = QtWidgets.QTreeWidgetItem([group])
+                group_item.setData(0, QtCore.Qt.UserRole, (category, group, ""))
+                category_item.addChild(group_item)
+                group_items[group_key] = group_item
+
+            if (category, group, "") == current_filter:
+                selected_item = group_item
+            elif (category, "", "") == current_filter:
+                selected_item = category_item
+
+        for item in category_items.values():
+            item.setExpanded(True)
+        if selected_item:
+            self.asset_filter_tree.setCurrentItem(selected_item)
+        self.asset_filter_tree.blockSignals(False)
+
+    def _selected_asset_filter(self) -> tuple[str, str, str]:
+        item = self.asset_filter_tree.currentItem()
+        if not item:
+            return "", "", ""
+        data = item.data(0, QtCore.Qt.UserRole)
+        if isinstance(data, tuple) and len(data) == 3:
+            return str(data[0]), str(data[1]), str(data[2])
+        return "", "", ""
+
+    def _asset_filter_values(self, asset: Asset) -> tuple[str, str, str]:
+        metadata = self.manager.load_asset_metadata(asset)
+        category = str(metadata.get("category") or asset.category or "")
+        group = str(metadata.get("group") or asset.group or "")
+        name = str(metadata.get("asset") or metadata.get("name") or asset.name or "")
+        return category, group, name
 
     def _asset_card_text(self, asset: Asset, metadata: dict) -> str:
         status = metadata.get("status") or "-"

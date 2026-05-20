@@ -67,6 +67,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         "threeDLayer",
         "FrameRange",
         "Take",
+        "Outputs",
         "AE Slot",
     ]
 
@@ -74,12 +75,14 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         self,
         identity=None,
         config_dir: str | os.PathLike[str] | None = None,
+        department: str | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self.service, self.identity_cls = _service(config_dir)
         self.identity = identity
         self.fixed_identity = identity is not None
+        self.initial_department = department
         self.is_maya_session = _is_maya_session()
         self.setWindowTitle("Review Layer Manager")
         self.resize(780, 560)
@@ -98,6 +101,11 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         shot_layout = QtWidgets.QHBoxLayout()
         shot_layout.setSpacing(4)
         self.shot_combo = QtWidgets.QComboBox()
+        self.department_combo = QtWidgets.QComboBox()
+        self.department_combo.addItems(self.service.shot_departments)
+        default_dept_index = self.department_combo.findText(self.initial_department or "anim")
+        if default_dept_index >= 0:
+            self.department_combo.setCurrentIndex(default_dept_index)
         self.episode_edit = QtWidgets.QLineEdit()
         self.sequence_edit = QtWidgets.QLineEdit()
         self.shot_edit = QtWidgets.QLineEdit()
@@ -111,6 +119,8 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         shot_layout.addWidget(self.sequence_edit)
         shot_layout.addWidget(QtWidgets.QLabel("SHOT"))
         shot_layout.addWidget(self.shot_edit)
+        shot_layout.addWidget(QtWidgets.QLabel("DEPT"))
+        shot_layout.addWidget(self.department_combo)
         shot_layout.addWidget(self.shot_combo, 1)
         root_layout.addLayout(shot_layout)
 
@@ -130,9 +140,13 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setVisible(True)
+        self.table.verticalHeader().setSectionsMovable(True)
+        self.table.verticalHeader().setDragEnabled(True)
+        self.table.verticalHeader().setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setDragDropMode(QtWidgets.QAbstractItemView.NoDragDrop)
         root_layout.addWidget(self.table, 1)
 
         form_group = QtWidgets.QGroupBox("Properties")
@@ -157,6 +171,8 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         self.take_spin = QtWidgets.QSpinBox()
         self.take_spin.setRange(1, 999)
         self.take_spin.setValue(1)
+        self.outputs_edit = QtWidgets.QLineEdit()
+        self.outputs_edit.setPlaceholderText("beauty, wireframe")
         self.ae_slot_edit = QtWidgets.QLineEdit()
         form.addRow("Layer", self.layer_edit)
         form.addRow("Members", self.members_edit)
@@ -168,17 +184,22 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         form.addRow("threeD Layer", self.three_d_check)
         form.addRow("Frame Range", self.frame_range_combo)
         form.addRow("Take", self.take_spin)
+        form.addRow("Outputs", self.outputs_edit)
         form.addRow("AE Slot", self.ae_slot_edit)
         root_layout.addWidget(form_group)
 
         action_layout = QtWidgets.QHBoxLayout()
         self.save_btn = QtWidgets.QPushButton("Save Contract")
         self.create_layers_btn = QtWidgets.QPushButton("Create Review Layers")
+        self.export_playblast_btn = QtWidgets.QPushButton("Export Playblast")
         if not self.is_maya_session:
             self.create_layers_btn.setEnabled(False)
             self.create_layers_btn.setToolTip("Available inside Maya.")
+            self.export_playblast_btn.setEnabled(False)
+            self.export_playblast_btn.setToolTip("Available inside Maya.")
         action_layout.addWidget(self.save_btn)
         action_layout.addWidget(self.create_layers_btn)
+        action_layout.addWidget(self.export_playblast_btn)
         root_layout.addLayout(action_layout)
 
         self.status_label = QtWidgets.QLabel("")
@@ -191,12 +212,14 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         self.refresh_btn.clicked.connect(self.refresh)
         self.save_btn.clicked.connect(self.save)
         self.create_layers_btn.clicked.connect(self.create_review_layers)
+        self.export_playblast_btn.clicked.connect(self.export_playblast)
         self.table.currentCellChanged.connect(lambda *_args: self._load_selected_row_to_form())
         for widget in (
             self.layer_edit,
             self.members_edit,
             self.camera_edit,
             self.camera_version_edit,
+            self.outputs_edit,
             self.ae_slot_edit,
         ):
             widget.editingFinished.connect(self._apply_form_to_selected_row)
@@ -254,6 +277,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
                 "three_d_layer": False,
                 "frame_range": "Animation",
                 "take": 1,
+                "outputs": self._default_outputs_for_layer(name),
                 "ae_slot": name,
             }
         )
@@ -277,6 +301,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         if not self.identity:
             return
         try:
+            self._normalize_order_from_rows()
             self.service.write_review_layers(self.identity, self._review_layers_from_table())
             self.status_label.setText("Saved review layer contract")
         except Exception as exc:
@@ -299,6 +324,36 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Create Review Layers Failed", str(exc))
 
+    def export_playblast(self) -> None:
+        if not self.identity:
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, "Export Playblast", "Export Playblast is available inside Maya.")
+            return
+        try:
+            self.save()
+            import maya.cmds as cmds
+            from smartlib.dcc.maya.review_playblast import export_beauty_sequences
+
+            department = self.department_combo.currentText().strip() or "anim"
+            source_workfile = cmds.file(query=True, sceneName=True) or ""
+            plan = self.service.plan_review_playblast_take(
+                self.identity,
+                department,
+                source_workfile=source_workfile,
+                comment="beauty playblast",
+                write=True,
+            )
+            exported = export_beauty_sequences(plan)
+            if exported:
+                summary = ", ".join(f"{layer}: {data.get('file_count', 0)}" for layer, data in sorted(exported.items()))
+            else:
+                summary = "No layers exported. Check Members in Review Layer Manager."
+            self.status_label.setText(f"Exported playblast: {plan.version_dir} | {summary}")
+            QtWidgets.QMessageBox.information(self, "Export Playblast", f"{plan.version_dir}\n{summary}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Export Playblast Failed", str(exc))
+
     def _append_row(self, data: dict) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -313,6 +368,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             "true" if data.get("three_d_layer") else "false",
             data.get("frame_range", "Animation"),
             data.get("take", 1),
+            data.get("outputs", ""),
             data.get("ae_slot", ""),
         ]
         for column, value in enumerate(values):
@@ -334,6 +390,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         index = self.frame_range_combo.findText(data["frame_range"])
         self.frame_range_combo.setCurrentIndex(index if index >= 0 else 0)
         self.take_spin.setValue(_int_or(data["take"], 1))
+        self.outputs_edit.setText(data["outputs"])
         self.ae_slot_edit.setText(data["ae_slot"])
 
     def _apply_form_to_selected_row(self) -> None:
@@ -351,6 +408,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             "true" if self.three_d_check.isChecked() else "false",
             self.frame_range_combo.currentText(),
             str(self.take_spin.value()),
+            self.outputs_edit.text().strip(),
             self.ae_slot_edit.text().strip(),
         ]
         for column, value in enumerate(values):
@@ -362,7 +420,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
 
     def _review_layers_from_table(self) -> dict:
         review_layers = {}
-        for row in range(self.table.rowCount()):
+        for row in self._visual_rows():
             data = self._row_data(row)
             layer = data["layer"].strip().upper()
             if not layer:
@@ -374,6 +432,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
                 "three_d_layer": _bool_text(data["three_d_layer"]),
                 "frame_range": data["frame_range"] or "Animation",
                 "take": _int_or(data["take"], 1),
+                "outputs": _csv_values(data["outputs"]) or _csv_values(self._default_outputs_for_layer(layer)),
                 "camera": {
                     "publish_type": "camera",
                     "version": data["camera_publish"] or "latest",
@@ -392,6 +451,18 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             }
         return review_layers
 
+    def _normalize_order_from_rows(self) -> None:
+        for visual_index, row in enumerate(self._visual_rows()):
+            item = self.table.item(row, 6)
+            if item is None:
+                item = QtWidgets.QTableWidgetItem()
+                self.table.setItem(row, 6, item)
+            item.setText(str(visual_index * 10))
+
+    def _visual_rows(self) -> list[int]:
+        header = self.table.verticalHeader()
+        return [header.logicalIndex(visual_row) for visual_row in range(self.table.rowCount())]
+
     def _row_data(self, row: int) -> dict:
         return {
             "layer": self._table_text(row, 0),
@@ -404,7 +475,8 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             "three_d_layer": self._table_text(row, 7),
             "frame_range": self._table_text(row, 8),
             "take": self._table_text(row, 9),
-            "ae_slot": self._table_text(row, 10),
+            "outputs": self._table_text(row, 10),
+            "ae_slot": self._table_text(row, 11),
         }
 
     def _table_text(self, row: int, column: int) -> str:
@@ -421,6 +493,13 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             index += 1
         return f"{candidate}_{index:02d}"
 
+    @staticmethod
+    def _default_outputs_for_layer(layer: str) -> str:
+        layer = str(layer).upper()
+        if layer in {"CHA", "CHB"}:
+            return "beauty, wireframe"
+        return "beauty"
+
 
 def _int_or(value, default: int) -> int:
     try:
@@ -433,17 +512,21 @@ def _bool_text(value) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _csv_values(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
 _WINDOW = None
 
 
-def show(identity=None, config_dir: str | os.PathLike[str] | None = None, parent=None):
+def show(identity=None, config_dir: str | os.PathLike[str] | None = None, department: str | None = None, parent=None):
     global _WINDOW
     try:
         _WINDOW.close()
     except Exception:
         pass
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    _WINDOW = ReviewLayerWindow(identity=identity, config_dir=config_dir, parent=parent)
+    _WINDOW = ReviewLayerWindow(identity=identity, config_dir=config_dir, department=department, parent=parent)
     _WINDOW.show()
     return _WINDOW
 
