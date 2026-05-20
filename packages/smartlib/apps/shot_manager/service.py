@@ -496,9 +496,71 @@ class ShotManagerService:
                     "three_d_layer": bool(layer.get("three_d_layer", False)),
                     "frame_range": layer.get("frame_range", "Animation"),
                     "take": layer.get("take", 1),
+                    "outputs": ", ".join(layer.get("outputs") or []),
                 }
             )
         return sorted(rows, key=lambda item: (int(item.get("order") or 0), str(item.get("layer"))))
+
+    def plan_review_publish(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        *,
+        version: int | None = None,
+        take: int | None = None,
+        source_workfile: str = "",
+        comment: str = "",
+        write: bool = True,
+    ):
+        from smartlib.review.package import build_review_package_plan, write_review_package_plan
+
+        plan = build_review_package_plan(
+            self.shot_root(identity),
+            self.load_shot(identity),
+            self.load_cast(identity),
+            department,
+            version=version,
+            take=take,
+            source_workfile=source_workfile,
+            comment=comment,
+            project_root=self.paths.project_root,
+            pipeline_root=_pipeline_root(),
+        )
+        return write_review_package_plan(plan) if write else plan
+
+    def plan_review_playblast_take(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        *,
+        source_workfile: str = "",
+        comment: str = "",
+        write: bool = True,
+    ):
+        from smartlib.review.package import (
+            build_review_package_plan,
+            latest_review_version,
+            next_review_take,
+            write_review_package_plan,
+        )
+
+        shot_root = self.shot_root(identity)
+        version = latest_review_version(shot_root, department) or 1
+        version_label = f"v{version:03d}"
+        take = next_review_take(shot_root / "publish" / "review" / department / version_label)
+        plan = build_review_package_plan(
+            shot_root,
+            self.load_shot(identity),
+            self.load_cast(identity),
+            department,
+            version=version,
+            take=take,
+            source_workfile=source_workfile,
+            comment=comment,
+            project_root=self.paths.project_root,
+            pipeline_root=_pipeline_root(),
+        )
+        return write_review_package_plan(plan) if write else plan
 
     def cast_from_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         return self.build_cast_data(rows)
@@ -758,3 +820,11 @@ def _preferred_publish(paths: list[Path]) -> Path | None:
         if matches:
             return sorted(matches, key=lambda path: path.as_posix().lower())[-1]
     return sorted(paths, key=lambda path: path.as_posix().lower())[-1]
+
+
+def _pipeline_root() -> Path:
+    return Path(
+        os.environ.get("SMARTPIPELINE_ROOT")
+        or os.environ.get("SMARTLIBRARY_ROOT")
+        or Path(__file__).resolve().parents[4]
+    )

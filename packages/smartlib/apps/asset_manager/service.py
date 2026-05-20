@@ -71,11 +71,23 @@ class AssetManagerService:
         return paths
 
     def create_asset(self, request: AssetCreateRequest) -> CreatedAsset:
-        created_paths = self._mkdirs(self.planned_asset_paths(request))
+        default_request = AssetCreateRequest(
+            category=request.category,
+            group=request.group,
+            name=request.name,
+            variant="default",
+            description=request.description,
+        )
+        created_paths = self._mkdirs(self.planned_asset_paths(default_request))
         asset_root = self.paths.asset_root(request.identity)
-        variant_root = self.paths.asset_variant_root(request.identity)
-        self._ensure_asset_json(request, asset_root)
-        self._ensure_variant_json(request, variant_root)
+        default_variant_root = self.paths.asset_variant_root(default_request.identity)
+        self._ensure_asset_json(default_request, asset_root)
+        self._ensure_variant_json(default_request, default_variant_root)
+        variant_root = default_variant_root
+        if request.variant and request.variant != "default":
+            created_paths.extend(self._mkdirs(self.planned_asset_paths(request)[1:]))
+            variant_root = self.paths.asset_variant_root(request.identity)
+            self._ensure_variant_json(request, variant_root)
         return CreatedAsset(request.identity, asset_root, variant_root, created_paths)
 
     def create_variant(self, request: AssetCreateRequest) -> CreatedAsset:

@@ -1,0 +1,5 @@
+tools:
+  openrv:
+    path: "C:/Program Files/ShotGrid/RV-2023.0.2/bin/rv.exe"
+  ffmpeg:
+    path: "P:/dev/smartlibrary/tools/ffmpeg/ffmpeg.exe"

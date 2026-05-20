@@ -72,6 +72,19 @@ def show_review_layer_manager() -> None:
     review_layer_ui.show(config_dir=config_dir)
 
 
+def show_viewer() -> None:
+    ensure_runtime_paths()
+    _reload(
+        "smartlib.apps.viewer",
+        "smartlib.apps.viewer.service",
+        "scripts.viewer_ui",
+    )
+    from scripts import viewer_ui
+
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
+    viewer_ui.show(config_dir=config_dir)
+
+
 def install() -> str:
     try:
         import maya.cmds as cmds
@@ -87,6 +100,7 @@ def install() -> str:
     cmds.menuItem(label="Asset Manager", parent=menu, command=lambda *_args: show_asset_manager())
     cmds.menuItem(label="Shot Manager", parent=menu, command=lambda *_args: show_shot_manager())
     cmds.menuItem(label="Review Layer Manager", parent=menu, command=lambda *_args: show_review_layer_manager())
+    cmds.menuItem(label="Viewer", parent=menu, command=lambda *_args: show_viewer())
     cmds.menuItem(divider=True, parent=menu)
     cmds.menuItem(label="Reload SmartMenu", parent=menu, command=lambda *_args: install())
     return menu
