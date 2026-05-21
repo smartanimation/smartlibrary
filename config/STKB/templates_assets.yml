@@ -63,3 +63,34 @@ publish_outputs:
     guide:
     - ma
     - fbx
+
+staging_dependencies:
+  model:
+    default:
+      variants: [default]
+      department: model
+      subsets: [selected]
+      format: ma
+  rig:
+    layout:
+      variants: [current, default]
+      department: model
+      subsets: [proxy, guide, render, hires]
+      format: ma
+    default:
+      variants: [current, default]
+      department: model
+      subsets: [render, hires]
+      format: ma
+  look:
+    default:
+      variants: [current, default]
+      department: model
+      subsets: [render, hires]
+      format: ma
+  groom:
+    default:
+      variants: [current, default]
+      department: model
+      subsets: [render, hires]
+      format: ma

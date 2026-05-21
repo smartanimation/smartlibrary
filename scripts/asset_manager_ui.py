@@ -1153,6 +1153,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         menu.addSeparator()
         create_folders = menu.addAction("Create Asset Folders")
         create_folders.setEnabled(asset is not None)
+        set_thumbnail = menu.addAction("Set Thumbnail...")
+        set_thumbnail.setEnabled(asset is not None)
         menu.addSeparator()
         copy_root = menu.addAction("Copy Asset Root")
         copy_data = menu.addAction("Copy Data Path")
@@ -1183,6 +1185,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.manager.ensure_asset_structure(asset)
             self.status_label.setText(f"Created folders: {asset.name}")
             self._show_current_asset()
+        elif action == set_thumbnail:
+            self._set_asset_thumbnail(asset)
         elif action == copy_root:
             self._copy_text(str(asset.root))
         elif action == copy_data:
@@ -1191,6 +1195,39 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._copy_text(str(asset.work_dir))
         elif action == copy_publish:
             self._copy_text(str(asset.publish_dir))
+
+    def _set_asset_thumbnail(self, asset: Asset | None) -> None:
+        if not asset:
+            return
+        path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Set Asset Thumbnail",
+            str(asset.root if asset.root.exists() else self.manager.assets_root),
+            "Images (*.jpg *.jpeg *.png *.webp *.bmp);;All Files (*)",
+        )
+        if not path:
+            return
+        source = Path(path)
+        suffix = source.suffix.lower() or ".jpg"
+        target = asset.root / f"thumbnail{suffix}"
+        try:
+            asset.root.mkdir(parents=True, exist_ok=True)
+            same_file = target.exists() and source.resolve() == target.resolve()
+            if not same_file:
+                shutil.copy2(source, target)
+            metadata_path = asset.root / "asset.json"
+            metadata = self._read_json_for_table(metadata_path) if metadata_path.exists() else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata.setdefault("asset", asset.name)
+            metadata.setdefault("category", asset.category)
+            metadata.setdefault("group", asset.group)
+            metadata["thumbnail"] = target.name
+            write_json_file(metadata_path, metadata)
+            self.status_label.setText(f"Thumbnail set: {asset.name}")
+            self.refresh_assets(keep_selection=True)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Set Thumbnail Failed", str(exc))
 
     def _send_selected_asset_to_shot_cast(self, asset: Asset | None) -> None:
         if not asset:
@@ -1937,39 +1974,27 @@ def resolve_staging_dependency(
     if department == "model" and variant == "default":
         return None
 
-    candidates: list[tuple[str, str, str, str]] = []
-    if department == "model":
-        candidates.append(("default", "model", subset or "render", "variant_model_from_default"))
-    elif department in {"rig", "look", "groom"}:
-        if variant == "default":
-            candidates.extend([
-                ("default", "model", "render", f"{department}_from_default_model_render"),
-                ("default", "model", "hires", f"{department}_from_default_model_hires"),
-            ])
-        else:
-            candidates.extend([
-                (variant, "model", "render", f"{department}_from_variant_model_render"),
-                (variant, "model", "hires", f"{department}_from_variant_model_hires"),
-                ("default", "model", "render", f"{department}_from_default_model_render"),
-                ("default", "model", "hires", f"{department}_from_default_model_hires"),
-            ])
-    else:
+    candidates = staging_dependency_candidates_from_config(manager, department, variant, subset)
+    if not candidates:
+        candidates = fallback_staging_dependency_candidates(department, variant, subset)
+
+    if not candidates:
         return None
 
-    for candidate_variant, candidate_department, candidate_subset, reason in candidates:
+    for candidate_variant, candidate_department, candidate_subset, publish_format, reason in candidates:
         latest = manager.latest_publish_info(
             asset,
             department=candidate_department,
             variant=candidate_variant,
             subset=candidate_subset,
-            publish_format="ma",
+            publish_format=publish_format,
         )
         if latest and latest.get("absolute_path"):
             return {
                 "variant": candidate_variant,
                 "department": candidate_department,
                 "subset": candidate_subset,
-                "publish_format": "ma",
+                "publish_format": publish_format,
                 "version": latest.get("version", ""),
                 "path": str(latest["absolute_path"]),
                 "namespace": "default" if candidate_variant == "default" else "model",
@@ -1978,8 +2003,8 @@ def resolve_staging_dependency(
             }
 
     expected = "\n".join(
-        f"- {candidate_variant}/{candidate_department}/{candidate_subset}/ma latest"
-        for candidate_variant, candidate_department, candidate_subset, _reason in candidates
+        f"- {candidate_variant}/{candidate_department}/{candidate_subset}/{publish_format} latest"
+        for candidate_variant, candidate_department, candidate_subset, publish_format, _reason in candidates
     )
     raise RuntimeError(
         "Required model publish was not found before staging.\n"
@@ -1990,6 +2015,111 @@ def resolve_staging_dependency(
         "Expected one of:\n"
         f"{expected}"
     )
+
+
+def staging_dependency_candidates_from_config(
+    manager: AssetManager,
+    department: str,
+    variant: str,
+    subset: str | None,
+) -> list[tuple[str, str, str, str, str]]:
+    rules = manager.staging_dependencies.get(department) or {}
+    rule = rules.get(subset or "") or rules.get("default") or {}
+    sources = rule.get("sources") or _staging_flat_rule_sources(rule)
+    candidates = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source_department = str(source.get("department") or "").strip()
+        publish_format = str(source.get("format") or "ma").strip().lstrip(".")
+        if not source_department or not publish_format:
+            continue
+        source_variant = _staging_source_variant(str(source.get("variant") or "current"), variant)
+        subsets = source.get("subsets") or []
+        if isinstance(subsets, str):
+            subsets = [subsets]
+        for source_subset in subsets:
+            resolved_subset = subset if str(source_subset) == "selected" else str(source_subset)
+            if not resolved_subset:
+                continue
+            candidates.append(
+                (
+                    source_variant,
+                    source_department,
+                    resolved_subset,
+                    publish_format,
+                    f"{department}_from_{source_variant}_{source_department}_{resolved_subset}",
+                )
+            )
+    return _unique_staging_candidates(candidates)
+
+
+def _staging_flat_rule_sources(rule: dict) -> list[dict]:
+    source_department = rule.get("department")
+    subsets = rule.get("subsets")
+    if not source_department or not subsets:
+        return []
+    variants = rule.get("variants") or ["current"]
+    if isinstance(variants, str):
+        variants = [variants]
+    return [
+        {
+            "variant": source_variant,
+            "department": source_department,
+            "subsets": subsets,
+            "format": rule.get("format") or "ma",
+        }
+        for source_variant in variants
+    ]
+
+
+def _staging_source_variant(config_variant: str, current_variant: str) -> str:
+    if config_variant in {"current", "selected"}:
+        return current_variant
+    return config_variant or current_variant
+
+
+def _unique_staging_candidates(
+    candidates: list[tuple[str, str, str, str, str]],
+) -> list[tuple[str, str, str, str, str]]:
+    unique = []
+    seen = set()
+    for candidate in candidates:
+        key = candidate[:4]
+        if key in seen:
+            continue
+        unique.append(candidate)
+        seen.add(key)
+    return unique
+
+
+def fallback_staging_dependency_candidates(
+    department: str,
+    variant: str,
+    subset: str | None,
+) -> list[tuple[str, str, str, str, str]]:
+    candidates: list[tuple[str, str, str, str, str]] = []
+    if department == "model":
+        candidates.append(("default", "model", subset or "render", "ma", "variant_model_from_default"))
+    elif department in {"rig", "look", "groom"}:
+        model_subsets = ["render", "hires"]
+        if department == "rig" and subset == "layout":
+            model_subsets = ["proxy", "guide", *model_subsets]
+        if variant == "default":
+            candidates.extend(
+                ("default", "model", model_subset, "ma", f"{department}_from_default_model_{model_subset}")
+                for model_subset in model_subsets
+            )
+        else:
+            candidates.extend(
+                (variant, "model", model_subset, "ma", f"{department}_from_variant_model_{model_subset}")
+                for model_subset in model_subsets
+            )
+            candidates.extend(
+                ("default", "model", model_subset, "ma", f"{department}_from_default_model_{model_subset}")
+                for model_subset in model_subsets
+            )
+    return candidates
 
 
 def resolve_asset_work_template(manager: AssetManager, department: str) -> Path | None:

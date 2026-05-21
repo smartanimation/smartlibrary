@@ -253,6 +253,7 @@ class AssetManager:
             str(self.project_root).replace("\\", "/"),
         )
         self.publish_outputs = asset_cfg.get("publish_outputs", {}) or {}
+        self.staging_dependencies = asset_cfg.get("staging_dependencies", {}) or {}
 
     @staticmethod
     def _resolve_config_dir(config_dir: str | os.PathLike[str] | None) -> Path:
