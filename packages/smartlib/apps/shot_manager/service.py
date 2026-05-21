@@ -105,6 +105,7 @@ class ShotWorkFile:
     version: int = 0
     take: int = 0
     comment: str = ""
+    thumbnail: str = ""
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,7 @@ class ShotManagerService:
                 parsed = parse_shot_work_file(path.name) or {}
                 metadata = read_json(sidecar_path(path), {}) or {}
                 comment = str(metadata.get("comment") or "")
+                thumbnail = str(metadata.get("thumbnail") or "")
                 updated = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
                 files.append(
                     ShotWorkFile(
@@ -247,6 +249,7 @@ class ShotManagerService:
                         version=int(parsed.get("version") or 0),
                         take=int(parsed.get("take") or 0),
                         comment=comment,
+                        thumbnail=thumbnail,
                     )
                 )
         return sorted(files, key=lambda item: (item.department, item.version, item.take, item.file.lower()), reverse=True)
@@ -258,6 +261,7 @@ class ShotManagerService:
         department: str,
         scene_info: dict[str, Any] | None = None,
         comment: str = "",
+        thumbnail: str = "",
     ) -> Path:
         work_path = Path(path)
         parsed = parse_shot_work_file(work_path.name) or {}
@@ -269,10 +273,16 @@ class ShotManagerService:
             "version": parsed.get("version"),
             "take": parsed.get("take"),
             "comment": comment,
+            "thumbnail": thumbnail,
             "source": work_path.name,
             "scene_info": scene_info or {},
         }
         return write_json(sidecar_path(work_path), data)
+
+    @staticmethod
+    def thumbnail_path_for_workfile(path: str | Path) -> Path:
+        work_path = Path(path)
+        return work_path.parent / ".thumbnails" / f"{work_path.stem}.jpg"
 
     def validate_cast(self, identity: ShotIdentity) -> list[ValidationIssue]:
         return validate_cast_data(self.load_cast(identity))

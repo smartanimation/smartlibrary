@@ -43,6 +43,11 @@ def save_current_scene(path: str | Path, shot_data: dict | None = None) -> dict:
     return collect_scene_info(cmds)
 
 
+def thumbnail_path_for_workfile(path: str | Path) -> Path:
+    scene_path = Path(path)
+    return scene_path.parent / ".thumbnails" / f"{scene_path.stem}.jpg"
+
+
 def open_work_scene(path: str | Path, shot_data: dict | None = None) -> None:
     try:
         import maya.cmds as cmds

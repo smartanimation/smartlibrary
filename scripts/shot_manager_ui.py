@@ -8,16 +8,16 @@ from pathlib import Path
 
 def _qt_modules():
     try:
-        from PySide6 import QtCore, QtUiTools, QtWidgets
+        from PySide6 import QtCore, QtGui, QtUiTools, QtWidgets
 
-        return QtCore, QtUiTools, QtWidgets
+        return QtCore, QtGui, QtUiTools, QtWidgets
     except ImportError:
-        from PySide2 import QtCore, QtUiTools, QtWidgets
+        from PySide2 import QtCore, QtGui, QtUiTools, QtWidgets
 
-        return QtCore, QtUiTools, QtWidgets
+        return QtCore, QtGui, QtUiTools, QtWidgets
 
 
-QtCore, QtUiTools, QtWidgets = _qt_modules()
+QtCore, QtGui, QtUiTools, QtWidgets = _qt_modules()
 
 
 def _ensure_smartlib_on_path() -> None:
@@ -204,11 +204,15 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.build_preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_table.horizontalHeader().setStretchLastSection(True)
         self.work_table.verticalHeader().setVisible(False)
-        self.work_table.verticalHeader().setDefaultSectionSize(30)
-        self.work_table.verticalHeader().setMinimumSectionSize(28)
+        self.work_table.setColumnCount(6)
+        self.work_table.setHorizontalHeaderLabels(["Thumbnail", "File", "Dept", "Updated", "Comment", "Path"])
+        self.work_table.verticalHeader().setDefaultSectionSize(58)
+        self.work_table.verticalHeader().setMinimumSectionSize(50)
+        self.work_table.setIconSize(QtCore.QSize(88, 50))
         self.work_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.work_table.setColumnHidden(4, True)
+        self.work_table.setColumnHidden(5, True)
+        self.work_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.open_work_btn.setStyleSheet(
             "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; }"
             "QPushButton:hover { background-color: #3d835f; }"
@@ -245,6 +249,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.refresh_work_btn.clicked.connect(self.refresh_work_files)
         self.work_dept_combo.currentTextChanged.connect(lambda _text: self.refresh_work_files())
         self.work_table.itemDoubleClicked.connect(lambda _item: self.open_work_scene())
+        self.work_table.customContextMenuRequested.connect(self.show_work_context_menu)
         self.shot_list.currentItemChanged.connect(lambda _current, _previous: self.show_current_shot())
         self.shot_list.itemDoubleClicked.connect(lambda _item, _column: self.show_detail_mode())
         self.back_to_shots_btn.clicked.connect(self.show_shot_browser)
@@ -593,24 +598,81 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         for item in self.service.list_shot_work_files(identity, department=department):
             row = self.work_table.rowCount()
             self.work_table.insertRow(row)
-            values = [item.file, item.department, item.updated, item.comment, item.path]
+            values = ["", item.file, item.department, item.updated, item.comment, item.path]
             for column, value in enumerate(values):
                 table_item = QtWidgets.QTableWidgetItem(str(value))
-                if column == 4:
+                if column == 0 and item.thumbnail and Path(item.thumbnail).exists():
+                    table_item.setIcon(QtGui.QIcon(item.thumbnail))
+                if column == 5:
                     table_item.setToolTip(str(value))
                 self.work_table.setItem(row, column, table_item)
         self.work_table.resizeColumnsToContents()
-        self.work_table.setColumnHidden(4, True)
+        self.work_table.setColumnHidden(5, True)
         self.work_table.horizontalHeader().setStretchLastSection(True)
 
     def selected_work_scene_path(self) -> Path | None:
         row = self.work_table.currentRow()
         if row < 0:
             return None
-        item = self.work_table.item(row, 4)
+        item = self.work_table.item(row, 5)
         if not item or not item.text().strip():
             return None
         return Path(item.text().strip())
+
+    def show_work_context_menu(self, pos) -> None:
+        item = self.work_table.itemAt(pos)
+        if not item:
+            return
+        self.work_table.selectRow(item.row())
+        path = self.selected_work_scene_path()
+        if not path:
+            return
+        menu = QtWidgets.QMenu(self)
+        open_scene = menu.addAction("Open Scene")
+        recapture_thumbnail = menu.addAction("Recapture Thumbnail")
+        copy_path = menu.addAction("Copy Path")
+        action = menu.exec(self.work_table.mapToGlobal(pos))
+        if action == open_scene:
+            self.open_work_scene()
+        elif action == recapture_thumbnail:
+            self.recapture_selected_work_thumbnail()
+        elif action == copy_path:
+            QtWidgets.QApplication.clipboard().setText(str(path))
+            self.status_label.setText(f"Copied: {path}")
+
+    def recapture_selected_work_thumbnail(self) -> None:
+        path = self.selected_work_scene_path()
+        if not path:
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, "Recapture Thumbnail", "Thumbnail capture is available inside Maya.")
+            return
+        try:
+            from smartlib.dcc.maya.thumbnail import capture_viewport_thumbnail
+
+            thumbnail_path = self.service.thumbnail_path_for_workfile(path)
+            capture_viewport_thumbnail(thumbnail_path)
+            identity = self.current_identity()
+            if identity:
+                metadata = {}
+                try:
+                    from smartlib.core.metadata import read_json, sidecar_path
+
+                    metadata = read_json(sidecar_path(path), {}) or {}
+                except Exception:
+                    metadata = {}
+                self.service.write_shot_work_metadata(
+                    path,
+                    identity,
+                    metadata.get("department") or self.work_dept_combo.currentText().strip(),
+                    scene_info=metadata.get("scene_info") or {},
+                    comment=metadata.get("comment") or "",
+                    thumbnail=str(thumbnail_path),
+                )
+            self.status_label.setText(f"Updated thumbnail: {path.name}")
+            self.refresh_work_files()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Recapture Thumbnail Failed", str(exc))
 
     def open_work_scene(self) -> None:
         identity = self.current_identity()
@@ -647,16 +709,23 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             _ensure_smartlib_on_path()
             import maya.cmds as cmds
             from smartlib.dcc.maya.shot_builder import save_current_scene
+            from smartlib.dcc.maya.thumbnail import capture_viewport_thumbnail
 
             current_path = cmds.file(query=True, sceneName=True) or None
             target_path = self.service.next_shot_work_path(identity, department, current_path=current_path)
             scene_info = save_current_scene(target_path, self.service.load_shot(identity))
+            thumbnail_path = self.service.thumbnail_path_for_workfile(target_path)
+            try:
+                capture_viewport_thumbnail(thumbnail_path)
+            except Exception:
+                thumbnail_path = ""
             self.service.write_shot_work_metadata(
                 target_path,
                 identity,
                 department,
                 scene_info=scene_info,
                 comment=comment,
+                thumbnail=str(thumbnail_path) if thumbnail_path else "",
             )
             self.status_label.setText(f"Saved work scene: {target_path}")
             self.refresh_work_files()

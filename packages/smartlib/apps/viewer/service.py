@@ -73,17 +73,20 @@ class ViewerService:
         if not isinstance(data, dict):
             return None
         version_dir = review_json.parent
-        layer_order = list((data.get("ae") or {}).get("layer_order") or (data.get("layers") or {}).keys())
-        layers = []
-        for layer_name in layer_order:
-            layer_data = (data.get("layers") or {}).get(layer_name) or {}
-            media = _layer_media(version_dir, layer_name, layer_data)
-            if media:
-                layers.append(media)
+        if data.get("type") == "quick_preview":
+            layer_order, layers = _quick_preview_layers(version_dir, data)
+        else:
+            layer_order = list((data.get("ae") or {}).get("layer_order") or (data.get("layers") or {}).keys())
+            layers = []
+            for layer_name in layer_order:
+                layer_data = (data.get("layers") or {}).get(layer_name) or {}
+                media = _layer_media(version_dir, layer_name, layer_data)
+                if media:
+                    layers.append(media)
         return ReviewPackage(
             episode=str(data.get("episode") or ""),
             sequence=str(data.get("sequence") or ""),
-            shot=str(data.get("shot") or version_dir.parents[3].name),
+            shot=str(data.get("shot") or data.get("asset") or version_dir.parents[3].name),
             department=str(data.get("department") or data.get("subset") or version_dir.parent.name),
             version=str(data.get("version") or version_dir.name),
             review_json=str(review_json),
@@ -102,6 +105,19 @@ class ViewerService:
         if config_path and Path(config_path).exists():
             return Path(config_path)
         found = shutil.which("rv.exe") or shutil.which("rv")
+        return Path(found) if found else None
+
+    def rvpush_executable(self) -> Path | None:
+        env_path = os.environ.get("RVPUSH_PATH")
+        if env_path and Path(env_path).exists():
+            return Path(env_path)
+        rv = self.rv_executable()
+        if rv:
+            for executable in ("rvpush.exe", "rvpush"):
+                sibling = rv.with_name(executable)
+                if sibling.exists():
+                    return sibling
+        found = shutil.which("rvpush.exe") or shutil.which("rvpush")
         return Path(found) if found else None
 
     def rv_args_for_package(self, package: ReviewPackage) -> list[str]:
@@ -146,6 +162,42 @@ def _layer_media(version_dir: Path, layer_name: str, layer_data: dict[str, Any])
         order=int(layer_data.get("order") or 0),
         ae_slot=str(layer_data.get("ae_slot") or layer_name),
     )
+
+
+def _quick_preview_layers(version_dir: Path, data: dict[str, Any]) -> tuple[list[str], list[ReviewLayerMedia]]:
+    outputs = data.get("outputs") or {}
+    layer_order = [name for name in ("beauty", "wireframe", "bbox") if outputs.get(name)]
+    layer_order.extend(name for name in outputs if name not in layer_order and outputs.get(name))
+    layers = []
+    for order, layer_name in enumerate(layer_order):
+        paths = [Path(path) for path in outputs.get(layer_name) or []]
+        files = [path for path in paths if path.exists()]
+        if not files:
+            continue
+        first_file = files[0]
+        last_file = files[-1]
+        layers.append(
+            ReviewLayerMedia(
+                layer=layer_name,
+                take="",
+                output=layer_name,
+                pattern=_relative_media_path(version_dir, first_file),
+                first_file=_relative_media_path(version_dir, first_file),
+                last_file=_relative_media_path(version_dir, last_file),
+                file_count=len(files),
+                frame_range=[1, len(files)],
+                order=order,
+                ae_slot=layer_name,
+            )
+        )
+    return layer_order, layers
+
+
+def _relative_media_path(version_dir: Path, path: Path) -> str:
+    try:
+        return path.relative_to(version_dir).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _rv_input_path(version_dir: str | Path, layer: ReviewLayerMedia) -> Path | None:

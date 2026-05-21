@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sys
 import json
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -232,6 +234,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.variant_list.setMinimumHeight(90)
         self.variant_list.setStyleSheet("QListWidget::item { height: 22px; }")
         selector_layout.addWidget(self.variant_list)
+        self.staging_btn = QtWidgets.QPushButton("Stageing")
+        self.staging_btn.setStyleSheet(
+            "QPushButton { background-color: #5d4f85; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #6e60a0; }"
+            "QPushButton:disabled { background-color: #4e4b57; color: #b8b8b8; }"
+        )
+        selector_layout.addWidget(self.staging_btn)
         selector_layout.addStretch(1)
         self.detail_content_splitter.addWidget(selector_panel)
 
@@ -292,11 +301,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.dependency_label = QtWidgets.QLabel("")
         self.dependency_label.setVisible(False)
 
-        self.work_list = QtWidgets.QTableWidget(0, 3)
-        self.work_list.setHorizontalHeaderLabels(["File", "Updated", "Comment"])
+        self.work_list = QtWidgets.QTableWidget(0, 4)
+        self.work_list.setHorizontalHeaderLabels(["Thumbnail", "File", "Updated", "Comment"])
         self.work_list.horizontalHeader().setStretchLastSection(True)
         self.work_list.verticalHeader().setStretchLastSection(False)
         self.work_list.verticalHeader().setVisible(False)
+        self.work_list.verticalHeader().setDefaultSectionSize(58)
+        self.work_list.setIconSize(QtCore.QSize(88, 50))
         self.work_list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.work_list.setSortingEnabled(True)
@@ -352,6 +363,36 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_layout.addLayout(data_buttons)
         self.detail_tabs.addTab(data_tab, "Data")
 
+        preview_tab = QtWidgets.QWidget()
+        self.preview_tab = preview_tab
+        preview_layout = QtWidgets.QVBoxLayout(preview_tab)
+        preview_layout.setContentsMargins(4, 4, 4, 4)
+        preview_layout.setSpacing(4)
+        self.preview_list = QtWidgets.QTableWidget(0, 5)
+        self.preview_list.setHorizontalHeaderLabels(["Version", "Type", "Updated", "Views", "review.json"])
+        self.preview_list.horizontalHeader().setStretchLastSection(True)
+        self.preview_list.verticalHeader().setVisible(False)
+        self.preview_list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.preview_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.preview_list.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        preview_layout.addWidget(self.preview_list)
+        preview_buttons = QtWidgets.QHBoxLayout()
+        preview_buttons.setContentsMargins(0, 0, 0, 0)
+        preview_buttons.setSpacing(4)
+        self.quick_preview_btn = QtWidgets.QPushButton("Quick Preview")
+        self.quick_preview_btn.setStyleSheet(
+            "QPushButton { background-color: #6a5a32; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #7c6b3d; }"
+            "QPushButton:disabled { background-color: #595447; color: #b8b8b8; }"
+        )
+        self.open_preview_rv_btn = QtWidgets.QPushButton("Open Package in RV")
+        self.open_preview_rv_btn.setStyleSheet(green_button_style)
+        preview_buttons.addStretch(1)
+        preview_buttons.addWidget(self.quick_preview_btn)
+        preview_buttons.addWidget(self.open_preview_rv_btn)
+        preview_layout.addLayout(preview_buttons)
+        self.detail_tabs.addTab(preview_tab, "Preview")
+
         self.publish_list = QtWidgets.QListWidget()
         self.publish_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
 
@@ -381,11 +422,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.itemSelectionChanged.connect(self._update_selected_file_info)
         self.data_list.customContextMenuRequested.connect(self._show_data_context_menu)
         self.data_list.itemSelectionChanged.connect(self._update_selected_file_info)
+        self.preview_list.itemSelectionChanged.connect(self._update_selected_file_info)
+        self.preview_list.itemDoubleClicked.connect(lambda _item: self._open_selected_preview_in_rv())
         self.publish_list.customContextMenuRequested.connect(self._show_publish_context_menu)
         self.open_scene_btn.clicked.connect(self._open_selected_scene)
         self.reference_btn.clicked.connect(self._reference_latest_publish)
         self.save_scene_btn.clicked.connect(self._save_scene)
         self.publish_btn.clicked.connect(self._publish_selected_work)
+        self.staging_btn.clicked.connect(self._stage_work_scene)
+        self.quick_preview_btn.clicked.connect(self._quick_preview_setup)
+        self.open_preview_rv_btn.clicked.connect(self._open_selected_preview_in_rv)
         self.export_mesh_btn.clicked.connect(lambda: self._show_export_data_menu("mesh"))
         self.export_guide_btn.clicked.connect(lambda: self._show_export_data_menu("guide"))
         self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
@@ -394,13 +440,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def refresh_assets(self, keep_selection: bool = True) -> None:
         selected_key = self._current_asset_key() if keep_selection else None
+        selected_asset_variant = self._current_asset_variant() if keep_selection else "default"
+        selected_department = self._current_department() if keep_selection else "model"
+        selected_subset = self._current_variant() if keep_selection else ""
         if not keep_selection:
             self.asset_filter_tree.clear()
         self.assets = self.manager.list_assets_from_sheet(fallback_to_filesystem=True)
         self._populate_asset_filter_tree()
         self._apply_filter(selected_key=selected_key)
+        self._restore_detail_selection(selected_asset_variant, selected_department, selected_subset)
         self._populate_asset_variants()
         self._populate_variants()
+        self._restore_detail_selection(selected_asset_variant, selected_department, selected_subset)
         self._show_current_asset()
         if self.manager.last_asset_source == "spreadsheet":
             self.status_label.setText(f"{len(self.assets)} assets from spreadsheet")
@@ -628,6 +679,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.setRowCount(0)
         self.work_list.blockSignals(False)
         self.data_list.clear()
+        self.preview_list.setRowCount(0)
         self.publish_list.clear()
         self._update_dependency_label(asset)
         self._update_detail_asset_info(asset)
@@ -663,17 +715,24 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 )
             file_item.setData(QtCore.Qt.UserRole, str(path))
             file_item.setFlags(file_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            thumb_item = QtWidgets.QTableWidgetItem("")
+            thumb_item.setFlags(thumb_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            thumbnail = self.manager.thumbnail_path_for_workfile(path)
+            if thumbnail.exists():
+                thumb_item.setIcon(QtGui.QIcon(str(thumbnail)))
             updated_item = QtWidgets.QTableWidgetItem(self._format_updated(path))
             updated_item.setFlags(updated_item.flags() & ~QtCore.Qt.ItemIsEditable)
-            self.work_list.setItem(row, 0, file_item)
-            self.work_list.setItem(row, 1, updated_item)
+            self.work_list.setItem(row, 0, thumb_item)
+            self.work_list.setItem(row, 1, file_item)
+            self.work_list.setItem(row, 2, updated_item)
             comment_item = QtWidgets.QTableWidgetItem(self.manager.file_comment(path))
-            self.work_list.setItem(row, 2, comment_item)
+            self.work_list.setItem(row, 3, comment_item)
         self.work_list.blockSignals(False)
         self.work_list.setSortingEnabled(True)
         self.work_list.resizeColumnsToContents()
 
         self._populate_data_tree(asset)
+        self._populate_preview_list(asset)
         self._update_selected_file_info()
 
         for path in self.manager.list_publish_files(asset):
@@ -772,6 +831,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 if data_path:
                     return Path(str(data_path))
             return None
+        if getattr(self, "detail_tabs", None) and self.detail_tabs.currentWidget() == getattr(self, "preview_tab", None):
+            preview_path = self._selected_preview_review_json()
+            return Path(preview_path) if preview_path else None
         work_path = self._selected_work_path()
         if work_path:
             return Path(work_path)
@@ -845,6 +907,45 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 else:
                     rows.append((next_key, str(value)))
         return rows
+
+    def _populate_preview_list(self, asset: Asset) -> None:
+        self.preview_list.setRowCount(0)
+        variant = self._work_variant_arg(asset)
+        department = self._current_department()
+        subset = self._work_subset_arg(asset) or self._current_variant()
+        base_dir = quick_preview_base_dir(asset, variant, department, subset)
+        if not base_dir.exists():
+            return
+        preview_rows = []
+        for version_dir in sorted(base_dir.glob("v*"), reverse=True):
+            review_json = version_dir / "review.json"
+            if not version_dir.is_dir() or not review_json.exists():
+                continue
+            review_data = self._read_json_for_table(review_json)
+            if not isinstance(review_data, dict):
+                continue
+            outputs = review_data.get("outputs") or {}
+            preview_rows.append((version_dir, review_json, review_data, outputs))
+
+        for version_dir, review_json, review_data, outputs in preview_rows:
+            row = self.preview_list.rowCount()
+            self.preview_list.insertRow(row)
+            values = [
+                str(review_data.get("version") or version_dir.name),
+                str(review_data.get("type") or "preview"),
+                self._format_updated(review_json),
+                ", ".join(str(item) for item in review_data.get("views") or outputs.keys()),
+                str(review_json),
+            ]
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(QtCore.Qt.UserRole, str(review_json))
+                self.preview_list.setItem(row, column, item)
+        self.preview_list.resizeColumnsToContents()
+        self.preview_list.horizontalHeader().setStretchLastSection(True)
+        if self.preview_list.rowCount():
+            self.preview_list.setCurrentCell(0, 0)
 
     def _populate_data_tree(self, asset: Asset) -> None:
         self.data_list.clear()
@@ -956,6 +1057,34 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if self.variant_list.count():
             self.variant_list.setCurrentRow(selected_row)
         self.variant_list.blockSignals(False)
+
+    def _restore_detail_selection(self, asset_variant: str, department: str, subset: str) -> None:
+        self._set_list_current_text(self.asset_variant_list, asset_variant)
+        index = self.asset_variant_combo.findText(asset_variant)
+        if index >= 0:
+            self.asset_variant_combo.blockSignals(True)
+            self.asset_variant_combo.setCurrentIndex(index)
+            self.asset_variant_combo.blockSignals(False)
+        self._set_list_current_text(self.dept_list, department)
+        for tab_index in range(self.dept_tabs.count()):
+            if self.dept_tabs.tabText(tab_index) == department:
+                self.dept_tabs.blockSignals(True)
+                self.dept_tabs.setCurrentIndex(tab_index)
+                self.dept_tabs.blockSignals(False)
+                break
+        self._set_list_current_text(self.variant_list, subset)
+
+    @staticmethod
+    def _set_list_current_text(list_widget, text: str) -> bool:
+        if not text:
+            return False
+        for row in range(list_widget.count()):
+            if list_widget.item(row).text() == text:
+                list_widget.blockSignals(True)
+                list_widget.setCurrentRow(row)
+                list_widget.blockSignals(False)
+                return True
+        return False
 
     def _update_dependency_label(self, asset: Asset | None) -> None:
         if not asset:
@@ -1172,12 +1301,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         open_scene = menu.addAction("Open Scene")
         open_folder = menu.addAction("Open Folder")
+        recapture_thumbnail = menu.addAction("Recapture Thumbnail")
         copy_path = menu.addAction("Copy Path")
         action = menu.exec(self.work_list.mapToGlobal(pos))
         if action == open_scene:
             self._open_selected_scene()
         elif action == open_folder:
             self.manager.open_in_explorer(path.parent)
+        elif action == recapture_thumbnail:
+            self._recapture_selected_work_thumbnail()
         elif action == copy_path:
             self._copy_text(str(path))
 
@@ -1191,6 +1323,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         open_scene = menu.addAction("Open")
         reference_scene = menu.addAction("Reference")
         publish_scene = menu.addAction("Publish")
+        recapture_thumbnail = menu.addAction("Recapture Thumbnail")
         menu.addSeparator()
         open_folder = menu.addAction("Open Folder")
         copy_path = menu.addAction("Copy Path")
@@ -1202,10 +1335,27 @@ class AssetManagerWindow(QtWidgets.QDialog):
             reference_file_to_current_dcc(path, namespace=asset.name if asset else None)
         elif action == publish_scene:
             self._publish_selected_work()
+        elif action == recapture_thumbnail:
+            self._recapture_selected_work_thumbnail()
         elif action == open_folder:
             self.manager.open_in_explorer(path.parent)
         elif action == copy_path:
             self._copy_text(str(path))
+
+    def _recapture_selected_work_thumbnail(self) -> None:
+        path_text = self._selected_work_path()
+        if not path_text:
+            return
+        path = Path(path_text)
+        try:
+            thumbnail = capture_work_thumbnail_in_current_dcc(self.manager.thumbnail_path_for_workfile(path))
+            if not thumbnail:
+                raise RuntimeError("Thumbnail capture did not return a file path.")
+            self.manager.update_file_metadata(path, thumbnail=thumbnail)
+            self.status_label.setText(f"Updated thumbnail: {path.name}")
+            self._show_current_asset()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Recapture Thumbnail Failed", str(exc))
 
     def _show_data_context_menu(self, pos) -> None:
         item = self.data_list.itemAt(pos)
@@ -1290,15 +1440,31 @@ class AssetManagerWindow(QtWidgets.QDialog):
         row = self.work_list.currentRow()
         if row < 0:
             return None
-        item = self.work_list.item(row, 0)
+        item = self.work_list.item(row, 1)
         if not item:
             return None
         return item.data(QtCore.Qt.UserRole)
 
+    def _select_work_path(self, path: str | os.PathLike[str]) -> bool:
+        wanted = str(Path(path))
+        for row in range(self.work_list.rowCount()):
+            item = self.work_list.item(row, 1)
+            if item and item.data(QtCore.Qt.UserRole) == wanted:
+                self.work_list.selectRow(row)
+                self.work_list.setCurrentCell(row, 1)
+                self.work_list.scrollToItem(item)
+                self._update_selected_file_info()
+                return True
+        return False
+
+    def _refresh_assets_with_work_selection(self, path: str | os.PathLike[str]) -> None:
+        self.refresh_assets(keep_selection=True)
+        self._select_work_path(path)
+
     def _on_work_item_changed(self, item) -> None:
-        if item.column() != 2:
+        if item.column() != 3:
             return
-        path = self.work_list.item(item.row(), 0).data(QtCore.Qt.UserRole)
+        path = self.work_list.item(item.row(), 1).data(QtCore.Qt.UserRole)
         if path:
             self.manager.set_file_comment(path, item.text())
 
@@ -1330,29 +1496,30 @@ class AssetManagerWindow(QtWidgets.QDialog):
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 save_scene_in_current_dcc(target)
+                thumbnail = capture_work_thumbnail_in_current_dcc(self.manager.thumbnail_path_for_workfile(target))
                 self.manager.update_file_metadata(
                     target,
                     comment=comment,
+                    thumbnail=thumbnail,
                     scene_info=collect_scene_info(),
                 )
                 self.status_label.setText(f"Saved: {target.name}")
-                self.refresh_assets(keep_selection=True)
+                self._refresh_assets_with_work_selection(target)
             except Exception as exc:
                 QtWidgets.QMessageBox.critical(self, "Save Scene Failed", str(exc))
             return
 
-        msg = QtWidgets.QMessageBox(self)
-        msg.setWindowTitle("Save Scene")
-        msg.setText("How do you want to save the current scene?")
-        overwrite_btn = msg.addButton("Overwrite", QtWidgets.QMessageBox.AcceptRole)
-        next_take_btn = msg.addButton("Next Take", QtWidgets.QMessageBox.ActionRole)
-        next_version_btn = msg.addButton("Next Version", QtWidgets.QMessageBox.ActionRole)
-        msg.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
-        msg.exec()
-
-        if msg.clickedButton() == overwrite_btn and selected_path:
-            target = Path(selected_path)
-        elif msg.clickedButton() == next_take_btn or msg.clickedButton() == overwrite_btn:
+        if self.manager.any_publish_record_for_work_file(asset, selected_path):
+            parsed = self.manager.parse_work_file(selected_path) or {}
+            target = self.manager.next_work_take_path(
+                asset,
+                department=parsed.get("department") or department,
+                variant=parsed.get("variant") or self._work_variant_arg(asset),
+                subset=self._work_subset_arg(asset),
+                version=int(parsed.get("version") or 0) + 1,
+                ext=parsed.get("ext") or "ma",
+            )
+        else:
             target = self.manager.next_work_take_path(
                 asset,
                 current_path=selected_path,
@@ -1360,16 +1527,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 variant=self._work_variant_arg(asset),
                 subset=self._work_subset_arg(asset),
             )
-        elif msg.clickedButton() == next_version_btn:
-            target = self.manager.next_work_version_path(
-                asset,
-                current_path=selected_path,
-                department=department,
-                variant=self._work_variant_arg(asset),
-                subset=self._work_subset_arg(asset),
-            )
-        else:
-            return
 
         comment = self._ask_comment("Save Scene Comment")
         if comment is None:
@@ -1377,15 +1534,159 @@ class AssetManagerWindow(QtWidgets.QDialog):
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             save_scene_in_current_dcc(target)
+            thumbnail = capture_work_thumbnail_in_current_dcc(self.manager.thumbnail_path_for_workfile(target))
             self.manager.update_file_metadata(
                 target,
                 comment=comment,
+                thumbnail=thumbnail,
                 scene_info=collect_scene_info(),
             )
             self.status_label.setText(f"Saved: {target.name}")
-            self.refresh_assets(keep_selection=True)
+            self._refresh_assets_with_work_selection(target)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Scene Failed", str(exc))
+
+    def _stage_work_scene(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        department = self._current_department()
+        variant = self._work_variant_arg(asset)
+        subset = self._work_subset_arg(asset)
+
+        target = self.manager.next_work_after_latest_publish_path(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+        )
+        try:
+            dependency_plan = resolve_staging_dependency(asset, self.manager, department, variant, subset)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Staging Failed", str(exc))
+            return
+        comment = self._ask_comment("Staging Comment")
+        if comment is None:
+            return
+        try:
+            dependency_info = stage_asset_work_scene(
+                asset,
+                self.manager,
+                target,
+                department,
+                variant,
+                subset,
+                dependency_plan=dependency_plan,
+            )
+            thumbnail = capture_work_thumbnail_in_current_dcc(self.manager.thumbnail_path_for_workfile(target))
+            self.manager.update_file_metadata(
+                target,
+                comment=comment,
+                thumbnail=thumbnail,
+                scene_info=collect_scene_info(),
+                staging={
+                    "department": department,
+                    "variant": variant,
+                    "subset": subset,
+                    **dependency_info,
+                },
+            )
+            self.status_label.setText(f"Staged: {target.name}")
+            self._refresh_assets_with_work_selection(target)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Staging Failed", str(exc))
+
+    def _quick_preview_setup(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        try:
+            result = create_quick_preview_package(
+                asset,
+                self.manager,
+                department=self._current_department(),
+                variant=self._work_variant_arg(asset),
+                subset=self._work_subset_arg(asset) or self._current_variant(),
+            )
+            manual = []
+            if result.get("focus_manual"):
+                manual.append("preview_focus_LOC")
+            if result.get("camera_manual"):
+                manual.append("preview_cam_LOC")
+            suffix = f" manual override exists: {', '.join(manual)}" if manual else ""
+            self.status_label.setText(f"Quick Preview: {result.get('version_dir')}{suffix}")
+            self._populate_preview_list(asset)
+            dialog = QtWidgets.QMessageBox(self)
+            dialog.setWindowTitle("Quick Preview")
+            dialog.setIcon(QtWidgets.QMessageBox.Information)
+            dialog.setText(
+                "Quick Preview package was created.\n"
+                f"Path: {result.get('version_dir')}\n"
+                f"Focus: {result.get('focus')}\n"
+                f"Camera: {result.get('camera')}"
+                + (f"\nManual override exists: {', '.join(manual)}" if manual else "")
+            )
+            open_rv_btn = dialog.addButton("Open Package in RV", QtWidgets.QMessageBox.AcceptRole)
+            dialog.addButton(QtWidgets.QMessageBox.Close)
+            dialog.exec()
+            if dialog.clickedButton() == open_rv_btn:
+                self._open_preview_review_json_in_rv(result.get("review_json"))
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Quick Preview Failed", str(exc))
+
+    def _open_preview_review_json_in_rv(self, review_json: str | os.PathLike[str] | None) -> None:
+        if not review_json:
+            return
+        _ensure_smartlib_on_path()
+        from smartlib.apps.viewer import ViewerService
+        from smartlib.core.config_loader import ProjectConfig
+
+        service = ViewerService(ProjectConfig(self.manager.config_dir))
+        package = service.review_package_from_json(review_json)
+        if not package:
+            self.status_label.setText("Preview package could not be read")
+            return
+        args = service.rv_args_for_package(package)
+        if not args:
+            self.status_label.setText("No preview sequence files were found for RV")
+            return
+        rv = service.rv_executable()
+        if not rv:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "OpenRV Not Found",
+                "Set tools.openrv.path in config/STKB/tools.yml or set OPENRV_PATH.",
+            )
+            return
+        rvpush = service.rvpush_executable()
+        if rvpush:
+            env = os.environ.copy()
+            env.setdefault("RVPUSH_RV_EXECUTABLE_PATH", str(rv))
+            subprocess.Popen([str(rvpush), "merge", "[", *args, "]"], env=env)
+            self.status_label.setText(f"Sent to RV: {package.shot} {package.version}")
+        else:
+            subprocess.Popen([str(rv), *args])
+            self.status_label.setText(f"Launched RV: {package.shot} {package.version}")
+
+    def _selected_preview_review_json(self) -> str | None:
+        if not getattr(self, "preview_list", None):
+            return None
+        row = self.preview_list.currentRow()
+        if row < 0:
+            return None
+        item = self.preview_list.item(row, 0)
+        if not item:
+            return None
+        return item.data(QtCore.Qt.UserRole)
+
+    def _open_selected_preview_in_rv(self) -> None:
+        review_json = self._selected_preview_review_json()
+        if not review_json:
+            self.status_label.setText("Select a preview package first")
+            return
+        self._open_preview_review_json_in_rv(review_json)
 
     def _publish_selected_work(self) -> None:
         asset = self._current_asset()
@@ -1406,20 +1707,30 @@ class AssetManagerWindow(QtWidgets.QDialog):
             )
             return
 
-        target = self.manager.publish_file_path(
+        publish_formats = self.manager.publish_formats_for_work_file(
             asset,
-            department=parsed["department"],
-            variant=parsed["variant"],
+            source_path,
             subset=self._work_subset_arg(asset),
-            version=parsed["version"],
-            ext=parsed["ext"],
         )
+        targets = {
+            publish_format: self.manager.publish_file_path(
+                asset,
+                department=parsed["department"],
+                variant=parsed["variant"],
+                subset=self._work_subset_arg(asset),
+                version=parsed["version"],
+                ext=publish_format,
+            )
+            for publish_format in publish_formats
+        }
         overwrite = False
-        if target.exists():
+        existing_targets = [path for path in targets.values() if path.exists()]
+        if existing_targets:
             result = QtWidgets.QMessageBox.question(
                 self,
                 "Publish Exists",
-                f"{target.name} already exists. Overwrite it?",
+                "Publish files already exist. Overwrite them?\n"
+                + "\n".join(path.name for path in existing_targets),
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                 QtWidgets.QMessageBox.No,
             )
@@ -1431,17 +1742,53 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if comment is None:
             return
         try:
-            published = self.manager.publish_work_file(
+            validation = validate_variant_publish(asset, self.manager, Path(source_path), subset=self._work_subset_arg(asset))
+            if not self._confirm_publish_validation(validation):
+                return
+            published = publish_work_outputs(
                 asset,
-                source_path,
+                self.manager,
+                Path(source_path),
+                targets,
                 overwrite=overwrite,
                 comment=comment,
                 subset=self._work_subset_arg(asset),
+                dependency_info=validation,
             )
-            self.status_label.setText(f"Published: {published.name}")
+            self.status_label.setText("Published: " + ", ".join(path.name for path in published))
             self._show_current_asset()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Publish Failed", str(exc))
+
+    def _confirm_publish_validation(self, validation: dict) -> bool:
+        issues = validation.get("validation", {}).get("issues", [])
+        overrides = validation.get("overrides", [])
+        dependencies = validation.get("dependencies", {})
+        lines = ["Publish validation"]
+        if dependencies:
+            base_variant = validation.get("base_variant")
+            if base_variant:
+                lines.append(f"base_variant: {base_variant}")
+            references = dependencies.get("references") or []
+            if references:
+                lines.append(f"references: {len(references)}")
+        if overrides:
+            lines.append("overrides: " + ", ".join(overrides[:12]))
+            if len(overrides) > 12:
+                lines.append(f"... and {len(overrides) - 12} more")
+        if issues:
+            lines.append("issues:")
+            lines.extend(f"- {issue}" for issue in issues)
+        else:
+            lines.append("issues: none")
+        result = QtWidgets.QMessageBox.question(
+            self,
+            "Publish Validation",
+            "\n".join(lines) + "\n\nContinue publish?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        return result == QtWidgets.QMessageBox.Yes
 
     def _show_export_data_menu(self, export_kind: str = "mesh") -> None:
         asset = self._current_asset()
@@ -1526,6 +1873,946 @@ def save_scene_in_current_dcc(path: str | os.PathLike[str]) -> None:
         pass
 
     raise RuntimeError("Save Scene is available inside Maya or Houdini.")
+
+
+def stage_asset_work_scene(
+    asset: Asset,
+    manager: AssetManager,
+    target: Path,
+    department: str,
+    variant: str,
+    subset: str | None,
+    dependency_plan: dict | None = None,
+) -> dict:
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Staging is available inside Maya.") from exc
+
+    template = resolve_asset_work_template(manager, department)
+    if template and template.exists():
+        cmds.file(str(template), open=True, force=True)
+    else:
+        cmds.file(new=True, force=True)
+
+    dependency_info: dict = {
+        "template": str(template).replace("\\", "/") if template else "",
+        "dependencies": {},
+    }
+    if dependency_plan:
+        reference_file_to_current_dcc(dependency_plan["path"], namespace=dependency_plan["namespace"])
+        if dependency_plan.get("base_variant"):
+            dependency_info["base_variant"] = dependency_plan["base_variant"]
+        dependency_info["dependencies"] = {
+            "base_variant": dependency_plan.get("base_variant", ""),
+            "references": [
+                {
+                    "variant": dependency_plan["variant"],
+                    "department": dependency_plan["department"],
+                    "subset": dependency_plan["subset"],
+                    "publish_format": dependency_plan["publish_format"],
+                    "version": dependency_plan.get("version", ""),
+                    "path": str(dependency_plan["path"]).replace("\\", "/"),
+                    "namespace": dependency_plan["namespace"],
+                    "reason": dependency_plan["reason"],
+                }
+            ],
+        }
+
+    ensure_asset_top_structure(cmds, asset.name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    scene_type = "mayaBinary" if target.suffix.lower() == ".mb" else "mayaAscii"
+    cmds.file(rename=str(target))
+    cmds.file(save=True, type=scene_type)
+    return dependency_info
+
+
+def resolve_staging_dependency(
+    asset: Asset,
+    manager: AssetManager,
+    department: str,
+    variant: str,
+    subset: str | None,
+) -> dict | None:
+    if department == "model" and variant == "default":
+        return None
+
+    candidates: list[tuple[str, str, str, str]] = []
+    if department == "model":
+        candidates.append(("default", "model", subset or "render", "variant_model_from_default"))
+    elif department in {"rig", "look", "groom"}:
+        if variant == "default":
+            candidates.extend([
+                ("default", "model", "render", f"{department}_from_default_model_render"),
+                ("default", "model", "hires", f"{department}_from_default_model_hires"),
+            ])
+        else:
+            candidates.extend([
+                (variant, "model", "render", f"{department}_from_variant_model_render"),
+                (variant, "model", "hires", f"{department}_from_variant_model_hires"),
+                ("default", "model", "render", f"{department}_from_default_model_render"),
+                ("default", "model", "hires", f"{department}_from_default_model_hires"),
+            ])
+    else:
+        return None
+
+    for candidate_variant, candidate_department, candidate_subset, reason in candidates:
+        latest = manager.latest_publish_info(
+            asset,
+            department=candidate_department,
+            variant=candidate_variant,
+            subset=candidate_subset,
+            publish_format="ma",
+        )
+        if latest and latest.get("absolute_path"):
+            return {
+                "variant": candidate_variant,
+                "department": candidate_department,
+                "subset": candidate_subset,
+                "publish_format": "ma",
+                "version": latest.get("version", ""),
+                "path": str(latest["absolute_path"]),
+                "namespace": "default" if candidate_variant == "default" else "model",
+                "base_variant": "default" if candidate_variant == "default" else "",
+                "reason": reason,
+            }
+
+    expected = "\n".join(
+        f"- {candidate_variant}/{candidate_department}/{candidate_subset}/ma latest"
+        for candidate_variant, candidate_department, candidate_subset, _reason in candidates
+    )
+    raise RuntimeError(
+        "Required model publish was not found before staging.\n"
+        f"Asset: {asset.name}\n"
+        f"Variant: {variant}\n"
+        f"Department: {department}\n"
+        f"Subset: {subset or ''}\n"
+        "Expected one of:\n"
+        f"{expected}"
+    )
+
+
+def resolve_asset_work_template(manager: AssetManager, department: str) -> Path | None:
+    filename = f"{department}_base.ma"
+    project_template = manager.project_root / "settings" / "templates" / "maya" / "asset" / filename
+    if project_template.exists():
+        return project_template
+    pipeline_root = Path(__file__).resolve().parents[1]
+    common_template = pipeline_root / "templates" / "maya" / "asset" / filename
+    if common_template.exists():
+        return common_template
+    return None
+
+
+def ensure_asset_top_structure(cmds, asset_name: str) -> None:
+    top = _ensure_exact_top_node(cmds, asset_name)
+    geo = _adopt_or_create_asset_child(cmds, top, "geo", ("geo", "geo_grp"))
+    for child in ("rig", "groom", "look"):
+        _adopt_or_create_asset_child(cmds, top, child, (child, f"{child}_grp"))
+    for subset in ("render", "proxy", "guide"):
+        _adopt_or_create_asset_child(cmds, geo, subset, (subset, f"{subset}_grp"))
+
+
+def _adopt_or_create_asset_child(cmds, parent: str, target: str, aliases: tuple[str, ...]) -> str:
+    existing = _child_with_leaf_name(cmds, parent, target)
+    if existing:
+        return existing
+
+    candidate = _template_child_candidate(cmds, parent, aliases)
+    if candidate:
+        if _node_leaf_name(candidate) != target:
+            candidate = cmds.rename(candidate, target)
+        parents = cmds.listRelatives(candidate, parent=True, fullPath=True) or []
+        if not parents or parents[0] != parent:
+            candidate = (cmds.parent(candidate, parent) or [candidate])[0]
+        return (cmds.ls(candidate, long=True) or [candidate])[0]
+
+    created = cmds.group(empty=True, name=target, parent=parent)
+    return (cmds.ls(created, long=True) or [created])[0]
+
+
+def _child_with_leaf_name(cmds, parent: str, name: str) -> str | None:
+    children = cmds.listRelatives(parent, children=True, type="transform", fullPath=True) or []
+    matches = [child for child in children if _node_leaf_name(child) == name]
+    if len(matches) > 1:
+        raise RuntimeError(f"Multiple children named '{name}' were found under {parent}.")
+    return matches[0] if matches else None
+
+
+def _template_child_candidate(cmds, parent: str, aliases: tuple[str, ...]) -> str | None:
+    children = cmds.listRelatives(parent, children=True, type="transform", fullPath=True) or []
+    nested = [child for child in children if _node_leaf_name(child) in aliases]
+    assemblies = []
+    for alias in aliases:
+        assemblies.extend(cmds.ls(alias, assemblies=True, long=True) or [])
+    candidates = _unique_nodes_by_path(nested + assemblies)
+    if len(candidates) > 1:
+        raise RuntimeError(f"Multiple template groups match {aliases}: {', '.join(candidates)}")
+    return candidates[0] if candidates else None
+
+
+def _node_leaf_name(node: str) -> str:
+    return node.split("|")[-1].split(":")[-1]
+
+
+def _unique_nodes_by_path(nodes: list[str]) -> list[str]:
+    unique = []
+    seen = set()
+    for node in nodes:
+        if node not in seen:
+            unique.append(node)
+            seen.add(node)
+    return unique
+
+
+def _ensure_exact_top_node(cmds, asset_name: str) -> str:
+    matches = cmds.ls(asset_name, assemblies=True, long=True) or []
+    if matches:
+        if len(matches) > 1:
+            raise RuntimeError(f"Multiple top nodes match asset name: {asset_name}")
+        leaf = matches[0].split("|")[-1]
+        if leaf != asset_name:
+            raise RuntimeError(f"Top node name must be exactly '{asset_name}', found '{leaf}'.")
+        return matches[0]
+
+    created = cmds.group(empty=True, name=asset_name)
+    leaf = created.split("|")[-1]
+    if leaf != asset_name:
+        if cmds.objExists(created):
+            cmds.delete(created)
+        raise RuntimeError(
+            f"Could not create exact top node '{asset_name}'. Maya created '{leaf}'. "
+            "Check for an existing conflicting node."
+        )
+    long_name = (cmds.ls(created, long=True) or [created])[0]
+    return long_name
+
+
+def setup_quick_preview_locators(asset_name: str) -> dict:
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Quick Preview setup is available inside Maya.") from exc
+
+    top = _find_exact_top_node(cmds, asset_name)
+    if not top:
+        raise RuntimeError(f"Asset top node was not found: {asset_name}")
+
+    pipeline_grp = _ensure_group(cmds, "PIPELINE_GRP")
+    preview_grp = _ensure_group(cmds, "PREVIEW_GRP", parent=pipeline_grp)
+    preview_tops = _preview_asset_top_nodes(cmds, asset_name, top)
+    bbox = _combined_world_bbox(cmds, preview_tops)
+    center = [
+        (bbox[0] + bbox[3]) * 0.5,
+        (bbox[1] + bbox[4]) * 0.5,
+        (bbox[2] + bbox[5]) * 0.5,
+    ]
+    size = [bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]]
+    diagonal = max((size[0] ** 2 + size[1] ** 2 + size[2] ** 2) ** 0.5, 1.0)
+    camera_distance = diagonal * 1.8
+    focus_position = [center[0], bbox[1] + size[1] * 0.6 if size[1] > 0 else center[1], center[2]]
+    camera_position = [center[0], focus_position[1], center[2] + camera_distance]
+
+    focus = _ensure_locator(cmds, "preview_focus_LOC", parent=preview_grp)
+    camera = _ensure_locator(cmds, "preview_cam_LOC", parent=preview_grp)
+    focus_manual = _is_manual_preview_locator(cmds, focus)
+    camera_manual = _is_manual_preview_locator(cmds, camera)
+    if not focus_manual:
+        cmds.xform(focus, worldSpace=True, translation=focus_position)
+        _set_auto_generated(cmds, focus, True)
+    if not camera_manual:
+        cmds.xform(camera, worldSpace=True, translation=camera_position)
+        _set_auto_generated(cmds, camera, True)
+
+    return {
+        "pipeline_group": pipeline_grp,
+        "preview_group": preview_grp,
+        "focus": focus,
+        "camera": camera,
+        "focus_manual": focus_manual,
+        "camera_manual": camera_manual,
+        "preview_tops": preview_tops,
+        "bbox": bbox,
+        "camera_distance": camera_distance,
+    }
+
+
+def _preview_asset_top_nodes(cmds, asset_name: str, local_top: str) -> list[str]:
+    tops = [local_top]
+    for node in cmds.ls(assemblies=True, type="transform", long=True) or []:
+        if node != local_top and _node_leaf_name(node) == asset_name:
+            tops.append(node)
+    return _unique_nodes_by_path(tops)
+
+
+def _combined_world_bbox(cmds, nodes: list[str]) -> list[float]:
+    if not nodes:
+        raise RuntimeError("No asset top nodes were found for Quick Preview framing.")
+    boxes = [cmds.exactWorldBoundingBox(node) for node in nodes]
+    return [
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        min(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+        max(box[4] for box in boxes),
+        max(box[5] for box in boxes),
+    ]
+
+
+def create_quick_preview_package(
+    asset: Asset,
+    manager: AssetManager,
+    *,
+    department: str,
+    variant: str,
+    subset: str,
+) -> dict:
+    result = setup_quick_preview_locators(asset.name)
+    base_dir = quick_preview_base_dir(asset, variant, department, subset)
+    version = next_review_version(base_dir)
+    version_label = f"v{version:03d}"
+    version_dir = base_dir / version_label
+    outputs = export_quick_preview_images(asset.name, result, version_dir)
+    review_data = {
+        "asset": asset.name,
+        "category": asset.category,
+        "group": asset.group,
+        "variant": variant,
+        "department": department,
+        "subset": subset,
+        "version": version_label,
+        "type": "quick_preview",
+        "views": ["front", "side", "top"],
+        "outputs": outputs,
+        "locators": {
+            "focus": result.get("focus"),
+            "camera": result.get("camera"),
+            "focus_manual": result.get("focus_manual"),
+            "camera_manual": result.get("camera_manual"),
+        },
+        "preview_tops": result.get("preview_tops") or [],
+        "bbox": result.get("bbox"),
+        "camera_distance": result.get("camera_distance"),
+    }
+    publish_data = {
+        "asset": asset.name,
+        "publish_type": "review",
+        "department": department,
+        "subset": subset,
+        "variant": variant,
+        "version": version,
+        "review": "review.json",
+        "files": {
+            key: [Path(path).relative_to(version_dir).as_posix() for path in paths]
+            for key, paths in outputs.items()
+        },
+    }
+    write_json_file(version_dir / "review.json", review_data)
+    write_json_file(version_dir / "publish.json", publish_data)
+    write_json_file(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/review.json"})
+    update_versions_json(base_dir / "versions.json", version_label)
+    result["version_dir"] = str(version_dir)
+    result["review_json"] = str(version_dir / "review.json")
+    return result
+
+
+def quick_preview_base_dir(asset: Asset, variant: str, department: str, subset: str) -> Path:
+    if asset.uses_variant_structure(variant):
+        return asset.variant_root(variant) / "publish" / "review" / department / subset
+    return asset.publish_dir / "review" / department / subset
+
+
+def next_review_version(base_dir: Path) -> int:
+    max_version = 0
+    if base_dir.exists():
+        for path in base_dir.iterdir():
+            if path.is_dir() and path.name.lower().startswith("v") and path.name[1:].isdigit():
+                max_version = max(max_version, int(path.name[1:]))
+    return max_version + 1
+
+
+def update_versions_json(path: Path, version_label: str) -> None:
+    versions = []
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                versions = json.load(f) or []
+        except Exception:
+            versions = []
+    next_versions = []
+    seen = False
+    for item in versions:
+        if not isinstance(item, dict):
+            continue
+        if item.get("version") == version_label:
+            item = dict(item)
+            item["status"] = "latest"
+            seen = True
+        elif item.get("status") == "latest":
+            item = dict(item)
+            item["status"] = "available"
+        next_versions.append(item)
+    if not seen:
+        next_versions.append({"version": version_label, "status": "latest"})
+    write_json_file(path, next_versions)
+
+
+def write_json_file(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def export_quick_preview_images(asset_name: str, locator_data: dict, version_dir: Path) -> dict[str, list[str]]:
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Quick Preview image export is available inside Maya.") from exc
+
+    version_dir.mkdir(parents=True, exist_ok=True)
+    focus_position = cmds.xform(locator_data["focus"], query=True, worldSpace=True, translation=True)
+    bbox = locator_data["bbox"]
+    size = [bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]]
+    distance = float(locator_data["camera_distance"])
+    views = [
+        ("front", [focus_position[0], focus_position[1], focus_position[2] + distance], [0, 0, 0]),
+        ("side", [focus_position[0] + distance, focus_position[1], focus_position[2]], [0, 90, 0]),
+        ("top", [focus_position[0], focus_position[1] + distance, focus_position[2]], [-90, 0, 0]),
+    ]
+    modes = ("beauty", "wireframe", "bbox")
+    panel = _active_model_panel(cmds)
+    original_camera = cmds.modelPanel(panel, query=True, camera=True)
+    original_selection = cmds.ls(selection=True, long=True) or []
+    outputs: dict[str, list[str]] = {key: [] for key in modes}
+    cameras = []
+    bbox_curve = None
+    original_bg = _capture_viewport_background(cmds)
+    try:
+        cmds.select(clear=True)
+        bbox_curve = _create_preview_bbox_curve(cmds, bbox)
+        _set_viewport_background(cmds, (0.48, 0.48, 0.48))
+        for index, (_view_name, position, rotation) in enumerate(views, start=1):
+            camera_transform, _camera_shape = cmds.camera(name=f"quickPreview_{index:02d}_CAM")
+            cameras.append(camera_transform)
+            cmds.xform(camera_transform, worldSpace=True, translation=position, rotation=rotation)
+            cmds.modelPanel(panel, edit=True, camera=camera_transform)
+            for mode in modes:
+                output_dir = version_dir / mode
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_path = output_dir / f"{asset_name}_{mode}_{index:04d}.jpg"
+                _apply_quick_preview_mode(cmds, panel, mode, bbox_curve)
+                cmds.playblast(
+                    completeFilename=str(output_path),
+                    forceOverwrite=True,
+                    format="image",
+                    compression="jpg",
+                    viewer=False,
+                    showOrnaments=False,
+                    offScreen=True,
+                    frame=[cmds.currentTime(query=True)],
+                    widthHeight=[1280, 720],
+                    percent=100,
+                )
+                outputs[mode].append(str(output_path))
+    finally:
+        try:
+            cmds.modelPanel(panel, edit=True, camera=original_camera)
+        except Exception:
+            pass
+        for camera in cameras:
+            if cmds.objExists(camera):
+                cmds.delete(camera)
+        if bbox_curve and cmds.objExists(bbox_curve):
+            cmds.delete(bbox_curve)
+        _restore_viewport_background(cmds, original_bg)
+        if original_selection:
+            existing = [node for node in original_selection if cmds.objExists(node)]
+            if existing:
+                cmds.select(existing, replace=True)
+    return outputs
+
+
+def _active_model_panel(cmds) -> str:
+    panel = cmds.getPanel(withFocus=True)
+    if panel and cmds.getPanel(typeOf=panel) == "modelPanel":
+        return panel
+    panels = cmds.getPanel(type="modelPanel") or []
+    if not panels:
+        raise RuntimeError("No Maya modelPanel was found for Quick Preview.")
+    return panels[0]
+
+
+def _apply_quick_preview_mode(cmds, panel: str, mode: str, bbox_curve: str | None) -> None:
+    if bbox_curve and cmds.objExists(bbox_curve):
+        cmds.setAttr(f"{bbox_curve}.visibility", mode == "bbox")
+    if mode == "beauty":
+        display_appearance = "smoothShaded"
+        wireframe_on_shaded = False
+        display_textures = True
+    elif mode == "wireframe":
+        display_appearance = "smoothShaded"
+        wireframe_on_shaded = True
+        display_textures = False
+    else:
+        display_appearance = "smoothShaded"
+        wireframe_on_shaded = False
+        display_textures = False
+    cmds.modelEditor(
+        panel,
+        edit=True,
+        displayAppearance=display_appearance,
+        wireframeOnShaded=wireframe_on_shaded,
+        displayTextures=display_textures,
+        grid=False,
+        manipulators=False,
+        locators=False,
+        cameras=False,
+        joints=True,
+    )
+
+
+def _create_preview_bbox_curve(cmds, bbox: list[float]) -> str:
+    x0, y0, z0, x1, y1, z1 = bbox
+    points = [
+        (x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0), (x0, y0, z0),
+        (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1), (x0, y0, z1),
+        (x1, y0, z1), (x1, y0, z0), (x1, y1, z0), (x1, y1, z1),
+        (x0, y1, z1), (x0, y1, z0),
+    ]
+    curve = cmds.curve(degree=1, point=points, name="quickPreview_bbox_CRV")
+    shapes = cmds.listRelatives(curve, shapes=True, fullPath=True) or []
+    for shape in shapes:
+        try:
+            cmds.setAttr(f"{shape}.overrideEnabled", True)
+            cmds.setAttr(f"{shape}.overrideRGBColors", True)
+            cmds.setAttr(f"{shape}.overrideColorRGB", 0.1, 1.0, 0.1)
+            cmds.setAttr(f"{shape}.lineWidth", 2)
+        except Exception:
+            pass
+    cmds.setAttr(f"{curve}.visibility", False)
+    return curve
+
+
+def _capture_viewport_background(cmds) -> dict:
+    keys = [
+        "background",
+        "backgroundTop",
+        "backgroundBottom",
+    ]
+    data = {}
+    for key in keys:
+        try:
+            data[key] = cmds.displayRGBColor(key, query=True)
+        except Exception:
+            pass
+    return data
+
+
+def _set_viewport_background(cmds, color: tuple[float, float, float]) -> None:
+    for key in ("background", "backgroundTop", "backgroundBottom"):
+        try:
+            cmds.displayRGBColor(key, *color)
+        except Exception:
+            pass
+
+
+def _restore_viewport_background(cmds, data: dict) -> None:
+    for key, value in data.items():
+        try:
+            cmds.displayRGBColor(key, *value)
+        except Exception:
+            pass
+
+
+def _find_exact_top_node(cmds, asset_name: str) -> str | None:
+    matches = cmds.ls(asset_name, assemblies=True, long=True) or []
+    exact = [node for node in matches if node.split("|")[-1] == asset_name]
+    if len(exact) > 1:
+        raise RuntimeError(f"Multiple top nodes match asset name: {asset_name}")
+    return exact[0] if exact else None
+
+
+def _ensure_group(cmds, name: str, parent: str | None = None) -> str:
+    matches = cmds.ls(name, long=True) or []
+    node = matches[0] if matches else cmds.group(empty=True, name=name)
+    if parent:
+        parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+        if not parents or parents[0] != parent:
+            node = (cmds.parent(node, parent) or [node])[0]
+    return (cmds.ls(node, long=True) or [node])[0]
+
+
+def _ensure_locator(cmds, name: str, parent: str) -> str:
+    matches = cmds.ls(name, type="transform", long=True) or []
+    node = matches[0] if matches else cmds.spaceLocator(name=name)[0]
+    parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+    if not parents or parents[0] != parent:
+        node = (cmds.parent(node, parent) or [node])[0]
+    node = (cmds.ls(node, long=True) or [node])[0]
+    _ensure_auto_generated_attr(cmds, node)
+    return node
+
+
+def _ensure_auto_generated_attr(cmds, node: str) -> None:
+    if not cmds.attributeQuery("autoGenerated", node=node, exists=True):
+        cmds.addAttr(node, longName="autoGenerated", attributeType="bool", defaultValue=True)
+        cmds.setAttr(f"{node}.autoGenerated", True)
+
+
+def _set_auto_generated(cmds, node: str, value: bool) -> None:
+    _ensure_auto_generated_attr(cmds, node)
+    cmds.setAttr(f"{node}.autoGenerated", bool(value))
+
+
+def _is_manual_preview_locator(cmds, node: str) -> bool:
+    _ensure_auto_generated_attr(cmds, node)
+    return not bool(cmds.getAttr(f"{node}.autoGenerated"))
+
+
+def capture_work_thumbnail_in_current_dcc(path: str | os.PathLike[str]) -> str:
+    try:
+        from smartlib.dcc.maya.thumbnail import capture_viewport_thumbnail
+
+        return str(capture_viewport_thumbnail(path))
+    except Exception:
+        return ""
+
+
+def publish_work_outputs(
+    asset: Asset,
+    manager: AssetManager,
+    source_workfile: Path,
+    targets: dict[str, Path],
+    *,
+    overwrite: bool,
+    comment: str,
+    subset: str | None,
+    dependency_info: dict | None = None,
+) -> list[Path]:
+    published: list[Path] = []
+    files: dict[str, str] = {}
+    source_ext = source_workfile.suffix.lower().lstrip(".")
+    extra_formats = [fmt for fmt in targets if fmt != source_ext]
+    if extra_formats:
+        ensure_current_dcc_scene_matches(source_workfile)
+    snapshot_active = False
+    try:
+        if should_import_references_for_publish(dependency_info):
+            compose_variant_snapshot_scene(asset.name, source_workfile, dependency_info)
+            snapshot_active = True
+        for publish_format, target in targets.items():
+            if target.exists() and not overwrite:
+                raise FileExistsError(f"Publish already exists: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if publish_format == source_ext:
+                if publish_format in {"ma", "mb"} and snapshot_active:
+                    save_maya_snapshot_copy(target, source_workfile)
+                else:
+                    shutil.copy2(source_workfile, target)
+            else:
+                export_current_scene_for_publish(target, publish_format, source_workfile)
+            published.append(target)
+            files[publish_format] = target.name
+    finally:
+        if snapshot_active:
+            reopen_source_workfile(source_workfile)
+
+    manager.register_publish_files_for_work_file(
+        asset,
+        source_workfile,
+        files=files,
+        comment=comment,
+        subset=subset,
+        dependency_info=dependency_info,
+    )
+    return published
+
+
+def should_import_references_for_publish(dependency_info: dict | None) -> bool:
+    if not dependency_info:
+        return False
+    return bool((dependency_info.get("dependencies") or {}).get("references"))
+
+
+def compose_variant_snapshot_scene(asset_name: str, source_workfile: Path, dependency_info: dict | None) -> dict:
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Maya snapshot publish is available inside Maya.") from exc
+
+    ensure_current_dcc_scene_matches(source_workfile)
+    imported = _import_all_scene_references(cmds)
+    local_top = _find_exact_top_node(cmds, asset_name)
+    if not local_top:
+        raise RuntimeError(f"Variant local top node was not found after importing references: {asset_name}")
+    base_tops = [
+        node for node in (cmds.ls(assemblies=True, type="transform", long=True) or [])
+        if node != local_top and _node_leaf_name(node) == asset_name
+    ]
+    local_mesh_names = _mesh_leaf_names_under_top(cmds, local_top)
+    merged = []
+    for base_top in base_tops:
+        _merge_base_top_into_variant(cmds, base_top, local_top, local_mesh_names)
+        merged.append(base_top)
+    return {
+        "imported_references": imported,
+        "merged_base_tops": merged,
+        "overrides": list((dependency_info or {}).get("overrides") or []),
+    }
+
+
+def _import_all_scene_references(cmds) -> list[str]:
+    imported = []
+    for _iteration in range(100):
+        refs = cmds.file(query=True, reference=True) or []
+        if not refs:
+            return imported
+        progressed = False
+        for ref in refs:
+            try:
+                ref_node = cmds.referenceQuery(ref, referenceNode=True)
+                cmds.file(ref, importReference=True)
+                imported.append(ref_node)
+                progressed = True
+            except Exception:
+                continue
+        if not progressed:
+            break
+    remaining = cmds.file(query=True, reference=True) or []
+    if remaining:
+        raise RuntimeError("Could not import all references for publish snapshot: " + ", ".join(remaining))
+    return imported
+
+
+def save_maya_snapshot_copy(target: Path, source_workfile: Path) -> Path:
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Maya snapshot publish is available inside Maya.") from exc
+    scene_type = "mayaBinary" if target.suffix.lower() == ".mb" else "mayaAscii"
+    cmds.file(rename=str(target))
+    cmds.file(save=True, type=scene_type)
+    cmds.file(rename=str(source_workfile))
+    return target
+
+
+def reopen_source_workfile(source_workfile: Path) -> None:
+    try:
+        import maya.cmds as cmds
+    except ImportError:
+        return
+    cmds.file(str(source_workfile), open=True, force=True)
+
+
+def _merge_base_top_into_variant(cmds, base_top: str, local_top: str, local_mesh_names: set[str]) -> None:
+    for child in cmds.listRelatives(base_top, children=True, type="transform", fullPath=True) or []:
+        child_leaf = _node_leaf_name(child)
+        if child_leaf in {"geo", "rig", "groom", "look"}:
+            local_group = _adopt_or_create_asset_child(cmds, local_top, child_leaf, (child_leaf, f"{child_leaf}_grp"))
+            _merge_base_group_children(cmds, child, local_group, local_mesh_names)
+        else:
+            _move_base_child_if_not_overridden(cmds, child, local_top, local_mesh_names)
+    if cmds.objExists(base_top):
+        cmds.delete(base_top)
+
+
+def _merge_base_group_children(cmds, base_group: str, local_group: str, local_mesh_names: set[str]) -> None:
+    for child in cmds.listRelatives(base_group, children=True, type="transform", fullPath=True) or []:
+        child_leaf = _node_leaf_name(child)
+        if _node_leaf_name(local_group) == "geo" and child_leaf in {"render", "proxy", "guide"}:
+            local_subset = _adopt_or_create_asset_child(cmds, local_group, child_leaf, (child_leaf, f"{child_leaf}_grp"))
+            _merge_base_group_children(cmds, child, local_subset, local_mesh_names)
+        else:
+            _move_base_child_if_not_overridden(cmds, child, local_group, local_mesh_names)
+
+
+def _move_base_child_if_not_overridden(cmds, child: str, parent: str, local_mesh_names: set[str]) -> None:
+    if _subtree_mesh_names(cmds, child).intersection(local_mesh_names):
+        cmds.delete(child)
+        return
+    moved = (cmds.parent(child, parent) or [child])[0]
+    _strip_dag_namespaces(cmds, moved)
+
+
+def _subtree_mesh_names(cmds, node: str) -> set[str]:
+    names = set()
+    transforms = [node] + (cmds.listRelatives(node, allDescendents=True, type="transform", fullPath=True) or [])
+    for transform in transforms:
+        shapes = cmds.listRelatives(transform, shapes=True, fullPath=True) or []
+        if any(cmds.nodeType(shape) == "mesh" for shape in shapes):
+            names.add(_node_leaf_name(transform))
+    return names
+
+
+def _strip_dag_namespaces(cmds, node: str) -> str:
+    for child in cmds.listRelatives(node, children=True, type="transform", fullPath=True) or []:
+        _strip_dag_namespaces(cmds, child)
+    leaf = node.split("|")[-1]
+    clean_leaf = leaf.split(":")[-1]
+    if leaf != clean_leaf:
+        try:
+            node = cmds.rename(node, clean_leaf)
+        except Exception:
+            pass
+    return node
+
+
+def ensure_current_dcc_scene_matches(source_workfile: str | os.PathLike[str]) -> None:
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Extra publish format export is available inside Maya.") from exc
+    current_scene_name = cmds.file(query=True, sceneName=True) or ""
+    if not current_scene_name:
+        raise RuntimeError("Open the selected work scene before publishing extra formats.")
+    current_scene = Path(current_scene_name)
+    if current_scene.resolve() != Path(source_workfile).resolve():
+        raise RuntimeError(
+            "Open the selected work scene before publishing extra formats. "
+            f"Current: {current_scene} / Selected: {source_workfile}"
+        )
+
+
+def validate_variant_publish(
+    asset: Asset,
+    manager: AssetManager,
+    source_workfile: Path,
+    *,
+    subset: str | None,
+) -> dict:
+    parsed = manager.parse_work_file(source_workfile) or {}
+    variant = parsed.get("variant") or ""
+    data = {
+        "dependencies": {},
+        "validation": {"issues": []},
+    }
+    if not variant or variant == "default":
+        data["validation"]["status"] = "ok"
+        return data
+
+    data["base_variant"] = "default"
+    try:
+        import maya.cmds as cmds
+    except ImportError:
+        data["validation"]["issues"].append("Maya is required to validate variant override dependencies.")
+        return data
+
+    try:
+        ensure_current_dcc_scene_matches(source_workfile)
+    except Exception as exc:
+        data["validation"]["issues"].append(str(exc))
+        return data
+
+    references = []
+    default_reference_names = set()
+    for ref_node in cmds.ls(type="reference") or []:
+        if ref_node == "sharedReferenceNode":
+            continue
+        try:
+            ref_path = cmds.referenceQuery(ref_node, filename=True, withoutCopyNumber=True)
+            namespace = cmds.referenceQuery(ref_node, namespace=True).lstrip(":")
+        except Exception:
+            continue
+        is_default = "/default/" in str(ref_path).replace("\\", "/").lower()
+        references.append({
+            "node": ref_node,
+            "namespace": namespace,
+            "path": str(ref_path).replace("\\", "/"),
+            "base_variant": "default" if is_default else "",
+        })
+        if is_default:
+            default_reference_names.update(_mesh_transform_leaf_names(cmds, namespace=namespace))
+
+    local_top = _find_exact_top_node(cmds, asset.name)
+    local_names = _mesh_leaf_names_under_top(cmds, local_top) if local_top else set()
+    overrides = sorted(default_reference_names.intersection(local_names))
+    adds = sorted(local_names.difference(default_reference_names))
+    data["dependencies"] = {
+        "base_variant": "default",
+        "references": references,
+    }
+    data["overrides"] = overrides
+    data["adds"] = adds
+    if not references:
+        data["validation"]["issues"].append("Variant publish has no references. Expected default variant reference.")
+    data["validation"]["status"] = "warning" if data["validation"]["issues"] else "ok"
+    return data
+
+
+def _mesh_transform_leaf_names(cmds, namespace: str = "") -> set[str]:
+    names = set()
+    if namespace:
+        transforms = cmds.ls(f"{namespace}:*", type="transform", long=True) or []
+    else:
+        transforms = [
+            node for node in (cmds.ls(assemblies=True, long=True) or [])
+            if ":" not in node.split("|")[-1]
+        ]
+    for node in transforms:
+        shapes = cmds.listRelatives(node, shapes=True, fullPath=True) or []
+        if any(cmds.nodeType(shape) == "mesh" for shape in shapes):
+            names.add(node.split("|")[-1].split(":")[-1])
+    return names
+
+
+def _mesh_leaf_names_under_top(cmds, top: str | None) -> set[str]:
+    if not top:
+        return set()
+    names = set()
+    transforms = [top] + (cmds.listRelatives(top, allDescendents=True, type="transform", fullPath=True) or [])
+    for node in transforms:
+        shapes = cmds.listRelatives(node, shapes=True, fullPath=True) or []
+        if any(cmds.nodeType(shape) == "mesh" for shape in shapes):
+            names.add(_node_leaf_name(node))
+    return names
+
+
+def export_current_scene_for_publish(
+    target: str | os.PathLike[str],
+    publish_format: str,
+    source_workfile: str | os.PathLike[str],
+) -> Path:
+    clean_format = publish_format.lower().lstrip(".")
+    target_path = Path(target)
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError(f"{clean_format} publish export is available inside Maya.") from exc
+
+    ensure_current_dcc_scene_matches(source_workfile)
+
+    if clean_format == "usd":
+        if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):
+            cmds.loadPlugin("mayaUsdPlugin")
+        cmds.file(
+            str(target_path),
+            force=True,
+            options=";",
+            type="USD Export",
+            exportAll=True,
+        )
+    elif clean_format == "fbx":
+        if not cmds.pluginInfo("fbxmaya", query=True, loaded=True):
+            cmds.loadPlugin("fbxmaya")
+        cmds.file(
+            str(target_path),
+            force=True,
+            options="v=0;",
+            type="FBX export",
+            exportAll=True,
+        )
+    elif clean_format == "abc":
+        if not cmds.pluginInfo("AbcExport", query=True, loaded=True):
+            cmds.loadPlugin("AbcExport")
+        frame = int(cmds.currentTime(query=True))
+        roots = cmds.ls(assemblies=True, long=True) or []
+        root_args = " ".join(f'-root "{node}"' for node in roots)
+        job = f'-frameRange {frame} {frame} {root_args} -file "{target_path.as_posix()}"'
+        cmds.AbcExport(j=job)
+    else:
+        raise RuntimeError(f"Unsupported publish format: {publish_format}")
+    return target_path
 
 
 def collect_scene_info() -> dict:
@@ -1641,7 +2928,7 @@ def export_selected_model_data(
             cmds.loadPlugin("AbcExport")
         frame = int(cmds.currentTime(query=True))
         roots = " ".join(f'-root "{node}"' for node in selection)
-        job = f'-frameRange {frame} {frame} {roots} -file "{data_path}"'
+        job = f'-frameRange {frame} {frame} {roots} -file "{data_path.as_posix()}"'
         cmds.AbcExport(j=job)
     elif clean_format == "usd":
         if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):

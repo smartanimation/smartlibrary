@@ -45,10 +45,15 @@ def _service(config_dir: str | os.PathLike[str] | None = None):
 
 
 class ViewerWindow(QtWidgets.QMainWindow):
-    def __init__(self, config_dir: str | os.PathLike[str] | None = None):
+    def __init__(
+        self,
+        config_dir: str | os.PathLike[str] | None = None,
+        review_json: str | os.PathLike[str] | None = None,
+    ):
         super().__init__()
         self.service = _service(config_dir)
         self.packages = []
+        self.initial_review_json = Path(review_json) if review_json else None
         self.setWindowTitle(f"Viewer - {self.service.project_config.project_name}")
         self.resize(980, 620)
         self._build_ui()
@@ -114,10 +119,19 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
     def refresh(self) -> None:
         self.packages = self.service.list_review_packages()
+        selected_review_json = ""
+        if self.initial_review_json:
+            package = self.service.review_package_from_json(self.initial_review_json)
+            if package and all(item.review_json != package.review_json for item in self.packages):
+                self.packages.insert(0, package)
+            selected_review_json = str(self.initial_review_json)
         self.review_table.setRowCount(0)
+        selected_row = 0
         for package in self.packages:
             row = self.review_table.rowCount()
             self.review_table.insertRow(row)
+            if selected_review_json and package.review_json == selected_review_json:
+                selected_row = row
             values = [
                 package.episode,
                 package.sequence,
@@ -131,7 +145,7 @@ class ViewerWindow(QtWidgets.QMainWindow):
                 self.review_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
         self.review_table.resizeColumnsToContents()
         if self.review_table.rowCount():
-            self.review_table.setCurrentCell(0, 0)
+            self.review_table.setCurrentCell(selected_row, 0)
         self.status_label.setText(f"{len(self.packages)} review packages")
 
     def current_package(self):
@@ -206,14 +220,17 @@ class ViewerWindow(QtWidgets.QMainWindow):
 _WINDOW = None
 
 
-def show(config_dir: str | os.PathLike[str] | None = None):
+def show(
+    config_dir: str | os.PathLike[str] | None = None,
+    review_json: str | os.PathLike[str] | None = None,
+):
     global _WINDOW
     try:
         _WINDOW.close()
     except Exception:
         pass
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    _WINDOW = ViewerWindow(config_dir=config_dir)
+    _WINDOW = ViewerWindow(config_dir=config_dir, review_json=review_json)
     _WINDOW.show()
     return _WINDOW
 

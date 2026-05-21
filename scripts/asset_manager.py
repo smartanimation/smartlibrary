@@ -65,8 +65,9 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _load_simple_project_yaml(path: Path) -> dict:
-    data: dict = {}
-    section: str | None = None
+    root: dict = {}
+    stack: list[tuple[int, dict | list]] = [(-1, root)]
+    pending_key: tuple[int, dict, str] | None = None
 
     with path.open("r", encoding="utf-8") as f:
         for raw_line in f:
@@ -76,24 +77,39 @@ def _load_simple_project_yaml(path: Path) -> dict:
 
             indent = len(line) - len(line.lstrip(" "))
             stripped = line.strip()
+            while stack and (indent < stack[-1][0] or (indent == stack[-1][0] and not stripped.startswith("- "))):
+                stack.pop()
 
-            if indent == 0 and stripped.endswith(":"):
-                section = stripped[:-1]
-                data[section] = [] if section.endswith("_depts") else {}
+            parent = stack[-1][1]
+            if pending_key and (indent > pending_key[0] or stripped.startswith("- ")):
+                _pending_indent, pending_parent, key = pending_key
+                if stripped.startswith("- "):
+                    new_list: list = []
+                    pending_parent[key] = new_list
+                    stack.append((indent, new_list))
+                    parent = new_list
+                pending_key = None
+
+            if stripped.startswith("- "):
+                if isinstance(parent, list):
+                    parent.append(_parse_scalar(stripped[2:].strip()))
                 continue
 
-            if section is None:
+            if ":" not in stripped or not isinstance(parent, dict):
                 continue
 
-            if isinstance(data.get(section), list) and stripped.startswith("- "):
-                data[section].append(_parse_scalar(stripped[2:].strip()))
-                continue
+            key, value = stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if value:
+                parent[key] = _parse_scalar(value)
+            else:
+                child: dict = {}
+                parent[key] = child
+                stack.append((indent, child))
+                pending_key = (indent, parent, key)
 
-            if isinstance(data.get(section), dict) and ":" in stripped:
-                key, value = stripped.split(":", 1)
-                data[section][key.strip()] = _parse_scalar(value.strip())
-
-    return data
+    return root
 
 
 def _parse_scalar(value: str):
@@ -223,6 +239,7 @@ class AssetManager:
         base_cfg = _load_yaml(self.config_dir / "templates_base.yml")
         asset_cfg = _load_yaml(self.config_dir / "templates_assets.yml")
         self.base_config = base_cfg
+        self.asset_config = asset_cfg
         self._sheet_metadata: dict[tuple[str, str, str], dict] = {}
         self.last_asset_source = "filesystem"
         self.last_asset_source_error = ""
@@ -235,6 +252,7 @@ class AssetManager:
             asset_cfg.get("templates", {}),
             str(self.project_root).replace("\\", "/"),
         )
+        self.publish_outputs = asset_cfg.get("publish_outputs", {}) or {}
 
     @staticmethod
     def _resolve_config_dir(config_dir: str | os.PathLike[str] | None) -> Path:
@@ -767,6 +785,34 @@ class AssetManager:
             ext=ext,
         )
 
+    def next_work_after_latest_publish_path(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str,
+        subset: str | None = None,
+        dcc: str = "maya",
+        ext: str = "ma",
+    ) -> Path:
+        latest = self.latest_publish_info(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+            publish_format=ext,
+        )
+        version = _version_number(latest["version"]) + 1 if latest and latest.get("version") else 1
+        return self.next_work_take_path(
+            asset,
+            dcc=dcc,
+            department=department,
+            variant=variant,
+            subset=subset,
+            version=version,
+            ext=ext,
+        )
+
     def publish_base_dir(
         self,
         asset: Asset,
@@ -882,6 +928,62 @@ class AssetManager:
         )
         return target
 
+    def publish_formats_for_work_file(
+        self,
+        asset: Asset,
+        source_workfile: str | os.PathLike[str],
+        *,
+        subset: str | None = None,
+    ) -> list[str]:
+        source = _norm(source_workfile)
+        parsed = self.parse_work_file(source)
+        if not parsed:
+            return [source.suffix.lower().lstrip(".")]
+        resolved_subset = subset or self.work_subset_for_path(asset, source, parsed["department"], parsed["variant"])
+        outputs = self.publish_outputs.get(parsed["department"], {})
+        formats = []
+        if isinstance(outputs, dict):
+            raw_formats = outputs.get(resolved_subset) or outputs.get(parsed["variant"]) or outputs.get("default")
+            if isinstance(raw_formats, str):
+                formats = [raw_formats]
+            elif isinstance(raw_formats, list):
+                formats = [str(item) for item in raw_formats]
+        if not formats:
+            formats = [source.suffix.lower().lstrip(".")]
+        source_ext = source.suffix.lower().lstrip(".")
+        normalized = []
+        for item in [source_ext, *formats]:
+            clean = str(item).lower().lstrip(".")
+            if clean and clean not in normalized:
+                normalized.append(clean)
+        return normalized
+
+    def register_publish_files_for_work_file(
+        self,
+        asset: Asset,
+        source_workfile: str | os.PathLike[str],
+        *,
+        files: dict[str, str | os.PathLike[str]],
+        comment: str = "",
+        subset: str | None = None,
+        dependency_info: dict | None = None,
+    ) -> dict:
+        source = _norm(source_workfile)
+        parsed = self.parse_work_file(source)
+        if not parsed:
+            raise ValueError(f"Work filename does not match the asset rule: {source.name}")
+        return self.register_publish(
+            asset,
+            department=parsed["department"],
+            variant=parsed["variant"],
+            subset=subset or self.work_subset_for_path(asset, source, parsed["department"], parsed["variant"]),
+            version=parsed["version"],
+            files=files,
+            source_workfile=_relative_to_asset(source, asset),
+            comment=comment,
+            dependency_info=dependency_info,
+        )
+
     def publish_metadata_path(
         self,
         asset: Asset,
@@ -915,6 +1017,7 @@ class AssetManager:
         source_workfile: str | os.PathLike[str],
         comment: str = "",
         status: str = "latest",
+        dependency_info: dict | None = None,
     ) -> dict:
         version_label = _version_label(version)
         version_num = _version_number(version)
@@ -929,6 +1032,8 @@ class AssetManager:
             "source_workfile": str(source_workfile).replace("\\", "/"),
             "comment": comment,
         }
+        if dependency_info:
+            record.update(dependency_info)
 
         for publish_format, filename in record["files"].items():
             version_dir = self.publish_version_dir(
@@ -979,6 +1084,15 @@ class AssetManager:
         latest = _read_json(latest_path, None)
         if not latest:
             return None
+        if asset.uses_variant_structure(variant):
+            version = latest.get("version")
+            if version:
+                version_dir = latest_path.parent / str(version)
+                record = _read_json(version_dir / "publish.json", {}) or {}
+                files = record.get("files") or {}
+                filename = files.get(publish_format)
+                if filename:
+                    return version_dir / Path(filename).name
         path = latest.get("path")
         if not path:
             return None
@@ -1004,11 +1118,22 @@ class AssetManager:
         if not latest:
             return None
         result = dict(latest)
+        if asset.uses_variant_structure(variant):
+            version = latest.get("version")
+            if version:
+                version_dir = latest_path.parent / str(version)
+                record = _read_json(version_dir / "publish.json", {}) or {}
+                files = record.get("files") or {}
+                filename = files.get(publish_format)
+                if filename:
+                    result["path"] = f"{version}/{Path(filename).name}"
+                    result["absolute_path"] = str(version_dir / Path(filename).name)
+                    return result
         if latest.get("path"):
             result["absolute_path"] = str(latest_path.parent / latest["path"])
         return result
 
-    def publish_record_for_work_file(
+    def any_publish_record_for_work_file(
         self,
         asset: Asset,
         source_workfile: str | os.PathLike[str],
@@ -1033,6 +1158,22 @@ class AssetManager:
         expected = _relative_to_asset(source, asset).replace("\\", "/")
         recorded = str(record.get("source_workfile", "")).replace("\\", "/")
         if recorded != expected:
+            return None
+
+        return record
+
+    def publish_record_for_work_file(
+        self,
+        asset: Asset,
+        source_workfile: str | os.PathLike[str],
+    ) -> dict | None:
+        source = _norm(source_workfile)
+        parsed = self.parse_work_file(source)
+        if not parsed:
+            return None
+
+        record = self.any_publish_record_for_work_file(asset, source)
+        if not record:
             return None
 
         latest = self.latest_publish_info(

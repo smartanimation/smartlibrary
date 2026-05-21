@@ -47,3 +47,13 @@ templates:
   reference_concept: "{dept_reference}/concept"
   reference_scan: "{dept_reference}/scan"
   reference_photo: "{dept_reference}/photo"
+
+publish_outputs:
+  model:
+    hires:
+    - ma
+  rig:
+    layout:
+    - ma
+    anim:
+    - ma
