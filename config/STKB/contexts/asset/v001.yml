@@ -1,0 +1,26 @@
+name: asset
+version: 1
+
+quality_profiles:
+  FAST:
+    model: proxy
+    look: low
+    rig: layout
+
+  WORK:
+    model: proxy
+    look: low
+    rig: anim
+
+  FINAL:
+    model: render
+    look: high
+    rig: anim
+
+viewport:
+  background: bbox
+  textures: low
+
+fallbacks:
+  look:
+    high: low

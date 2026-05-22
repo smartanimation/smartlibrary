@@ -18,6 +18,8 @@ templates:
   work_maya_model_guide: "{dept_work}/maya/model/guide"
   work_maya_rig_layout: "{dept_work}/maya/rig/layout"
   work_maya_rig_anim: "{dept_work}/maya/rig/anim"
+  work_maya_look_low: "{dept_work}/maya/look/low"
+  work_maya_look_high: "{dept_work}/maya/look/high"
   work_maya_groom: "{dept_work}/maya/groom"
   work_substance: "{dept_work}/substance"
   work_mari: "{dept_work}/mari"

@@ -25,6 +25,7 @@ WORK_DCC_LAYOUT = {
     "maya": {
         "model": ["hires", "proxy", "render", "guide"],
         "rig": ["layout", "anim"],
+        "look": ["low", "high"],
         "groom": [],
     },
     "substance": [],
@@ -511,7 +512,7 @@ class AssetManager:
         defaults = {
             "model": ["hires", "proxy", "render", "guide"],
             "rig": ["layout", "anim"],
-            "look": ["main"],
+            "look": ["low", "high"],
         }
         return defaults.get(department, ["main"])
 

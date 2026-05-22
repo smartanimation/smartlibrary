@@ -50,6 +50,14 @@ def _asset_service(config_dir: str | os.PathLike[str]):
     return AssetManagerService(ProjectConfig(config_dir)), AssetCreateRequest
 
 
+def _asset_context_service(config_dir: str | os.PathLike[str]):
+    _ensure_smartlib_on_path()
+    from smartlib.apps.asset_manager import AssetContextService
+    from smartlib.core.config_loader import ProjectConfig
+
+    return AssetContextService(ProjectConfig(config_dir))
+
+
 class AssetRequestDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, title: str = "Create Asset"):
         super().__init__(parent)
@@ -393,6 +401,54 @@ class AssetManagerWindow(QtWidgets.QDialog):
         preview_layout.addLayout(preview_buttons)
         self.detail_tabs.addTab(preview_tab, "Preview")
 
+        context_tab = QtWidgets.QWidget()
+        self.context_tab = context_tab
+        context_layout = QtWidgets.QHBoxLayout(context_tab)
+        context_layout.setContentsMargins(4, 4, 4, 4)
+        context_layout.setSpacing(4)
+        context_selector = QtWidgets.QWidget()
+        context_selector_layout = QtWidgets.QVBoxLayout(context_selector)
+        context_selector_layout.setContentsMargins(0, 0, 0, 0)
+        context_selector_layout.setSpacing(4)
+        context_selector_layout.addWidget(QtWidgets.QLabel("Context"))
+        self.context_profile_list = QtWidgets.QListWidget()
+        self.context_profile_list.setFixedWidth(120)
+        self.context_profile_list.setStyleSheet("QListWidget::item { height: 24px; }")
+        context_selector_layout.addWidget(self.context_profile_list, 1)
+        context_layout.addWidget(context_selector, 0)
+        context_main = QtWidgets.QWidget()
+        context_main_layout = QtWidgets.QVBoxLayout(context_main)
+        context_main_layout.setContentsMargins(0, 0, 0, 0)
+        context_main_layout.setSpacing(4)
+        context_layout.addWidget(context_main, 1)
+        context_header = QtWidgets.QHBoxLayout()
+        context_header.setContentsMargins(0, 0, 0, 0)
+        context_header.setSpacing(4)
+        self.context_version_combo = QtWidgets.QComboBox()
+        self.context_version_combo.setVisible(False)
+        self.context_assemble_btn = QtWidgets.QPushButton("Assemble")
+        self.context_pack_btn = QtWidgets.QPushButton("Pack")
+        self.context_pack_btn.setEnabled(False)
+        context_header.addStretch(1)
+        context_header.addWidget(self.context_assemble_btn)
+        context_header.addWidget(self.context_pack_btn)
+        context_main_layout.addLayout(context_header)
+        self.context_state_table = QtWidgets.QTableWidget(0, 6)
+        self.context_state_table.setHorizontalHeaderLabels(
+            ["Subset", "Type", "Resolved", "State", "Latest", "Comment"]
+        )
+        self.context_state_table.horizontalHeader().setStretchLastSection(True)
+        self.context_state_table.verticalHeader().setVisible(False)
+        self.context_state_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.context_state_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        context_main_layout.addWidget(self.context_state_table, 1)
+        self.context_pack_tree = QtWidgets.QTreeWidget()
+        self.context_pack_tree.setHeaderLabels(["Dept", "Subset", "Ver", "Comment"])
+        self._apply_context_pack_tree_header()
+        self.context_pack_tree.setIndentation(10)
+        context_main_layout.addWidget(self.context_pack_tree, 1)
+        self.detail_tabs.addTab(context_tab, "Context")
+
         self.publish_list = QtWidgets.QListWidget()
         self.publish_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
 
@@ -432,10 +488,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.staging_btn.clicked.connect(self._stage_work_scene)
         self.quick_preview_btn.clicked.connect(self._quick_preview_setup)
         self.open_preview_rv_btn.clicked.connect(self._open_selected_preview_in_rv)
+        self.context_version_combo.currentTextChanged.connect(self._populate_context_profiles)
+        self.context_profile_list.currentRowChanged.connect(self._on_context_profile_selected)
+        self.context_assemble_btn.clicked.connect(self._assemble_selected_asset_context)
+        self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
         self.export_mesh_btn.clicked.connect(lambda: self._show_export_data_menu("mesh"))
         self.export_guide_btn.clicked.connect(lambda: self._show_export_data_menu("guide"))
         self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
         self.import_data_btn.clicked.connect(self._import_selected_data)
+        self.context_assembly = None
+        self._populate_context_versions()
         self._show_asset_mode()
 
     def refresh_assets(self, keep_selection: bool = True) -> None:
@@ -680,6 +742,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.blockSignals(False)
         self.data_list.clear()
         self.preview_list.setRowCount(0)
+        self._clear_context_state()
         self.publish_list.clear()
         self._update_dependency_label(asset)
         self._update_detail_asset_info(asset)
@@ -733,6 +796,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         self._populate_data_tree(asset)
         self._populate_preview_list(asset)
+        self._populate_context_pack_tree()
         self._update_selected_file_info()
 
         for path in self.manager.list_publish_files(asset):
@@ -947,6 +1011,188 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if self.preview_list.rowCount():
             self.preview_list.setCurrentCell(0, 0)
 
+    def _populate_context_versions(self) -> None:
+        self.context_version_combo.blockSignals(True)
+        self.context_version_combo.clear()
+        try:
+            service = _asset_context_service(self.manager.config_dir)
+            versions = service.context_versions("asset")
+            active = service.active_context_version("asset") if versions else ""
+            self.context_version_combo.addItems(versions)
+            index = self.context_version_combo.findText(active)
+            if index >= 0:
+                self.context_version_combo.setCurrentIndex(index)
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+        self.context_version_combo.blockSignals(False)
+        self._populate_context_profiles()
+
+    def _populate_context_profiles(self, *_args) -> None:
+        current = self._current_context_profile()
+        self.context_profile_list.clear()
+        version = self.context_version_combo.currentText().strip() or None
+        try:
+            service = _asset_context_service(self.manager.config_dir)
+            profiles = service.quality_profiles("asset", version)
+            self.context_profile_list.addItems(profiles)
+            preferred = current or "WORK"
+            matches = self.context_profile_list.findItems(preferred, QtCore.Qt.MatchExactly)
+            index = self.context_profile_list.row(matches[0]) if matches else 0
+            if index >= 0:
+                self.context_profile_list.setCurrentRow(index)
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+        self._populate_context_pack_tree()
+
+    def _current_context_profile(self) -> str:
+        item = self.context_profile_list.currentItem() if getattr(self, "context_profile_list", None) else None
+        return item.text().strip() if item else ""
+
+    def _on_context_profile_selected(self, _row: int) -> None:
+        self._populate_context_pack_tree()
+        self._assemble_selected_asset_context(silent=True)
+
+    def _clear_context_state(self) -> None:
+        if not getattr(self, "context_state_table", None):
+            return
+        self.context_assembly = None
+        self.context_state_table.setRowCount(0)
+        self.context_pack_btn.setEnabled(False)
+        if getattr(self, "context_pack_tree", None):
+            self.context_pack_tree.clear()
+
+    def _asset_context_identity(self, asset: Asset):
+        _ensure_smartlib_on_path()
+        from smartlib.core.path_resolver import AssetIdentity
+
+        return AssetIdentity(
+            category=asset.category,
+            group=asset.group,
+            name=asset.name,
+            variant=self._current_asset_variant() if asset.uses_variant_structure(self._current_asset_variant()) else "default",
+        )
+
+    def _assemble_selected_asset_context(self, silent: bool = False) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        version = self.context_version_combo.currentText().strip() or None
+        profile = self._current_context_profile()
+        if not profile:
+            self.status_label.setText("Select a quality profile first")
+            return
+        try:
+            service = _asset_context_service(self.manager.config_dir)
+            self.context_assembly = service.assemble(
+                self._asset_context_identity(asset),
+                context_name="asset",
+                context_version=version,
+                quality_profile=profile,
+            )
+            self._populate_context_state(self.context_assembly, service)
+            self.status_label.setText(
+                f"Context assembled: {asset.name} {self.context_assembly.context_version} {profile}"
+            )
+        except Exception as exc:
+            self._clear_context_state()
+            if silent:
+                self.status_label.setText(str(exc))
+            else:
+                QtWidgets.QMessageBox.critical(self, "Context Assemble Failed", str(exc))
+
+    def _populate_context_state(self, assembly, service=None) -> None:
+        self._populate_context_entries(assembly.entries)
+        can_pack = not assembly.errors
+        if can_pack and service:
+            can_pack = service.has_pack_changes(assembly)
+        self.context_pack_btn.setEnabled(can_pack)
+        if not assembly.errors and not can_pack:
+            self.status_label.setText("Context pack is unchanged from latest")
+
+    def _populate_context_entries(self, entries) -> None:
+        self.context_state_table.setRowCount(0)
+        for entry in entries:
+            row = self.context_state_table.rowCount()
+            self.context_state_table.insertRow(row)
+            values = [
+                entry.publish_type,
+                entry.requested_subset,
+                entry.resolved_subset,
+                entry.status,
+                entry.latest_version,
+                entry.comment,
+            ]
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(str(value))
+                if entry.status == "MISSING":
+                    item.setForeground(QtGui.QColor("#d88888"))
+                elif entry.status == "FALLBACK":
+                    item.setForeground(QtGui.QColor("#d6b46b"))
+                self.context_state_table.setItem(row, column, item)
+        self.context_state_table.resizeColumnsToContents()
+        self.context_state_table.horizontalHeader().setStretchLastSection(True)
+
+    def _pack_selected_asset_context(self) -> None:
+        if not self.context_assembly:
+            self.status_label.setText("Assemble a context first")
+            return
+        try:
+            service = _asset_context_service(self.manager.config_dir)
+            packed = service.pack(self.context_assembly)
+            self.status_label.setText(f"Context packed: {packed.version_dir}")
+            self._populate_context_pack_tree()
+            QtWidgets.QMessageBox.information(
+                self,
+                "Context Pack",
+                "Context pack was created.\n"
+                f"Path: {packed.version_dir}",
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Context Pack Failed", str(exc))
+
+    def _populate_context_pack_tree(self) -> None:
+        if not getattr(self, "context_pack_tree", None):
+            return
+        self.context_pack_tree.clear()
+        asset = self._current_asset()
+        profile = self._current_context_profile()
+        if not asset or not profile:
+            return
+        try:
+            service = _asset_context_service(self.manager.config_dir)
+            packs = service.list_packs(self._asset_context_identity(asset), quality_profile=profile)
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            return
+        for pack in packs:
+            version_item = QtWidgets.QTreeWidgetItem([pack["version"], "", "", pack.get("comment", "")])
+            version_item.setData(0, QtCore.Qt.UserRole, pack["manifest"])
+            version_item.setExpanded(True)
+            self.context_pack_tree.addTopLevelItem(version_item)
+            for entry in pack["manifest"].get("resolved_representations") or []:
+                version_item.addChild(
+                    QtWidgets.QTreeWidgetItem(
+                        [
+                            str(entry.get("publish_type") or ""),
+                            str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
+                            str(entry.get("version") or ""),
+                            str(entry.get("comment") or ""),
+                        ]
+                    )
+                )
+        self._apply_context_pack_tree_header()
+        self.context_pack_tree.expandAll()
+
+    def _apply_context_pack_tree_header(self) -> None:
+        if not getattr(self, "context_pack_tree", None):
+            return
+        header = self.context_pack_tree.header()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        header.setStretchLastSection(True)
     def _populate_data_tree(self, asset: Asset) -> None:
         self.data_list.clear()
         roots: dict[Path, QtWidgets.QTreeWidgetItem] = {}
