@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from smartlib.core.config_loader import ProjectConfig, load_config
 from smartlib.core.metadata import read_json, write_json
@@ -39,11 +40,22 @@ class AssetContextAssembly:
 class PackedAssetContext:
     version_dir: Path
     manifest_path: Path
+    scene_path: Path
     publish_json: Path
+
+
+@dataclass(frozen=True)
+class AssembledAssetContext:
+    assembly_dir: Path
+    manifest_path: Path
+    scene_path: Path
+    assembly_json: Path
 
 
 class AssetContextService:
     """Resolve and snapshot asset context assemblies without importing DCC APIs."""
+
+    MAYA_SNAPSHOT_REVISION = 3
 
     def __init__(self, project_config: ProjectConfig):
         self.project_config = project_config
@@ -151,11 +163,19 @@ class AssetContextService:
             manifest=manifest,
         )
 
-    def pack(self, assembly: AssetContextAssembly) -> PackedAssetContext:
+    def pack(
+        self,
+        assembly: AssetContextAssembly,
+        *,
+        assembled: AssembledAssetContext | None = None,
+    ) -> PackedAssetContext:
         if assembly.errors:
             raise RuntimeError("Context pack is blocked by unresolved representations.")
         if not self.has_pack_changes(assembly):
             raise RuntimeError("Context pack is unchanged from the latest pack.")
+        assembled = assembled or self.current_assembly(assembly)
+        if not assembled or not self.is_current_assembly(assembly, assembled):
+            raise RuntimeError("Assemble and verify this Context before packing it.")
         subset = f"{assembly.context_name}_{assembly.quality_profile.lower()}"
         base_dir = self.paths.asset_publish_dir(assembly.identity, "asset", subset)
         versions = [
@@ -166,6 +186,12 @@ class AssetContextService:
         version_label = format_version(next_version([version for version in versions if version]))
         version_dir = base_dir / version_label
         manifest_path = write_json(version_dir / "build_manifest.json", assembly.manifest)
+        scene_path = version_dir / "asset.ma"
+        scene_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(assembled.scene_path, scene_path)
+        assembly_record = read_json(assembled.assembly_json, {}) or {}
+        composition = dict(assembly_record.get("composition") or {})
+        composition["assembly"] = str(assembled.assembly_dir.as_posix())
         publish_data = {
             "asset": assembly.identity.name,
             "publish_type": "asset",
@@ -173,14 +199,95 @@ class AssetContextService:
             "variant": assembly.identity.variant,
             "version": version_label,
             "files": {
+                "ma": scene_path.name,
                 "build_manifest": manifest_path.name,
             },
             "context": assembly.manifest["context"],
+            "composition": composition,
         }
         publish_json = write_json(version_dir / "publish.json", publish_data)
-        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/build_manifest.json"})
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{scene_path.name}"})
         self._update_versions(base_dir / "versions.json", version_label)
-        return PackedAssetContext(version_dir=version_dir, manifest_path=manifest_path, publish_json=publish_json)
+        self._set_assembly_status(assembled, "packed", version_label)
+        return PackedAssetContext(
+            version_dir=version_dir,
+            manifest_path=manifest_path,
+            scene_path=scene_path,
+            publish_json=publish_json,
+        )
+
+    def write_assembly(
+        self,
+        assembly: AssetContextAssembly,
+        *,
+        maya_scene_builder: Callable[[Path, Path], Path] | None = None,
+    ) -> AssembledAssetContext:
+        if assembly.errors:
+            raise RuntimeError("Context assembly is blocked by unresolved representations.")
+        assembly_dir = self._assembly_dir(assembly)
+        manifest_path = write_json(assembly_dir / "build_manifest.json", assembly.manifest)
+        scene_path, scene_source = self._pack_maya_scene_entry(
+            assembly,
+            assembly_dir,
+            maya_scene_builder=maya_scene_builder,
+        )
+        assembly_json = write_json(
+            assembly_dir / "assembly.json",
+            {
+                "asset": assembly.identity.name,
+                "publish_type": "asset",
+                "subset": self._pack_subset(assembly),
+                "variant": assembly.identity.variant,
+                "status": "verifying",
+                "files": {
+                    "ma": scene_path.name,
+                    "build_manifest": manifest_path.name,
+                },
+                "context": assembly.manifest["context"],
+                "composition": {
+                    "maya_scene_source": str(scene_source.as_posix()),
+                    "mode": "maya_reference_snapshot" if maya_scene_builder else "scene_entry_copy",
+                    "maya_snapshot_revision": self.MAYA_SNAPSHOT_REVISION if maya_scene_builder else 0,
+                },
+            },
+        )
+        return AssembledAssetContext(
+            assembly_dir=assembly_dir,
+            manifest_path=manifest_path,
+            scene_path=scene_path,
+            assembly_json=assembly_json,
+        )
+
+    def current_assembly(self, assembly: AssetContextAssembly) -> AssembledAssetContext | None:
+        assembly_dir = self._assembly_dir(assembly)
+        manifest_path = assembly_dir / "build_manifest.json"
+        scene_path = assembly_dir / "asset.ma"
+        assembly_json = assembly_dir / "assembly.json"
+        if not manifest_path.exists() or not scene_path.exists() or not assembly_json.exists():
+            return None
+        return AssembledAssetContext(
+            assembly_dir=assembly_dir,
+            manifest_path=manifest_path,
+            scene_path=scene_path,
+            assembly_json=assembly_json,
+        )
+
+    def is_current_assembly(
+        self,
+        assembly: AssetContextAssembly,
+        assembled: AssembledAssetContext | None = None,
+    ) -> bool:
+        assembled = assembled or self.current_assembly(assembly)
+        if not assembled:
+            return False
+        manifest = read_json(assembled.manifest_path, {}) or {}
+        if self._representation_signature(assembly.manifest) != self._representation_signature(manifest):
+            return False
+        record = read_json(assembled.assembly_json, {}) or {}
+        composition = record.get("composition") or {}
+        if composition.get("mode") == "maya_reference_snapshot":
+            return int(composition.get("maya_snapshot_revision") or 0) == self.MAYA_SNAPSHOT_REVISION
+        return True
 
     def has_pack_changes(self, assembly: AssetContextAssembly) -> bool:
         packs = self.list_packs(
@@ -190,8 +297,60 @@ class AssetContextService:
         )
         if not packs:
             return True
+        latest_version_dir = Path(packs[0]["manifest_path"]).parent
+        if not (latest_version_dir / "asset.ma").exists():
+            return True
+        publish_record = read_json(latest_version_dir / "publish.json", {}) or {}
+        composition = publish_record.get("composition") or {}
+        if composition.get("mode") == "maya_reference_snapshot":
+            if int(composition.get("maya_snapshot_revision") or 0) != self.MAYA_SNAPSHOT_REVISION:
+                return True
         latest_manifest = packs[0]["manifest"]
         return self._representation_signature(assembly.manifest) != self._representation_signature(latest_manifest)
+
+    def _pack_maya_scene_entry(
+        self,
+        assembly: AssetContextAssembly,
+        version_dir: Path,
+        *,
+        maya_scene_builder: Callable[[Path, Path], Path] | None = None,
+    ) -> tuple[Path, Path]:
+        source = self._maya_scene_entry_source(assembly)
+        if not source:
+            raise RuntimeError("Context pack has no Maya scene representation to write asset.ma.")
+        scene_path = version_dir / "asset.ma"
+        scene_path.parent.mkdir(parents=True, exist_ok=True)
+        if maya_scene_builder:
+            maya_scene_builder(source, scene_path)
+        else:
+            shutil.copy2(source, scene_path)
+        return scene_path, source
+
+    def _assembly_dir(self, assembly: AssetContextAssembly) -> Path:
+        return self.paths.asset_publish_dir(assembly.identity, "asset", self._pack_subset(assembly)) / "_assembly"
+
+    @staticmethod
+    def _pack_subset(assembly: AssetContextAssembly) -> str:
+        return f"{assembly.context_name}_{assembly.quality_profile.lower()}"
+
+    @staticmethod
+    def _set_assembly_status(assembled: AssembledAssetContext, status: str, version: str = "") -> None:
+        record = read_json(assembled.assembly_json, {}) or {}
+        record["status"] = status
+        if version:
+            record["packed_version"] = version
+        write_json(assembled.assembly_json, record)
+
+    @staticmethod
+    def _maya_scene_entry_source(assembly: AssetContextAssembly) -> Path | None:
+        by_type = {"rig": 0, "asset": 1, "model": 2, "look": 3, "groom": 4}
+        entries = sorted(assembly.entries, key=lambda entry: (by_type.get(entry.publish_type, 99), entry.publish_type))
+        for entry in entries:
+            for key in ("ma", "mb"):
+                path = Path(str((entry.files or {}).get(key) or ""))
+                if path.exists():
+                    return path
+        return None
 
     def list_packs(self, identity: AssetIdentity, *, quality_profile: str, context_name: str = "asset") -> list[dict]:
         subset = f"{context_name}_{quality_profile.lower()}"

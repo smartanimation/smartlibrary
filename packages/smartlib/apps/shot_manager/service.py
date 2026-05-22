@@ -99,6 +99,7 @@ class BuildPreviewItem:
 @dataclass(frozen=True)
 class ShotWorkFile:
     department: str
+    option: str
     file: str
     path: str
     updated: str
@@ -173,8 +174,33 @@ class ShotManagerService:
     def load_shot(self, identity: ShotIdentity) -> dict[str, Any]:
         return read_json(self.shot_root(identity) / "shot.json", {})
 
-    def shot_work_dir(self, identity: ShotIdentity, department: str) -> Path:
-        return self.paths.shot_work_dir(identity.episode, identity.sequence, identity.shot, department)
+    def shot_work_dir(self, identity: ShotIdentity, department: str, option: str | None = None) -> Path:
+        work_dir = self.paths.shot_work_dir(identity.episode, identity.sequence, identity.shot, department)
+        if option:
+            return work_dir / _normalize_work_option(option)
+        return work_dir
+
+    def list_shot_work_options(self, identity: ShotIdentity, department: str) -> list[str]:
+        work_dir = self.shot_work_dir(identity, department)
+        options = {"main"}
+        if work_dir.exists():
+            options.update(
+                path.name
+                for path in work_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".")
+            )
+        return sorted(options, key=lambda item: (item != "main", item.lower()))
+
+    def create_shot_work_option(self, identity: ShotIdentity, option: str) -> list[Path]:
+        option_name = _normalize_work_option(option)
+        if option_name == "all":
+            raise ValueError("'all' is reserved for the work option filter.")
+        paths = []
+        for department in self.shot_departments:
+            path = self.shot_work_dir(identity, department, option_name)
+            path.mkdir(parents=True, exist_ok=True)
+            paths.append(path)
+        return paths
 
     def shot_work_file_path(
         self,
@@ -182,12 +208,13 @@ class ShotManagerService:
         department: str,
         version: int,
         take: int,
+        option: str = "main",
         ext: str = "ma",
     ) -> Path:
         version_label = f"v{version:03d}"
         take_label = f"{take:02d}"
         filename = f"{identity.shot}_{department}_{version_label}_{take_label}.{ext.lstrip('.')}"
-        return self.shot_work_dir(identity, department) / filename
+        return self.shot_work_dir(identity, department, option) / filename
 
     def next_shot_work_path(
         self,
@@ -195,6 +222,7 @@ class ShotManagerService:
         department: str,
         current_path: str | Path | None = None,
         next_version: bool = False,
+        option: str = "main",
         ext: str = "ma",
     ) -> Path:
         parsed = parse_shot_work_file(Path(current_path).name) if current_path else None
@@ -207,17 +235,23 @@ class ShotManagerService:
             if next_version:
                 take = 1
             else:
-                take = self.next_shot_work_take(identity, department, version, ext)
+                take = self.next_shot_work_take(identity, department, version, ext, option=option)
         else:
             version = 1
-            take = self.next_shot_work_take(identity, department, version, ext)
-        return self.shot_work_file_path(identity, department, version, take, ext)
+            take = self.next_shot_work_take(identity, department, version, ext, option=option)
+        return self.shot_work_file_path(identity, department, version, take, option, ext)
 
-    def next_shot_work_take(self, identity: ShotIdentity, department: str, version: int, ext: str = "ma") -> int:
+    def next_shot_work_take(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        version: int,
+        ext: str = "ma",
+        option: str = "main",
+    ) -> int:
         max_take = 0
-        work_dir = self.shot_work_dir(identity, department)
-        if work_dir.exists():
-            for path in work_dir.iterdir():
+        for work_dir in self._shot_work_option_dirs(identity, department, option):
+            for path in work_dir.iterdir() if work_dir.exists() else []:
                 parsed = parse_shot_work_file(path.name)
                 if not parsed:
                     continue
@@ -225,40 +259,56 @@ class ShotManagerService:
                     max_take = max(max_take, parsed["take"])
         return max_take + 1
 
-    def list_shot_work_files(self, identity: ShotIdentity, department: str | None = None) -> list[ShotWorkFile]:
+    def list_shot_work_files(
+        self,
+        identity: ShotIdentity,
+        department: str | None = None,
+        option: str | None = None,
+    ) -> list[ShotWorkFile]:
         departments = [department] if department else self.shot_departments
         files: list[ShotWorkFile] = []
         for dept in departments:
-            work_dir = self.shot_work_dir(identity, dept)
-            if not work_dir.exists():
-                continue
-            for path in work_dir.iterdir():
-                if not path.is_file() or path.suffix.lower() not in {".ma", ".mb"}:
-                    continue
-                parsed = parse_shot_work_file(path.name) or {}
-                metadata = read_json(sidecar_path(path), {}) or {}
-                comment = str(metadata.get("comment") or "")
-                thumbnail = str(metadata.get("thumbnail") or "")
-                updated = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-                files.append(
-                    ShotWorkFile(
-                        department=dept,
-                        file=path.name,
-                        path=str(path),
-                        updated=updated,
-                        version=int(parsed.get("version") or 0),
-                        take=int(parsed.get("take") or 0),
-                        comment=comment,
-                        thumbnail=thumbnail,
-                    )
-                )
-        return sorted(files, key=lambda item: (item.department, item.version, item.take, item.file.lower()), reverse=True)
+            options = self.list_shot_work_options(identity, dept) if not option or option == "all" else [_normalize_work_option(option)]
+            for option_name in options:
+                for work_dir in self._shot_work_option_dirs(identity, dept, option_name):
+                    if not work_dir.exists():
+                        continue
+                    for path in work_dir.iterdir():
+                        if not path.is_file() or path.suffix.lower() not in {".ma", ".mb"}:
+                            continue
+                        parsed = parse_shot_work_file(path.name) or {}
+                        metadata = read_json(sidecar_path(path), {}) or {}
+                        comment = str(metadata.get("comment") or "")
+                        thumbnail = str(metadata.get("thumbnail") or "")
+                        updated = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                        files.append(
+                            ShotWorkFile(
+                                department=dept,
+                                option=str(metadata.get("option") or option_name),
+                                file=path.name,
+                                path=str(path),
+                                updated=updated,
+                                version=int(parsed.get("version") or 0),
+                                take=int(parsed.get("take") or 0),
+                                comment=comment,
+                                thumbnail=thumbnail,
+                            )
+                        )
+        return sorted(files, key=lambda item: (item.department, item.option, item.version, item.take, item.file.lower()), reverse=True)
+
+    def _shot_work_option_dirs(self, identity: ShotIdentity, department: str, option: str) -> list[Path]:
+        option_name = _normalize_work_option(option)
+        directories = [self.shot_work_dir(identity, department, option_name)]
+        if option_name == "main":
+            directories.append(self.shot_work_dir(identity, department))
+        return directories
 
     def write_shot_work_metadata(
         self,
         path: str | Path,
         identity: ShotIdentity,
         department: str,
+        option: str = "main",
         scene_info: dict[str, Any] | None = None,
         comment: str = "",
         thumbnail: str = "",
@@ -270,6 +320,7 @@ class ShotManagerService:
             "sequence": identity.sequence,
             "shot": identity.shot,
             "department": department,
+            "option": _normalize_work_option(option),
             "version": parsed.get("version"),
             "take": parsed.get("take"),
             "comment": comment,
@@ -339,7 +390,9 @@ class ShotManagerService:
                 )
                 continue
 
-            publish_path = self.resolve_asset_publish(variant_root, asset_publish)
+            publish_path = self.resolve_asset_context_work_publish(variant_root, asset_publish)
+            if not publish_path:
+                publish_path = self.resolve_asset_publish(variant_root, asset_publish)
             status = "resolved" if publish_path else ("missing" if required else "optional missing")
             items.append(
                 BuildPreviewItem(
@@ -373,7 +426,7 @@ class ShotManagerService:
             return None
         if _is_version_label(asset_publish):
             candidates = sorted(publish_root.glob(f"*/*/{asset_publish}/*"))
-            files = [path for path in candidates if path.is_file() and path.name not in {"publish.json", "validation.json"}]
+            files = _maya_scene_publish_paths(candidates)
             return _preferred_publish(files)
         if asset_publish == "approved":
             approved = self._approved_publish_paths(publish_root)
@@ -382,13 +435,38 @@ class ShotManagerService:
         latest = self._latest_publish_paths(publish_root)
         return _preferred_publish(latest)
 
+    def resolve_asset_context_work_publish(self, variant_root: Path, asset_publish: str) -> Path | None:
+        context_root = variant_root / "publish" / "asset" / "asset_work"
+        if not context_root.exists():
+            return None
+        if _is_version_label(asset_publish):
+            return _preferred_context_scene(context_root / asset_publish)
+        if asset_publish == "approved":
+            versions = read_json(context_root / "versions.json", [])
+            candidates = [
+                _preferred_context_scene(context_root / str(row.get("version") or ""))
+                for row in versions if isinstance(row, dict)
+                and row.get("status") in {"approved", "latest"}
+                and row.get("version")
+            ]
+            candidates = [path for path in candidates if path]
+            if candidates:
+                return sorted(candidates, key=lambda path: path.as_posix().lower())[-1]
+        latest = read_json(context_root / "latest.json", {})
+        latest_path = context_root / str((latest or {}).get("path") or "")
+        if _is_maya_scene_publish(latest_path):
+            return latest_path
+        if latest.get("version"):
+            return _preferred_context_scene(context_root / str(latest["version"]))
+        return None
+
     def _latest_publish_paths(self, publish_root: Path) -> list[Path]:
         paths = []
         for latest_json in publish_root.glob("*/*/latest.json"):
             latest = read_json(latest_json, {})
             if latest.get("path"):
                 path = latest_json.parent / latest["path"]
-                if path.exists():
+                if path.exists() and _is_maya_scene_publish(path):
                     paths.append(path)
         return paths
 
@@ -404,10 +482,7 @@ class ShotManagerService:
             for version in approved_versions:
                 version_dir = versions_json.parent / version
                 if version_dir.exists():
-                    paths.extend(
-                        path for path in version_dir.iterdir()
-                        if path.is_file() and path.name not in {"publish.json", "validation.json"}
-                    )
+                    paths.extend(_maya_scene_publish_paths(version_dir.iterdir()))
         return paths
 
     def planned_shot_paths(self, request: ShotCreateRequest) -> list[Path]:
@@ -419,7 +494,7 @@ class ShotManagerService:
             shot_root / "data",
             shot_root / "publish",
         ]
-        paths.extend(shot_root / department / "work" for department in self.shot_departments)
+        paths.extend(shot_root / department / "work" / "main" for department in self.shot_departments)
         return paths
 
     def create_shot(self, request: ShotCreateRequest) -> Path:
@@ -699,6 +774,15 @@ class ShotManagerService:
         selected = read_selected_asset(self.project_config)
         if not selected.get("asset"):
             return {}
+        return self.asset_selection_cast_row(selected, existing_cast=existing_cast)
+
+    def asset_selection_cast_row(
+        self,
+        selected: dict[str, Any],
+        existing_cast: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not selected.get("asset"):
+            return {}
         role = _role_from_asset_selection(selected)
         cast_key = _unique_cast_key(existing_cast or {}, selected.get("asset"))
         return {
@@ -711,6 +795,34 @@ class ShotManagerService:
             "required": True,
             "note": f"from Asset Manager: {selected.get('category', '')}/{selected.get('group', '')}",
         }
+
+    def add_asset_selections_to_cast(
+        self,
+        identity: ShotIdentity,
+        selections: list[dict[str, Any]],
+    ) -> tuple[Path, list[dict[str, Any]]]:
+        cast_data = self.load_cast(identity)
+        cast_rows = self.cast_data_to_rows(identity, cast_data)
+        reserved_cast = dict(cast_data.get("cast") or {})
+        added_rows: list[dict[str, Any]] = []
+        for selected in selections:
+            row = self.asset_selection_cast_row(selected, existing_cast=reserved_cast)
+            if not row:
+                continue
+            cast_rows.append(
+                {
+                    "episode": identity.episode,
+                    "sequence": identity.sequence,
+                    "shot": identity.shot,
+                    **row,
+                }
+            )
+            reserved_cast[row["cast_key"]] = {}
+            added_rows.append(row)
+        if not added_rows:
+            raise ValueError("No valid asset selections were provided.")
+        updated = self.build_cast_data(cast_rows, existing=cast_data)
+        return self.write_cast(identity, updated), added_rows
 
 
 def validate_cast_data(cast_data: dict[str, Any]) -> list[ValidationIssue]:
@@ -746,6 +858,17 @@ def validate_cast_data(cast_data: dict[str, Any]) -> list[ValidationIssue]:
 SHOT_WORK_RE = re.compile(
     r"^(?P<shot>.+?)_(?P<department>[^_]+)_v(?P<version>\d+)_(?P<take>\d+)\.(?P<ext>[^.]+)$"
 )
+
+WORK_OPTION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]*$")
+
+
+def _normalize_work_option(option: Any) -> str:
+    value = str(option or "main").strip()
+    if not value:
+        value = "main"
+    if not WORK_OPTION_RE.match(value):
+        raise ValueError("Shot work option may contain letters, numbers, underscores, and hyphens.")
+    return value
 
 
 def parse_shot_work_file(filename: str) -> dict[str, Any] | None:
@@ -823,13 +946,43 @@ def _row_matches_identity(row: dict[str, Any], identity: ShotIdentity) -> bool:
 def _preferred_publish(paths: list[Path]) -> Path | None:
     if not paths:
         return None
-    priority = ["/asset/", "/rig/anim/", "/rig/layout/", "/model/hires/"]
+    priority = [
+        "/rig/anim/",
+        "/rig/layout/",
+        "/asset/",
+        "/model/render/",
+        "/model/hires/",
+        "/model/proxy/",
+        "/model/guide/",
+    ]
     normalized = [(path.as_posix().lower(), path) for path in paths]
     for marker in priority:
         matches = [path for text, path in normalized if marker in text]
         if matches:
             return sorted(matches, key=lambda path: path.as_posix().lower())[-1]
     return sorted(paths, key=lambda path: path.as_posix().lower())[-1]
+
+
+def _maya_scene_publish_paths(paths) -> list[Path]:
+    return [path for path in paths if _is_maya_scene_publish(path)]
+
+
+def _preferred_context_scene(version_dir: Path) -> Path | None:
+    for filename in ("asset.ma", "asset.mb"):
+        path = version_dir / filename
+        if _is_maya_scene_publish(path):
+            return path
+    record = read_json(version_dir / "publish.json", {})
+    for key in ("ma", "mb"):
+        filename = str((record.get("files") or {}).get(key) or "")
+        path = version_dir / Path(filename).name
+        if _is_maya_scene_publish(path):
+            return path
+    return None
+
+
+def _is_maya_scene_publish(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in {".ma", ".mb"}
 
 
 def _pipeline_root() -> Path:

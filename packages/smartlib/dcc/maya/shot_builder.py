@@ -4,6 +4,49 @@ from pathlib import Path
 from typing import Iterable
 
 
+def stage_shot_from_preview(
+    preview_items: Iterable,
+    shot_data: dict | None = None,
+    *,
+    department: str,
+    project_root: str | Path | None = None,
+) -> list[str]:
+    """Open a shot work template, then reference resolved cast publishes."""
+
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Shot staging is available inside Maya.") from exc
+
+    template = resolve_shot_work_template(department, project_root=project_root)
+    if template:
+        cmds.file(str(template), open=True, force=True)
+    else:
+        cmds.file(new=True, force=True)
+    return build_shot_from_preview(preview_items, shot_data)
+
+
+def resolve_shot_work_template(
+    department: str,
+    *,
+    project_root: str | Path | None = None,
+    pipeline_root: str | Path | None = None,
+) -> Path | None:
+    dept_filename = f"{department}_base.ma"
+    filenames = (dept_filename, "shot_base.ma")
+    roots = []
+    if project_root:
+        roots.append(Path(project_root) / "settings" / "templates" / "maya" / "shot")
+    roots.append(Path(pipeline_root) if pipeline_root else Path(__file__).resolve().parents[4])
+    for root in roots:
+        template_root = root if root.name == "shot" else root / "templates" / "maya" / "shot"
+        for filename in filenames:
+            candidate = template_root / filename
+            if candidate.exists():
+                return candidate
+    return None
+
+
 def build_shot_from_preview(preview_items: Iterable, shot_data: dict | None = None) -> list[str]:
     """Reference resolved cast publishes into the current Maya scene."""
 

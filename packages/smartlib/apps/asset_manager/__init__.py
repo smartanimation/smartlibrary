@@ -1,6 +1,7 @@
 """Asset Manager application package."""
 
 from smartlib.apps.asset_manager.context import (
+    AssembledAssetContext,
     AssetContextAssembly,
     AssetContextEntry,
     AssetContextService,
@@ -12,6 +13,7 @@ __all__ = [
     "AssetContextAssembly",
     "AssetContextEntry",
     "AssetContextService",
+    "AssembledAssetContext",
     "AssetCreateRequest",
     "AssetManagerService",
     "CreatedAsset",

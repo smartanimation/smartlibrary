@@ -58,6 +58,14 @@ def _asset_context_service(config_dir: str | os.PathLike[str]):
     return AssetContextService(ProjectConfig(config_dir))
 
 
+def _shot_service(config_dir: str | os.PathLike[str]):
+    _ensure_smartlib_on_path()
+    from smartlib.apps.shot_manager import ShotManagerService
+    from smartlib.core.config_loader import ProjectConfig
+
+    return ShotManagerService(ProjectConfig(config_dir))
+
+
 class AssetRequestDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, title: str = "Create Asset"):
         super().__init__(parent)
@@ -99,6 +107,11 @@ class AssetRequestDialog(QtWidgets.QDialog):
 
 
 class AssetManagerWindow(QtWidgets.QDialog):
+    SETTINGS_ORGANIZATION = "smartpipeline"
+    SETTINGS_APPLICATION = "AssetManager"
+    SETTINGS_GEOMETRY_KEY = "window/geometry"
+    SETTINGS_STATE_GROUP = "window/state"
+
     def __init__(self, manager: AssetManager | None = None, parent=None):
         super().__init__(parent)
         self.manager = manager or AssetManager()
@@ -107,39 +120,162 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.setWindowTitle(f"Asset Manager - {self.manager.project_name}")
         self.resize(760, 460)
         self._build_ui()
+        self._restore_window_geometry()
         self.refresh_assets()
+        self._restore_window_state()
+
+    def _window_settings(self):
+        return QtCore.QSettings(self.SETTINGS_ORGANIZATION, self.SETTINGS_APPLICATION)
+
+    def _restore_window_geometry(self) -> None:
+        geometry = self._window_settings().value(self.SETTINGS_GEOMETRY_KEY)
+        if geometry:
+            self.restoreGeometry(geometry)
+
+    def closeEvent(self, event) -> None:
+        self._window_settings().setValue(self.SETTINGS_GEOMETRY_KEY, self.saveGeometry())
+        self._save_window_state()
+        super().closeEvent(event)
+
+    def _save_window_state(self) -> None:
+        settings = self._window_settings()
+        settings.beginGroup(self.SETTINGS_STATE_GROUP)
+        asset_key = self._current_asset_key()
+        settings.setValue("asset_key", list(asset_key) if asset_key else [])
+        settings.setValue("asset_filter", list(self._selected_asset_filter()))
+        settings.setValue("search_text", self.search_edit.text())
+        settings.setValue("detail_mode", self.detail_panel.isVisible())
+        settings.setValue("browser_filter_tab", self.browser_filter_tabs.currentIndex())
+        settings.setValue("detail_tab", self.detail_tabs.currentIndex())
+        settings.setValue("asset_variant", self._current_asset_variant())
+        settings.setValue("department", self._current_department())
+        settings.setValue("subset", self._current_variant())
+        settings.setValue("asset_view", "table" if self.asset_list.viewMode() == QtWidgets.QListView.ListMode else "card")
+        settings.setValue("shot_codes", [identity.code for identity in self._selected_shot_identities()])
+        settings.setValue("main_splitter", self.main_splitter.saveState())
+        settings.setValue("asset_browser_splitter", self.asset_browser_splitter.saveState())
+        settings.setValue("detail_content_splitter", self.detail_content_splitter.saveState())
+        settings.endGroup()
+
+    def _restore_window_state(self) -> None:
+        settings = self._window_settings()
+        settings.beginGroup(self.SETTINGS_STATE_GROUP)
+        asset_key = self._settings_string_list(settings.value("asset_key"))
+        asset_filter = self._settings_string_list(settings.value("asset_filter"))
+        search_text = str(settings.value("search_text", "") or "")
+        detail_mode = self._settings_bool(settings.value("detail_mode", False))
+        browser_filter_tab = self._settings_int(settings.value("browser_filter_tab"), 0)
+        detail_tab = self._settings_int(settings.value("detail_tab"), 0)
+        asset_variant = str(settings.value("asset_variant", "default") or "default")
+        department = str(settings.value("department", "model") or "model")
+        subset = str(settings.value("subset", "") or "")
+        asset_view = str(settings.value("asset_view", "card") or "card")
+        shot_codes = set(self._settings_string_list(settings.value("shot_codes")))
+        main_splitter = settings.value("main_splitter")
+        asset_browser_splitter = settings.value("asset_browser_splitter")
+        detail_content_splitter = settings.value("detail_content_splitter")
+        settings.endGroup()
+
+        self.search_edit.blockSignals(True)
+        self.search_edit.setText(search_text)
+        self.search_edit.blockSignals(False)
+        if len(asset_filter) == 3:
+            self._select_asset_filter(tuple(asset_filter))
+        selected_key = tuple(asset_key) if len(asset_key) == 3 else None
+        self._apply_filter(selected_key=selected_key)
+        self._restore_detail_selection(asset_variant, department, subset)
+        self._populate_variants()
+        self._restore_detail_selection(asset_variant, department, subset)
+        self._select_shot_codes(shot_codes)
+        self.browser_filter_tabs.setCurrentIndex(max(0, min(browser_filter_tab, self.browser_filter_tabs.count() - 1)))
+        self.detail_tabs.setCurrentIndex(max(0, min(detail_tab, self.detail_tabs.count() - 1)))
+        if asset_view == "table":
+            self._set_asset_table_view()
+        else:
+            self._set_asset_card_view()
+        if detail_mode and self._current_asset():
+            self._show_detail_mode()
+        else:
+            self._show_asset_mode()
+        for splitter, state in (
+            (self.main_splitter, main_splitter),
+            (self.asset_browser_splitter, asset_browser_splitter),
+            (self.detail_content_splitter, detail_content_splitter),
+        ):
+            if state:
+                splitter.restoreState(state)
+
+    @staticmethod
+    def _settings_string_list(value) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value]
+        return [str(value)]
+
+    @staticmethod
+    def _settings_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _settings_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _build_ui(self) -> None:
         root_layout = QtWidgets.QVBoxLayout(self)
         root_layout.setContentsMargins(4, 4, 4, 4)
         root_layout.setSpacing(4)
 
-        splitter = QtWidgets.QSplitter()
-        root_layout.addWidget(splitter, 1)
+        self.main_splitter = QtWidgets.QSplitter()
+        root_layout.addWidget(self.main_splitter, 1)
 
         self.asset_panel = QtWidgets.QWidget()
         asset_panel_layout = QtWidgets.QVBoxLayout(self.asset_panel)
         asset_panel_layout.setContentsMargins(2, 2, 2, 2)
         asset_panel_layout.setSpacing(4)
-        asset_browser_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        asset_panel_layout.addWidget(asset_browser_splitter, 1)
+        self.asset_browser_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        asset_panel_layout.addWidget(self.asset_browser_splitter, 1)
+
+        self.browser_filter_tabs = QtWidgets.QTabWidget()
+        self.browser_filter_tabs.setMinimumWidth(140)
+        self.browser_filter_tabs.setMaximumWidth(240)
+        self.asset_browser_splitter.addWidget(self.browser_filter_tabs)
 
         self.asset_filter_tree = QtWidgets.QTreeWidget()
         self.asset_filter_tree.setHeaderHidden(True)
-        self.asset_filter_tree.setMinimumWidth(120)
-        self.asset_filter_tree.setMaximumWidth(220)
         self.asset_filter_tree.setRootIsDecorated(True)
         self.asset_filter_tree.setIndentation(10)
         self.asset_filter_tree.setStyleSheet("QTreeWidget::item { height: 24px; }")
-        asset_browser_splitter.addWidget(self.asset_filter_tree)
+        self.browser_filter_tabs.addTab(self.asset_filter_tree, "Assets")
+
+        shot_filter_panel = QtWidgets.QWidget()
+        shot_filter_layout = QtWidgets.QVBoxLayout(shot_filter_panel)
+        shot_filter_layout.setContentsMargins(2, 2, 2, 2)
+        shot_filter_layout.setSpacing(4)
+        self.shot_tree = QtWidgets.QTreeWidget()
+        self.shot_tree.setHeaderHidden(True)
+        self.shot_tree.setRootIsDecorated(True)
+        self.shot_tree.setIndentation(10)
+        self.shot_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.shot_tree.setStyleSheet("QTreeWidget::item { height: 24px; }")
+        self.add_assets_to_cast_btn = QtWidgets.QPushButton("Add Selected to Cast")
+        self.add_assets_to_cast_btn.setToolTip("Add the selected assets to each selected shot cast.")
+        shot_filter_layout.addWidget(self.shot_tree, 1)
+        shot_filter_layout.addWidget(self.add_assets_to_cast_btn)
+        self.browser_filter_tabs.addTab(shot_filter_panel, "Shots")
 
         asset_browser = QtWidgets.QWidget()
         asset_browser_layout = QtWidgets.QVBoxLayout(asset_browser)
         asset_browser_layout.setContentsMargins(2, 2, 2, 2)
         asset_browser_layout.setSpacing(4)
-        asset_browser_splitter.addWidget(asset_browser)
-        asset_browser_splitter.setStretchFactor(0, 0)
-        asset_browser_splitter.setStretchFactor(1, 1)
+        self.asset_browser_splitter.addWidget(asset_browser)
+        self.asset_browser_splitter.setStretchFactor(0, 0)
+        self.asset_browser_splitter.setStretchFactor(1, 1)
 
         filter_layout = QtWidgets.QHBoxLayout()
         filter_layout.setContentsMargins(0, 0, 0, 0)
@@ -174,6 +310,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_list.setGridSize(QtCore.QSize(160, 168))
         self.asset_list.setUniformItemSizes(True)
         self.asset_list.setWordWrap(True)
+        self.asset_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.asset_list.setStyleSheet("""
             QListWidget {
                 background: #2b2b2b;
@@ -195,14 +332,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
             }
         """)
         asset_browser_layout.addWidget(self.asset_list)
-        splitter.addWidget(self.asset_panel)
+        self.main_splitter.addWidget(self.asset_panel)
 
         right = QtWidgets.QWidget()
         self.detail_panel = right
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(4)
-        splitter.addWidget(right)
+        self.main_splitter.addWidget(right)
 
         self.back_to_assets_btn = QtWidgets.QPushButton("Back")
         self.asset_variant_header_label = QtWidgets.QLabel("Variant")
@@ -433,9 +570,20 @@ class AssetManagerWindow(QtWidgets.QDialog):
         context_header.addWidget(self.context_assemble_btn)
         context_header.addWidget(self.context_pack_btn)
         context_main_layout.addLayout(context_header)
-        self.context_state_table = QtWidgets.QTableWidget(0, 6)
+        self.context_readiness_label = QtWidgets.QLabel("PACK BLOCKED: Assemble a Context first")
+        self.context_readiness_label.setObjectName("context_readiness_label")
+        self.context_readiness_label.setStyleSheet(
+            "QLabel#context_readiness_label {"
+            " padding: 4px 6px;"
+            " border: 1px solid #5d5d5d;"
+            " background: #353535;"
+            " color: #d6b46b;"
+            "}"
+        )
+        context_main_layout.addWidget(self.context_readiness_label)
+        self.context_state_table = QtWidgets.QTableWidget(0, 7)
         self.context_state_table.setHorizontalHeaderLabels(
-            ["Subset", "Type", "Resolved", "State", "Latest", "Comment"]
+            ["Subset", "Type", "Resolved", "State", "Official", "Latest", "Comment"]
         )
         self.context_state_table.horizontalHeader().setStretchLastSection(True)
         self.context_state_table.verticalHeader().setVisible(False)
@@ -457,6 +605,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         self.search_edit.textChanged.connect(self._apply_filter)
         self.asset_filter_tree.currentItemChanged.connect(lambda _current, _previous: self._apply_filter())
+        self.add_assets_to_cast_btn.clicked.connect(self._add_selected_assets_to_shot_cast)
         self.refresh_btn.clicked.connect(self.refresh_assets)
         self.asset_list.currentRowChanged.connect(self._show_current_asset)
         self.asset_list.itemDoubleClicked.connect(lambda _item: self._show_detail_mode())
@@ -497,6 +646,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
         self.import_data_btn.clicked.connect(self._import_selected_data)
         self.context_assembly = None
+        self.context_verification = None
         self._populate_context_versions()
         self._show_asset_mode()
 
@@ -509,6 +659,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.asset_filter_tree.clear()
         self.assets = self.manager.list_assets_from_sheet(fallback_to_filesystem=True)
         self._populate_asset_filter_tree()
+        self._populate_shot_tree()
         self._apply_filter(selected_key=selected_key)
         self._restore_detail_selection(selected_asset_variant, selected_department, selected_subset)
         self._populate_asset_variants()
@@ -619,6 +770,56 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.asset_filter_tree.setCurrentItem(selected_item)
         self.asset_filter_tree.blockSignals(False)
 
+    def _populate_shot_tree(self) -> None:
+        selected_codes = {identity.code for identity in self._selected_shot_identities()}
+
+        self.shot_tree.blockSignals(True)
+        self.shot_tree.clear()
+        selected_items = []
+        try:
+            service = _shot_service(self.manager.config_dir)
+            episode_items: dict[str, QtWidgets.QTreeWidgetItem] = {}
+            sequence_items: dict[tuple[str, str], QtWidgets.QTreeWidgetItem] = {}
+            for identity in service.list_shots():
+                episode_item = episode_items.get(identity.episode)
+                if episode_item is None:
+                    episode_item = QtWidgets.QTreeWidgetItem([identity.episode])
+                    self.shot_tree.addTopLevelItem(episode_item)
+                    episode_items[identity.episode] = episode_item
+
+                sequence_key = (identity.episode, identity.sequence)
+                sequence_item = sequence_items.get(sequence_key)
+                if sequence_item is None:
+                    sequence_item = QtWidgets.QTreeWidgetItem([identity.sequence])
+                    episode_item.addChild(sequence_item)
+                    sequence_items[sequence_key] = sequence_item
+
+                shot_item = QtWidgets.QTreeWidgetItem([identity.shot])
+                shot_item.setData(0, QtCore.Qt.UserRole, identity)
+                shot_item.setToolTip(0, identity.code)
+                sequence_item.addChild(shot_item)
+                if identity.code in selected_codes:
+                    selected_items.append(shot_item)
+
+            for item in episode_items.values():
+                item.setExpanded(True)
+            for item in sequence_items.values():
+                item.setExpanded(True)
+            if not episode_items:
+                empty_item = QtWidgets.QTreeWidgetItem(["No shots"])
+                empty_item.setFlags(empty_item.flags() & ~QtCore.Qt.ItemIsSelectable)
+                self.shot_tree.addTopLevelItem(empty_item)
+        except Exception as exc:
+            error_item = QtWidgets.QTreeWidgetItem(["Shot list unavailable"])
+            error_item.setToolTip(0, str(exc))
+            error_item.setFlags(error_item.flags() & ~QtCore.Qt.ItemIsSelectable)
+            self.shot_tree.addTopLevelItem(error_item)
+        for selected_item in selected_items:
+            selected_item.setSelected(True)
+        if selected_items:
+            self.shot_tree.setCurrentItem(selected_items[0])
+        self.shot_tree.blockSignals(False)
+
     def _selected_asset_filter(self) -> tuple[str, str, str]:
         item = self.asset_filter_tree.currentItem()
         if not item:
@@ -627,6 +828,26 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if isinstance(data, tuple) and len(data) == 3:
             return str(data[0]), str(data[1]), str(data[2])
         return "", "", ""
+
+    def _select_asset_filter(self, target: tuple[str, str, str]) -> bool:
+        for index in range(self.asset_filter_tree.topLevelItemCount()):
+            top_item = self.asset_filter_tree.topLevelItem(index)
+            if self._tree_item_data_matches(top_item, target):
+                self.asset_filter_tree.setCurrentItem(top_item)
+                return True
+            for child_index in range(top_item.childCount()):
+                child = top_item.child(child_index)
+                if self._tree_item_data_matches(child, target):
+                    self.asset_filter_tree.setCurrentItem(child)
+                    return True
+        return False
+
+    @staticmethod
+    def _tree_item_data_matches(item, target: tuple[str, str, str]) -> bool:
+        data = item.data(0, QtCore.Qt.UserRole)
+        if isinstance(data, tuple) and len(data) == 3:
+            return tuple(str(value) for value in data) == target
+        return False
 
     def _asset_filter_values(self, asset: Asset) -> tuple[str, str, str]:
         metadata = self.manager.load_asset_metadata(asset)
@@ -722,6 +943,46 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not item:
             return None
         return item.data(QtCore.Qt.UserRole)
+
+    def _selected_assets(self) -> list[Asset]:
+        assets: list[Asset] = []
+        for item in self.asset_list.selectedItems():
+            asset = item.data(QtCore.Qt.UserRole)
+            if isinstance(asset, Asset):
+                assets.append(asset)
+        current = self._current_asset()
+        if not assets and current:
+            assets.append(current)
+        return assets
+
+    def _selected_shot_identities(self) -> list:
+        identities = []
+        for item in self.shot_tree.selectedItems():
+            identity = item.data(0, QtCore.Qt.UserRole)
+            if identity:
+                identities.append(identity)
+        if identities:
+            return identities
+        item = self.shot_tree.currentItem()
+        if not item:
+            return []
+        identity = item.data(0, QtCore.Qt.UserRole)
+        return [identity] if identity else []
+
+    def _select_shot_codes(self, shot_codes: set[str]) -> None:
+        if not shot_codes:
+            return
+        self.shot_tree.blockSignals(True)
+        for episode_index in range(self.shot_tree.topLevelItemCount()):
+            episode_item = self.shot_tree.topLevelItem(episode_index)
+            for sequence_index in range(episode_item.childCount()):
+                sequence_item = episode_item.child(sequence_index)
+                for shot_index in range(sequence_item.childCount()):
+                    shot_item = sequence_item.child(shot_index)
+                    identity = shot_item.data(0, QtCore.Qt.UserRole)
+                    if identity and identity.code in shot_codes:
+                        shot_item.setSelected(True)
+        self.shot_tree.blockSignals(False)
 
     @staticmethod
     def _asset_key(asset: Asset) -> tuple[str, str, str]:
@@ -1056,8 +1317,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not getattr(self, "context_state_table", None):
             return
         self.context_assembly = None
+        self.context_verification = None
         self.context_state_table.setRowCount(0)
         self.context_pack_btn.setEnabled(False)
+        self._set_context_readiness("BLOCKED", "Assemble a Context first")
         if getattr(self, "context_pack_tree", None):
             self.context_pack_tree.clear()
 
@@ -1090,10 +1353,41 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 context_version=version,
                 quality_profile=profile,
             )
+            self.context_verification = service.current_assembly(self.context_assembly)
+            if not silent and not self.context_assembly.errors:
+                maya_scene_builder = None
+                maya_preview = None
+                try:
+                    import maya.cmds  # noqa: F401
+                    from smartlib.dcc.maya.asset_context import (
+                        open_context_asset_assembly,
+                        write_context_asset_snapshot,
+                    )
+
+                    maya_scene_builder = write_context_asset_snapshot
+                    maya_preview = open_context_asset_assembly
+                except ImportError:
+                    maya_scene_builder = None
+                self.context_verification = service.write_assembly(
+                    self.context_assembly,
+                    maya_scene_builder=maya_scene_builder,
+                )
+                if maya_preview:
+                    maya_preview(
+                        self.context_verification.scene_path,
+                        asset.name,
+                        resolve_asset_work_template(self.manager, "model"),
+                    )
             self._populate_context_state(self.context_assembly, service)
-            self.status_label.setText(
-                f"Context assembled: {asset.name} {self.context_assembly.context_version} {profile}"
-            )
+            self._populate_context_pack_tree()
+            if self.context_verification and not silent and not self.context_assembly.errors:
+                self.status_label.setText(
+                    f"Context verifying: {asset.name} {self.context_assembly.context_version} {profile}"
+                )
+            else:
+                self.status_label.setText(
+                    f"Context resolved: {asset.name} {self.context_assembly.context_version} {profile}"
+                )
         except Exception as exc:
             self._clear_context_state()
             if silent:
@@ -1102,24 +1396,49 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.critical(self, "Context Assemble Failed", str(exc))
 
     def _populate_context_state(self, assembly, service=None) -> None:
-        self._populate_context_entries(assembly.entries)
+        official_versions = self._context_official_versions(assembly, service)
+        self._populate_context_entries(assembly.entries, official_versions)
         can_pack = not assembly.errors
-        if can_pack and service:
-            can_pack = service.has_pack_changes(assembly)
+        if assembly.errors:
+            self._set_context_readiness("BLOCKED", f"{len(assembly.errors)} representation missing")
+        elif can_pack and service:
+            self.context_verification = service.current_assembly(assembly)
+            has_changes = service.has_pack_changes(assembly)
+            is_verified = service.is_current_assembly(assembly, self.context_verification)
+            can_pack = has_changes and is_verified
+            if not has_changes:
+                self.status_label.setText("Context pack is unchanged from latest")
+                self._set_context_readiness("UNCHANGED", "Official versions already match latest Pack")
+            elif not is_verified:
+                self.status_label.setText("Assemble a verification scene before Pack")
+                self._set_context_readiness("BLOCKED", "Verification assembly is missing or stale")
+            else:
+                newer_count = self._context_newer_latest_count(assembly.entries, official_versions)
+                suffix = f"; {newer_count} newer latest available" if newer_count else ""
+                self._set_context_readiness(
+                    "READY",
+                    f"Verification assembly is current; {len(assembly.entries)} representations resolved{suffix}",
+                )
+        elif can_pack:
+            self._set_context_readiness("RESOLVED", f"{len(assembly.entries)} representations resolved")
         self.context_pack_btn.setEnabled(can_pack)
-        if not assembly.errors and not can_pack:
-            self.status_label.setText("Context pack is unchanged from latest")
 
-    def _populate_context_entries(self, entries) -> None:
+    def _populate_context_entries(self, entries, official_versions=None) -> None:
+        official_versions = official_versions or {}
         self.context_state_table.setRowCount(0)
         for entry in entries:
             row = self.context_state_table.rowCount()
             self.context_state_table.insertRow(row)
+            official_version = official_versions.get(
+                self._context_entry_key(entry.publish_type, entry.requested_subset),
+                "",
+            )
             values = [
                 entry.publish_type,
                 entry.requested_subset,
                 entry.resolved_subset,
                 entry.status,
+                official_version,
                 entry.latest_version,
                 entry.comment,
             ]
@@ -1129,9 +1448,75 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     item.setForeground(QtGui.QColor("#d88888"))
                 elif entry.status == "FALLBACK":
                     item.setForeground(QtGui.QColor("#d6b46b"))
+                elif (
+                    column in (4, 5)
+                    and official_version
+                    and entry.latest_version
+                    and official_version != entry.latest_version
+                ):
+                    item.setForeground(QtGui.QColor("#d6b46b"))
                 self.context_state_table.setItem(row, column, item)
         self.context_state_table.resizeColumnsToContents()
         self.context_state_table.horizontalHeader().setStretchLastSection(True)
+
+    def _set_context_readiness(self, state: str, message: str) -> None:
+        if not getattr(self, "context_readiness_label", None):
+            return
+        colors = {
+            "READY": ("#244638", "#9edcb8"),
+            "RESOLVED": ("#31485b", "#a9d4f3"),
+            "UNCHANGED": ("#353535", "#b8b8b8"),
+            "BLOCKED": ("#4a3925", "#e0be78"),
+        }
+        background, text = colors.get(state, colors["BLOCKED"])
+        self.context_readiness_label.setText(f"PACK {state}: {message}")
+        self.context_readiness_label.setStyleSheet(
+            "QLabel#context_readiness_label {"
+            " padding: 4px 6px;"
+            " border: 1px solid #5d5d5d;"
+            f" background: {background};"
+            f" color: {text};"
+            "}"
+        )
+
+    @staticmethod
+    def _context_entry_key(publish_type: str, requested_subset: str) -> tuple[str, str]:
+        return str(publish_type), str(requested_subset)
+
+    def _context_official_versions(self, assembly, service) -> dict[tuple[str, str], str]:
+        if not service:
+            return {}
+        try:
+            packs = service.list_packs(
+                assembly.identity,
+                quality_profile=assembly.quality_profile,
+                context_name=assembly.context_name,
+            )
+        except Exception:
+            return {}
+        if not packs:
+            return {}
+        versions = {}
+        for entry in packs[0]["manifest"].get("resolved_representations") or []:
+            if not isinstance(entry, dict):
+                continue
+            versions[
+                self._context_entry_key(
+                    str(entry.get("publish_type") or ""),
+                    str(entry.get("requested_subset") or ""),
+                )
+            ] = str(entry.get("version") or "")
+        return versions
+
+    @staticmethod
+    def _context_newer_latest_count(entries, official_versions) -> int:
+        return sum(
+            1
+            for entry in entries
+            if official_versions.get((str(entry.publish_type), str(entry.requested_subset)))
+            and entry.latest_version
+            and official_versions[(str(entry.publish_type), str(entry.requested_subset))] != entry.latest_version
+        )
 
     def _pack_selected_asset_context(self) -> None:
         if not self.context_assembly:
@@ -1139,8 +1524,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         try:
             service = _asset_context_service(self.manager.config_dir)
-            packed = service.pack(self.context_assembly)
+            packed = service.pack(self.context_assembly, assembled=self.context_verification)
             self.status_label.setText(f"Context packed: {packed.version_dir}")
+            self._populate_context_state(self.context_assembly, service)
             self._populate_context_pack_tree()
             QtWidgets.QMessageBox.information(
                 self,
@@ -1161,10 +1547,38 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         try:
             service = _asset_context_service(self.manager.config_dir)
+            resolved = service.assemble(
+                self._asset_context_identity(asset),
+                context_name="asset",
+                context_version=self.context_version_combo.currentText().strip() or None,
+                quality_profile=profile,
+            )
+            verification = service.current_assembly(resolved)
             packs = service.list_packs(self._asset_context_identity(asset), quality_profile=profile)
         except Exception as exc:
             self.status_label.setText(str(exc))
             return
+        if verification and service.is_current_assembly(resolved, verification):
+            try:
+                with verification.assembly_json.open("r", encoding="utf-8") as stream:
+                    status = str((json.load(stream) or {}).get("status") or "verifying").upper()
+            except Exception:
+                status = "VERIFYING"
+            assembly_item = QtWidgets.QTreeWidgetItem(["_assembly", "", status, "verification scene"])
+            assembly_item.setForeground(0, QtGui.QColor("#d6b46b"))
+            assembly_item.setExpanded(True)
+            self.context_pack_tree.addTopLevelItem(assembly_item)
+            for entry in resolved.manifest.get("resolved_representations") or []:
+                assembly_item.addChild(
+                    QtWidgets.QTreeWidgetItem(
+                        [
+                            str(entry.get("publish_type") or ""),
+                            str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
+                            str(entry.get("version") or ""),
+                            str(entry.get("comment") or ""),
+                        ]
+                    )
+                )
         for pack in packs:
             version_item = QtWidgets.QTreeWidgetItem([pack["version"], "", "", pack.get("comment", "")])
             version_item.setData(0, QtCore.Qt.UserRole, pack["manifest"])
@@ -1496,6 +1910,41 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.status_label.setText(f"Sent to Shot Cast: {asset.name} ({path})")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Send to Shot Cast Failed", str(exc))
+
+    def _add_selected_assets_to_shot_cast(self) -> None:
+        identities = self._selected_shot_identities()
+        if not identities:
+            QtWidgets.QMessageBox.information(self, "Add to Cast", "Select one or more shots in the Shot tree first.")
+            return
+        assets = self._selected_assets()
+        if not assets:
+            QtWidgets.QMessageBox.information(self, "Add to Cast", "Select one or more assets first.")
+            return
+        try:
+            selections = []
+            for asset in assets:
+                metadata = self.manager.load_asset_metadata(asset)
+                selections.append(
+                    {
+                        "asset": asset.name,
+                        "category": asset.category,
+                        "group": asset.group,
+                        "variant": metadata.get("default_variant") or "default",
+                        "asset_type": metadata.get("asset_type") or metadata.get("type") or asset.category,
+                        "root": str(asset.root),
+                    }
+                )
+            service = _shot_service(self.manager.config_dir)
+            added_count = 0
+            changed_shots = []
+            for identity in identities:
+                _cast_path, rows = service.add_asset_selections_to_cast(identity, selections)
+                added_count += len(rows)
+                changed_shots.append(identity.code)
+            shot_label = ", ".join(changed_shots)
+            self.status_label.setText(f"Added {added_count} cast entries to: {shot_label}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Add to Cast Failed", str(exc))
 
     def _create_asset(self) -> None:
         dialog = AssetRequestDialog(self, title="Create Asset")

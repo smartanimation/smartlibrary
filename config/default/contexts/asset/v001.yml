@@ -24,3 +24,5 @@ viewport:
 fallbacks:
   look:
     high: low
+  rig:
+    anim: layout

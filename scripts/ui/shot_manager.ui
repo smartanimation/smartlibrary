@@ -79,38 +79,68 @@
         <number>0</number>
        </property>
        <item>
-        <widget class="QTreeWidget" name="shot_list">
-         <property name="selectionMode">
-          <enum>QAbstractItemView::SingleSelection</enum>
+        <widget class="QSplitter" name="shot_browser_splitter">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
          </property>
-         <property name="rootIsDecorated">
-          <bool>false</bool>
-         </property>
-         <column>
-          <property name="text">
-           <string>Episode</string>
+         <widget class="QTreeWidget" name="shot_filter_tree">
+          <property name="minimumSize">
+           <size>
+            <width>140</width>
+            <height>0</height>
+           </size>
           </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Sequence</string>
+          <property name="maximumSize">
+           <size>
+            <width>240</width>
+            <height>16777215</height>
+           </size>
           </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Shot</string>
+          <property name="headerHidden">
+           <bool>true</bool>
           </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Status</string>
+          <property name="rootIsDecorated">
+           <bool>true</bool>
           </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Frames</string>
+          <column>
+           <property name="text">
+            <string>Shots</string>
+           </property>
+          </column>
+         </widget>
+         <widget class="QTreeWidget" name="shot_list">
+          <property name="selectionMode">
+           <enum>QAbstractItemView::SingleSelection</enum>
           </property>
-         </column>
+          <property name="rootIsDecorated">
+           <bool>false</bool>
+          </property>
+          <column>
+           <property name="text">
+            <string>Episode</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Sequence</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Shot</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Status</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Frames</string>
+           </property>
+          </column>
+         </widget>
         </widget>
        </item>
       </layout>
@@ -133,44 +163,82 @@
         <number>0</number>
        </property>
        <item>
-        <layout class="QHBoxLayout" name="detail_header_layout">
-         <property name="spacing">
-          <number>4</number>
-         </property>
-         <item>
-          <widget class="QPushButton" name="back_to_shots_btn">
-           <property name="text">
-            <string>Back</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLabel" name="detail_title_label">
-           <property name="text">
-            <string>Shot Detail</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="detail_header_spacer">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-        </layout>
-       </item>
-       <item>
         <widget class="QSplitter" name="detail_splitter">
          <property name="orientation">
           <enum>Qt::Horizontal</enum>
          </property>
+         <widget class="QWidget" name="detail_selector_widget">
+          <property name="minimumSize">
+           <size>
+            <width>150</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>220</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <layout class="QVBoxLayout" name="detail_selector_layout">
+           <property name="spacing">
+            <number>4</number>
+           </property>
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>4</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <widget class="QPushButton" name="back_to_shots_btn">
+             <property name="text">
+              <string>Back</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="shot_dept_label">
+             <property name="text">
+              <string>Dept</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QListWidget" name="shot_dept_list"/>
+           </item>
+           <item>
+            <widget class="QLabel" name="shot_variant_label">
+             <property name="text">
+              <string>Option</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QListWidget" name="shot_variant_list"/>
+           </item>
+           <item>
+            <widget class="QPushButton" name="add_shot_variant_btn">
+             <property name="text">
+              <string>+</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="stage_shot_btn">
+             <property name="text">
+              <string>Stage</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
          <widget class="QTabWidget" name="tabs">
          <widget class="QWidget" name="work_tab">
           <attribute name="title">
@@ -396,6 +464,44 @@
            </item>
           </layout>
          </widget>
+         <widget class="QWidget" name="data_tab">
+          <attribute name="title">
+           <string>Data</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="data_layout">
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>4</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <widget class="QTreeWidget" name="shot_data_tree">
+             <column>
+              <property name="text">
+               <string>Name</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Version</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Comment</string>
+              </property>
+             </column>
+            </widget>
+           </item>
+          </layout>
+         </widget>
          <widget class="QPlainTextEdit" name="validation_view">
           <attribute name="title">
            <string>Validation</string>
@@ -406,7 +512,7 @@
          </widget>
          <widget class="QWidget" name="build_preview_tab">
           <attribute name="title">
-           <string>Build Preview</string>
+           <string>Preview</string>
           </attribute>
           <layout class="QVBoxLayout" name="buildpreview_layout">
            <property name="spacing">
@@ -497,6 +603,44 @@
            </item>
           </layout>
          </widget>
+         <widget class="QWidget" name="context_tab">
+          <attribute name="title">
+           <string>Context</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="context_layout">
+           <property name="leftMargin">
+            <number>4</number>
+           </property>
+           <property name="topMargin">
+            <number>4</number>
+           </property>
+           <property name="rightMargin">
+            <number>4</number>
+           </property>
+           <property name="bottomMargin">
+            <number>4</number>
+           </property>
+           <item>
+            <widget class="QTreeWidget" name="shot_context_tree">
+             <column>
+              <property name="text">
+               <string>Context</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>State</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Version</string>
+              </property>
+             </column>
+            </widget>
+           </item>
+          </layout>
+         </widget>
          </widget>
          <widget class="QWidget" name="info_widget">
           <layout class="QVBoxLayout" name="info_layout">
@@ -515,6 +659,49 @@
            <property name="bottomMargin">
             <number>4</number>
            </property>
+           <item>
+            <widget class="QLabel" name="shot_thumbnail_label">
+             <property name="minimumSize">
+              <size>
+               <width>220</width>
+               <height>124</height>
+              </size>
+             </property>
+             <property name="alignment">
+              <set>Qt::AlignCenter</set>
+             </property>
+             <property name="text">
+              <string>Thumbnail</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="detail_title_label">
+             <property name="text">
+              <string>Shot Detail</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QTableWidget" name="shot_info_table">
+             <property name="rowCount">
+              <number>0</number>
+             </property>
+             <property name="columnCount">
+              <number>2</number>
+             </property>
+             <column>
+              <property name="text">
+               <string>Info</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Value</string>
+              </property>
+             </column>
+            </widget>
+           </item>
            <item>
             <widget class="QLabel" name="shot_json_label">
              <property name="text">
