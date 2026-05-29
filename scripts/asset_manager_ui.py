@@ -151,7 +151,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         settings.setValue("department", self._current_department())
         settings.setValue("subset", self._current_variant())
         settings.setValue("asset_view", "table" if self.asset_list.viewMode() == QtWidgets.QListView.ListMode else "card")
-        settings.setValue("shot_codes", [identity.code for identity in self._selected_shot_identities()])
+        settings.setValue("shot_codes", [target["code"] for target in self._selected_cast_targets()])
         settings.setValue("main_splitter", self.main_splitter.saveState())
         settings.setValue("asset_browser_splitter", self.asset_browser_splitter.saveState())
         settings.setValue("detail_content_splitter", self.detail_content_splitter.saveState())
@@ -771,7 +771,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_filter_tree.blockSignals(False)
 
     def _populate_shot_tree(self) -> None:
-        selected_codes = {identity.code for identity in self._selected_shot_identities()}
+        selected_codes = {target["code"] for target in self._selected_cast_targets()}
 
         self.shot_tree.blockSignals(True)
         self.shot_tree.clear()
@@ -791,15 +791,23 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 sequence_item = sequence_items.get(sequence_key)
                 if sequence_item is None:
                     sequence_item = QtWidgets.QTreeWidgetItem([identity.sequence])
+                    sequence_item.setData(
+                        0,
+                        QtCore.Qt.UserRole,
+                        {"kind": "sequence", "episode": identity.episode, "sequence": identity.sequence, "code": f"{identity.episode}_{identity.sequence}"},
+                    )
+                    sequence_item.setToolTip(0, f"Sequence Cast: {identity.episode}/{identity.sequence}")
                     episode_item.addChild(sequence_item)
                     sequence_items[sequence_key] = sequence_item
 
                 shot_item = QtWidgets.QTreeWidgetItem([identity.shot])
-                shot_item.setData(0, QtCore.Qt.UserRole, identity)
+                shot_item.setData(0, QtCore.Qt.UserRole, {"kind": "shot", "identity": identity, "code": identity.code})
                 shot_item.setToolTip(0, identity.code)
                 sequence_item.addChild(shot_item)
                 if identity.code in selected_codes:
                     selected_items.append(shot_item)
+                if f"{identity.episode}_{identity.sequence}" in selected_codes and sequence_item not in selected_items:
+                    selected_items.append(sequence_item)
 
             for item in episode_items.values():
                 item.setExpanded(True)
@@ -956,18 +964,30 @@ class AssetManagerWindow(QtWidgets.QDialog):
         return assets
 
     def _selected_shot_identities(self) -> list:
+        return [target["identity"] for target in self._selected_cast_targets() if target.get("kind") == "shot"]
+
+    def _selected_cast_targets(self) -> list[dict]:
+        targets = []
         identities = []
         for item in self.shot_tree.selectedItems():
-            identity = item.data(0, QtCore.Qt.UserRole)
-            if identity:
-                identities.append(identity)
-        if identities:
-            return identities
+            target = self._cast_target_from_tree_item(item)
+            if target:
+                targets.append(target)
+        if targets:
+            return _unique_cast_targets(targets)
         item = self.shot_tree.currentItem()
         if not item:
             return []
-        identity = item.data(0, QtCore.Qt.UserRole)
-        return [identity] if identity else []
+        target = self._cast_target_from_tree_item(item)
+        return [target] if target else []
+
+    def _cast_target_from_tree_item(self, item) -> dict | None:
+        data = item.data(0, QtCore.Qt.UserRole) if item else None
+        if isinstance(data, dict) and data.get("kind") in {"shot", "sequence"}:
+            return data
+        if data and hasattr(data, "code"):
+            return {"kind": "shot", "identity": data, "code": data.code}
+        return None
 
     def _select_shot_codes(self, shot_codes: set[str]) -> None:
         if not shot_codes:
@@ -977,9 +997,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
             episode_item = self.shot_tree.topLevelItem(episode_index)
             for sequence_index in range(episode_item.childCount()):
                 sequence_item = episode_item.child(sequence_index)
+                sequence_data = sequence_item.data(0, QtCore.Qt.UserRole)
+                if isinstance(sequence_data, dict) and sequence_data.get("code") in shot_codes:
+                    sequence_item.setSelected(True)
                 for shot_index in range(sequence_item.childCount()):
                     shot_item = sequence_item.child(shot_index)
-                    identity = shot_item.data(0, QtCore.Qt.UserRole)
+                    data = shot_item.data(0, QtCore.Qt.UserRole)
+                    identity = data.get("identity") if isinstance(data, dict) else data
                     if identity and identity.code in shot_codes:
                         shot_item.setSelected(True)
         self.shot_tree.blockSignals(False)
@@ -1364,7 +1388,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
                         write_context_asset_snapshot,
                     )
 
-                    maya_scene_builder = write_context_asset_snapshot
+                    look_scenes = self._context_scene_paths(self.context_assembly, "look")
+                    maya_scene_builder = lambda source, target: write_context_asset_snapshot(
+                        source,
+                        target,
+                        look_scenes=look_scenes,
+                    )
                     maya_preview = open_context_asset_assembly
                 except ImportError:
                     maya_scene_builder = None
@@ -1507,6 +1536,19 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 )
             ] = str(entry.get("version") or "")
         return versions
+
+    @staticmethod
+    def _context_scene_paths(assembly, publish_type: str) -> list[Path]:
+        paths = []
+        for entry in assembly.entries:
+            if entry.publish_type != publish_type:
+                continue
+            for key in ("ma", "mb"):
+                path = Path(str((entry.files or {}).get(key) or ""))
+                if path.exists():
+                    paths.append(path)
+                    break
+        return paths
 
     @staticmethod
     def _context_newer_latest_count(entries, official_versions) -> int:
@@ -1912,9 +1954,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Send to Shot Cast Failed", str(exc))
 
     def _add_selected_assets_to_shot_cast(self) -> None:
-        identities = self._selected_shot_identities()
-        if not identities:
-            QtWidgets.QMessageBox.information(self, "Add to Cast", "Select one or more shots in the Shot tree first.")
+        targets = self._selected_cast_targets()
+        if not targets:
+            QtWidgets.QMessageBox.information(self, "Add to Cast", "Select one or more shots or sequences in the Shot tree first.")
             return
         assets = self._selected_assets()
         if not assets:
@@ -1936,13 +1978,22 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 )
             service = _shot_service(self.manager.config_dir)
             added_count = 0
-            changed_shots = []
-            for identity in identities:
-                _cast_path, rows = service.add_asset_selections_to_cast(identity, selections)
+            changed_targets = []
+            for target in targets:
+                if target.get("kind") == "sequence":
+                    _cast_path, rows = service.add_asset_selections_to_sequence_cast(
+                        target["episode"],
+                        target["sequence"],
+                        selections,
+                    )
+                    changed_targets.append(f"{target['episode']}/{target['sequence']}")
+                else:
+                    identity = target["identity"]
+                    _cast_path, rows = service.add_asset_selections_to_cast(identity, selections)
+                    changed_targets.append(identity.code)
                 added_count += len(rows)
-                changed_shots.append(identity.code)
-            shot_label = ", ".join(changed_shots)
-            self.status_label.setText(f"Added {added_count} cast entries to: {shot_label}")
+            target_label = ", ".join(changed_targets)
+            self.status_label.setText(f"Added {added_count} cast entries to: {target_label}")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Add to Cast Failed", str(exc))
 
@@ -3317,10 +3368,20 @@ def publish_work_outputs(
 ) -> list[Path]:
     published: list[Path] = []
     files: dict[str, str] = {}
+    parsed = manager.parse_work_file(source_workfile) or {}
     source_ext = source_workfile.suffix.lower().lstrip(".")
     extra_formats = [fmt for fmt in targets if fmt != source_ext]
-    if extra_formats:
+    collect_rig_metadata = parsed.get("department") == "rig"
+    if extra_formats or collect_rig_metadata:
         ensure_current_dcc_scene_matches(source_workfile)
+    rig_metadata = None
+    if collect_rig_metadata:
+        rig_metadata = collect_rig_publish_metadata(
+            asset.name,
+            subset or parsed.get("variant") or "",
+            source_workfile,
+            dependency_info,
+        )
     snapshot_active = False
     try:
         if should_import_references_for_publish(dependency_info):
@@ -3339,6 +3400,8 @@ def publish_work_outputs(
                 export_current_scene_for_publish(target, publish_format, source_workfile)
             published.append(target)
             files[publish_format] = target.name
+            if rig_metadata is not None:
+                write_rig_publish_metadata(target.parent, rig_metadata)
     finally:
         if snapshot_active:
             reopen_source_workfile(source_workfile)
@@ -3352,6 +3415,30 @@ def publish_work_outputs(
         dependency_info=dependency_info,
     )
     return published
+
+
+def collect_rig_publish_metadata(
+    asset_name: str,
+    subset: str,
+    source_workfile: Path,
+    dependency_info: dict | None,
+) -> dict:
+    from smartlib.dcc.maya.rig_metadata import collect_rig_metadata
+
+    return collect_rig_metadata(
+        asset_name=asset_name,
+        subset=subset,
+        source_workfile=source_workfile,
+        dependency_info=dependency_info,
+    )
+
+
+def write_rig_publish_metadata(version_dir: Path, metadata: dict) -> Path:
+    metadata_dir = version_dir / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    path = metadata_dir / "rig.json"
+    write_json_file(path, metadata)
+    return path
 
 
 def should_import_references_for_publish(dependency_info: dict | None) -> bool:
@@ -3668,7 +3755,7 @@ def collect_scene_info() -> dict:
 
     layers = []
     for layer in cmds.ls(type="renderLayer") or []:
-        if layer != "defaultRenderLayer":
+        if layer.split("|")[-1].split(":")[-1] != "defaultRenderLayer":
             layers.append(layer)
 
     references = []
@@ -4038,6 +4125,18 @@ def import_data_file_to_current_dcc(path: str | os.PathLike[str]) -> None:
         raise RuntimeError("mGear skin import API was not found. Check your mGear version.")
 
     raise RuntimeError(f"Unsupported data file type: {ext}")
+
+
+def _unique_cast_targets(targets: list[dict]) -> list[dict]:
+    unique = []
+    seen = set()
+    for target in targets:
+        code = target.get("code")
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        unique.append(target)
+    return unique
 
 
 _WINDOW = None

@@ -90,3 +90,15 @@ staging_dependencies:
       department: model
       subsets: [render, hires]
       format: ma
+
+maya_reference_groups:
+  default: assets_grp
+  rules:
+    - group: sets_grp
+      category: [env]
+    - group: props_grp
+      category: [prop]
+    - group: character_grp
+      category: [characters]
+    - group: character_grp
+      group_name: [hero]

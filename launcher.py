@@ -63,6 +63,12 @@ def apply_config_env_vars(env, env_vars, projectroot, *, maya_safe=False):
             continue
         env[key] = value
 
+
+def runtime_python_path():
+    runtime = os.path.join(CURRENT_DIR, "runtime", "python", "Scripts", "python.exe")
+    return runtime if os.path.exists(runtime) else sys.executable
+
+
 def format_config_value(value, projectroot):
     return (
         str(value)
@@ -454,6 +460,44 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.creator_win.config_saved.connect(self.refresh_projects)
             self.creator_win.show()
 
+    def current_project_config_dir(self):
+        folder_name = self.project_map.get(self.ui.projectCombo.currentText())
+        if not folder_name:
+            return ""
+        return os.path.join(PROJECTS_ROOT, folder_name)
+
+    def launch_smart_tool(self, tool_name):
+        cfg_dir = self.current_project_config_dir()
+        if not cfg_dir:
+            QtWidgets.QMessageBox.warning(self, "SmartTools", "Select a project first.")
+            return
+        python = runtime_python_path()
+        env = os.environ.copy()
+        env["PROJECT_CONFIG_DIR"] = cfg_dir
+        env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+        env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
+        apply_pipeline_pythonpath(env, maya_safe=False)
+
+        tool_commands = {
+            "asset_manager": [python, os.path.join(SCRIPTS_DIR, "asset_manager_ui.py")],
+            "editorial_intake": [python, "-m", "smartlib.apps.editorial_intake"],
+            "smart_casting": [python, "-m", "smartlib.apps.smart_casting", cfg_dir],
+            "shot_manager": [python, os.path.join(SCRIPTS_DIR, "shot_manager_ui.py")],
+        }
+        command = tool_commands.get(tool_name)
+        if not command:
+            QtWidgets.QMessageBox.warning(self, "SmartTools", f"Unknown tool: {tool_name}")
+            return
+        try:
+            subprocess.Popen(
+                command,
+                cwd=CURRENT_DIR,
+                env=env,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "SmartTools", f"Launch failed: {e}")
+
     def check_project_status(self, root):
         is_ready = os.path.exists(root) if root else False
         if hasattr(self.ui, 'setup_button'):
@@ -469,6 +513,15 @@ class SmartLauncher(QtWidgets.QMainWindow):
     def setup_menus(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("FILE")
+        tools_menu = menubar.addMenu("SmartTools")
+        asset_action = tools_menu.addAction("Asset Manager", lambda: self.launch_smart_tool("asset_manager"))
+        asset_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirIcon))
+        editorial_action = tools_menu.addAction("Editorial Intake", lambda: self.launch_smart_tool("editorial_intake"))
+        editorial_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        casting_action = tools_menu.addAction("Smart Casting", lambda: self.launch_smart_tool("smart_casting"))
+        casting_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
+        shot_action = tools_menu.addAction("Shot Manager", lambda: self.launch_smart_tool("shot_manager"))
+        shot_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon))
         
         # 1. New Project
         new_action = file_menu.addAction("New Project", self.open_config_creator)

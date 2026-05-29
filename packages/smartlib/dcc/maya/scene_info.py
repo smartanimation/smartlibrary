@@ -25,7 +25,7 @@ def collect_scene_info(cmds_module=None) -> dict:
 
     layers = []
     for layer in cmds.ls(type="renderLayer") or []:
-        if layer != "defaultRenderLayer":
+        if not _is_default_render_layer(layer):
             layers.append(layer)
 
     references = []
@@ -53,3 +53,10 @@ def collect_scene_info(cmds_module=None) -> dict:
         "layers": sorted(set(layers)),
         "references": sorted(set(references)),
     }
+
+
+def _is_default_render_layer(layer: str) -> bool:
+    """Filter Maya's built-in render layer even if a namespace/full path leaks in."""
+
+    clean_name = str(layer or "").split("|")[-1].split(":")[-1]
+    return clean_name == "defaultRenderLayer"

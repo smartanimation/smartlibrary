@@ -9,6 +9,7 @@ enabled_softwares:
 - maya
 - DaVinciResolve
 - AfterEffects2025
+- Houdini21.0.440
 shot_depts:
 - anim
 asset_depts:

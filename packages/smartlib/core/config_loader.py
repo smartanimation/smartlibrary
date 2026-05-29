@@ -63,6 +63,13 @@ def _parse_scalar(value: str) -> Any:
         return ""
     if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
+    lowered = value.lower()
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    if lowered in {"null", "none"}:
+        return None
     if value.isdigit():
         return int(value)
     return value

@@ -8,6 +8,7 @@ from smartlib.apps.shot_manager.service import (
     ShotIdentity,
     ShotManagerService,
     ShotWorkFile,
+    SequenceIdentity,
     DEFAULT_REVIEW_LAYERS,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "ShotIdentity",
     "ShotManagerService",
     "ShotWorkFile",
+    "SequenceIdentity",
     "DEFAULT_REVIEW_LAYERS",
 ]

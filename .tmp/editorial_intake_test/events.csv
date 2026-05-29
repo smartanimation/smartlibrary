@@ -1,0 +1,2 @@
+﻿episode,sequence,shot,cut_in,cut_out,handle_head,handle_tail,source_in,source_out,event_id,clip,retime,hold,note,segments
+ep001,sq010,sh0010,1001,1010,12,12,0,9,1,offline,1,false,test,

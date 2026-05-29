@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable
 
 
-def write_context_asset_snapshot(source_scene: str | Path, target_scene: str | Path) -> Path:
+def write_context_asset_snapshot(
+    source_scene: str | Path,
+    target_scene: str | Path,
+    look_scenes: Iterable[str | Path] | None = None,
+) -> Path:
     """Write a Maya asset context scene with nested references imported."""
 
     try:
@@ -26,6 +31,8 @@ def write_context_asset_snapshot(source_scene: str | Path, target_scene: str | P
         cmds.file(str(source), open=True, force=True)
         _import_all_references(cmds)
         _merge_imported_base_asset_branches(cmds)
+        for look_scene in look_scenes or []:
+            _apply_look_scene_materials(cmds, Path(look_scene))
         cmds.file(rename=str(target))
         cmds.file(save=True, type="mayaAscii")
     finally:
@@ -82,6 +89,92 @@ def _import_all_references(cmds) -> None:
     remaining = cmds.file(query=True, reference=True) or []
     if remaining:
         raise RuntimeError("Could not import all context asset references: " + ", ".join(remaining))
+
+
+def _apply_look_scene_materials(cmds, look_scene: Path) -> None:
+    if not look_scene.exists():
+        raise FileNotFoundError(f"Context look scene was not found: {look_scene}")
+
+    target_shapes = _mesh_shapes_by_leaf(cmds)
+    assemblies_before = set(cmds.ls(assemblies=True, long=True) or [])
+    shapes_before = set(_mesh_shapes(cmds))
+    cmds.file(
+        str(look_scene),
+        i=True,
+        namespace="__contextLook",
+        mergeNamespacesOnClash=False,
+        preserveReferences=True,
+    )
+    _import_all_references(cmds)
+
+    imported_shapes = [
+        shape
+        for shape in _mesh_shapes(cmds)
+        if shape not in shapes_before and cmds.objExists(shape)
+    ]
+    applied = 0
+    for source_shape in imported_shapes:
+        target_shape = _matching_mesh_shape(target_shapes, source_shape)
+        if not target_shape:
+            continue
+        for shading_engine in _shape_shading_engines(cmds, source_shape):
+            try:
+                cmds.sets(target_shape, edit=True, forceElement=shading_engine)
+                applied += 1
+            except RuntimeError:
+                continue
+
+    _delete_imported_assemblies(cmds, assemblies_before)
+    if imported_shapes and not applied:
+        raise RuntimeError(
+            f"Look scene was imported but no matching mesh material assignments were applied: {look_scene}"
+        )
+
+
+def _mesh_shapes_by_leaf(cmds) -> dict[str, list[str]]:
+    shapes: dict[str, list[str]] = {}
+    for shape in _mesh_shapes(cmds):
+        shapes.setdefault(_mesh_leaf(shape), []).append(shape)
+    return shapes
+
+
+def _mesh_shapes(cmds) -> list[str]:
+    shapes = []
+    for shape in cmds.ls(type="mesh", long=True) or []:
+        try:
+            if cmds.getAttr(f"{shape}.intermediateObject"):
+                continue
+        except Exception:
+            pass
+        shapes.append(shape)
+    return shapes
+
+
+def _matching_mesh_shape(target_shapes: dict[str, list[str]], source_shape: str) -> str | None:
+    matches = target_shapes.get(_mesh_leaf(source_shape)) or []
+    return matches[0] if len(matches) == 1 else None
+
+
+def _shape_shading_engines(cmds, shape: str) -> list[str]:
+    return [
+        node
+        for node in cmds.listConnections(shape, type="shadingEngine") or []
+        if node not in {"initialShadingGroup", "initialParticleSE"}
+    ]
+
+
+def _delete_imported_assemblies(cmds, assemblies_before: set[str]) -> None:
+    for assembly in cmds.ls(assemblies=True, long=True) or []:
+        if assembly not in assemblies_before and cmds.objExists(assembly):
+            try:
+                cmds.delete(assembly)
+            except RuntimeError:
+                continue
+
+
+def _mesh_leaf(shape: str) -> str:
+    parent = str(shape).rsplit("|", 1)[0] if "|" in str(shape) else str(shape)
+    return _leaf_name(parent)
 
 
 def _merge_imported_base_asset_branches(cmds) -> None:

@@ -1,0 +1,320 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>842</width>
+    <height>496</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MainWindow</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item>
+     <widget class="QFrame" name="frame">
+      <property name="frameShape">
+       <enum>QFrame::StyledPanel</enum>
+      </property>
+      <property name="frameShadow">
+       <enum>QFrame::Raised</enum>
+      </property>
+      <layout class="QHBoxLayout" name="horizontalLayout">
+       <property name="spacing">
+        <number>3</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QPushButton" name="validate_btn">
+         <property name="text">
+          <string>Validate</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="set_sequencerange_btn">
+         <property name="text">
+          <string>Set Sequence Range</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="set_selectedshotrange_btn">
+         <property name="text">
+          <string>Set Selected Range</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>253</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="shotscale_btn">
+         <property name="text">
+          <string>Scale</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="shotmove_btn">
+         <property name="text">
+          <string>Move</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSpinBox" name="spinBox">
+         <property name="minimumSize">
+          <size>
+           <width>100</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="minimum">
+          <number>-99999</number>
+         </property>
+         <property name="maximum">
+          <number>99999</number>
+         </property>
+         <property name="value">
+          <number>0</number>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QTableWidget" name="shotlist">
+      <property name="alternatingRowColors">
+       <bool>true</bool>
+      </property>
+      <property name="selectionBehavior">
+       <enum>QAbstractItemView::SelectRows</enum>
+      </property>
+      <attribute name="horizontalHeaderStretchLastSection">
+       <bool>true</bool>
+      </attribute>
+      <attribute name="verticalHeaderVisible">
+       <bool>false</bool>
+      </attribute>
+      <row>
+       <property name="text">
+        <string>新しい行</string>
+       </property>
+      </row>
+      <row>
+       <property name="text">
+        <string>新しい行</string>
+       </property>
+      </row>
+      <row>
+       <property name="text">
+        <string>新しい行</string>
+       </property>
+      </row>
+      <column>
+       <property name="text">
+        <string>Shot</string>
+       </property>
+      </column>
+      <column>
+       <property name="text">
+        <string>Camera</string>
+       </property>
+      </column>
+      <column>
+       <property name="text">
+        <string>Lens</string>
+       </property>
+      </column>
+      <column>
+       <property name="text">
+        <string>fStop</string>
+       </property>
+      </column>
+      <column>
+       <property name="text">
+        <string>Start Time</string>
+       </property>
+      </column>
+      <column>
+       <property name="text">
+        <string>End Time</string>
+       </property>
+      </column>
+      <column>
+       <property name="text">
+        <string>Duration</string>
+       </property>
+      </column>
+      <item row="0" column="0">
+       <property name="text">
+        <string>sh0010</string>
+       </property>
+      </item>
+      <item row="0" column="1">
+       <property name="text">
+        <string>sh0010:cam</string>
+       </property>
+      </item>
+      <item row="0" column="2">
+       <property name="text">
+        <string>35 mm</string>
+       </property>
+      </item>
+      <item row="0" column="3">
+       <property name="text">
+        <string>5.6</string>
+       </property>
+      </item>
+      <item row="0" column="4">
+       <property name="text">
+        <string>1001</string>
+       </property>
+      </item>
+      <item row="0" column="5">
+       <property name="text">
+        <string>1024</string>
+       </property>
+      </item>
+      <item row="0" column="6">
+       <property name="text">
+        <string>24 (01 + 00)</string>
+       </property>
+      </item>
+      <item row="1" column="0">
+       <property name="text">
+        <string>sh0020</string>
+       </property>
+      </item>
+      <item row="1" column="1">
+       <property name="text">
+        <string>sh0020:cam</string>
+       </property>
+      </item>
+      <item row="1" column="2">
+       <property name="text">
+        <string>35 mm</string>
+       </property>
+      </item>
+      <item row="1" column="3">
+       <property name="text">
+        <string>5.6</string>
+       </property>
+      </item>
+      <item row="1" column="4">
+       <property name="text">
+        <string>1025</string>
+       </property>
+      </item>
+      <item row="1" column="5">
+       <property name="text">
+        <string>1129</string>
+       </property>
+      </item>
+      <item row="1" column="6">
+       <property name="text">
+        <string>105 (04 + 09)</string>
+       </property>
+      </item>
+      <item row="2" column="0">
+       <property name="text">
+        <string>sh0030</string>
+       </property>
+      </item>
+      <item row="2" column="1">
+       <property name="text">
+        <string>sh0030:cam</string>
+       </property>
+      </item>
+      <item row="2" column="2">
+       <property name="text">
+        <string>35 mm</string>
+       </property>
+      </item>
+      <item row="2" column="3">
+       <property name="text">
+        <string>5.6</string>
+       </property>
+      </item>
+      <item row="2" column="4">
+       <property name="text">
+        <string>1130</string>
+       </property>
+      </item>
+      <item row="2" column="5">
+       <property name="text">
+        <string>1211</string>
+       </property>
+      </item>
+      <item row="2" column="6">
+       <property name="text">
+        <string>82 (03 + 10)</string>
+       </property>
+      </item>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPushButton" name="preview_btn">
+      <property name="font">
+       <font>
+        <pointsize>12</pointsize>
+       </font>
+      </property>
+      <property name="text">
+       <string>Preview</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>842</width>
+     <height>21</height>
+    </rect>
+   </property>
+  </widget>
+ </widget>
+ <tabstops>
+  <tabstop>validate_btn</tabstop>
+  <tabstop>set_sequencerange_btn</tabstop>
+  <tabstop>set_selectedshotrange_btn</tabstop>
+  <tabstop>shotscale_btn</tabstop>
+  <tabstop>shotmove_btn</tabstop>
+  <tabstop>spinBox</tabstop>
+  <tabstop>shotlist</tabstop>
+  <tabstop>preview_btn</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>

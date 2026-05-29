@@ -15,6 +15,7 @@ from smartlib.core.metadata import read_json, sidecar_path, write_json
 from smartlib.core.path_resolver import ProjectPaths
 from smartlib.core.selection_context import read_selected_asset
 from smartlib.core.validation import ValidationIssue
+from smartlib.core.versioning import format_version, next_version, parse_version
 
 
 DEFAULT_SHOT_DEPARTMENTS = ["layout", "anim", "fx", "lighting", "comp"]
@@ -57,6 +58,16 @@ class ShotIdentity:
     @property
     def code(self) -> str:
         return f"{self.episode}_{self.sequence}_{self.shot}"
+
+
+@dataclass(frozen=True)
+class SequenceIdentity:
+    episode: str
+    sequence: str
+
+    @property
+    def code(self) -> str:
+        return f"{self.episode}_{self.sequence}"
 
 
 @dataclass(frozen=True)
@@ -110,6 +121,33 @@ class ShotWorkFile:
 
 
 @dataclass(frozen=True)
+class ShotDataVersion:
+    name: str
+    version: str
+    path: str
+    updated: str = ""
+    comment: str = ""
+    latest: bool = False
+
+
+@dataclass(frozen=True)
+class LayoutPublishStatusItem:
+    name: str
+    state: str
+    version: str = ""
+    path: str = ""
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class AnimInputBuildResult:
+    shot: str
+    cast_publish: Path
+    placements_publish: Path
+    anim_input: Path
+
+
+@dataclass(frozen=True)
 class ShotCreateRequest:
     episode: str
     sequence: str
@@ -118,6 +156,7 @@ class ShotCreateRequest:
     cut_in: int = 1001
     cut_out: int = 1001
     status: str = "wip"
+    create_work_dirs: bool = True
 
     @property
     def identity(self) -> ShotIdentity:
@@ -150,6 +189,9 @@ class ShotManagerService:
     def shot_root(self, identity: ShotIdentity) -> Path:
         return self.paths.shot_root(identity.episode, identity.sequence, identity.shot)
 
+    def sequence_workspace_root(self, episode: str, sequence: str) -> Path:
+        return self.paths.sequence_workspace_root(episode, sequence)
+
     def list_shots(self) -> list[ShotIdentity]:
         shots_root = self.paths.shots_root()
         if not shots_root.exists():
@@ -171,19 +213,63 @@ class ShotManagerService:
                 continue
         return sorted(shots, key=lambda item: (item.episode.lower(), item.sequence.lower(), item.shot.lower()))
 
+    def list_sequences(self) -> list[SequenceIdentity]:
+        sequences: dict[tuple[str, str], SequenceIdentity] = {}
+        sequences_root = self.paths.sequences_root()
+        if sequences_root.exists():
+            for sequence_json in sequences_root.glob("*/*/sequence.json"):
+                sequence_root = sequence_json.parent
+                episode_root = sequence_root.parent
+                sequences[(episode_root.name, sequence_root.name)] = SequenceIdentity(episode_root.name, sequence_root.name)
+        for shot in self.list_shots():
+            sequences.setdefault((shot.episode, shot.sequence), SequenceIdentity(shot.episode, shot.sequence))
+        return sorted(sequences.values(), key=lambda item: (item.episode.lower(), item.sequence.lower()))
+
+    def load_sequence(self, identity: SequenceIdentity) -> dict[str, Any]:
+        sequence_path = self.sequence_workspace_root(identity.episode, identity.sequence) / "sequence.json"
+        data = read_json(sequence_path, None)
+        if isinstance(data, dict):
+            return data
+        legacy_path = self.paths.sequence_root(identity.episode, identity.sequence) / "sequence.json"
+        data = read_json(legacy_path, None)
+        if isinstance(data, dict):
+            return data
+        shots = [shot for shot in self.list_shots() if shot.episode == identity.episode and shot.sequence == identity.sequence]
+        return {"episode": identity.episode, "sequence": identity.sequence, "shots": [{"shot": shot.shot} for shot in shots]}
+
     def load_shot(self, identity: ShotIdentity) -> dict[str, Any]:
         return read_json(self.shot_root(identity) / "shot.json", {})
 
-    def shot_work_dir(self, identity: ShotIdentity, department: str, option: str | None = None) -> Path:
-        work_dir = self.paths.shot_work_dir(identity.episode, identity.sequence, identity.shot, department)
+    def shot_work_dir(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        option: str | None = None,
+        tool_name: str = "maya",
+    ) -> Path:
+        work_dir = self.paths.shot_work_dir(
+            identity.episode,
+            identity.sequence,
+            identity.shot,
+            department,
+            _normalize_tool_name(tool_name),
+        )
         if option:
             return work_dir / _normalize_work_option(option)
         return work_dir
 
-    def list_shot_work_options(self, identity: ShotIdentity, department: str) -> list[str]:
-        work_dir = self.shot_work_dir(identity, department)
+    def legacy_shot_work_dir(self, identity: ShotIdentity, department: str, option: str | None = None) -> Path:
+        work_dir = self.paths.legacy_shot_work_dir(identity.episode, identity.sequence, identity.shot, department)
+        if option:
+            return work_dir / _normalize_work_option(option)
+        return work_dir
+
+    def list_shot_work_options(self, identity: ShotIdentity, department: str, tool_name: str = "maya") -> list[str]:
+        work_dirs = [self.shot_work_dir(identity, department, tool_name=tool_name), self.legacy_shot_work_dir(identity, department)]
         options = {"main"}
-        if work_dir.exists():
+        for work_dir in work_dirs:
+            if not work_dir.exists():
+                continue
             options.update(
                 path.name
                 for path in work_dir.iterdir()
@@ -197,7 +283,7 @@ class ShotManagerService:
             raise ValueError("'all' is reserved for the work option filter.")
         paths = []
         for department in self.shot_departments:
-            path = self.shot_work_dir(identity, department, option_name)
+            path = self.shot_work_dir(identity, department, option_name, tool_name="maya")
             path.mkdir(parents=True, exist_ok=True)
             paths.append(path)
         return paths
@@ -209,12 +295,73 @@ class ShotManagerService:
         version: int,
         take: int,
         option: str = "main",
+        tool_name: str = "maya",
         ext: str = "ma",
     ) -> Path:
         version_label = f"v{version:03d}"
         take_label = f"{take:02d}"
         filename = f"{identity.shot}_{department}_{version_label}_{take_label}.{ext.lstrip('.')}"
-        return self.shot_work_dir(identity, department, option) / filename
+        return self.shot_work_dir(identity, department, option, tool_name=tool_name) / filename
+
+    def sequence_work_dir(self, identity: SequenceIdentity, department: str, tool_name: str = "maya") -> Path:
+        return self.paths.sequence_work_dir(identity.episode, identity.sequence, department, _normalize_tool_name(tool_name))
+
+    def sequence_work_file_path(
+        self,
+        identity: SequenceIdentity,
+        department: str,
+        version: int,
+        take: int,
+        tool_name: str = "maya",
+        ext: str = "ma",
+    ) -> Path:
+        version_label = f"v{version:03d}"
+        take_label = f"{take:02d}"
+        filename = f"{identity.episode}_{identity.sequence}_{department}_{version_label}_{take_label}.{ext.lstrip('.')}"
+        return self.sequence_work_dir(identity, department, tool_name) / filename
+
+    def next_sequence_work_path(
+        self,
+        identity: SequenceIdentity,
+        department: str,
+        current_path: str | Path | None = None,
+        tool_name: str = "maya",
+        ext: str = "ma",
+    ) -> Path:
+        parsed = parse_shot_work_file(Path(current_path).name) if current_path else None
+        if parsed and parsed.get("shot") != f"{identity.episode}_{identity.sequence}":
+            parsed = None
+        if parsed:
+            department = parsed["department"]
+            ext = parsed["ext"]
+            version = parsed["version"]
+        else:
+            version = 1
+        take = self.next_sequence_work_take(identity, department, version, tool_name, ext)
+        return self.sequence_work_file_path(identity, department, version, take, tool_name, ext)
+
+    def next_sequence_work_take(
+        self,
+        identity: SequenceIdentity,
+        department: str,
+        version: int,
+        tool_name: str = "maya",
+        ext: str = "ma",
+    ) -> int:
+        work_dir = self.sequence_work_dir(identity, department, tool_name)
+        max_take = 0
+        for path in work_dir.iterdir() if work_dir.exists() else []:
+            parsed = parse_shot_work_file(path.name)
+            if not parsed:
+                continue
+            if (
+                parsed["shot"] == f"{identity.episode}_{identity.sequence}"
+                and parsed["department"] == department
+                and parsed["version"] == version
+                and parsed["ext"] == ext
+            ):
+                max_take = max(max_take, parsed["take"])
+        return max_take + 1
 
     def next_shot_work_path(
         self,
@@ -223,6 +370,7 @@ class ShotManagerService:
         current_path: str | Path | None = None,
         next_version: bool = False,
         option: str = "main",
+        tool_name: str = "maya",
         ext: str = "ma",
     ) -> Path:
         parsed = parse_shot_work_file(Path(current_path).name) if current_path else None
@@ -235,11 +383,11 @@ class ShotManagerService:
             if next_version:
                 take = 1
             else:
-                take = self.next_shot_work_take(identity, department, version, ext, option=option)
+                take = self.next_shot_work_take(identity, department, version, ext, option=option, tool_name=tool_name)
         else:
             version = 1
-            take = self.next_shot_work_take(identity, department, version, ext, option=option)
-        return self.shot_work_file_path(identity, department, version, take, option, ext)
+            take = self.next_shot_work_take(identity, department, version, ext, option=option, tool_name=tool_name)
+        return self.shot_work_file_path(identity, department, version, take, option, tool_name, ext)
 
     def next_shot_work_take(
         self,
@@ -248,9 +396,10 @@ class ShotManagerService:
         version: int,
         ext: str = "ma",
         option: str = "main",
+        tool_name: str = "maya",
     ) -> int:
         max_take = 0
-        for work_dir in self._shot_work_option_dirs(identity, department, option):
+        for work_dir in self._shot_work_option_dirs(identity, department, option, tool_name=tool_name):
             for path in work_dir.iterdir() if work_dir.exists() else []:
                 parsed = parse_shot_work_file(path.name)
                 if not parsed:
@@ -264,13 +413,14 @@ class ShotManagerService:
         identity: ShotIdentity,
         department: str | None = None,
         option: str | None = None,
+        tool_name: str = "maya",
     ) -> list[ShotWorkFile]:
         departments = [department] if department else self.shot_departments
         files: list[ShotWorkFile] = []
         for dept in departments:
-            options = self.list_shot_work_options(identity, dept) if not option or option == "all" else [_normalize_work_option(option)]
+            options = self.list_shot_work_options(identity, dept, tool_name=tool_name) if not option or option == "all" else [_normalize_work_option(option)]
             for option_name in options:
-                for work_dir in self._shot_work_option_dirs(identity, dept, option_name):
+                for work_dir in self._shot_work_option_dirs(identity, dept, option_name, tool_name=tool_name):
                     if not work_dir.exists():
                         continue
                     for path in work_dir.iterdir():
@@ -296,12 +446,62 @@ class ShotManagerService:
                         )
         return sorted(files, key=lambda item: (item.department, item.option, item.version, item.take, item.file.lower()), reverse=True)
 
-    def _shot_work_option_dirs(self, identity: ShotIdentity, department: str, option: str) -> list[Path]:
+    def list_sequence_work_files(
+        self,
+        identity: SequenceIdentity,
+        department: str | None = None,
+        tool_name: str | None = None,
+    ) -> list[ShotWorkFile]:
+        departments = [department] if department else ["layout"]
+        tools = [_normalize_tool_name(tool_name)] if tool_name else ["maya", "houdini"]
+        files: list[ShotWorkFile] = []
+        for dept in departments:
+            for tool in tools:
+                work_dir = self.sequence_work_dir(identity, dept, tool)
+                if not work_dir.exists():
+                    continue
+                for path in work_dir.iterdir():
+                    if not path.is_file() or path.suffix.lower() not in {".ma", ".mb", ".hip", ".hiplc", ".hipnc"}:
+                        continue
+                    parsed = parse_shot_work_file(path.name) or {}
+                    metadata = read_json(sidecar_path(path), {}) or {}
+                    updated = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                    files.append(
+                        ShotWorkFile(
+                            department=dept,
+                            option=str(metadata.get("tool") or tool),
+                            file=path.name,
+                            path=str(path),
+                            updated=updated,
+                            version=int(parsed.get("version") or 0),
+                            take=int(parsed.get("take") or 0),
+                            comment=str(metadata.get("comment") or ""),
+                            thumbnail=str(metadata.get("thumbnail") or ""),
+                        )
+                    )
+        return sorted(files, key=lambda item: (item.department, item.option, item.version, item.take, item.file.lower()), reverse=True)
+
+    def _shot_work_option_dirs(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        option: str,
+        tool_name: str = "maya",
+    ) -> list[Path]:
         option_name = _normalize_work_option(option)
-        directories = [self.shot_work_dir(identity, department, option_name)]
+        directories = [self.shot_work_dir(identity, department, option_name, tool_name=tool_name)]
         if option_name == "main":
-            directories.append(self.shot_work_dir(identity, department))
-        return directories
+            directories.append(self.shot_work_dir(identity, department, tool_name=tool_name))
+            directories.append(self.legacy_shot_work_dir(identity, department))
+        directories.append(self.legacy_shot_work_dir(identity, department, option_name))
+        seen = set()
+        unique = []
+        for directory in directories:
+            key = directory.as_posix().lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(directory)
+        return unique
 
     def write_shot_work_metadata(
         self,
@@ -320,7 +520,34 @@ class ShotManagerService:
             "sequence": identity.sequence,
             "shot": identity.shot,
             "department": department,
+            "tool": "maya",
             "option": _normalize_work_option(option),
+            "version": parsed.get("version"),
+            "take": parsed.get("take"),
+            "comment": comment,
+            "thumbnail": thumbnail,
+            "source": work_path.name,
+            "scene_info": scene_info or {},
+        }
+        return write_json(sidecar_path(work_path), data)
+
+    def write_sequence_work_metadata(
+        self,
+        path: str | Path,
+        identity: SequenceIdentity,
+        department: str,
+        tool_name: str = "maya",
+        scene_info: dict[str, Any] | None = None,
+        comment: str = "",
+        thumbnail: str = "",
+    ) -> Path:
+        work_path = Path(path)
+        parsed = parse_shot_work_file(work_path.name) or {}
+        data = {
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "department": department,
+            "tool": _normalize_tool_name(tool_name),
             "version": parsed.get("version"),
             "take": parsed.get("take"),
             "comment": comment,
@@ -339,7 +566,651 @@ class ShotManagerService:
         return validate_cast_data(self.load_cast(identity))
 
     def build_preview(self, identity: ShotIdentity) -> list[BuildPreviewItem]:
-        cast_data = self.load_cast(identity)
+        return self._build_preview_from_cast(self.load_cast(identity))
+
+    def build_sequence_preview(self, identity: SequenceIdentity) -> list[BuildPreviewItem]:
+        return self._build_preview_from_cast(self.load_sequence_cast(identity.episode, identity.sequence))
+
+    def latest_anim_input(self, identity: ShotIdentity) -> Path | None:
+        base_dir = self.shot_root(identity) / "publish" / "anim_input" / "main"
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        path = base_dir / str(latest.get("path") or "")
+        return path if path.exists() else None
+
+    def build_preview_from_anim_input(self, identity: ShotIdentity) -> list[BuildPreviewItem]:
+        anim_input = self.latest_anim_input(identity)
+        if not anim_input:
+            raise RuntimeError(f"Anim input package was not found for {identity.code}.")
+        data = read_json(anim_input, {}) or {}
+        cast_path = self.paths.project_root / str(data.get("cast") or "")
+        cast_data = read_json(cast_path, {}) if cast_path.exists() else {}
+        if not (cast_data.get("cast") or {}):
+            cast_data = self.load_cast(identity)
+        if not (cast_data.get("cast") or {}):
+            cast_data = self.load_sequence_cast(identity.episode, identity.sequence)
+        return self._build_preview_from_cast(cast_data)
+
+    def publish_animation_curves(
+        self,
+        identity: ShotIdentity,
+        curve_data: dict[str, Any],
+        *,
+        target: str = "main",
+        subset: str = "curves",
+        source_workfile: str | Path = "",
+        comment: str = "",
+    ) -> Path:
+        return self.export_animation_curves_data(
+            identity,
+            curve_data,
+            target=target,
+            subset=subset,
+            source_workfile=source_workfile,
+            comment=comment,
+        )
+
+    def export_animation_curves_data(
+        self,
+        identity: ShotIdentity,
+        curve_data: dict[str, Any],
+        *,
+        target: str = "main",
+        subset: str = "curves",
+        source_workfile: str | Path = "",
+        comment: str = "",
+    ) -> Path:
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "curves")
+        base_dir = self.shot_root(identity) / "data" / "animation" / clean_target / clean_subset
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        data = dict(curve_data)
+        data.update(
+            {
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "data_type": "animation",
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "comment": comment,
+            }
+        )
+        if source_workfile:
+            data["source_workfile"] = self._relative_to_project(Path(source_workfile))
+        animation_path = write_json(version_dir / "animation_curve.json", data)
+        write_json(
+            version_dir / "data.json",
+            {
+                "data_type": "animation",
+                "target": clean_target,
+                "subset": clean_subset,
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version_label,
+                "files": {"animation_curve": "animation_curve.json"},
+                "source_workfile": data.get("source_workfile", ""),
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/animation_curve.json"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return animation_path
+
+    def latest_animation_curve_path(
+        self,
+        identity: ShotIdentity,
+        *,
+        target: str = "main",
+        subset: str = "curves",
+    ) -> Path | None:
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "curves")
+        base_dir = self.shot_root(identity) / "data" / "animation" / clean_target / clean_subset
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        path = base_dir / str(latest.get("path") or "")
+        if path.exists():
+            return path
+        legacy_base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / clean_subset
+        latest = read_json(legacy_base_dir / "latest.json", {}) or {}
+        path = legacy_base_dir / str(latest.get("path") or "")
+        return path if path.exists() else None
+
+    def list_animation_curve_versions(
+        self,
+        identity: ShotIdentity,
+        *,
+        target: str = "main",
+        subset: str = "curves",
+    ) -> list[ShotDataVersion]:
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "curves")
+        base_dir = self.shot_root(identity) / "data" / "animation" / clean_target / clean_subset
+        rows = self._list_animation_curve_versions_from_dir(base_dir, clean_target, clean_subset, legacy=False)
+        legacy_base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / clean_subset
+        rows.extend(self._list_animation_curve_versions_from_dir(legacy_base_dir, clean_target, clean_subset, legacy=True))
+        return sorted(rows, key=lambda row: (parse_version(row.version), row.name), reverse=True)
+
+    def _list_animation_curve_versions_from_dir(
+        self,
+        base_dir: Path,
+        target: str,
+        subset: str,
+        *,
+        legacy: bool = False,
+    ) -> list[ShotDataVersion]:
+        if not base_dir.exists():
+            return []
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        latest_version = str(latest.get("version") or "")
+        rows: list[ShotDataVersion] = []
+        for version_dir in base_dir.glob("v*"):
+            if not version_dir.is_dir() or not version_dir.name[1:].isdigit():
+                continue
+            animation_path = version_dir / "animation_curve.json"
+            if not animation_path.exists():
+                continue
+            metadata = read_json(version_dir / "data.json", {}) or read_json(version_dir / "publish.json", {}) or {}
+            updated = ""
+            try:
+                updated = datetime.fromtimestamp(animation_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+            prefix = "legacy publish" if legacy else "data"
+            rows.append(
+                ShotDataVersion(
+                    name=f"{prefix}/animation/{target}/{subset}",
+                    version=version_dir.name,
+                    path=str(animation_path),
+                    updated=updated,
+                    comment=str(metadata.get("comment") or ""),
+                    latest=version_dir.name == latest_version,
+                )
+            )
+        return rows
+
+    def publish_animation_from_data(
+        self,
+        identity: ShotIdentity,
+        animation_curve_path: str | Path,
+        *,
+        target: str = "main",
+        subset: str = "curves",
+        comment: str = "",
+    ) -> Path:
+        source_path = Path(animation_curve_path)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Animation curve data was not found: {source_path}")
+        curve_data = read_json(source_path, {}) or {}
+        if not curve_data.get("curves"):
+            raise RuntimeError(f"Animation curve data has no curves: {source_path}")
+
+        clean_target = _clean_publish_token(target or curve_data.get("target") or "main")
+        clean_subset = _clean_publish_token(subset or curve_data.get("subset") or "curves")
+        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / clean_subset
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+
+        published_curve = dict(curve_data)
+        published_curve.update(
+            {
+                "publish_type": "animation",
+                "data_source": self._relative_to_project(source_path),
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "comment": comment,
+            }
+        )
+        animation_curve_file = write_json(version_dir / "animation_curve.json", published_curve)
+        usd_path = version_dir / "animation.usd"
+        usd_path.write_text(
+            "\n".join(
+                [
+                    "#usda 1.0",
+                    "(",
+                    "    customLayerData = {",
+                    '        string smartpipeline_publish_type = "animation"',
+                    f'        string episode = "{identity.episode}"',
+                    f'        string sequence = "{identity.sequence}"',
+                    f'        string shot = "{identity.shot}"',
+                    f'        string target = "{clean_target}"',
+                    f'        string subset = "{clean_subset}"',
+                    f'        string version = "{version_label}"',
+                    "    }",
+                    ")",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "animation",
+                "target": clean_target,
+                "subset": clean_subset,
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version_label,
+                "files": {
+                    "animation_curve": "animation_curve.json",
+                    "usd": "animation.usd",
+                },
+                "source_data": self._relative_to_project(source_path),
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/animation_curve.json"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return animation_curve_file
+
+    def published_animation_source_paths(self, identity: ShotIdentity) -> set[str]:
+        root = self.shot_root(identity) / "publish" / "animation"
+        sources: set[str] = set()
+        if not root.exists():
+            return sources
+        for publish_json in root.glob("**/publish.json"):
+            data = read_json(publish_json, {}) or {}
+            source_data = str(data.get("source_data") or "")
+            if not source_data:
+                continue
+            source_path = self.paths.project_root / source_data
+            sources.add(source_path.resolve().as_posix().lower())
+        return sources
+
+    def list_shot_data_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
+        return self._list_data_versions(self.shot_root(identity) / "data")
+
+    def list_sequence_data_versions(self, identity: SequenceIdentity, department: str = "layout") -> list[ShotDataVersion]:
+        return self._list_data_versions(self.sequence_workspace_root(identity.episode, identity.sequence) / department / "data")
+
+    def _list_data_versions(self, data_root: Path) -> list[ShotDataVersion]:
+        rows: list[ShotDataVersion] = []
+        if not data_root.exists():
+            return rows
+        latest_by_base: dict[Path, str] = {}
+        for latest_json in data_root.glob("**/latest.json"):
+            latest = read_json(latest_json, {}) or {}
+            latest_by_base[latest_json.parent] = str(latest.get("version") or "")
+        for version_dir in data_root.glob("**/v*"):
+            if not version_dir.is_dir() or not version_dir.name[1:].isdigit():
+                continue
+            base_dir = version_dir.parent
+            files = sorted(
+                path.name
+                for path in version_dir.iterdir()
+                if path.is_file() and path.suffix.lower() in {".json", ".yml", ".yaml"}
+            )
+            try:
+                rel_name = base_dir.relative_to(data_root).as_posix()
+            except ValueError:
+                rel_name = base_dir.name
+            updated = ""
+            try:
+                updated = datetime.fromtimestamp(version_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+            rows.append(
+                ShotDataVersion(
+                    name=rel_name,
+                    version=version_dir.name,
+                    path=str(version_dir),
+                    updated=updated,
+                    comment=", ".join(files),
+                    latest=latest_by_base.get(base_dir) == version_dir.name,
+                )
+            )
+        return sorted(rows, key=lambda row: (row.name, row.version), reverse=True)
+
+    def layout_publish_status(self, identity: SequenceIdentity) -> list[LayoutPublishStatusItem]:
+        root = self.sequence_workspace_root(identity.episode, identity.sequence)
+        cast_path = root / "cast.json"
+        cast_data = read_json(cast_path, {}) if cast_path.exists() else {}
+        statuses = [
+            self._status_from_file(
+                "cast",
+                cast_path,
+                exists=bool((cast_data or {}).get("cast")),
+                message="cast.json has no cast entries.",
+            ),
+            self._status_from_latest("placements", root / "publish" / "layout" / "placements"),
+            self._status_from_camera_publishes(root / "publish" / "camera"),
+            self._status_from_latest(
+                "editorial",
+                self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence,
+            ),
+            self._status_from_sequence_timing(identity),
+        ]
+        return statuses
+
+    def build_anim_input_package(self, identity: SequenceIdentity, comment: str = "") -> list[AnimInputBuildResult]:
+        statuses = self.layout_publish_status(identity)
+        blocking = [item for item in statuses if item.state != "READY"]
+        if blocking:
+            names = ", ".join(item.name for item in blocking)
+            raise RuntimeError(f"Anim input package is blocked by missing layout publish data: {names}")
+        root = self.sequence_workspace_root(identity.episode, identity.sequence)
+        sequence_data = self.load_sequence(identity)
+        shots = self._sequence_shot_identities(identity, sequence_data)
+        if not shots:
+            raise RuntimeError("No production shots were found for this sequence.")
+        results = []
+        for shot_identity in shots:
+            shot_data = self.load_shot(shot_identity)
+            cast_publish = self.publish_shot_cast_from_sequence(shot_identity, comment=comment)
+            placements_publish = self.publish_shot_placements_from_sequence(shot_identity, comment=comment)
+            anim_input = self.publish_shot_anim_input(
+                shot_identity,
+                cast_publish=cast_publish,
+                placements_publish=placements_publish,
+                shot_data=shot_data,
+                sequence_data=sequence_data,
+                comment=comment,
+            )
+            results.append(
+                AnimInputBuildResult(
+                    shot=shot_identity.shot,
+                    cast_publish=cast_publish,
+                    placements_publish=placements_publish,
+                    anim_input=anim_input,
+                )
+            )
+        return results
+
+    def publish_shot_cast_from_sequence(self, identity: ShotIdentity, comment: str = "") -> Path:
+        shot_cast = self.load_cast(identity)
+        source = shot_cast if (shot_cast.get("cast") or {}) else self.load_sequence_cast(identity.episode, identity.sequence)
+        cast_data = deepcopy(source)
+        cast_data["episode"] = identity.episode
+        cast_data["sequence"] = identity.sequence
+        cast_data["shot"] = identity.shot
+        if not (shot_cast.get("cast") or {}) and (cast_data.get("cast") or {}):
+            self.write_cast(identity, cast_data)
+        base_dir = self.shot_root(identity) / "publish" / "cast" / "main"
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        cast_path = write_json(version_dir / "cast.json", cast_data)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "cast",
+                "subset": "main",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version_label,
+                "files": {"cast": "cast.json"},
+                "source": "shot_cast" if (shot_cast.get("cast") or {}) else "sequence_cast",
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/cast.json"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return cast_path
+
+    def publish_shot_placements_from_sequence(self, identity: ShotIdentity, comment: str = "") -> Path:
+        sequence_root = self.sequence_workspace_root(identity.episode, identity.sequence)
+        source_base = sequence_root / "publish" / "layout" / "placements"
+        latest = read_json(source_base / "latest.json", {}) or {}
+        source_dir = source_base / str(latest.get("version") or "")
+        if not source_dir.exists():
+            raise RuntimeError(f"Sequence placement publish was not found: {source_base}")
+        base_dir = self.shot_root(identity) / "publish" / "layout" / "placements"
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        placements = read_json(source_dir / "placements.json", {}) or {}
+        members = read_json(source_dir / "placement_members.json", {}) or {}
+        placements_path = write_json(version_dir / "placements.json", placements)
+        write_json(version_dir / "placement_members.json", members)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "layout",
+                "subset": "placements",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version_label,
+                "files": {"placements": "placements.json", "placement_members": "placement_members.json"},
+                "source_sequence_publish": self._relative_to_project(source_dir),
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/placements.json"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return placements_path
+
+    def publish_shot_anim_input(
+        self,
+        identity: ShotIdentity,
+        *,
+        cast_publish: Path,
+        placements_publish: Path,
+        shot_data: dict[str, Any],
+        sequence_data: dict[str, Any],
+        comment: str = "",
+    ) -> Path:
+        base_dir = self.shot_root(identity) / "publish" / "anim_input" / "main"
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        editorial = (shot_data.get("editorial") or {}) if shot_data else {}
+        sequence_editorial = sequence_data.get("editorial") or {}
+        camera_publish = self._latest_shot_camera_publish(identity)
+        cut_in = editorial.get("cut_in")
+        cut_out = editorial.get("cut_out")
+        handles = self._editorial_handles(editorial)
+        work_range = self._anim_work_range(cut_in, cut_out, handles)
+        anim_input = {
+            "package_type": "anim_input",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "version": version_label,
+            "fps": editorial.get("fps") or sequence_editorial.get("fps") or self.project_fps,
+            "source_cut_range": [cut_in, cut_out],
+            "work_range": work_range,
+            "cut_range": self._anim_cut_range_in_work(work_range, cut_in, cut_out, handles),
+            "handles": handles,
+            "cast": self._relative_to_project(cast_publish),
+            "placements": self._relative_to_project(placements_publish),
+            "camera": self._relative_to_project(camera_publish) if camera_publish else "",
+            "editorial": self._relative_to_project(self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence / "latest.json"),
+            "comment": comment,
+        }
+        anim_input_path = write_json(version_dir / "anim_input.json", anim_input)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "anim_input",
+                "subset": "main",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version_label,
+                "files": {"anim_input": "anim_input.json"},
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/anim_input.json"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return anim_input_path
+
+    def _status_from_file(self, name: str, path: Path, *, exists: bool | None = None, message: str = "") -> LayoutPublishStatusItem:
+        ready = path.exists() if exists is None else exists and path.exists()
+        return LayoutPublishStatusItem(
+            name=name,
+            state="READY" if ready else "MISSING",
+            path=str(path) if path.exists() else "",
+            message="" if ready else message or f"{name} was not found.",
+        )
+
+    def _status_from_latest(self, name: str, base_dir: Path) -> LayoutPublishStatusItem:
+        latest_path = base_dir / "latest.json"
+        latest = read_json(latest_path, {}) if latest_path.exists() else {}
+        version = str((latest or {}).get("version") or "")
+        target = base_dir / str((latest or {}).get("path") or "")
+        ready = bool(version) and target.exists()
+        return LayoutPublishStatusItem(
+            name=name,
+            state="READY" if ready else "MISSING",
+            version=version,
+            path=str(target if target.exists() else latest_path),
+            message="" if ready else f"{name} latest publish was not found.",
+        )
+
+    def _status_from_camera_publishes(self, camera_root: Path) -> LayoutPublishStatusItem:
+        latest_paths = list(camera_root.glob("*/*/latest.json")) if camera_root.exists() else []
+        versions = []
+        ready_count = 0
+        for latest_path in latest_paths:
+            latest = read_json(latest_path, {}) or {}
+            version = str(latest.get("version") or "")
+            target = latest_path.parent / str(latest.get("path") or "")
+            if version and not target.exists():
+                for fallback_name in ("camera.json", "publish.json", "camera.ma"):
+                    fallback = latest_path.parent / version / fallback_name
+                    if fallback.exists():
+                        target = fallback
+                        break
+            if version:
+                versions.append(f"{latest_path.parent.parent.name}/{latest_path.parent.name}:{version}")
+            if target.exists():
+                ready_count += 1
+        ready = bool(latest_paths) and ready_count == len(latest_paths)
+        return LayoutPublishStatusItem(
+            name="camera",
+            state="READY" if ready else "MISSING",
+            version=", ".join(versions[:3]) + (" ..." if len(versions) > 3 else ""),
+            path=str(camera_root),
+            message="" if ready else "No camera publish latest.json was found.",
+        )
+
+    def _status_from_sequence_timing(self, identity: SequenceIdentity) -> LayoutPublishStatusItem:
+        sequence_data = self.load_sequence(identity)
+        editorial = sequence_data.get("editorial") or {}
+        required = ["fps", "cut_in", "cut_out"]
+        missing = [key for key in required if editorial.get(key) is None]
+        return LayoutPublishStatusItem(
+            name="timing",
+            state="READY" if not missing else "MISSING",
+            version=str(editorial.get("fps") or ""),
+            path=str(self.sequence_workspace_root(identity.episode, identity.sequence) / "sequence.json"),
+            message="" if not missing else "Missing editorial timing: " + ", ".join(missing),
+        )
+
+    def _sequence_shot_identities(self, identity: SequenceIdentity, sequence_data: dict[str, Any] | None = None) -> list[ShotIdentity]:
+        sequence_data = sequence_data or self.load_sequence(identity)
+        rows = []
+        for row in sequence_data.get("shots") or []:
+            shot_name = str(row.get("shot") or "").strip() if isinstance(row, dict) else ""
+            if shot_name:
+                rows.append(ShotIdentity(identity.episode, identity.sequence, shot_name))
+        if not rows:
+            rows = [
+                shot for shot in self.list_shots()
+                if shot.episode == identity.episode and shot.sequence == identity.sequence
+            ]
+        return sorted(rows, key=lambda shot: shot.shot)
+
+    def _latest_shot_camera_publish(self, identity: ShotIdentity, camera_option: str = "main") -> Path | None:
+        base_dir = self.sequence_workspace_root(identity.episode, identity.sequence) / "publish" / "camera" / identity.shot / camera_option
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        version = str(latest.get("version") or "")
+        path = base_dir / str(latest.get("path") or "")
+        if path.is_file():
+            return path
+        if path.is_dir():
+            for fallback_name in ("camera.json", "publish.json", "camera.ma"):
+                fallback = path / fallback_name
+                if fallback.exists():
+                    return fallback
+        for fallback_name in ("camera.json", "publish.json", "camera.ma"):
+            fallback = base_dir / version / fallback_name
+            if fallback.exists():
+                return fallback
+        return None
+
+    @staticmethod
+    def _editorial_handles(editorial: dict[str, Any]) -> list[int]:
+        handles = editorial.get("handles") if isinstance(editorial, dict) else None
+        if isinstance(handles, dict):
+            return [int(handles.get("head") or 0), int(handles.get("tail") or 0)]
+        if isinstance(handles, list) and len(handles) >= 2:
+            return [int(handles[0] or 0), int(handles[1] or 0)]
+        return [0, 0]
+
+    @staticmethod
+    def _anim_work_range(cut_in: Any, cut_out: Any, handles: list[int]) -> list[int | None]:
+        try:
+            duration = int(cut_out) - int(cut_in) + 1
+        except (TypeError, ValueError):
+            return [None, None]
+        total = max(1, duration + int(handles[0]) + int(handles[1]))
+        return [1001, 1001 + total - 1]
+
+    @staticmethod
+    def _anim_cut_range_in_work(
+        work_range: list[int | None],
+        cut_in: Any,
+        cut_out: Any,
+        handles: list[int],
+    ) -> list[int | None]:
+        if work_range[0] is None:
+            return [cut_in, cut_out]
+        try:
+            duration = int(cut_out) - int(cut_in) + 1
+        except (TypeError, ValueError):
+            return [None, None]
+        cut_start = int(work_range[0]) + int(handles[0])
+        return [cut_start, cut_start + duration - 1]
+
+    def _next_publish_version(self, base_dir: Path) -> str:
+        versions = [
+            parse_version(path.name)
+            for path in base_dir.glob("v*")
+            if path.is_dir() and parse_version(path.name) is not None
+        ]
+        return format_version(next_version([version for version in versions if version]))
+
+    def _update_versions(self, path: Path, version_label: str) -> None:
+        versions = read_json(path, []) if path.exists() else []
+        if not isinstance(versions, list):
+            versions = []
+        next_versions = []
+        seen = False
+        for item in versions:
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            if item.get("version") == version_label:
+                item["status"] = "latest"
+                seen = True
+            elif item.get("status") == "latest":
+                item["status"] = "available"
+            next_versions.append(item)
+        if not seen:
+            next_versions.append({"version": version_label, "status": "latest"})
+        write_json(path, next_versions)
+
+    def _relative_to_project(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(self.paths.project_root.resolve()).as_posix()
+        except Exception:
+            return path.as_posix()
+
+    def _build_preview_from_cast(self, cast_data: dict[str, Any]) -> list[BuildPreviewItem]:
         cast = cast_data.get("cast") or {}
         review_layers = cast_data.get("review_layers") or {}
         member_to_layer = {}
@@ -494,7 +1365,8 @@ class ShotManagerService:
             shot_root / "data",
             shot_root / "publish",
         ]
-        paths.extend(shot_root / department / "work" / "main" for department in self.shot_departments)
+        if request.create_work_dirs:
+            paths.extend(self.shot_work_dir(identity, department, "main", tool_name="maya") for department in self.shot_departments)
         return paths
 
     def create_shot(self, request: ShotCreateRequest) -> Path:
@@ -506,6 +1378,7 @@ class ShotManagerService:
             cut_in=request.cut_in,
             cut_out=request.cut_out,
             status=request.status,
+            create_work_dirs=request.create_work_dirs,
         )
         for path in self.planned_shot_paths(request):
             path.mkdir(parents=True, exist_ok=True)
@@ -516,6 +1389,58 @@ class ShotManagerService:
         self.write_shot_json(request)
         self.ensure_cast_json(request.identity)
         return shot_root
+
+    def ensure_sequence_all_shot(self, episode: str, sequence: str) -> Path:
+        identity = ShotIdentity(episode, sequence, "all")
+        shot_root = self.shot_root(identity)
+        if (shot_root / "shot.json").exists():
+            return shot_root
+        request = ShotCreateRequest(
+            episode=episode,
+            sequence=sequence,
+            shot="all",
+            fps=self.project_fps,
+            cut_in=0,
+            cut_out=0,
+            status="sequence",
+        )
+        for path in self.planned_shot_paths(request):
+            path.mkdir(parents=True, exist_ok=True)
+        self.write_shot_json(request)
+        self.ensure_cast_json(identity)
+        return shot_root
+
+    def update_sequence_all_shot(self, episode: str, sequence: str) -> Path:
+        identity = ShotIdentity(episode, sequence, "all")
+        shot_root = self.ensure_sequence_all_shot(episode, sequence)
+        ranges = []
+        sequence_root = self.paths.sequence_root(episode, sequence)
+        for shot_json in sequence_root.glob("*/shot.json"):
+            shot_name = shot_json.parent.name
+            if shot_name == "all":
+                continue
+            data = read_json(shot_json, {}) or {}
+            editorial = data.get("editorial") or {}
+            try:
+                cut_in = int(editorial.get("cut_in"))
+                cut_out = int(editorial.get("cut_out"))
+            except (TypeError, ValueError):
+                continue
+            if cut_out >= cut_in:
+                ranges.append((cut_in, cut_out))
+        cut_in = min((item[0] for item in ranges), default=0)
+        cut_out = max((item[1] for item in ranges), default=0)
+        status = (read_json(shot_root / "shot.json", {}) or {}).get("status", "sequence")
+        request = ShotCreateRequest(
+            episode=episode,
+            sequence=sequence,
+            shot="all",
+            fps=self.project_fps,
+            cut_in=cut_in,
+            cut_out=cut_out,
+            status=str(status or "sequence"),
+        )
+        return self.write_shot_json(request)
 
     def write_shot_json(self, request: ShotCreateRequest) -> Path:
         duration = max(0, request.cut_out - request.cut_in + 1)
@@ -550,6 +1475,23 @@ class ShotManagerService:
             messages = ", ".join(issue.message for issue in errors)
             raise ValueError(f"Invalid cast data: {messages}")
         return write_json(self.shot_root(identity) / "cast.json", cast_data)
+
+    def sequence_cast_path(self, episode: str, sequence: str) -> Path:
+        return self.sequence_workspace_root(episode, sequence) / "cast.json"
+
+    def load_sequence_cast(self, episode: str, sequence: str) -> dict[str, Any]:
+        return read_json(self.sequence_cast_path(episode, sequence), {"cast": {}, "review_layers": DEFAULT_REVIEW_LAYERS})
+
+    def write_sequence_cast(self, episode: str, sequence: str, cast_data: dict[str, Any]) -> Path:
+        root = self.sequence_workspace_root(episode, sequence)
+        root.mkdir(parents=True, exist_ok=True)
+        return write_json(
+            root / "cast.json",
+            {
+                "cast": cast_data.get("cast") or {},
+                "review_layers": _defaulted_review_layers(cast_data.get("review_layers")),
+            },
+        )
 
     def review_layers(self, identity: ShotIdentity) -> dict[str, dict[str, Any]]:
         return _defaulted_review_layers(self.load_cast(identity).get("review_layers"))
@@ -824,6 +1766,39 @@ class ShotManagerService:
         updated = self.build_cast_data(cast_rows, existing=cast_data)
         return self.write_cast(identity, updated), added_rows
 
+    def add_asset_selections_to_sequence_cast(
+        self,
+        episode: str,
+        sequence: str,
+        selections: list[dict[str, Any]],
+    ) -> tuple[Path, list[dict[str, Any]]]:
+        cast_data = self.load_sequence_cast(episode, sequence)
+        cast = dict(cast_data.get("cast") or {})
+        review_layers = _defaulted_review_layers(cast_data.get("review_layers"))
+        added_rows: list[dict[str, Any]] = []
+        for selected in selections:
+            row = self.asset_selection_cast_row(selected, existing_cast=cast)
+            if not row:
+                continue
+            cast[row["cast_key"]] = {
+                "asset": row["asset"],
+                "variant": row["variant"],
+                "role": row["role"],
+                "namespace": row["namespace"],
+                "asset_publish": row["asset_publish"],
+                "required": row["required"],
+                "note": row["note"],
+            }
+            layer = review_layers.setdefault(row["role"], {"members": [], "order": len(review_layers) * 10})
+            members = list(layer.get("members") or [])
+            if row["cast_key"] not in members:
+                members.append(row["cast_key"])
+            layer["members"] = members
+            added_rows.append(row)
+        if not added_rows:
+            raise ValueError("No valid asset selections were provided.")
+        return self.write_sequence_cast(episode, sequence, {"cast": cast, "review_layers": review_layers}), added_rows
+
 
 def validate_cast_data(cast_data: dict[str, Any]) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
@@ -869,6 +1844,21 @@ def _normalize_work_option(option: Any) -> str:
     if not WORK_OPTION_RE.match(value):
         raise ValueError("Shot work option may contain letters, numbers, underscores, and hyphens.")
     return value
+
+
+def _normalize_tool_name(tool_name: Any) -> str:
+    value = str(tool_name or "maya").strip().lower()
+    aliases = {"houdini": "houdini", "hython": "houdini", "maya": "maya", "mayapy": "maya"}
+    value = aliases.get(value, value)
+    if not WORK_OPTION_RE.match(value):
+        raise ValueError("Tool name may contain letters, numbers, underscores, and hyphens.")
+    return value
+
+
+def _clean_publish_token(value: Any) -> str:
+    text = str(value or "main").strip()
+    clean = re.sub(r"[^0-9A-Za-z_-]+", "_", text).strip("_")
+    return clean or "main"
 
 
 def parse_shot_work_file(filename: str) -> dict[str, Any] | None:

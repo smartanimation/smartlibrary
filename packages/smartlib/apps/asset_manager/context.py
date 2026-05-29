@@ -55,7 +55,7 @@ class AssembledAssetContext:
 class AssetContextService:
     """Resolve and snapshot asset context assemblies without importing DCC APIs."""
 
-    MAYA_SNAPSHOT_REVISION = 3
+    MAYA_SNAPSHOT_REVISION = 4
 
     def __init__(self, project_config: ProjectConfig):
         self.project_config = project_config

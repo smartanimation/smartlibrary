@@ -56,7 +56,12 @@ class ViewerService:
         shots_root = self.project_root / "shots"
         if not shots_root.exists():
             return []
-        for latest_json in shots_root.glob("*/*/*/publish/review/*/latest.json"):
+        latest_paths = list(shots_root.glob("*/*/*/publish/review/*/latest.json"))
+        latest_paths.extend(shots_root.glob("*/*/*/publish/review/*/*/latest.json"))
+        sequences_root = self.project_root / "sequences"
+        latest_paths.extend(sequences_root.glob("*/*/publish/review/*/latest.json"))
+        latest_paths.extend(sequences_root.glob("*/*/publish/review/*/*/latest.json"))
+        for latest_json in latest_paths:
             latest = read_json(latest_json, {})
             if not isinstance(latest, dict) or not latest.get("path"):
                 continue
@@ -75,6 +80,8 @@ class ViewerService:
         version_dir = review_json.parent
         if data.get("type") == "quick_preview":
             layer_order, layers = _quick_preview_layers(version_dir, data)
+        elif data.get("rv_mode") == "editorial_sequence" and data.get("shots"):
+            layer_order, layers = _editorial_sequence_layers(version_dir, data)
         else:
             layer_order = list((data.get("ae") or {}).get("layer_order") or (data.get("layers") or {}).keys())
             layers = []
@@ -188,6 +195,33 @@ def _quick_preview_layers(version_dir: Path, data: dict[str, Any]) -> tuple[list
                 frame_range=[1, len(files)],
                 order=order,
                 ae_slot=layer_name,
+            )
+        )
+    return layer_order, layers
+
+
+def _editorial_sequence_layers(version_dir: Path, data: dict[str, Any]) -> tuple[list[str], list[ReviewLayerMedia]]:
+    rows = sorted((data.get("shots") or {}).items(), key=lambda item: int((item[1] or {}).get("sequence_range", [0])[0]))
+    layer_order = [name for name, _row in rows]
+    layers = []
+    for order, (shot_name, row) in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        first_file = str(row.get("first_file") or "")
+        last_file = str(row.get("last_file") or "")
+        pattern = str(row.get("file") or first_file)
+        layers.append(
+            ReviewLayerMedia(
+                layer=shot_name,
+                take=str(row.get("version") or ""),
+                output="beauty",
+                pattern=pattern,
+                first_file=first_file,
+                last_file=last_file,
+                file_count=int(row.get("file_count") or 0),
+                frame_range=list(row.get("frame_range") or []),
+                order=order,
+                ae_slot=shot_name,
             )
         )
     return layer_order, layers

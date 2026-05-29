@@ -85,6 +85,32 @@ def show_viewer() -> None:
     viewer_ui.show(config_dir=config_dir)
 
 
+def show_smart_shot() -> None:
+    ensure_runtime_paths()
+    _reload(
+        "smartlib.dcc.maya.smart_shot",
+        "smartlib.apps.smart_shot.ui",
+        "smartlib.apps.smart_shot",
+    )
+    from smartlib.apps import smart_shot
+
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
+    smart_shot.show(config_dir=config_dir)
+
+
+def show_placement_manager() -> None:
+    ensure_runtime_paths()
+    _reload(
+        "smartlib.dcc.maya.placement",
+        "smartlib.apps.placement_manager.ui",
+        "smartlib.apps.placement_manager",
+    )
+    from smartlib.apps import placement_manager
+
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
+    placement_manager.show(config_dir=config_dir)
+
+
 def install() -> str:
     try:
         import maya.cmds as cmds
@@ -100,6 +126,8 @@ def install() -> str:
     cmds.menuItem(label="Asset Manager", parent=menu, command=lambda *_args: show_asset_manager())
     cmds.menuItem(label="Shot Manager", parent=menu, command=lambda *_args: show_shot_manager())
     cmds.menuItem(label="Review Layer Manager", parent=menu, command=lambda *_args: show_review_layer_manager())
+    cmds.menuItem(label="Smart Shot", parent=menu, command=lambda *_args: show_smart_shot())
+    cmds.menuItem(label="Placement Manager", parent=menu, command=lambda *_args: show_placement_manager())
     cmds.menuItem(label="Viewer", parent=menu, command=lambda *_args: show_viewer())
     cmds.menuItem(divider=True, parent=menu)
     cmds.menuItem(label="Reload SmartMenu", parent=menu, command=lambda *_args: install())

@@ -1,0 +1,16 @@
+shot_naming:
+  profiles:
+    editorial:
+      prefix: sh
+      start: 10
+      step: 10
+      padding: 4
+
+    cut:
+      prefix: c
+      start: 1
+      step: 1
+      padding: 3
+
+resolve_export:
+  shot_naming_profile: editorial

@@ -22,6 +22,9 @@ class ProjectPaths:
     def shots_root(self) -> Path:
         return self.project_root / "shots"
 
+    def sequences_root(self) -> Path:
+        return self.project_root / "sequences"
+
     def asset_root(self, identity: AssetIdentity) -> Path:
         return self.assets_root() / identity.category / identity.group / identity.name
 
@@ -58,7 +61,22 @@ class ProjectPaths:
     def sequence_root(self, episode: str, sequence: str) -> Path:
         return self.shots_root() / episode / sequence
 
-    def shot_work_dir(self, episode: str, sequence: str, shot: str, department: str) -> Path:
+    def sequence_workspace_root(self, episode: str, sequence: str) -> Path:
+        return self.sequences_root() / episode / sequence
+
+    def sequence_work_dir(self, episode: str, sequence: str, department: str, dcc: str) -> Path:
+        return self.sequence_workspace_root(episode, sequence) / department / "work" / dcc
+
+    def sequence_publish_dir(self, episode: str, sequence: str, publish_type: str) -> Path:
+        return self.sequence_workspace_root(episode, sequence) / "publish" / publish_type
+
+    def sequence_publish_version_dir(self, episode: str, sequence: str, publish_type: str, version: str) -> Path:
+        return self.sequence_publish_dir(episode, sequence, publish_type) / version
+
+    def shot_work_dir(self, episode: str, sequence: str, shot: str, department: str, tool_name: str = "maya") -> Path:
+        return self.shot_root(episode, sequence, shot) / department / "work" / tool_name
+
+    def legacy_shot_work_dir(self, episode: str, sequence: str, shot: str, department: str) -> Path:
         return self.shot_root(episode, sequence, shot) / department / "work"
 
     def shot_data_dir(self, episode: str, sequence: str, shot: str, data_type: str, target: str, subset: str) -> Path:
