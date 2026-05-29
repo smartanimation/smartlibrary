@@ -111,6 +111,9 @@ def stage_anim_from_input(
                 referenced.append(str(camera_scene))
     placement_nodes = _apply_anim_placements(cmds, root, anim_input)
     _offset_animation_keys(cmds, placement_nodes, frame_offset)
+    layout_overlay = _load_layout_overlay_usd(cmds, root, anim_input)
+    if layout_overlay:
+        referenced.append(layout_overlay)
     _apply_shot_timing(cmds, anim_shot_data)
     return referenced
 
@@ -413,6 +416,33 @@ def _project_path(project_root: Path, path_text: str) -> Path | None:
         return None
     path = Path(path_text)
     return path if path.is_absolute() else project_root / path
+
+
+def _load_layout_overlay_usd(cmds, project_root: Path, anim_input: dict) -> str:
+    usd_path = _project_path(project_root, str(anim_input.get("layout_overlay") or ""))
+    if not usd_path or not usd_path.exists():
+        return ""
+    try:
+        cmds.loadPlugin("mayaUsdPlugin", quiet=True)
+    except Exception:
+        return ""
+    group = _ensure_group(cmds, "layout_overlay_grp")
+    transform = cmds.createNode("transform", name=_unique_node_name(cmds, "layout_overlay_USD"), parent=group)
+    shape = cmds.createNode("mayaUsdProxyShape", name=f"{transform}Shape", parent=transform)
+    try:
+        cmds.setAttr(f"{shape}.filePath", str(usd_path).replace("\\", "/"), type="string")
+    except Exception:
+        pass
+    for attr, value in (
+        ("smartpipelineRole", "layout_overlay"),
+        ("smartpipelineUsage", str(anim_input.get("layout_overlay_usage") or "reference_only")),
+    ):
+        try:
+            cmds.addAttr(transform, longName=attr, dataType="string")
+            cmds.setAttr(f"{transform}.{attr}", value, type="string")
+        except Exception:
+            pass
+    return str(usd_path)
 
 
 def _camera_scene_from_publish(path: Path) -> Path | None:

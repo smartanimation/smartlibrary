@@ -892,6 +892,40 @@ class ShotManagerService:
         ]
         return statuses
 
+    def shot_anim_input_status(self, identity: ShotIdentity) -> list[LayoutPublishStatusItem]:
+        shot_data = self.load_shot(identity)
+        sequence_data = self.load_sequence(SequenceIdentity(identity.episode, identity.sequence))
+        sequence_root = self.sequence_workspace_root(identity.episode, identity.sequence)
+        shot_cast = self.load_cast(identity)
+        sequence_cast = self.load_sequence_cast(identity.episode, identity.sequence)
+        cast_ready = bool((shot_cast.get("cast") or {}) or (sequence_cast.get("cast") or {}))
+        camera_publish = self._latest_shot_camera_publish(identity)
+        layout_overlay = self._latest_layout_overlay_usd(identity)
+        statuses = [
+            self._status_from_file(
+                "cast",
+                self.shot_root(identity) / "cast.json",
+                exists=cast_ready,
+                message="No shot or sequence cast entries were found.",
+            ),
+            self._status_from_latest("placements", sequence_root / "publish" / "layout" / "placements"),
+            LayoutPublishStatusItem(
+                name="camera",
+                state="READY" if camera_publish else "MISSING",
+                version=self._latest_publish_version_label(sequence_root / "publish" / "camera" / identity.shot / "main"),
+                path=str(camera_publish or sequence_root / "publish" / "camera" / identity.shot / "main"),
+                message="" if camera_publish else "Camera publish was not found for this shot.",
+            ),
+            self._status_from_shot_timing(identity, shot_data, sequence_data),
+            LayoutPublishStatusItem(
+                name="layout_overlay",
+                state="READY" if layout_overlay else "OPTIONAL",
+                path=str(layout_overlay or ""),
+                message="" if layout_overlay else "Optional layout USD overlay was not found.",
+            ),
+        ]
+        return statuses
+
     def build_anim_input_package(self, identity: SequenceIdentity, comment: str = "") -> list[AnimInputBuildResult]:
         statuses = self.layout_publish_status(identity)
         blocking = [item for item in statuses if item.state != "READY"]
@@ -905,26 +939,38 @@ class ShotManagerService:
             raise RuntimeError("No production shots were found for this sequence.")
         results = []
         for shot_identity in shots:
-            shot_data = self.load_shot(shot_identity)
-            cast_publish = self.publish_shot_cast_from_sequence(shot_identity, comment=comment)
-            placements_publish = self.publish_shot_placements_from_sequence(shot_identity, comment=comment)
-            anim_input = self.publish_shot_anim_input(
-                shot_identity,
-                cast_publish=cast_publish,
-                placements_publish=placements_publish,
-                shot_data=shot_data,
-                sequence_data=sequence_data,
-                comment=comment,
-            )
-            results.append(
-                AnimInputBuildResult(
-                    shot=shot_identity.shot,
-                    cast_publish=cast_publish,
-                    placements_publish=placements_publish,
-                    anim_input=anim_input,
-                )
-            )
+            results.append(self.build_anim_input_package_for_shot(shot_identity, comment=comment, sequence_data=sequence_data))
         return results
+
+    def build_anim_input_package_for_shot(
+        self,
+        identity: ShotIdentity,
+        comment: str = "",
+        sequence_data: dict[str, Any] | None = None,
+    ) -> AnimInputBuildResult:
+        statuses = self.shot_anim_input_status(identity)
+        blocking = [item for item in statuses if item.state == "MISSING" and item.name != "layout_overlay"]
+        if blocking:
+            names = ", ".join(item.name for item in blocking)
+            raise RuntimeError(f"Anim input package is blocked by missing shot publish data: {names}")
+        shot_data = self.load_shot(identity)
+        sequence_data = sequence_data or self.load_sequence(SequenceIdentity(identity.episode, identity.sequence))
+        cast_publish = self.publish_shot_cast_from_sequence(identity, comment=comment)
+        placements_publish = self.publish_shot_placements_from_sequence(identity, comment=comment)
+        anim_input = self.publish_shot_anim_input(
+            identity,
+            cast_publish=cast_publish,
+            placements_publish=placements_publish,
+            shot_data=shot_data,
+            sequence_data=sequence_data,
+            comment=comment,
+        )
+        return AnimInputBuildResult(
+            shot=identity.shot,
+            cast_publish=cast_publish,
+            placements_publish=placements_publish,
+            anim_input=anim_input,
+        )
 
     def publish_shot_cast_from_sequence(self, identity: ShotIdentity, comment: str = "") -> Path:
         shot_cast = self.load_cast(identity)
@@ -951,6 +997,37 @@ class ShotManagerService:
                 "version": version_label,
                 "files": {"cast": "cast.json"},
                 "source": "shot_cast" if (shot_cast.get("cast") or {}) else "sequence_cast",
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/cast.json"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return cast_path
+
+    def publish_sequence_cast(self, episode: str, sequence: str, comment: str = "") -> Path:
+        cast_data = deepcopy(self.load_sequence_cast(episode, sequence))
+        cast_data["episode"] = episode
+        cast_data["sequence"] = sequence
+        issues = validate_cast_data(cast_data)
+        errors = [issue for issue in issues if issue.severity == "error"]
+        if errors:
+            messages = ", ".join(issue.message for issue in errors)
+            raise ValueError(f"Invalid sequence cast data: {messages}")
+        base_dir = self.sequence_workspace_root(episode, sequence) / "publish" / "cast" / "main"
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        cast_path = write_json(version_dir / "cast.json", cast_data)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "cast",
+                "subset": "main",
+                "episode": episode,
+                "sequence": sequence,
+                "version": version_label,
+                "files": {"cast": "cast.json"},
+                "source": "sequence_cast",
                 "comment": comment,
             },
         )
@@ -1008,6 +1085,7 @@ class ShotManagerService:
         editorial = (shot_data.get("editorial") or {}) if shot_data else {}
         sequence_editorial = sequence_data.get("editorial") or {}
         camera_publish = self._latest_shot_camera_publish(identity)
+        layout_overlay = self._latest_layout_overlay_usd(identity)
         cut_in = editorial.get("cut_in")
         cut_out = editorial.get("cut_out")
         handles = self._editorial_handles(editorial)
@@ -1026,6 +1104,8 @@ class ShotManagerService:
             "cast": self._relative_to_project(cast_publish),
             "placements": self._relative_to_project(placements_publish),
             "camera": self._relative_to_project(camera_publish) if camera_publish else "",
+            "layout_overlay": self._relative_to_project(layout_overlay) if layout_overlay else "",
+            "layout_overlay_usage": "reference_only",
             "editorial": self._relative_to_project(self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence / "latest.json"),
             "comment": comment,
         }
@@ -1110,6 +1190,25 @@ class ShotManagerService:
             message="" if not missing else "Missing editorial timing: " + ", ".join(missing),
         )
 
+    def _status_from_shot_timing(
+        self,
+        identity: ShotIdentity,
+        shot_data: dict[str, Any],
+        sequence_data: dict[str, Any],
+    ) -> LayoutPublishStatusItem:
+        editorial = shot_data.get("editorial") or {}
+        sequence_editorial = sequence_data.get("editorial") or {}
+        fps = editorial.get("fps") or sequence_editorial.get("fps") or self.project_fps
+        required = ["cut_in", "cut_out"]
+        missing = [key for key in required if editorial.get(key) is None]
+        return LayoutPublishStatusItem(
+            name="timing",
+            state="READY" if not missing else "MISSING",
+            version=str(fps or ""),
+            path=str(self.shot_root(identity) / "shot.json"),
+            message="" if not missing else "Missing shot timing: " + ", ".join(missing),
+        )
+
     def _sequence_shot_identities(self, identity: SequenceIdentity, sequence_data: dict[str, Any] | None = None) -> list[ShotIdentity]:
         sequence_data = sequence_data or self.load_sequence(identity)
         rows = []
@@ -1140,6 +1239,55 @@ class ShotManagerService:
             fallback = base_dir / version / fallback_name
             if fallback.exists():
                 return fallback
+        return None
+
+    @staticmethod
+    def _latest_publish_version_label(base_dir: Path) -> str:
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        return str(latest.get("version") or "")
+
+    def _latest_layout_overlay_usd(self, identity: ShotIdentity) -> Path | None:
+        direct_candidates = [
+            self.shot_root(identity) / "publish" / "usd" / "layout.usda",
+            self.shot_root(identity) / "publish" / "usd" / "layout.usd",
+            self.sequence_workspace_root(identity.episode, identity.sequence) / "publish" / "usd" / identity.shot / "layout.usda",
+            self.sequence_workspace_root(identity.episode, identity.sequence) / "publish" / "usd" / identity.shot / "layout.usd",
+        ]
+        for candidate in direct_candidates:
+            if candidate.exists():
+                return candidate
+
+        publish_dirs = [
+            self.shot_root(identity) / "publish" / "layout" / "usd",
+            self.shot_root(identity) / "publish" / "layout" / "proxy",
+            self.shot_root(identity) / "publish" / "layout" / "main",
+            self.sequence_workspace_root(identity.episode, identity.sequence) / "publish" / "layout" / identity.shot / "usd",
+            self.sequence_workspace_root(identity.episode, identity.sequence) / "publish" / "layout" / identity.shot / "main",
+            self.sequence_workspace_root(identity.episode, identity.sequence) / "publish" / "layout" / identity.shot / "proxy",
+        ]
+        for publish_dir in publish_dirs:
+            path = self._latest_publish_file(publish_dir, ("layout.usda", "layout.usd", "shot.usda", "shot.usd"))
+            if path:
+                return path
+        return None
+
+    @staticmethod
+    def _latest_publish_file(base_dir: Path, filenames: tuple[str, ...]) -> Path | None:
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        latest_path = base_dir / str(latest.get("path") or "")
+        candidates = []
+        if latest_path.name:
+            candidates.append(latest_path)
+            if latest_path.is_dir():
+                candidates.extend(latest_path / name for name in filenames)
+        version = str(latest.get("version") or "")
+        if version:
+            version_dir = base_dir / version
+            candidates.append(version_dir)
+            candidates.extend(version_dir / name for name in filenames)
+        for candidate in candidates:
+            if candidate.is_file() and candidate.suffix.lower() in {".usd", ".usda"}:
+                return candidate
         return None
 
     @staticmethod

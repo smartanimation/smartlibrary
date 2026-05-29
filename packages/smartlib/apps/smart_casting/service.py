@@ -159,6 +159,17 @@ class SmartCastingService:
     def load_sequence_cast(self, episode: str, sequence: str) -> dict[str, Any]:
         return self.shot_service.load_sequence_cast(episode, sequence)
 
+    def save_sequence_cast(self, episode: str, sequence: str, rows: list[dict[str, Any]]) -> Path:
+        existing = self.load_sequence_cast(episode, sequence)
+        return self.shot_service.write_sequence_cast(
+            episode,
+            sequence,
+            self.shot_service.build_cast_data(rows, existing=existing),
+        )
+
+    def publish_sequence_cast(self, episode: str, sequence: str, comment: str = "") -> Path:
+        return self.shot_service.publish_sequence_cast(episode, sequence, comment=comment)
+
     def load_shot_cast(self, identity: ShotIdentity) -> dict[str, Any]:
         return self.shot_service.load_cast(identity)
 

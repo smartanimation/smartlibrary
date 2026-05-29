@@ -180,8 +180,12 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.sequence_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.sequence_cast_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         sequence_buttons = QtWidgets.QHBoxLayout()
+        self.save_sequence_cast_btn = QtWidgets.QPushButton("Save Sequence Cast")
+        self.publish_sequence_cast_btn = QtWidgets.QPushButton("Publish Sequence Cast")
         self.remove_sequence_cast_btn = QtWidgets.QPushButton("Remove Sequence Cast")
         sequence_buttons.addStretch(1)
+        sequence_buttons.addWidget(self.save_sequence_cast_btn)
+        sequence_buttons.addWidget(self.publish_sequence_cast_btn)
         sequence_buttons.addWidget(self.remove_sequence_cast_btn)
         shot_buttons = QtWidgets.QHBoxLayout()
         self.add_cast_btn = QtWidgets.QPushButton("Add Cast")
@@ -231,6 +235,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.sequence_cast_list.customContextMenuRequested.connect(self.show_sequence_cast_menu)
         self.shot_cast_list.itemSelectionChanged.connect(self.populate_cast_detail)
         self.add_cast_btn.clicked.connect(self.add_sequence_cast_to_shot)
+        self.save_sequence_cast_btn.clicked.connect(self.save_sequence_cast)
+        self.publish_sequence_cast_btn.clicked.connect(self.publish_sequence_cast)
         self.remove_sequence_cast_btn.clicked.connect(self.remove_sequence_cast)
         self.remove_cast_btn.clicked.connect(self.remove_shot_cast)
         self.save_shot_cast_btn.clicked.connect(self.save_shot_cast)
@@ -522,11 +528,22 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         if item:
             self.sequence_cast_list.setCurrentItem(item)
         menu = QtWidgets.QMenu(self)
+        add_action = menu.addAction("Add to Shot Cast")
+        add_action.setEnabled(bool(self.sequence_cast_list.selectedItems()))
+        menu.addSeparator()
+        save_action = menu.addAction("Save Sequence Cast")
+        publish_action = menu.addAction("Publish Sequence Cast")
         remove_action = menu.addAction("Remove from Sequence Cast")
         remove_action.setEnabled(bool(self.sequence_cast_list.selectedItems()))
         global_pos = self.sequence_cast_list.mapToGlobal(pos)
         action = menu.exec_(global_pos) if hasattr(menu, "exec_") else menu.exec(global_pos)
-        if action == remove_action:
+        if action == add_action:
+            self.add_sequence_cast_to_shot()
+        elif action == save_action:
+            self.save_sequence_cast()
+        elif action == publish_action:
+            self.publish_sequence_cast()
+        elif action == remove_action:
             self.remove_sequence_cast()
 
     def remove_sequence_cast(self) -> None:
@@ -553,6 +570,31 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             self.populate_cast_detail()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Remove Sequence Cast Failed", str(exc))
+
+    def save_sequence_cast(self) -> None:
+        try:
+            path = self._save_sequence_cast()
+            QtWidgets.QMessageBox.information(self, "Save Sequence Cast", str(path))
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Save Sequence Cast Failed", str(exc))
+
+    def _save_sequence_cast(self) -> Path:
+        episode = self.episode_combo.currentText()
+        sequence = self.sequence_combo.currentText()
+        return self.service.save_sequence_cast(episode, sequence, self._sequence_cast_rows())
+
+    def publish_sequence_cast(self) -> None:
+        episode = self.episode_combo.currentText()
+        sequence = self.sequence_combo.currentText()
+        comment, accepted = QtWidgets.QInputDialog.getText(self, "Publish Sequence Cast", "Comment")
+        if not accepted:
+            return
+        try:
+            self._save_sequence_cast()
+            path = self.service.publish_sequence_cast(episode, sequence, comment=comment.strip())
+            QtWidgets.QMessageBox.information(self, "Publish Sequence Cast", str(path))
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Publish Sequence Cast Failed", str(exc))
 
     def save_shot_cast(self) -> None:
         identity = self.current_shot_identity()
@@ -584,6 +626,15 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         for index in range(self.shot_cast_list.count()):
             data = dict(self.shot_cast_list.item(index).data(QtCore.Qt.UserRole) or {})
             rows.append({"episode": identity.episode, "sequence": identity.sequence, "shot": identity.shot, **data})
+        return rows
+
+    def _sequence_cast_rows(self) -> list[dict[str, Any]]:
+        rows = []
+        episode = self.episode_combo.currentText()
+        sequence = self.sequence_combo.currentText()
+        for index in range(self.sequence_cast_list.count()):
+            data = dict(self.sequence_cast_list.item(index).data(QtCore.Qt.UserRole) or {})
+            rows.append({"episode": episode, "sequence": sequence, **data})
         return rows
 
     def auto_selection(self) -> None:
