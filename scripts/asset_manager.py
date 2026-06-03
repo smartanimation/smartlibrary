@@ -35,6 +35,7 @@ WORK_DCC_LAYOUT = {
 }
 DATA_LAYOUT = {
     "model": ["hires", "proxy", "render", "guide"],
+    "geo": ["hires", "proxy", "render", "guide"],
     "rig": ["skin", "guide", "build"],
     "guide": [],
     "skin": [],
@@ -524,8 +525,25 @@ class AssetManager:
                     variants.append(path.name)
         return sorted(variants) or ["default"]
 
-    def work_subsets(self, department: str, *, dcc: str = "maya") -> list[str]:
+    def work_subsets(self, department: str, *, asset: Asset | None = None, dcc: str = "maya") -> list[str]:
+        if asset:
+            subsets = self._work_subsets_for_asset(asset, department)
+            if subsets:
+                return subsets
         return self.work_variants(department, dcc=dcc)
+
+    def _work_subsets_for_asset(self, asset: Asset, department: str) -> list[str]:
+        by_department = self.asset_config.get("work_subsets_by_category") or {}
+        rules = by_department.get(department) or {}
+        if not isinstance(rules, dict):
+            return []
+        for key in (asset.category, asset.group, "default"):
+            values = rules.get(key)
+            if isinstance(values, str):
+                return [values]
+            if isinstance(values, list):
+                return [str(value) for value in values if str(value)]
+        return []
 
     def work_root_dir(
         self,
@@ -537,7 +555,7 @@ class AssetManager:
         subset: str = "",
     ) -> Path:
         if asset.uses_variant_structure(variant):
-            path = asset.variant_root(variant) / department / "work"
+            path = asset.variant_root(variant) / department / "work" / dcc
             if subset:
                 path = path / subset
             return path
@@ -558,6 +576,8 @@ class AssetManager:
             work_root = asset.variant_root(variant) / department / "work"
             try:
                 relative = source.parent.relative_to(work_root)
+                if len(relative.parts) >= 2:
+                    return relative.parts[1]
                 if relative.parts:
                     return relative.parts[0]
             except ValueError:
@@ -1239,6 +1259,7 @@ class AssetManager:
         self,
         asset: Asset,
         *,
+        dcc: str | None = None,
         department: str | None = None,
         variant: str | None = None,
         subset: str | None = None,
@@ -1249,12 +1270,13 @@ class AssetManager:
             if variant and asset.uses_variant_structure(variant):
                 dept_root = self.work_root_dir(
                     asset,
+                    dcc=dcc or "maya",
                     department=department,
                     variant=variant,
                     subset=subset or "",
                 )
             else:
-                dept_root = asset.work_dir / "maya" / department
+                dept_root = asset.work_dir / (dcc or "maya") / department
                 if variant:
                     dept_root = dept_root / variant
             files = [
@@ -1262,17 +1284,38 @@ class AssetManager:
                 if path == dept_root or dept_root in path.parents
             ]
             if asset.uses_variant_structure(variant or "default"):
-                variant_files = self._list_files(asset.variant_root(variant or "default") / department / "work")
+                work_root = asset.variant_root(variant or "default") / department / "work"
+                variant_files = self._list_files(work_root)
                 if subset:
-                    subset_root = self.work_root_dir(
-                        asset,
-                        department=department,
-                        variant=variant or "default",
-                        subset=subset,
-                    )
+                    if dcc:
+                        new_subset_roots = [
+                            self.work_root_dir(
+                                asset,
+                                dcc=dcc,
+                                department=department,
+                                variant=variant or "default",
+                                subset=subset,
+                            )
+                        ]
+                    else:
+                        new_subset_roots = [
+                            self.work_root_dir(
+                                asset,
+                                dcc=work_dcc,
+                                department=department,
+                                variant=variant or "default",
+                                subset=subset,
+                            )
+                            for work_dcc in WORK_DCC_LAYOUT
+                        ]
+                    legacy_subset_root = work_root / subset
                     variant_files = [
                         path for path in variant_files
-                        if path == subset_root or subset_root in path.parents
+                        if (
+                            any(path == root or root in path.parents for root in new_subset_roots)
+                            or path == legacy_subset_root
+                            or legacy_subset_root in path.parents
+                        )
                     ]
                 files.extend(variant_files)
         if extensions:
@@ -1295,11 +1338,18 @@ class AssetManager:
         department: str,
         variant: str = "",
         subset: str | None = None,
+        data_format: str | None = None,
         ext: str,
         name: str | None = None,
     ) -> Path:
         clean_ext = ext.lstrip(".")
-        base_dir = self.data_base_dir(asset, department=department, variant=variant, subset=subset)
+        base_dir = self.data_base_dir(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+            data_format=data_format,
+        )
         stem = name or f"{asset.name}_{department}_{variant}".rstrip("_")
 
         max_version = 0
@@ -1318,6 +1368,7 @@ class AssetManager:
             department=department,
             variant=variant,
             subset=subset,
+            data_format=data_format,
             version=max_version + 1,
             ext=clean_ext,
             name=stem,
@@ -1330,12 +1381,20 @@ class AssetManager:
         department: str,
         variant: str = "",
         subset: str | None = None,
+        data_format: str | None = None,
     ) -> Path:
         if variant and asset.uses_variant_structure(variant):
-            return asset.variant_root(variant) / "data" / department / (subset or variant)
+            path = asset.variant_root(variant) / "data" / department / (subset or variant)
+            if data_format:
+                path = path / data_format.lower().lstrip(".")
+            return path
         path = asset.data_dir / department
         if variant:
             path = path / variant
+        if subset:
+            path = path / subset
+        if data_format:
+            path = path / data_format.lower().lstrip(".")
         return path
 
     def data_version_dir(
@@ -1345,9 +1404,16 @@ class AssetManager:
         department: str,
         variant: str = "",
         subset: str | None = None,
+        data_format: str | None = None,
         version: int | str,
     ) -> Path:
-        return self.data_base_dir(asset, department=department, variant=variant, subset=subset) / _version_label(version)
+        return self.data_base_dir(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+            data_format=data_format,
+        ) / _version_label(version)
 
     def data_file_path(
         self,
@@ -1356,6 +1422,7 @@ class AssetManager:
         department: str,
         variant: str,
         subset: str | None = None,
+        data_format: str | None = None,
         version: int | str,
         ext: str,
         name: str | None = None,
@@ -1368,6 +1435,7 @@ class AssetManager:
             department=department,
             variant=variant,
             subset=subset,
+            data_format=data_format,
             version=version,
         ) / f"{stem}_{version_label}.{clean_ext}"
 
@@ -1378,8 +1446,15 @@ class AssetManager:
         department: str,
         variant: str = "",
         subset: str | None = None,
+        data_format: str | None = None,
     ) -> int:
-        base_dir = self.data_base_dir(asset, department=department, variant=variant, subset=subset)
+        base_dir = self.data_base_dir(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+            data_format=data_format,
+        )
         max_version = 0
         if base_dir.exists():
             for path in base_dir.iterdir():
@@ -1397,8 +1472,15 @@ class AssetManager:
         department: str,
         variant: str = "",
         subset: str | None = None,
+        data_format: str | None = None,
     ) -> dict[str, Path]:
-        base_dir = self.data_base_dir(asset, department=department, variant=variant, subset=subset)
+        base_dir = self.data_base_dir(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+            data_format=data_format,
+        )
         return {
             "latest": base_dir / "latest.json",
             "versions": base_dir / "versions.json",
@@ -1411,6 +1493,7 @@ class AssetManager:
         department: str,
         variant: str,
         subset: str | None = None,
+        data_format: str | None = None,
         version: int | str,
         files: dict[str, str | os.PathLike[str]],
         source_workfile: str | os.PathLike[str],
@@ -1425,6 +1508,7 @@ class AssetManager:
             "variant": variant,
             "publish_type": department,
             "subset": subset or variant,
+            "format": data_format.lower().lstrip(".") if data_format else "",
             "version": version_num,
             "files": {key: str(value).replace("\\", "/") for key, value in files.items()},
             "source_workfile": str(source_workfile).replace("\\", "/"),
@@ -1435,12 +1519,21 @@ class AssetManager:
             department=department,
             variant=variant,
             subset=subset,
+            data_format=data_format,
             version=version,
         )
         _write_json(version_dir / "publish.json", record)
+        if data_format:
+            _write_json(version_dir / "data.json", record)
 
         first_file = next(iter(record["files"].values()), "")
-        metadata_paths = self.data_metadata_path(asset, department=department, variant=variant, subset=subset)
+        metadata_paths = self.data_metadata_path(
+            asset,
+            department=department,
+            variant=variant,
+            subset=subset,
+            data_format=data_format,
+        )
         _write_json(
             metadata_paths["latest"],
             {

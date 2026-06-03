@@ -27,6 +27,7 @@ def stage_shot_from_preview(
         cmds.file(str(template), open=True, force=True)
     else:
         cmds.file(new=True, force=True)
+    _apply_scene_policy(cmds, shot_data or {})
     referenced = build_shot_from_preview(preview_items, shot_data)
     if _is_sequence_all_layout(shot_data or {}, department):
         referenced.extend(
@@ -56,6 +57,7 @@ def stage_sequence_layout_from_preview(
         cmds.file(str(template), open=True, force=True)
     else:
         cmds.file(new=True, force=True)
+    _apply_scene_policy(cmds, sequence_data)
     referenced = build_shot_from_preview(preview_items, sequence_data)
     referenced.extend(build_layout_sequence_all(sequence_data, project_root=project_root))
     return referenced
@@ -83,6 +85,7 @@ def stage_anim_from_input(
     else:
         cmds.file(new=True, force=True)
     anim_shot_data = _shot_data_from_anim_input(anim_input)
+    _apply_scene_policy(cmds, anim_shot_data)
     referenced = build_shot_from_preview(preview_items, anim_shot_data)
     frame_offset = _anim_frame_offset(anim_input)
     camera_path = _project_path(root, str(anim_input.get("camera") or ""))
@@ -1006,3 +1009,20 @@ def _apply_shot_timing(cmds, shot_data: dict) -> None:
     if cut_in is not None and cut_out is not None:
         cmds.playbackOptions(minTime=float(cut_in), animationStartTime=float(cut_in))
         cmds.playbackOptions(maxTime=float(cut_out), animationEndTime=float(cut_out))
+
+
+def _apply_scene_policy(cmds, shot_data: dict) -> None:
+    try:
+        from smartlib.dcc.maya.scene_policy import apply_scene_policy
+
+        editorial = shot_data.get("editorial") or {}
+        frame_range = None
+        if editorial.get("cut_in") is not None and editorial.get("cut_out") is not None:
+            frame_range = (editorial.get("cut_in"), editorial.get("cut_out"))
+        apply_scene_policy(
+            cmds,
+            fps=editorial.get("fps") or shot_data.get("fps"),
+            frame_range=frame_range,
+        )
+    except Exception:
+        pass

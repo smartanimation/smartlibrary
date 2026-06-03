@@ -3,17 +3,29 @@ version: 1
 
 quality_profiles:
   FAST:
-    model: proxy
+    model:
+      default: proxy
+      characters: low
+      env: proxy
+      prop: proxy
     look: low
     rig: layout
 
   WORK:
-    model: proxy
+    model:
+      default: proxy
+      characters: low
+      env: proxy
+      prop: proxy
     look: low
     rig: anim
 
   FINAL:
-    model: render
+    model:
+      default: render
+      characters: high
+      env: render
+      prop: render
     look: high
     rig: anim
 

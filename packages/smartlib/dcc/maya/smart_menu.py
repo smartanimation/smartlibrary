@@ -111,6 +111,19 @@ def show_placement_manager() -> None:
     placement_manager.show(config_dir=config_dir)
 
 
+def show_asset_assembly() -> None:
+    ensure_runtime_paths()
+    _reload(
+        "smartlib.dcc.maya.asset_assembly",
+        "smartlib.apps.asset_assembly.ui",
+        "smartlib.apps.asset_assembly",
+    )
+    from smartlib.apps import asset_assembly
+
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
+    asset_assembly.show(config_dir=config_dir)
+
+
 def install() -> str:
     try:
         import maya.cmds as cmds
@@ -128,6 +141,7 @@ def install() -> str:
     cmds.menuItem(label="Review Layer Manager", parent=menu, command=lambda *_args: show_review_layer_manager())
     cmds.menuItem(label="Smart Shot", parent=menu, command=lambda *_args: show_smart_shot())
     cmds.menuItem(label="Placement Manager", parent=menu, command=lambda *_args: show_placement_manager())
+    cmds.menuItem(label="Asset Assembly", parent=menu, command=lambda *_args: show_asset_assembly())
     cmds.menuItem(label="Viewer", parent=menu, command=lambda *_args: show_viewer())
     cmds.menuItem(divider=True, parent=menu)
     cmds.menuItem(label="Reload SmartMenu", parent=menu, command=lambda *_args: install())

@@ -8,7 +8,7 @@ templates:
   dept_reference: "{asset_root}/reference"
 
   # work scene naming. Work files keep take numbers.
-  work_scene_dir: "{asset_root}/work/{dcc}/{department}/{variant}"
+  work_scene_dir: "{asset_root}/{variant}/{department}/work/{dcc}/{subset}"
   work_scene_file: "{project_name}_{asset_name}_{department}_{variant}_{version}_{take}.{ext}"
   publish_scene_file: "{asset_name}_{variant}_{version}.{ext}"
 
@@ -65,6 +65,20 @@ publish_outputs:
     guide:
     - ma
     - fbx
+  look:
+    default:
+    - usd
+    low:
+    - usd
+    high:
+    - usd
+
+work_subsets_by_category:
+  model:
+    default: [proxy, render]
+    characters: [low, high]
+    env: [proxy, render]
+    prop: [proxy, render]
 
 staging_dependencies:
   model:
@@ -85,6 +99,26 @@ staging_dependencies:
       subsets: [render, hires]
       format: ma
   look:
+    low:
+      sources:
+        - variant: current
+          department: model
+          subsets: [low]
+          format: usd
+        - variant: default
+          department: model
+          subsets: [low]
+          format: usd
+    high:
+      sources:
+        - variant: current
+          department: model
+          subsets: [high]
+          format: usd
+        - variant: default
+          department: model
+          subsets: [high]
+          format: usd
     default:
       variants: [current, default]
       department: model

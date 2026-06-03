@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime
@@ -496,12 +497,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_buttons = QtWidgets.QHBoxLayout()
         data_buttons.setContentsMargins(0, 0, 0, 0)
         data_buttons.setSpacing(4)
-        self.export_mesh_btn = QtWidgets.QPushButton("Export Mesh")
+        self.export_mesh_btn = QtWidgets.QPushButton("Export Geo FBX")
+        self.ingest_fbx_btn = QtWidgets.QPushButton("Ingest Model FBX")
         self.export_guide_btn = QtWidgets.QPushButton("Export Guide")
         self.export_skin_btn = QtWidgets.QPushButton("Export Skin")
         self.import_data_btn = QtWidgets.QPushButton("Import")
         data_buttons.addStretch(1)
         data_buttons.addWidget(self.export_mesh_btn)
+        data_buttons.addWidget(self.ingest_fbx_btn)
         data_buttons.addWidget(self.export_guide_btn)
         data_buttons.addWidget(self.export_skin_btn)
         data_buttons.addWidget(self.import_data_btn)
@@ -642,6 +645,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_assemble_btn.clicked.connect(self._assemble_selected_asset_context)
         self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
         self.export_mesh_btn.clicked.connect(lambda: self._show_export_data_menu("mesh"))
+        self.ingest_fbx_btn.clicked.connect(self._ingest_model_fbx)
         self.export_guide_btn.clicked.connect(lambda: self._show_export_data_menu("guide"))
         self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
         self.import_data_btn.clicked.connect(self._import_selected_data)
@@ -1021,6 +1025,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _show_current_asset(self) -> None:
         asset = self._current_asset()
         self._populate_asset_variants()
+        self._populate_variants()
         self.work_list.setSortingEnabled(False)
         self.work_list.blockSignals(True)
         self.work_list.setRowCount(0)
@@ -1039,6 +1044,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         subset = self._work_subset_arg(asset)
         work_files = self.manager.list_work_files(
             asset,
+            dcc=current_dcc_name(),
             department=department,
             variant=variant,
             subset=subset,
@@ -1046,7 +1052,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         )
         if not work_files:
             self.status_label.setText(
-                f"No work scenes found under: {self.manager.work_root_dir(asset, department=department, variant=variant, subset=subset or '')}"
+                f"No work scenes found under: {self.manager.work_root_dir(asset, dcc=current_dcc_name(), department=department, variant=variant, subset=subset or '')}"
             )
 
         self.work_list.blockSignals(True)
@@ -1110,7 +1116,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         item = self.variant_list.currentItem()
         if item:
             return item.text()
-        variants = self.manager.work_subsets(self._current_department())
+        variants = self.manager.work_subsets(self._current_department(), asset=self._current_asset())
         return variants[0] if variants else "main"
 
     def _current_asset_variant(self) -> str:
@@ -1652,7 +1658,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _populate_data_tree(self, asset: Asset) -> None:
         self.data_list.clear()
         roots: dict[Path, QtWidgets.QTreeWidgetItem] = {}
-        ignored = {"publish.json", "latest.json", "versions.json"}
+        ignored = {"publish.json", "data.json", "source.json", "latest.json", "versions.json"}
         data_roots = [asset.data_dir]
         data_roots.extend(asset.variant_root(variant) / "data" for variant in self.manager.asset_variants(asset))
         files = [
@@ -1752,7 +1758,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.variant_list.blockSignals(True)
         self.variant_list.clear()
         selected_row = 0
-        for index, variant in enumerate(self.manager.work_subsets(self._current_department())):
+        for index, variant in enumerate(self.manager.work_subsets(self._current_department(), asset=self._current_asset())):
             self.variant_list.addItem(variant)
             if variant == current:
                 selected_row = index
@@ -2265,13 +2271,20 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         selected_path = self._selected_work_path()
         department = self._current_department()
+        dcc = current_dcc_name()
+        ext = current_work_scene_extension()
+        subset = self._effective_work_subset(asset, dcc)
+        if dcc == "houdini" and department in {"model", "look"}:
+            subset = self._current_variant()
 
         if not selected_path:
             target = self.manager.next_work_take_path(
                 asset,
+                dcc=dcc,
                 department=department,
                 variant=self._work_variant_arg(asset),
-                subset=self._work_subset_arg(asset),
+                subset=subset,
+                ext=ext,
             )
             comment = self._ask_comment("Save Scene Comment")
             if comment is None:
@@ -2296,19 +2309,22 @@ class AssetManagerWindow(QtWidgets.QDialog):
             parsed = self.manager.parse_work_file(selected_path) or {}
             target = self.manager.next_work_take_path(
                 asset,
+                dcc=dcc,
                 department=parsed.get("department") or department,
                 variant=parsed.get("variant") or self._work_variant_arg(asset),
-                subset=self._work_subset_arg(asset),
+                subset=subset,
                 version=int(parsed.get("version") or 0) + 1,
-                ext=parsed.get("ext") or "ma",
+                ext=parsed.get("ext") or ext,
             )
         else:
             target = self.manager.next_work_take_path(
                 asset,
                 current_path=selected_path,
+                dcc=dcc,
                 department=department,
                 variant=self._work_variant_arg(asset),
-                subset=self._work_subset_arg(asset),
+                subset=subset,
+                ext=ext,
             )
 
         comment = self._ask_comment("Save Scene Comment")
@@ -2336,16 +2352,33 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         department = self._current_department()
         variant = self._work_variant_arg(asset)
-        subset = self._work_subset_arg(asset)
+        dcc = current_dcc_name()
+        ext = current_work_scene_extension()
+        subset = self._effective_work_subset(asset, dcc)
+        if dcc == "houdini" and department in {"model", "look"}:
+            subset = self._current_variant()
 
         target = self.manager.next_work_after_latest_publish_path(
             asset,
+            dcc=dcc,
             department=department,
             variant=variant,
             subset=subset,
+            ext=ext,
         )
         try:
             dependency_plan = resolve_staging_dependency(asset, self.manager, department, variant, subset)
+            if dependency_plan is None and dcc == "houdini":
+                dependency_plan = resolve_houdini_latest_model_sublayer(asset, self.manager, department, variant, subset)
+            if dcc == "houdini":
+                dependency_plan = ensure_houdini_usd_dependency_plan(
+                    asset,
+                    self.manager,
+                    department,
+                    variant,
+                    subset,
+                    dependency_plan,
+                )
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Staging Failed", str(exc))
             return
@@ -2419,6 +2452,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Quick Preview Failed", str(exc))
 
+    def _effective_work_subset(self, asset: Asset | None, dcc: str | None = None) -> str | None:
+        subset = self._work_subset_arg(asset)
+        if subset:
+            return subset
+        if dcc == "houdini" and asset and asset.uses_variant_structure(self._current_asset_variant()):
+            return self._current_variant()
+        return subset
+
     def _open_preview_review_json_in_rv(self, review_json: str | os.PathLike[str] | None) -> None:
         if not review_json:
             return
@@ -2490,17 +2531,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
             )
             return
 
+        subset = self._effective_work_subset(asset, current_dcc_name())
         publish_formats = self.manager.publish_formats_for_work_file(
             asset,
             source_path,
-            subset=self._work_subset_arg(asset),
+            subset=subset,
         )
         targets = {
             publish_format: self.manager.publish_file_path(
                 asset,
                 department=parsed["department"],
                 variant=parsed["variant"],
-                subset=self._work_subset_arg(asset),
+                subset=subset,
                 version=parsed["version"],
                 ext=publish_format,
             )
@@ -2525,7 +2567,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if comment is None:
             return
         try:
-            validation = validate_variant_publish(asset, self.manager, Path(source_path), subset=self._work_subset_arg(asset))
+            validation = validate_variant_publish(asset, self.manager, Path(source_path), subset=subset)
+            validation = merge_publish_dependency_info(
+                validation,
+                collect_publish_dependency_info(asset, self.manager, Path(source_path), subset=subset),
+            )
             if not self._confirm_publish_validation(validation):
                 return
             published = publish_work_outputs(
@@ -2535,7 +2581,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 targets,
                 overwrite=overwrite,
                 comment=comment,
-                subset=self._work_subset_arg(asset),
+                subset=subset,
                 dependency_info=validation,
             )
             self.status_label.setText("Published: " + ", ".join(path.name for path in published))
@@ -2580,12 +2626,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
 
         menu = QtWidgets.QMenu(self)
-        export_fbx = export_abc = export_usd = None
+        export_fbx = None
         export_guide = export_skin_high = export_skin_low = None
         if export_kind == "mesh":
-            export_fbx = menu.addAction("Selected Mesh: .fbx")
-            export_abc = menu.addAction("Selected Mesh: .abc")
-            export_usd = menu.addAction("Selected Mesh: .usd")
+            export_fbx = menu.addAction("Selected Mesh: FBX")
         elif export_kind == "guide":
             export_guide = menu.addAction("mGear Guide")
         elif export_kind == "skin":
@@ -2600,11 +2644,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         try:
             if action == export_fbx:
-                paths = export_selected_model_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "fbx", comment)
-            elif action == export_abc:
-                paths = export_selected_model_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "abc", comment)
-            elif action == export_usd:
-                paths = export_selected_model_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "usd", comment)
+                paths = export_selected_geo_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "fbx", comment)
             elif action == export_guide:
                 paths = [export_mgear_guide(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or "guide")]
             elif action == export_skin_high:
@@ -2621,6 +2661,39 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 self._populate_data_tree(current_asset)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Export Data Failed", str(exc))
+
+    def _ingest_model_fbx(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        source, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Ingest Model FBX",
+            "",
+            "FBX Files (*.fbx)",
+        )
+        if not source:
+            return
+        comment = self._ask_comment("Data Ingest Comment")
+        if comment is None:
+            return
+        try:
+            path = ingest_model_fbx_data(
+                asset,
+                self.manager,
+                self._work_variant_arg(asset),
+                self._work_subset_arg(asset) or self._current_variant(),
+                source,
+                comment,
+            )
+            self.manager.set_file_comment(path, comment)
+            self.status_label.setText(f"Ingested: {path.name}")
+            current_asset = self._current_asset()
+            if current_asset:
+                self._populate_data_tree(current_asset)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Ingest Model FBX Failed", str(exc))
 
     def _import_latest_publish(self) -> None:
         asset = self._current_asset()
@@ -2650,12 +2723,35 @@ def save_scene_in_current_dcc(path: str | os.PathLike[str]) -> None:
     try:
         import hou
 
-        hou.hipFile.save(file_path)
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        hou.hipFile.save(file_name=file_path)
         return
     except ImportError:
         pass
 
     raise RuntimeError("Save Scene is available inside Maya or Houdini.")
+
+
+def current_dcc_name() -> str:
+    try:
+        import hou  # noqa: F401
+
+        return "houdini"
+    except ImportError:
+        pass
+    try:
+        import maya.cmds  # noqa: F401
+
+        return "maya"
+    except ImportError:
+        pass
+    return "maya"
+
+
+def current_work_scene_extension() -> str:
+    if current_dcc_name() == "houdini":
+        return "hip"
+    return "ma"
 
 
 def stage_asset_work_scene(
@@ -2669,8 +2765,19 @@ def stage_asset_work_scene(
 ) -> dict:
     try:
         import maya.cmds as cmds
-    except ImportError as exc:
-        raise RuntimeError("Staging is available inside Maya.") from exc
+    except ImportError:
+        cmds = None
+
+    if cmds is None:
+        return stage_houdini_asset_work_scene(
+            asset,
+            manager,
+            target,
+            department,
+            variant,
+            subset,
+            dependency_plan=dependency_plan,
+        )
 
     template = resolve_asset_work_template(manager, department)
     if template and template.exists():
@@ -2708,6 +2815,95 @@ def stage_asset_work_scene(
     cmds.file(rename=str(target))
     cmds.file(save=True, type=scene_type)
     return dependency_info
+
+
+def stage_houdini_asset_work_scene(
+    asset: Asset,
+    manager: AssetManager,
+    target: Path,
+    department: str,
+    variant: str,
+    subset: str | None,
+    dependency_plan: dict | None = None,
+) -> dict:
+    try:
+        import hou
+    except ImportError as exc:
+        raise RuntimeError("Staging is available inside Maya or Houdini.") from exc
+
+    if hou.hipFile.hasUnsavedChanges():
+        result = hou.ui.displayMessage(
+            "Current scene has unsaved changes. Start staging scene?",
+            buttons=("Stage", "Cancel"),
+            default_choice=0,
+            close_choice=1,
+        )
+        if result != 0:
+            raise RuntimeError("Staging was canceled.")
+
+    hou.hipFile.clear(suppress_save_prompt=True)
+    dependency_info: dict = {
+        "template": "",
+        "dependencies": {},
+        "dcc": "houdini",
+    }
+    if dependency_plan:
+        dependency_info["dependencies"] = {
+            "base_variant": dependency_plan.get("base_variant", ""),
+            "sublayers": [
+                {
+                    "variant": dependency_plan["variant"],
+                    "department": dependency_plan["department"],
+                    "subset": dependency_plan["subset"],
+                    "publish_format": dependency_plan["publish_format"],
+                    "version": dependency_plan.get("version", ""),
+                    "path": str(dependency_plan["path"]).replace("\\", "/"),
+                    "reason": dependency_plan["reason"],
+                }
+            ],
+        }
+        if dependency_plan.get("base_variant"):
+            dependency_info["base_variant"] = dependency_plan["base_variant"]
+        _create_houdini_sublayer_node(dependency_plan["path"], f"{dependency_plan['department']}_{dependency_plan['subset']}")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    hou.hipFile.save(str(target))
+    return dependency_info
+
+
+def _create_houdini_sublayer_node(path: str | os.PathLike[str], name: str) -> None:
+    import hou
+
+    source = Path(path)
+    if source.suffix.lower() not in {".usd", ".usda", ".usdc"}:
+        raise RuntimeError(f"Houdini sublayer source must be USD: {source}")
+
+    stage = hou.node("/stage")
+    if stage is None:
+        stage = hou.node("/").createNode("lopnet", "stage")
+    node_name = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_") or "asset_sublayer"
+    sublayer = stage.createNode("sublayer", node_name=node_name)
+    file_path = str(source).replace("\\", "/")
+    _set_first_existing_houdini_parm(
+        sublayer,
+        ("filepath1", "filepath", "layerpath1", "sublayer1", "file1"),
+        file_path,
+    )
+    try:
+        sublayer.setDisplayFlag(True)
+        sublayer.setRenderFlag(True)
+    except Exception:
+        pass
+    stage.layoutChildren()
+
+
+def _set_first_existing_houdini_parm(node, names: tuple[str, ...], value: str) -> bool:
+    for name in names:
+        parm = node.parm(name)
+        if parm is not None:
+            parm.set(value)
+            return True
+    raise RuntimeError(f"Could not find a file path parameter on Houdini node: {node.path()}")
 
 
 def resolve_staging_dependency(
@@ -2761,6 +2957,83 @@ def resolve_staging_dependency(
         "Expected one of:\n"
         f"{expected}"
     )
+
+
+def resolve_houdini_latest_model_sublayer(
+    asset: Asset,
+    manager: AssetManager,
+    department: str,
+    variant: str,
+    subset: str | None,
+) -> dict | None:
+    if department != "model":
+        return None
+    source_variant = variant
+    latest = manager.latest_publish_info(
+        asset,
+        department="model",
+        variant=variant,
+        subset=subset,
+        publish_format="usd",
+    )
+    if not latest and variant != "default":
+        source_variant = "default"
+        latest = manager.latest_publish_info(
+            asset,
+            department="model",
+            variant="default",
+            subset=subset,
+            publish_format="usd",
+        )
+    if not latest or not latest.get("absolute_path"):
+        return None
+    return {
+        "variant": source_variant,
+        "department": "model",
+        "subset": subset or "",
+        "publish_format": "usd",
+        "version": latest.get("version", ""),
+        "path": str(latest["absolute_path"]),
+        "namespace": "model",
+        "base_variant": "default" if source_variant == "default" else "",
+        "reason": "houdini_model_from_latest_usd",
+    }
+
+
+def ensure_houdini_usd_dependency_plan(
+    asset: Asset,
+    manager: AssetManager,
+    department: str,
+    variant: str,
+    subset: str | None,
+    dependency_plan: dict | None,
+) -> dict | None:
+    if dependency_plan:
+        path = Path(str(dependency_plan.get("path") or ""))
+        publish_format = str(dependency_plan.get("publish_format") or "").lower().lstrip(".")
+        if publish_format in {"usd", "usda", "usdc"} and path.suffix.lower() in {".usd", ".usda", ".usdc"}:
+            return dependency_plan
+
+    if department in {"model", "look"}:
+        replacement = resolve_houdini_latest_model_sublayer(
+            asset,
+            manager,
+            "model",
+            variant,
+            subset,
+        )
+        if replacement:
+            replacement["reason"] = f"houdini_usd_sublayer_for_{department}_{subset or ''}"
+            return replacement
+
+    if dependency_plan:
+        raise RuntimeError(
+            "Houdini Stage can only sublayer USD publishes.\n"
+            f"Resolved non-USD dependency: {dependency_plan.get('path')}\n"
+            f"Department: {department}\n"
+            f"Subset: {subset or ''}"
+        )
+    return None
 
 
 def staging_dependency_candidates_from_config(
@@ -2882,11 +3155,21 @@ def resolve_asset_work_template(manager: AssetManager, department: str) -> Path 
 
 def ensure_asset_top_structure(cmds, asset_name: str) -> None:
     top = _ensure_exact_top_node(cmds, asset_name)
-    geo = _adopt_or_create_asset_child(cmds, top, "geo", ("geo", "geo_grp"))
-    for child in ("rig", "groom", "look"):
-        _adopt_or_create_asset_child(cmds, top, child, (child, f"{child}_grp"))
-    for subset in ("render", "proxy", "guide"):
-        _adopt_or_create_asset_child(cmds, geo, subset, (subset, f"{subset}_grp"))
+    _adopt_or_create_asset_child(cmds, top, "geo", ("geo", "geo_grp"))
+    ensure_pipeline_work_structure(cmds)
+
+
+def ensure_pipeline_work_structure(cmds) -> dict[str, str]:
+    pipeline_grp = _ensure_group(cmds, "PIPELINE_GRP")
+    ref_grp = _ensure_group(cmds, "REF_GRP", parent=pipeline_grp)
+    work_grp = _ensure_group(cmds, "WORK_GRP", parent=pipeline_grp)
+    preview_grp = _ensure_group(cmds, "PREVIEW_GRP", parent=pipeline_grp)
+    return {
+        "pipeline": pipeline_grp,
+        "ref": ref_grp,
+        "work": work_grp,
+        "preview": preview_grp,
+    }
 
 
 def _adopt_or_create_asset_child(cmds, parent: str, target: str, aliases: tuple[str, ...]) -> str:
@@ -3138,6 +3421,13 @@ def write_json_file(path: Path, data) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+def read_json_file(path: Path, default=None):
+    if not path.exists():
+        return default
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def export_quick_preview_images(asset_name: str, locator_data: dict, version_dir: Path) -> dict[str, list[str]]:
@@ -3573,9 +3863,18 @@ def _strip_dag_namespaces(cmds, node: str) -> str:
 def ensure_current_dcc_scene_matches(source_workfile: str | os.PathLike[str]) -> None:
     try:
         import maya.cmds as cmds
-    except ImportError as exc:
-        raise RuntimeError("Extra publish format export is available inside Maya.") from exc
-    current_scene_name = cmds.file(query=True, sceneName=True) or ""
+    except ImportError:
+        cmds = None
+
+    if cmds is None:
+        try:
+            import hou
+        except ImportError as exc:
+            raise RuntimeError("Extra publish format export is available inside Maya or Houdini.") from exc
+        current_scene_name = hou.hipFile.path()
+    else:
+        current_scene_name = cmds.file(query=True, sceneName=True) or ""
+
     if not current_scene_name:
         raise RuntimeError("Open the selected work scene before publishing extra formats.")
     current_scene = Path(current_scene_name)
@@ -3652,6 +3951,133 @@ def validate_variant_publish(
     return data
 
 
+def collect_publish_dependency_info(
+    asset: Asset,
+    manager: AssetManager,
+    source_workfile: Path,
+    *,
+    subset: str | None,
+) -> dict:
+    if current_dcc_name() != "houdini":
+        return {}
+    parsed = manager.parse_work_file(source_workfile) or {}
+    if parsed.get("department") != "look":
+        return {}
+    sublayers = collect_houdini_sublayer_dependencies(asset, manager)
+    model_dependency = next(
+        (
+            dependency
+            for dependency in sublayers
+            if dependency.get("publish_type") == "model"
+            and (not subset or dependency.get("subset") == subset)
+        ),
+        None,
+    )
+    data: dict = {
+        "dependencies": {
+            "sublayers": sublayers,
+        },
+        "validation": {"issues": [], "status": "ok"},
+    }
+    if model_dependency:
+        data["model_dependency"] = model_dependency
+        data["dependencies"]["model"] = model_dependency
+    return data
+
+
+def collect_houdini_sublayer_dependencies(asset: Asset, manager: AssetManager) -> list[dict]:
+    try:
+        import hou
+    except ImportError:
+        return []
+
+    dependencies: list[dict] = []
+    seen: set[str] = set()
+    stage = hou.node("/stage")
+    if stage is None:
+        return dependencies
+    for node in stage.allSubChildren():
+        if node.type().name() != "sublayer":
+            continue
+        for file_path in _houdini_node_file_paths(node):
+            dependency = dependency_from_publish_path(asset, manager, Path(file_path))
+            if not dependency:
+                continue
+            key = dependency.get("path", "")
+            if key in seen:
+                continue
+            dependencies.append(dependency)
+            seen.add(key)
+    return dependencies
+
+
+def _houdini_node_file_paths(node) -> list[str]:
+    paths: list[str] = []
+    for parm in node.parms():
+        try:
+            value = parm.eval()
+        except Exception:
+            continue
+        if not isinstance(value, str):
+            continue
+        if not value.lower().endswith((".usd", ".usda", ".usdc")):
+            continue
+        paths.append(value.replace("\\", "/"))
+    return paths
+
+
+def dependency_from_publish_path(asset: Asset, manager: AssetManager, path: Path) -> dict | None:
+    try:
+        relative = path.relative_to(asset.variant_root("default"))
+    except ValueError:
+        try:
+            relative = path.relative_to(asset.root)
+        except ValueError:
+            return None
+    parts = relative.parts
+    if len(parts) < 5 or parts[0] != "publish":
+        return None
+    publish_type, subset, version = parts[1], parts[2], parts[3]
+    publish_json = path.parent / "publish.json"
+    record = read_json_file(publish_json, {}) if publish_json.exists() else {}
+    return {
+        "asset": asset.name,
+        "variant": record.get("variant") or "default",
+        "publish_type": publish_type,
+        "department": publish_type,
+        "subset": subset,
+        "version": version,
+        "file": path.name,
+        "path": _relative_to_project_path(manager, path),
+    }
+
+
+def merge_publish_dependency_info(base: dict, dependency_info: dict) -> dict:
+    if not dependency_info:
+        return base
+    merged = dict(base or {})
+    dependencies = dict(merged.get("dependencies") or {})
+    dependencies.update(dependency_info.get("dependencies") or {})
+    merged["dependencies"] = dependencies
+    if dependency_info.get("model_dependency"):
+        merged["model_dependency"] = dependency_info["model_dependency"]
+    validation = dict(merged.get("validation") or {})
+    dependency_validation = dependency_info.get("validation") or {}
+    issues = list(validation.get("issues") or [])
+    issues.extend(dependency_validation.get("issues") or [])
+    validation["issues"] = issues
+    validation["status"] = "warning" if issues else validation.get("status") or dependency_validation.get("status") or "ok"
+    merged["validation"] = validation
+    return merged
+
+
+def _relative_to_project_path(manager: AssetManager, path: Path) -> str:
+    try:
+        return path.relative_to(manager.project_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def _mesh_transform_leaf_names(cmds, namespace: str = "") -> set[str]:
     names = set()
     if namespace:
@@ -3689,10 +4115,13 @@ def export_current_scene_for_publish(
     target_path = Path(target)
     try:
         import maya.cmds as cmds
-    except ImportError as exc:
-        raise RuntimeError(f"{clean_format} publish export is available inside Maya.") from exc
+    except ImportError:
+        cmds = None
 
     ensure_current_dcc_scene_matches(source_workfile)
+
+    if cmds is None:
+        return export_current_houdini_scene_for_publish(target_path, clean_format)
 
     if clean_format == "usd":
         if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):
@@ -3724,6 +4153,33 @@ def export_current_scene_for_publish(
         cmds.AbcExport(j=job)
     else:
         raise RuntimeError(f"Unsupported publish format: {publish_format}")
+    return target_path
+
+
+def export_current_houdini_scene_for_publish(target_path: Path, publish_format: str) -> Path:
+    try:
+        import hou
+    except ImportError as exc:
+        raise RuntimeError(f"{publish_format} publish export is available inside Maya or Houdini.") from exc
+
+    if publish_format != "usd":
+        raise RuntimeError(f"Unsupported Houdini publish format: {publish_format}")
+
+    stage_root = hou.node("/stage")
+    if stage_root is None:
+        raise RuntimeError("Houdini USD publish requires a Solaris /stage network.")
+    lop = stage_root.displayNode()
+    if lop is None:
+        children = stage_root.children()
+        lop = children[-1] if children else None
+    if lop is None:
+        raise RuntimeError("Houdini USD publish requires at least one LOP node under /stage.")
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    stage = lop.stage()
+    if stage is None:
+        raise RuntimeError(f"Could not cook USD stage from {lop.path()}.")
+    stage.Export(str(target_path).replace("\\", "/"))
     return target_path
 
 
@@ -3785,7 +4241,7 @@ def collect_scene_info() -> dict:
     }
 
 
-def export_selected_model_data(
+def export_selected_geo_data(
     asset: Asset,
     manager: AssetManager,
     variant: str,
@@ -3796,7 +4252,7 @@ def export_selected_model_data(
     try:
         import maya.cmds as cmds
     except ImportError:
-        raise RuntimeError("Model data export is available inside Maya.")
+        raise RuntimeError("Geo data export is available inside Maya.")
 
     selection = cmds.ls(selection=True, long=True) or []
     if not selection:
@@ -3805,22 +4261,23 @@ def export_selected_model_data(
     variant = variant or "default"
     subset = subset or "hires"
     clean_format = data_format.lower().lstrip(".")
-    base_name = f"{asset.name}_model_{subset}"
+    if clean_format != "fbx":
+        raise RuntimeError(f"Unsupported geo data format: {data_format}")
     version = manager.next_data_version(
         asset,
-        department="model",
+        department="geo",
         variant=variant,
         subset=subset,
+        data_format=clean_format,
     )
-    data_path = manager.data_file_path(
+    data_path = manager.data_version_dir(
         asset,
-        department="model",
+        department="geo",
         variant=variant,
         subset=subset,
+        data_format=clean_format,
         version=version,
-        ext=clean_format,
-        name=base_name,
-    )
+    ) / f"geo.{clean_format}"
 
     data_path.parent.mkdir(parents=True, exist_ok=True)
     cmds.select(selection, replace=True)
@@ -3835,38 +4292,83 @@ def export_selected_model_data(
             type="FBX export",
             exportSelected=True,
         )
-    elif clean_format == "abc":
-        if not cmds.pluginInfo("AbcExport", query=True, loaded=True):
-            cmds.loadPlugin("AbcExport")
-        frame = int(cmds.currentTime(query=True))
-        roots = " ".join(f'-root "{node}"' for node in selection)
-        job = f'-frameRange {frame} {frame} {roots} -file "{data_path.as_posix()}"'
-        cmds.AbcExport(j=job)
-    elif clean_format == "usd":
-        if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):
-            cmds.loadPlugin("mayaUsdPlugin")
-        cmds.file(
-            str(data_path),
-            force=True,
-            options=";",
-            type="USD Export",
-            exportSelected=True,
-        )
-    else:
-        raise RuntimeError(f"Unsupported data format: {data_format}")
-
     source_workfile = cmds.file(query=True, sceneName=True) or ""
     manager.register_data_export(
         asset,
-        department="model",
+        department="geo",
         variant=variant,
         subset=subset,
+        data_format=clean_format,
         version=version,
         files={clean_format: data_path.name},
         source_workfile=source_workfile,
         comment=comment,
     )
     return [data_path]
+
+
+def ingest_model_fbx_data(
+    asset: Asset,
+    manager: AssetManager,
+    variant: str,
+    subset: str,
+    source: str | os.PathLike[str],
+    comment: str = "",
+) -> Path:
+    source_path = Path(source)
+    if source_path.suffix.lower() != ".fbx":
+        raise RuntimeError("Only FBX files can be ingested as model data.")
+    if not source_path.exists():
+        raise FileNotFoundError(source_path)
+
+    variant = variant or "default"
+    subset = subset or "hires"
+    data_format = "fbx"
+    version = manager.next_data_version(
+        asset,
+        department="model",
+        variant=variant,
+        subset=subset,
+        data_format=data_format,
+    )
+    version_dir = manager.data_version_dir(
+        asset,
+        department="model",
+        variant=variant,
+        subset=subset,
+        data_format=data_format,
+        version=version,
+    )
+    target_path = version_dir / "model.fbx"
+    version_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target_path)
+
+    manager.register_data_export(
+        asset,
+        department="model",
+        variant=variant,
+        subset=subset,
+        data_format=data_format,
+        version=version,
+        files={data_format: target_path.name},
+        source_workfile=source_path,
+        comment=comment,
+    )
+    source_data = {
+        "source_type": "external_fbx",
+        "received_from": "external",
+        "original_file": str(source_path).replace("\\", "/"),
+        "ingested_at": datetime.now().isoformat(timespec="seconds"),
+        "asset": asset.name,
+        "variant": variant,
+        "subset": subset,
+        "format": data_format,
+        "comment": comment,
+    }
+    with (version_dir / "source.json").open("w", encoding="utf-8") as f:
+        json.dump(source_data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return target_path
 
 
 def export_mgear_guide(asset: Asset, manager: AssetManager, variant: str = "default", subset: str = "guide") -> Path:

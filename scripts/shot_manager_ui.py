@@ -124,6 +124,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shots = []
         self.active_sequence_identity = None
         self.active_shot_identity = None
+        self.context_target_shot_identity = None
         self._restore_state_pending = True
         self.is_maya_session = _is_maya_session()
         self.setWindowTitle(f"Shot Manager - {self.service.project_config.project_name}")
@@ -508,10 +509,6 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_context_tree.setColumnHidden(4, True)
         self.refresh_layout_status_btn = QtWidgets.QPushButton("Refresh")
         self.build_anim_input_btn = QtWidgets.QPushButton("Build Anim Input Package")
-        self.context_target_label = QtWidgets.QLabel("Target: None")
-        self.context_target_label.setStyleSheet(
-            "QLabel { background: #303030; color: #d8d8d8; border: 1px solid #484848; padding: 4px; }"
-        )
         self.context_shot_detail_label = QtWidgets.QLabel("Selected Shot Status")
         self.context_shot_detail_label.setStyleSheet("font-weight: bold;")
         self.context_shot_detail_tree = QtWidgets.QTreeWidget()
@@ -536,7 +533,6 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             header.addWidget(self.refresh_layout_status_btn)
             header.addWidget(self.build_anim_input_btn)
             layout.insertLayout(0, header)
-            layout.insertWidget(1, self.context_target_label)
             layout.addWidget(self.context_shot_detail_label)
             layout.addWidget(self.context_shot_detail_tree)
             self.context_shot_detail_label.hide()
@@ -544,7 +540,6 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.refresh_layout_status_btn.clicked.connect(self.populate_layout_publish_status)
         self.build_anim_input_btn.clicked.connect(self.build_anim_input_package)
         self.shot_context_tree.itemClicked.connect(self._on_context_tree_item_clicked)
-        self.shot_context_tree.itemDoubleClicked.connect(self._on_context_tree_item_double_clicked)
 
     def _hide_validation_tab(self) -> None:
         index = self.tabs.indexOf(self.validation_view)
@@ -1282,10 +1277,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_context_tree.clear()
         self._clear_context_shot_detail()
         if shot_identity:
+            self.context_target_shot_identity = shot_identity
             if hasattr(self, "layout_status_label"):
                 self.layout_status_label.setText("Shot Anim Input Status")
-            if hasattr(self, "context_target_label"):
-                self.context_target_label.setText(f"Target: Shot {shot_identity.episode}/{shot_identity.sequence}/{shot_identity.shot}")
             self.build_anim_input_btn.setText("Build Anim Input Package")
             rows = self.service.shot_anim_input_status(shot_identity)
             parent = QtWidgets.QTreeWidgetItem([shot_identity.shot, "", "", "Shot anim input readiness", ""])
@@ -1299,25 +1293,31 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.status_label.setText(f"Shot anim input status: {ready}/{len(rows)} ready")
             return
         if not sequence_identity:
+            self.context_target_shot_identity = None
             if hasattr(self, "layout_status_label"):
                 self.layout_status_label.setText("Layout Publish Status")
-            if hasattr(self, "context_target_label"):
-                self.context_target_label.setText("Target: None")
             self.build_anim_input_btn.setText("Build Anim Input Package")
             item = QtWidgets.QTreeWidgetItem(["Layout Publish Status", "N/A", "", "Open a sequence detail to check anim input readiness.", ""])
             self.shot_context_tree.addTopLevelItem(item)
             return
         if hasattr(self, "layout_status_label"):
             self.layout_status_label.setText("Sequence Anim Input Status")
-        if hasattr(self, "context_target_label"):
-            self.context_target_label.setText(f"Target: Sequence {sequence_identity.episode}/{sequence_identity.sequence}")
-        self.build_anim_input_btn.setText("Build Anim Input Packages")
+        self.context_target_shot_identity = None
+        self._set_sequence_context_target_label(sequence_identity)
         rows = self.service.layout_publish_status(sequence_identity)
-        sequence_parent = QtWidgets.QTreeWidgetItem([sequence_identity.sequence, "", "", "Sequence layout publish readiness", ""])
+        blocking = [row for row in rows if row.state == "MISSING"]
+        state = "READY" if not blocking else "MISSING"
+        message = "" if not blocking else "Missing: " + ", ".join(row.name for row in blocking)
+        sequence_parent = QtWidgets.QTreeWidgetItem([sequence_identity.sequence, state, "", message, ""])
+        sequence_parent.setData(
+            0,
+            QtCore.Qt.UserRole,
+            {"kind": "sequence_context", "identity": sequence_identity},
+        )
+        color = QtGui.QColor("#355f45") if state == "READY" else QtGui.QColor("#6d3939")
+        for column in range(self.shot_context_tree.columnCount()):
+            sequence_parent.setBackground(column, color)
         self.shot_context_tree.addTopLevelItem(sequence_parent)
-        for row_data in rows:
-            sequence_parent.addChild(self._context_status_item(row_data))
-        sequence_parent.setExpanded(True)
         shot_summary_parent = QtWidgets.QTreeWidgetItem(["Shots", "", "", "Shot anim input readiness summary", ""])
         self.shot_context_tree.addTopLevelItem(shot_summary_parent)
         sequence_data = self.service.load_sequence(sequence_identity)
@@ -1346,23 +1346,44 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 
     def _on_context_tree_item_clicked(self, item, _column=0) -> None:
         data = item.data(0, QtCore.Qt.UserRole) if item else None
-        if not isinstance(data, dict) or data.get("kind") != "shot_context":
+        if not isinstance(data, dict):
+            return
+        if data.get("kind") == "sequence_context":
+            identity = data.get("identity")
+            if not identity:
+                return
+            self._populate_context_sequence_detail(identity)
+            self.context_target_shot_identity = None
+            self._set_sequence_context_target_label(identity)
+            return
+        if data.get("kind") != "shot_context":
             return
         identity = data.get("identity")
         if not identity:
             return
         self._populate_context_shot_detail(identity)
+        self.context_target_shot_identity = identity
+        self.build_anim_input_btn.setText("Build Anim Input Package")
 
-    def _on_context_tree_item_double_clicked(self, item, _column=0) -> None:
-        data = item.data(0, QtCore.Qt.UserRole) if item else None
-        if not isinstance(data, dict) or data.get("kind") != "shot_context":
+    def _populate_context_sequence_detail(self, identity) -> None:
+        if not hasattr(self, "context_shot_detail_tree"):
             return
-        identity = data.get("identity")
-        if not identity:
-            return
-        self.active_sequence_identity = None
-        self.active_shot_identity = identity
-        self._show_current_shot_identity(identity)
+        self.context_shot_detail_tree.clear()
+        if hasattr(self, "context_shot_detail_label"):
+            self.context_shot_detail_label.setText(f"Selected Sequence Status: {identity.sequence}")
+            self.context_shot_detail_label.show()
+        rows = self.service.layout_publish_status(identity)
+        parent = QtWidgets.QTreeWidgetItem([identity.sequence, "", "", "Sequence layout publish readiness", ""])
+        self.context_shot_detail_tree.addTopLevelItem(parent)
+        for row_data in rows:
+            parent.addChild(self._context_status_item(row_data))
+        parent.setExpanded(True)
+        self.context_shot_detail_tree.resizeColumnToContents(0)
+        self.context_shot_detail_tree.resizeColumnToContents(1)
+        self.context_shot_detail_tree.show()
+
+    def _set_sequence_context_target_label(self, sequence_identity) -> None:
+        self.build_anim_input_btn.setText("Build Anim Input Packages")
 
     def _clear_context_shot_detail(self) -> None:
         if hasattr(self, "context_shot_detail_tree"):
@@ -1403,7 +1424,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         return item
 
     def build_anim_input_package(self) -> None:
-        shot_identity = self.active_shot_identity or self.current_identity()
+        shot_identity = self.context_target_shot_identity or self.active_shot_identity or self.current_identity()
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
         if shot_identity:
             comment, accepted = QtWidgets.QInputDialog.getText(self, "Build Anim Input Package", "Comment")

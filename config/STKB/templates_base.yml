@@ -11,6 +11,7 @@ enabled_softwares:
 - AfterEffects2025
 - Houdini21.0.440
 - UE5.3
+- Blender5.0
 shot_depts:
 - layout
 - anim

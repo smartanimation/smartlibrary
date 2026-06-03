@@ -8,7 +8,7 @@ templates:
   dept_reference: "{asset_root}/reference"
 
   # work is DCC-first and keeps take numbers in file names.
-  work_scene_dir: "{asset_root}/work/{dcc}/{department}/{variant}"
+  work_scene_dir: "{asset_root}/{variant}/{department}/work/{dcc}/{subset}"
   work_scene_file: "{project_name}_{asset_name}_{department}_{variant}_{version}_{take}.{ext}"
   publish_scene_file: "{asset_name}_{variant}_{version}.{ext}"
   work_maya_model_hires: "{dept_work}/maya/model/hires"
@@ -59,6 +59,13 @@ publish_outputs:
     - ma
     anim:
     - ma
+
+work_subsets_by_category:
+  model:
+    default: [proxy, render]
+    characters: [low, high]
+    env: [proxy, render]
+    prop: [proxy, render]
 
 staging_dependencies:
   model:

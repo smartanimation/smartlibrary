@@ -1,0 +1,60 @@
+#usda 1.0
+(
+    defaultPrim = "LightRig"
+    metersPerUnit = 0.01
+    upAxis = "Y"
+)
+
+def Xform "LightRig"
+{
+    custom string smartpipeline:publish_type = "lightRig"
+    custom string smartpipeline:subset = "preview"
+    custom string smartpipeline:description = "Neutral Solaris light rig for asset and shot lighting tests."
+
+    def DomeLight "dome"
+    {
+        color3f inputs:color = (0.78, 0.82, 0.9)
+        float inputs:intensity = 0.35
+        float inputs:exposure = 0
+        int inputs:normalize = 1
+    }
+
+    def RectLight "key"
+    {
+        color3f inputs:color = (1.0, 0.94, 0.86)
+        float inputs:intensity = 450
+        float inputs:exposure = 0
+        float inputs:width = 350
+        float inputs:height = 350
+        int inputs:normalize = 1
+        double3 xformOp:translate = (-250, 320, 420)
+        double3 xformOp:rotateXYZ = (-35, -30, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+
+    def RectLight "fill"
+    {
+        color3f inputs:color = (0.55, 0.66, 1.0)
+        float inputs:intensity = 90
+        float inputs:exposure = 0
+        float inputs:width = 500
+        float inputs:height = 500
+        int inputs:normalize = 1
+        double3 xformOp:translate = (360, 220, 220)
+        double3 xformOp:rotateXYZ = (-20, 45, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+
+    def RectLight "rim"
+    {
+        color3f inputs:color = (0.86, 0.92, 1.0)
+        float inputs:intensity = 260
+        float inputs:exposure = 0
+        float inputs:width = 220
+        float inputs:height = 220
+        int inputs:normalize = 1
+        double3 xformOp:translate = (0, 260, -360)
+        double3 xformOp:rotateXYZ = (-25, 180, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

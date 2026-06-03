@@ -1,4 +1,7 @@
 path: C:/Program Files/Side Effects Software/Houdini 21.0.440/bin/houdini.exe
 icon: ''
 env_vars: {}
-paths: {}
+paths:
+  HOUDINI_PATH:
+  - "{smartpipeline_root}/packages/smartlib/dcc/houdini"
+  - "&"

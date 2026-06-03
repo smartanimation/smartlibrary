@@ -957,6 +957,14 @@ class ShotManagerService:
         sequence_data = sequence_data or self.load_sequence(SequenceIdentity(identity.episode, identity.sequence))
         cast_publish = self.publish_shot_cast_from_sequence(identity, comment=comment)
         placements_publish = self.publish_shot_placements_from_sequence(identity, comment=comment)
+        self.publish_shot_layout_overlay(
+            identity,
+            cast_publish=cast_publish,
+            placements_publish=placements_publish,
+            shot_data=shot_data,
+            sequence_data=sequence_data,
+            comment=comment,
+        )
         anim_input = self.publish_shot_anim_input(
             identity,
             cast_publish=cast_publish,
@@ -1067,6 +1075,213 @@ class ShotManagerService:
         write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/placements.json"})
         self._update_versions(base_dir / "versions.json", version_label)
         return placements_path
+
+    def publish_shot_layout_overlay(
+        self,
+        identity: ShotIdentity,
+        *,
+        cast_publish: Path,
+        placements_publish: Path,
+        shot_data: dict[str, Any],
+        sequence_data: dict[str, Any],
+        comment: str = "",
+    ) -> Path:
+        base_dir = self.shot_root(identity) / "publish" / "layout" / "proxy"
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        layout_path = version_dir / "layout.usda"
+        editorial = (shot_data.get("editorial") or {}) if shot_data else {}
+        sequence_editorial = sequence_data.get("editorial") or {}
+        camera_publish = self._latest_shot_camera_publish(identity)
+        cast_data = read_json(cast_publish, {}) or {}
+        cache_paths = self.publish_shot_layout_proxy_caches(
+            identity,
+            cast_data=cast_data,
+            shot_data=shot_data,
+            sequence_data=sequence_data,
+            comment=comment,
+        )
+        cache_prims = []
+        cache_references = {}
+        for target, cache_path in cache_paths.items():
+            relative_cache = self._relative_path(layout_path.parent, cache_path)
+            virtual_cache = self._shot_virtual_path(cache_path)
+            cache_references[target] = {
+                "virtual": virtual_cache,
+                "resolved": relative_cache,
+                "project_path": self._relative_to_project(cache_path),
+            }
+            prim_name = self._usd_identifier(target)
+            cache_prims.extend(
+                [
+                    f'    def Xform "{prim_name}" (',
+                    f"        references = @{relative_cache}@",
+                    "    )",
+                    "    {",
+                    f'        custom string target = "{target}"',
+                    "    }",
+                ]
+            )
+        content = "\n".join(
+            [
+                "#usda 1.0",
+                "(",
+                '    defaultPrim = "layout"',
+                ")",
+                "",
+                'def Xform "layout"',
+                "{",
+                '    custom string smartpipeline_publish_type = "layout"',
+                '    custom string smartpipeline_subset = "proxy"',
+                '    custom string smartpipeline_usage = "anim_reference_overlay"',
+                f'    custom string episode = "{identity.episode}"',
+                f'    custom string sequence = "{identity.sequence}"',
+                f'    custom string shot = "{identity.shot}"',
+                f'    custom string version = "{version_label}"',
+                f'    custom string cast = "{self._relative_to_project(cast_publish)}"',
+                f'    custom string placements = "{self._relative_to_project(placements_publish)}"',
+                f'    custom string camera = "{self._relative_to_project(camera_publish) if camera_publish else ""}"',
+                f'    custom string fps = "{editorial.get("fps") or sequence_editorial.get("fps") or self.project_fps}"',
+                f'    custom string cut_in = "{editorial.get("cut_in", "")}"',
+                f'    custom string cut_out = "{editorial.get("cut_out", "")}"',
+                *cache_prims,
+                "}",
+                "",
+            ]
+        )
+        layout_path.write_text(content, encoding="utf-8")
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "layout",
+                "subset": "proxy",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version_label,
+                "files": {"usd": "layout.usda"},
+                "usage": "anim_reference_overlay",
+                "source_cast": self._relative_to_project(cast_publish),
+                "source_placements": self._relative_to_project(placements_publish),
+                "source_camera": self._relative_to_project(camera_publish) if camera_publish else "",
+                "caches": {target: self._relative_to_project(path) for target, path in cache_paths.items()},
+                "references": cache_references,
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/layout.usda"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return layout_path
+
+    def publish_shot_layout_proxy_caches(
+        self,
+        identity: ShotIdentity,
+        *,
+        cast_data: dict[str, Any],
+        shot_data: dict[str, Any],
+        sequence_data: dict[str, Any],
+        comment: str = "",
+    ) -> dict[str, Path]:
+        caches: dict[str, Path] = {}
+        editorial = (shot_data.get("editorial") or {}) if shot_data else {}
+        sequence_editorial = sequence_data.get("editorial") or {}
+        for target, entry in sorted((cast_data.get("cast") or {}).items()):
+            if not self._is_character_layout_cache_entry(entry):
+                continue
+            clean_target = self._clean_publish_name(target)
+            base_dir = self.shot_root(identity) / "data" / "layout" / "proxy" / clean_target / "cache"
+            version_label = self._next_publish_version(base_dir)
+            version_dir = base_dir / version_label
+            version_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = version_dir / f"{clean_target}.usd"
+            frame_range = self._layout_cache_frame_range(editorial, sequence_editorial)
+            content = "\n".join(
+                [
+                    "#usda 1.0",
+                    "(",
+                    f'    defaultPrim = "{self._usd_identifier(clean_target)}"',
+                    ")",
+                    "",
+                    f'def Xform "{self._usd_identifier(clean_target)}"',
+                    "{",
+                    '    custom string smartpipeline_data_type = "layout_cache"',
+                    '    custom string smartpipeline_subset = "proxy"',
+                    f'    custom string episode = "{identity.episode}"',
+                    f'    custom string sequence = "{identity.sequence}"',
+                    f'    custom string shot = "{identity.shot}"',
+                    f'    custom string target = "{target}"',
+                    f'    custom string asset = "{entry.get("asset", "")}"',
+                    f'    custom string variant = "{entry.get("variant", "default")}"',
+                    f'    custom string namespace = "{entry.get("namespace", target)}"',
+                    f'    custom string fps = "{editorial.get("fps") or sequence_editorial.get("fps") or self.project_fps}"',
+                    f'    custom string cut_in = "{editorial.get("cut_in", "")}"',
+                    f'    custom string cut_out = "{editorial.get("cut_out", "")}"',
+                    "}",
+                    "",
+                ]
+            )
+            cache_path.write_text(content, encoding="utf-8")
+            export_result = self._export_maya_layout_cache(
+                namespace=str(entry.get("namespace") or target),
+                cache_path=cache_path,
+                frame_range=frame_range,
+            )
+            write_json(
+                version_dir / "data.json",
+                {
+                    "data_type": "layout_cache",
+                    "subset": "proxy",
+                    "episode": identity.episode,
+                    "sequence": identity.sequence,
+                    "shot": identity.shot,
+                    "target": target,
+                    "version": version_label,
+                    "files": {"usd": cache_path.name},
+                    "asset": entry.get("asset", ""),
+                    "variant": entry.get("variant", "default"),
+                    "namespace": entry.get("namespace", target),
+                    "frame_range": list(frame_range) if frame_range else [],
+                    "export_status": export_result.get("export_status", "placeholder"),
+                    "export_error": export_result.get("export_error", ""),
+                    "source_nodes": export_result.get("source_nodes", []),
+                    "comment": comment,
+                },
+            )
+            write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{cache_path.name}"})
+            self._update_versions(base_dir / "versions.json", version_label)
+            caches[target] = cache_path
+        return caches
+
+    @staticmethod
+    def _is_character_layout_cache_entry(entry: dict[str, Any]) -> bool:
+        role = _normalize_role(entry.get("role") or "")
+        return role in {"CHA", "CHB", "CHARACTER"}
+
+    @staticmethod
+    def _layout_cache_frame_range(editorial: dict[str, Any], sequence_editorial: dict[str, Any]) -> tuple[int, int] | None:
+        cut_in = editorial.get("cut_in", sequence_editorial.get("cut_in"))
+        cut_out = editorial.get("cut_out", sequence_editorial.get("cut_out"))
+        try:
+            return int(cut_in), int(cut_out)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _export_maya_layout_cache(namespace: str, cache_path: Path, frame_range: tuple[int, int] | None) -> dict[str, Any]:
+        try:
+            from smartlib.dcc.maya.layout_cache import export_layout_cache_for_cast
+        except Exception as exc:
+            return {
+                "export_status": "skipped",
+                "export_error": f"Layout cache exporter is unavailable: {exc}",
+                "source_nodes": [],
+            }
+        return export_layout_cache_for_cast(
+            namespace=namespace,
+            output_path=cache_path,
+            frame_range=frame_range,
+        )
 
     def publish_shot_anim_input(
         self,
@@ -1358,6 +1573,33 @@ class ShotManagerService:
         except Exception:
             return path.as_posix()
 
+    @staticmethod
+    def _relative_path(from_dir: Path, target: Path) -> str:
+        try:
+            return os.path.relpath(target.resolve(), from_dir.resolve()).replace("\\", "/")
+        except Exception:
+            return target.as_posix()
+
+    def _shot_virtual_path(self, path: Path) -> str:
+        try:
+            rel = path.resolve().relative_to(self.paths.shots_root().resolve()).as_posix()
+            return f"shot://{rel}"
+        except Exception:
+            return path.as_posix()
+
+    @staticmethod
+    def _clean_publish_name(value: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip())
+        cleaned = cleaned.strip("_")
+        return cleaned or "target"
+
+    @classmethod
+    def _usd_identifier(cls, value: str) -> str:
+        cleaned = cls._clean_publish_name(value)
+        if cleaned[0].isdigit():
+            return f"n_{cleaned}"
+        return cleaned
+
     def _build_preview_from_cast(self, cast_data: dict[str, Any]) -> list[BuildPreviewItem]:
         cast = cast_data.get("cast") or {}
         review_layers = cast_data.get("review_layers") or {}
@@ -1455,7 +1697,10 @@ class ShotManagerService:
         return _preferred_publish(latest)
 
     def resolve_asset_context_work_publish(self, variant_root: Path, asset_publish: str) -> Path | None:
-        context_root = variant_root / "publish" / "asset" / "asset_work"
+        context_root = variant_root / "publish" / "asset" / "work"
+        legacy_context_root = variant_root / "publish" / "asset" / "asset_work"
+        if not context_root.exists() and legacy_context_root.exists():
+            context_root = legacy_context_root
         if not context_root.exists():
             return None
         if _is_version_label(asset_publish):

@@ -116,7 +116,7 @@ class AssetContextService:
         entries = []
         errors = []
         for publish_type, requested_subset in profile.items():
-            requested = str(requested_subset)
+            requested = self._requested_subset_for_identity(identity, requested_subset)
             entry = self._resolve_representation(identity, context, str(publish_type), requested)
             entries.append(entry)
             if entry.status == "MISSING":
@@ -176,7 +176,7 @@ class AssetContextService:
         assembled = assembled or self.current_assembly(assembly)
         if not assembled or not self.is_current_assembly(assembly, assembled):
             raise RuntimeError("Assemble and verify this Context before packing it.")
-        subset = f"{assembly.context_name}_{assembly.quality_profile.lower()}"
+        subset = self._pack_subset(assembly)
         base_dir = self.paths.asset_publish_dir(assembly.identity, "asset", subset)
         versions = [
             parse_version(path.name)
@@ -331,7 +331,10 @@ class AssetContextService:
 
     @staticmethod
     def _pack_subset(assembly: AssetContextAssembly) -> str:
-        return f"{assembly.context_name}_{assembly.quality_profile.lower()}"
+        profile = assembly.quality_profile.lower()
+        if assembly.context_name == "asset":
+            return profile
+        return f"{assembly.context_name}_{profile}"
 
     @staticmethod
     def _set_assembly_status(assembled: AssembledAssetContext, status: str, version: str = "") -> None:
@@ -353,7 +356,7 @@ class AssetContextService:
         return None
 
     def list_packs(self, identity: AssetIdentity, *, quality_profile: str, context_name: str = "asset") -> list[dict]:
-        subset = f"{context_name}_{quality_profile.lower()}"
+        subset = quality_profile.lower() if context_name == "asset" else f"{context_name}_{quality_profile.lower()}"
         base_dir = self.paths.asset_publish_dir(identity, "asset", subset)
         packs = []
         for version_dir in sorted(base_dir.glob("v*"), reverse=True):
@@ -422,6 +425,16 @@ class AssetContextService:
             files={},
             message=f"Missing publish: {publish_type}/{requested_subset}",
         )
+
+    @staticmethod
+    def _requested_subset_for_identity(identity: AssetIdentity, requested_subset: Any) -> str:
+        if isinstance(requested_subset, dict):
+            for key in (identity.category, identity.group, "default"):
+                value = requested_subset.get(key)
+                if value:
+                    return str(value)
+            return ""
+        return str(requested_subset)
 
     def _latest_publish(self, identity: AssetIdentity, publish_type: str, subset: str) -> dict[str, Any] | None:
         base_dir = self.paths.asset_publish_dir(identity, publish_type, subset)

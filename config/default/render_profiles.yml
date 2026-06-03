@@ -1,0 +1,13 @@
+render_profiles:
+  preview:
+    renderer: karma
+    resolution: [960, 540]
+    samples: 32
+    output_format: jpg
+
+  final:
+    renderer: karma
+    resolution: [1920, 1080]
+    samples: 256
+    output_format: exr
+    color_management: ACEScg

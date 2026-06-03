@@ -10,6 +10,13 @@ from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
 
 
 DEFAULT_ASSET_DEPARTMENTS = ["model", "look", "rig", "groom"]
+DEFAULT_WORK_TOOLS = ["maya", "houdini"]
+DEFAULT_WORK_SUBSETS = {
+    "model": ["hires", "proxy", "render", "guide"],
+    "rig": ["layout", "anim"],
+    "look": ["low", "high"],
+    "groom": ["render"],
+}
 
 
 @dataclass(frozen=True)
@@ -67,7 +74,13 @@ class AssetManagerService:
             variant_root / "data",
             variant_root / "publish",
         ]
-        paths.extend(variant_root / department / "work" for department in self.asset_departments)
+        for department in self.asset_departments:
+            work_root = variant_root / department / "work"
+            paths.append(work_root)
+            for tool_name in DEFAULT_WORK_TOOLS:
+                paths.append(work_root / tool_name)
+                for subset in DEFAULT_WORK_SUBSETS.get(department, ["main"]):
+                    paths.append(work_root / tool_name / subset)
         return paths
 
     def create_asset(self, request: AssetCreateRequest) -> CreatedAsset:
