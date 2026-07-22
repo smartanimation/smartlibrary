@@ -7,5 +7,10 @@ templates:
 
   # ショット直下の共通フォルダ
   dept_data: "{shot_root}/data"
+  dept_output: "{shot_root}/output"
   dept_publish: "{shot_root}/publish"
   dept_render: "{shot_root}/render"
+  output_review: "{shot_root}/output/review/{dept}/{layer}/{version}/{take}"
+  publish_review: "{shot_root}/publish/review/{dept}/{layer}/{version}/{take}"
+  output_review_build: "{shot_root}/output/review/{dept}/review_build/{version}/{take}"
+  publish_review_build: "{shot_root}/publish/review/{dept}/review_build/{version}/{take}"

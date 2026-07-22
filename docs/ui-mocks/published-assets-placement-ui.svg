@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="430" height="640" viewBox="0 0 430 640">
+  <defs>
+    <style>
+      .bg { fill: #242424; }
+      .panel { fill: #343434; }
+      .panel2 { fill: #2c2c2c; }
+      .field { fill: #202020; stroke: #454545; stroke-width: 1; }
+      .focus { fill: #202020; stroke: #2f78b7; stroke-width: 1.5; }
+      .button { fill: #424242; }
+      .primary { fill: #2f6f9f; }
+      .row { fill: #292929; stroke: #424242; stroke-width: 1; }
+      .rowSelected { fill: #24384a; stroke: #2f78b7; stroke-width: 1.2; }
+      .text { fill: #d8d8d8; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; }
+      .bold { fill: #f0f0f0; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; font-weight: 600; }
+      .label { fill: #b8b8b8; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; }
+      .tiny { fill: #9a9a9a; font-family: "Segoe UI", Arial, sans-serif; font-size: 8px; }
+      .title { fill: #f2f2f2; font-family: "Segoe UI", Arial, sans-serif; font-size: 14px; font-weight: 600; }
+      .section { fill: #d0d0d0; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; font-weight: 600; }
+      .buttonText { fill: #f3f3f3; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; font-weight: 600; }
+      .pillText { fill: #ffffff; font-family: "Segoe UI", Arial, sans-serif; font-size: 8px; font-weight: 600; }
+      .line { stroke: #474747; stroke-width: 1; }
+      .check { fill: #2f6f9f; stroke: #8fb9d7; stroke-width: 1; }
+      .emptyCheck { fill: #1e1e1e; stroke: #5a5a5a; stroke-width: 1; }
+      .ref { fill: #3b6f9e; }
+      .inst { fill: #6f8f45; }
+      .ok { fill: #76b875; }
+      .warn { fill: #d7a85e; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="430" height="640"/>
+  <rect class="panel" x="12" y="10" width="406" height="620" rx="2"/>
+
+  <text class="title" x="24" y="34">Published Assets / Placement</text>
+  <text class="tiny" x="24" y="51">Place published assets back into the scene as locators with USD export tags.</text>
+
+  <rect class="panel2" x="24" y="66" width="382" height="64"/>
+  <text class="section" x="36" y="90">Publish Result</text>
+  <circle class="ok" cx="38" cy="108" r="3"/>
+  <text class="text" x="48" y="112">3 assets published</text>
+  <circle class="ok" cx="150" cy="108" r="3"/>
+  <text class="text" x="160" y="112">proxy subset ready</text>
+  <circle class="warn" cx="282" cy="108" r="3"/>
+  <text class="text" x="292" y="112">USD modes editable</text>
+
+  <line class="line" x1="24" y1="148" x2="406" y2="148"/>
+  <text class="section" x="24" y="169">Published Assets</text>
+  <text class="tiny" x="246" y="169">Choose which assets to place.</text>
+
+  <rect class="panel2" x="24" y="180" width="382" height="166"/>
+  <text class="tiny" x="42" y="197">Asset</text>
+  <text class="tiny" x="126" y="197">Version</text>
+  <text class="tiny" x="184" y="197">Source Hidden</text>
+  <text class="tiny" x="282" y="197">Locator</text>
+  <text class="tiny" x="350" y="197">USD</text>
+
+  <rect class="rowSelected" x="34" y="206" width="362" height="30"/>
+  <rect class="check" x="43" y="215" width="12" height="12" rx="1"/>
+  <path d="M46 221 L49 224 L53 218" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="bold" x="62" y="225">Chair_A</text>
+  <text class="text" x="126" y="225">v001</text>
+  <text class="text" x="184" y="225">chairA_geo</text>
+  <text class="text" x="282" y="225">Chair_A_LOC</text>
+  <rect class="ref" x="348" y="214" width="40" height="14" rx="2"/>
+  <text class="pillText" x="354" y="225">Ref</text>
+
+  <rect class="row" x="34" y="240" width="362" height="30"/>
+  <rect class="check" x="43" y="249" width="12" height="12" rx="1"/>
+  <path d="M46 255 L49 258 L53 252" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="bold" x="62" y="259">Chair_B</text>
+  <text class="text" x="126" y="259">v001</text>
+  <text class="text" x="184" y="259">chairB_geo</text>
+  <text class="text" x="282" y="259">Chair_B_LOC</text>
+  <rect class="inst" x="348" y="248" width="40" height="14" rx="2"/>
+  <text class="pillText" x="353" y="259">Inst</text>
+
+  <rect class="row" x="34" y="274" width="362" height="30"/>
+  <rect class="emptyCheck" x="43" y="283" width="12" height="12" rx="1"/>
+  <text class="bold" x="62" y="293">Table_A</text>
+  <text class="text" x="126" y="293">v001</text>
+  <text class="text" x="184" y="293">table_geo</text>
+  <text class="text" x="282" y="293">Table_A_LOC</text>
+  <rect class="ref" x="348" y="282" width="40" height="14" rx="2"/>
+  <text class="pillText" x="354" y="293">Ref</text>
+
+  <rect class="button" x="34" y="312" width="92" height="20" rx="1"/>
+  <text class="buttonText" x="55" y="326">Select All</text>
+  <rect class="button" x="132" y="312" width="112" height="20" rx="1"/>
+  <text class="buttonText" x="153" y="326">Find in Maya</text>
+  <rect class="button" x="250" y="312" width="120" height="20" rx="1"/>
+  <text class="buttonText" x="269" y="326">Open Publish Dir</text>
+
+  <text class="section" x="24" y="374">Placement Settings</text>
+  <text class="label" x="50" y="399">Asset</text>
+  <rect class="field" x="92" y="386" width="110" height="20"/>
+  <text class="text" x="98" y="400">Chair_A</text>
+
+  <text class="label" x="221" y="399">USD Mode</text>
+  <rect class="focus" x="278" y="386" width="100" height="20"/>
+  <text class="text" x="284" y="400">Reference</text>
+  <path d="M366 394 L372 394 L369 398 Z" fill="#bdbdbd"/>
+
+  <text class="label" x="47" y="427">Variant</text>
+  <rect class="field" x="92" y="414" width="110" height="20"/>
+  <text class="text" x="98" y="428">default</text>
+  <text class="label" x="240" y="427">Subset</text>
+  <rect class="field" x="278" y="414" width="100" height="20"/>
+  <text class="text" x="284" y="428">proxy</text>
+
+  <text class="label" x="35" y="455">Locator</text>
+  <rect class="field" x="92" y="442" width="286" height="20"/>
+  <text class="text" x="98" y="456">Chair_A_LOC</text>
+
+  <rect class="check" x="92" y="478" width="12" height="12" rx="1"/>
+  <path d="M95 484 L98 487 L102 481" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="text" x="112" y="488">Create locator at source transform</text>
+  <rect class="check" x="92" y="502" width="12" height="12" rx="1"/>
+  <path d="M95 508 L98 511 L102 505" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="text" x="112" y="512">Reference published asset into locator</text>
+  <rect class="emptyCheck" x="92" y="526" width="12" height="12" rx="1"/>
+  <text class="text" x="112" y="536">Parent locator under same parent</text>
+
+  <text class="section" x="24" y="570">Locator Metadata</text>
+  <rect class="field" x="92" y="557" width="286" height="20"/>
+  <text class="tiny" x="98" y="570">smartUsdMode = reference | smartAssetVersion = v001</text>
+
+  <rect class="button" x="92" y="590" width="134" height="24" rx="1"/>
+  <text class="buttonText" x="113" y="606">Apply to Selected Rows</text>
+  <rect class="primary" x="238" y="590" width="140" height="24" rx="1"/>
+  <text class="buttonText" x="265" y="606">Place Selected Assets</text>
+</svg>

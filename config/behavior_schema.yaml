@@ -1,0 +1,29 @@
+schema: smart_crowd_behavior.v1
+
+interaction_types:
+  seat:
+    label: Seat
+  door:
+    label: Door
+  stairs:
+    label: Stairs
+
+animation_types:
+  locomotion:
+    label: Locomotion
+  idle:
+    label: Idle
+  interaction:
+    label: Interaction
+
+animation_styles:
+  normal:
+    label: Normal
+  happy:
+    label: Happy
+  sad:
+    label: Sad
+  angry:
+    label: Angry
+  sneak:
+    label: Sneak

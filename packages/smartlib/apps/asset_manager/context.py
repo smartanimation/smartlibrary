@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from smartlib.core.config_loader import ProjectConfig, load_config
+from smartlib.core.config_loader import (
+    ProjectConfig,
+    deep_merge,
+    default_config_dir,
+    load_config,
+    studio_config_dir,
+)
 from smartlib.core.metadata import read_json, write_json
 from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
 from smartlib.core.versioning import format_version, next_version, parse_version
@@ -62,13 +68,21 @@ class AssetContextService:
         project_root = project_config.project_root
         if project_root is None:
             raise RuntimeError("project_root is not set in templates_base.yml")
-        self.paths = ProjectPaths(project_root)
+        self.paths = ProjectPaths(
+            project_root,
+            templates=project_config.templates,
+            project_name=project_config.project_name,
+        )
 
     def context_versions(self, context_name: str = "asset") -> list[str]:
-        context_dir = self.context_dir(context_name)
-        if not context_dir.exists():
-            return []
-        return sorted(path.stem for path in context_dir.glob("v*.yml") if path.is_file())
+        versions = {
+            path.stem
+            for context_dir in self.context_dirs(context_name)
+            if context_dir.exists()
+            for path in context_dir.glob("v*.yml")
+            if path.is_file()
+        }
+        return sorted(versions)
 
     def active_context_version(self, context_name: str = "asset") -> str:
         project_settings = self.project_config.load("project_settings.yml")
@@ -83,15 +97,37 @@ class AssetContextService:
     def context_dir(self, context_name: str) -> Path:
         return self.project_config.config_dir / "contexts" / context_name
 
+    def context_dirs(self, context_name: str) -> list[Path]:
+        """Return context roots from lowest to highest override priority."""
+
+        roots = [default_config_dir()]
+        studio_dir = studio_config_dir()
+        if studio_dir and studio_dir != default_config_dir():
+            roots.append(studio_dir)
+        if self.project_config.config_dir not in roots:
+            roots.append(self.project_config.config_dir)
+        return [root / "contexts" / context_name for root in roots]
+
     def load_context(self, context_name: str = "asset", version: str | None = None) -> dict[str, Any]:
         resolved_version = version or self.active_context_version(context_name)
-        path = self.context_dir(context_name) / f"{resolved_version}.yml"
-        data = load_config(path)
+        paths = [
+            context_dir / f"{resolved_version}.yml"
+            for context_dir in self.context_dirs(context_name)
+        ]
+        existing_paths = [path for path in paths if path.is_file()]
+        data: dict[str, Any] = {}
+        for path in existing_paths:
+            data = deep_merge(data, load_config(path))
         if not data:
-            raise FileNotFoundError(f"Context config was not found or empty: {path}")
+            searched = ", ".join(str(path) for path in paths)
+            raise FileNotFoundError(
+                f"Context config was not found or empty: {context_name}/{resolved_version}. "
+                f"Searched: {searched}"
+            )
         data.setdefault("name", context_name)
         data["_version_label"] = resolved_version
-        data["_path"] = str(path)
+        data["_path"] = str(existing_paths[-1])
+        data["_source_paths"] = [str(path) for path in existing_paths]
         return data
 
     def quality_profiles(self, context_name: str = "asset", version: str | None = None) -> list[str]:

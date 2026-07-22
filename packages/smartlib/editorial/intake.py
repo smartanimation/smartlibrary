@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from smartlib.apps.shot_manager.service import ShotCreateRequest, ShotIdentity, ShotManagerService
-from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.config_loader import ProjectConfig, expand_config_tokens, load_config
 from smartlib.core.metadata import read_json, write_json
 from smartlib.core.versioning import format_version, next_version, parse_version
 
@@ -311,15 +312,15 @@ class EditorialIntakeService:
         return output_mov
 
     def _ffmpeg_path(self) -> Path:
-        tools = self.project_config.load("tools.yml")
+        pipeline_root = _pipeline_root()
+        tools = self.project_config.load("tools.yml") or load_config(pipeline_root / "config" / "default" / "tools.yml")
         raw = (((tools.get("tools") or {}).get("ffmpeg") or {}).get("path") or "").strip()
         if raw:
-            raw = raw.replace("{smartpipeline_root}", Path(__file__).resolve().parents[3].as_posix())
-            raw = raw.replace("{project_root}", self.project_root.as_posix())
+            raw = expand_config_tokens(raw, self.project_config)
             path = Path(raw)
             if path.exists():
                 return path
-        path = Path(__file__).resolve().parents[3] / "tools" / "ffmpeg" / "ffmpeg.exe"
+        path = Path(os.environ.get("SMARTPIPELINE_TOOLS") or pipeline_root.parent / "smarttools") / "ffmpeg" / "ffmpeg.exe"
         if path.exists():
             return path
         raise FileNotFoundError(f"ffmpeg.exe was not found: {path}")
@@ -660,3 +661,10 @@ def _relative_to_project(path: Path, project_root: Path) -> str:
         return path.relative_to(project_root).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _pipeline_root() -> Path:
+    env_root = os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get("SMARTLIBRARY_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path(__file__).resolve().parents[3]

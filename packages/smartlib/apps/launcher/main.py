@@ -21,4 +21,7 @@ def main() -> None:
             sys.path.insert(0, path)
     os.environ.setdefault("SMARTPIPELINE_ROOT", str(root))
     os.environ.setdefault("SMARTLIBRARY_ROOT", str(root))
+    os.environ.setdefault("SMARTPIPELINE_TOOLS", str(root.parent / "smarttools"))
+    os.environ.setdefault("SMARTPIPELINE_STUDIO_CONFIG_DIR", str(root.parent / "smartprojects"))
+    os.environ.setdefault("SMARTPIPELINE_STUDIO_CONFIG", str(root.parent / "smartprojects" / "studio.yml"))
     runpy.run_path(str(root / "launcher.py"), run_name="__main__")

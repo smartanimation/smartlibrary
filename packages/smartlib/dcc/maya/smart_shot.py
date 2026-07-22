@@ -96,11 +96,7 @@ def set_camera_fstop(shot_node: str, value: float) -> None:
 
 def set_sequence_range(shots: list[SequencerShot] | None = None) -> tuple[int, int]:
     cmds = _maya_cmds()
-    shots = shots or list_sequencer_shots()
-    if not shots:
-        raise RuntimeError("No camera sequencer shots were found.")
-    start = min(shot.start for shot in shots)
-    end = max(shot.end for shot in shots)
+    start, end = sequence_range(shots)
     cmds.playbackOptions(minTime=start, maxTime=end, animationStartTime=start, animationEndTime=end)
     cmds.currentTime(start, edit=True)
     return start, end
@@ -108,14 +104,110 @@ def set_sequence_range(shots: list[SequencerShot] | None = None) -> tuple[int, i
 
 def set_selected_range(shot_nodes: list[str]) -> tuple[int, int]:
     cmds = _maya_cmds()
-    selected = [shot for shot in list_sequencer_shots() if shot.node in set(shot_nodes)]
-    if not selected:
-        raise RuntimeError("Select one or more sequencer shots.")
-    start = min(shot.start for shot in selected)
-    end = max(shot.end for shot in selected)
+    start, end = selected_shot_range(shot_nodes)
     cmds.playbackOptions(minTime=start, maxTime=end, animationStartTime=start, animationEndTime=end)
     cmds.currentTime(start, edit=True)
     return start, end
+
+
+def sequence_range(shots: list[SequencerShot] | None = None) -> tuple[int, int]:
+    shots = shots or list_sequencer_shots()
+    if not shots:
+        raise RuntimeError("No camera sequencer shots were found.")
+    return min(shot.start for shot in shots), max(shot.end for shot in shots)
+
+
+def selected_shot_range(shot_nodes: list[str]) -> tuple[int, int]:
+    selected_nodes = set(shot_nodes)
+    selected = [shot for shot in list_sequencer_shots() if shot.node in selected_nodes]
+    if not selected:
+        raise RuntimeError("Select one or more sequencer shots.")
+    return min(shot.start for shot in selected), max(shot.end for shot in selected)
+
+
+def move_time_to_sequence_start() -> int:
+    shots = list_sequencer_shots()
+    start, _end = sequence_range(shots)
+    target = min(shots, key=lambda shot: shot.start)
+    _set_current_time(start, target)
+    return start
+
+
+def move_time_to_sequence_end() -> int:
+    shots = list_sequencer_shots()
+    _start, end = sequence_range(shots)
+    target = max(shots, key=lambda shot: shot.end)
+    _set_current_time(end, target)
+    return end
+
+
+def move_time_to_selected_start(shot_nodes: list[str]) -> int:
+    selected = _selected_shots(shot_nodes)
+    start = min(shot.start for shot in selected)
+    target = min(selected, key=lambda shot: shot.start)
+    _set_current_time(start, target, [shot.node for shot in selected])
+    return start
+
+
+def move_time_to_selected_end(shot_nodes: list[str]) -> int:
+    selected = _selected_shots(shot_nodes)
+    end = max(shot.end for shot in selected)
+    target = max(selected, key=lambda shot: shot.end)
+    _set_current_time(end, target, [shot.node for shot in selected])
+    return end
+
+
+def _selected_shots(shot_nodes: list[str]) -> list[SequencerShot]:
+    selected_nodes = set(shot_nodes)
+    selected = [shot for shot in list_sequencer_shots() if shot.node in selected_nodes]
+    if not selected:
+        raise RuntimeError("Select one or more sequencer shots.")
+    return selected
+
+
+def _set_current_time(frame: int, target_shot: SequencerShot | None = None, shot_nodes: list[str] | None = None) -> None:
+    cmds = _maya_cmds()
+    frame = int(frame)
+    cmds.currentTime(frame, edit=True)
+    if shot_nodes:
+        try:
+            cmds.select(shot_nodes, replace=True)
+        except Exception:
+            pass
+    elif target_shot:
+        try:
+            cmds.select(target_shot.node, replace=True)
+        except Exception:
+            pass
+    if target_shot and target_shot.camera:
+        _prepare_playblast_view(cmds, target_shot.camera)
+    _sync_camera_sequencer(cmds, frame, target_shot)
+
+
+def _sync_camera_sequencer(cmds: Any, frame: int, target_shot: SequencerShot | None = None) -> None:
+    for manager in cmds.ls(type="sequenceManager") or []:
+        for attr in ("currentTime", "time", "sequenceTime"):
+            if cmds.objExists(f"{manager}.{attr}"):
+                try:
+                    cmds.setAttr(f"{manager}.{attr}", frame)
+                except Exception:
+                    pass
+        for args, kwargs in (
+            ((manager,), {"edit": True, "currentTime": frame}),
+            ((manager,), {"edit": True, "currentShot": target_shot.node if target_shot else ""}),
+            ((), {"edit": True, "currentTime": frame}),
+            ((), {"edit": True, "currentShot": target_shot.node if target_shot else ""}),
+        ):
+            if not kwargs.get("currentShot") and "currentShot" in kwargs:
+                continue
+            try:
+                cmds.sequenceManager(*args, **kwargs)
+            except Exception:
+                pass
+    try:
+        cmds.refresh(force=True)
+    except Exception:
+        pass
 
 
 def move_selected_shots(shot_nodes: list[str], frame_delta: int) -> None:
@@ -128,6 +220,9 @@ def move_selected_shots(shot_nodes: list[str], frame_delta: int) -> None:
     for shot in shots:
         _set_shot_range(cmds, shot.node, shot.start + frame_delta, shot.end + frame_delta)
         _move_keys(cmds, shot.start, shot.end, frame_delta)
+    moved = _selected_shots(shot_nodes)
+    target = min(moved, key=lambda shot: shot.start)
+    _set_current_time(target.start, target, [shot.node for shot in moved])
 
 
 def scale_selected_shot_duration(shot_node: str, new_duration: int) -> None:
@@ -262,7 +357,7 @@ def export_selected_preview(
     written = []
     for shot in shots:
         version_dir = _next_review_version(project_root, episode, sequence, shot.shot, dept)
-        take_dir = version_dir / "layers" / "camera" / "take001"
+        take_dir = version_dir / "01"
         take_dir.mkdir(parents=True, exist_ok=True)
         output_stem = take_dir / "beauty"
         if shot.camera:
@@ -280,7 +375,7 @@ def export_selected_preview(
                 sequenceTime=False,
                 clearCache=True,
                 viewer=False,
-                showOrnaments=True,
+                showOrnaments=False,
                 percent=100,
                 compression="jpg",
                 widthHeight=[1280, 720],
@@ -292,11 +387,14 @@ def export_selected_preview(
             "shot": shot.shot,
             "dept": dept,
             "playblast_preset": playblast_preset,
+            "record_type": "output",
+            "output_type": "review",
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "camera_publish_state": _preview_locks(project_root, episode, sequence).get(shot.shot, {}),
             "frame_range": [shot.start, shot.end],
             "layers": {
                 "camera": {
-                    "file": "layers/camera/take001/beauty_####.jpg",
+                    "file": "01/beauty_####.jpg",
                     "camera": shot.camera,
                     "resolution": [1280, 720],
                     "order": 0,
@@ -304,7 +402,7 @@ def export_selected_preview(
             },
         }
         write_json(version_dir / "review.json", review_json)
-        write_json(version_dir / "publish.json", {"publish_type": "review", "subset": dept, "version": version_dir.name})
+        write_json(version_dir / "output.json", {"record_type": "output", "output_type": "review", "subset": dept, "version": version_dir.name})
         write_json(version_dir.parent / "latest.json", {"version": version_dir.name, "path": f"{version_dir.name}/review.json"})
         _update_versions(version_dir.parent / "versions.json", version_dir.name)
         written.append(str(version_dir))
@@ -413,7 +511,7 @@ def export_all_layout_preview(
         raise RuntimeError("project_root is not set in templates_base.yml")
     episode, sequence = scene_episode_sequence(project_root)
     project_name = project_config.project_name
-    sequence_review_root = project_root / "sequences" / episode / sequence / "publish" / "review" / dept
+    sequence_review_root = project_root / "sequences" / episode / sequence / "output" / "review" / dept
     main_version_dir = _next_all_review_version(sequence_review_root)
     version_label = main_version_dir.name
     main_version_dir.mkdir(parents=True, exist_ok=True)
@@ -431,15 +529,14 @@ def export_all_layout_preview(
     frame_start = min(shot.start for shot in shots)
     frame_end = max(shot.end for shot in shots)
     for shot in sorted(shots, key=lambda item: item.start):
-        if _is_preview_locked(project_root, episode, sequence, shot.shot):
-            continue
         exported_shots.append(shot.shot)
-        camera_name = _camera_folder_name(shot.camera)
+        camera_name = "cam"
         shot_version_dir = _next_all_review_shot_version(sequence_review_root, shot.shot, camera_name)
         shot_version_label = shot_version_dir.name
-        shot_version_dir.mkdir(parents=True, exist_ok=True)
+        take_dir = shot_version_dir / "01"
+        take_dir.mkdir(parents=True, exist_ok=True)
         stem = f"{project_name}_{dept}_{shot.shot}_{shot_version_label}"
-        output_stem = shot_version_dir / stem
+        output_stem = take_dir / stem
         if shot.camera:
             cmds.lookThru(shot.camera)
         from smartlib.dcc.maya.playblast_preset import applied_playblast_preset
@@ -455,19 +552,20 @@ def export_all_layout_preview(
                 sequenceTime=False,
                 clearCache=True,
                 viewer=False,
-                showOrnaments=True,
+                showOrnaments=False,
                 percent=100,
                 compression="png",
                 widthHeight=[1280, 720],
             )
-        _normalize_playblast_sequence(shot_version_dir, stem, shot.start, shot.end, ".png")
-        pattern = f"../{shot.shot}/{camera_name}/{shot_version_label}/{stem}_####.png"
-        first_file = shot_version_dir / f"{stem}_{shot.start:04d}.png"
-        last_file = shot_version_dir / f"{stem}_{shot.end:04d}.png"
+        _normalize_playblast_sequence(take_dir, stem, shot.start, shot.end, ".png")
+        first_file = take_dir / f"{stem}_{shot.start:04d}.png"
+        last_file = take_dir / f"{stem}_{shot.end:04d}.png"
+        pattern = _relative_to(main_version_dir, take_dir / f"{stem}_####.png")
         review_shots[shot.shot] = {
             "shot": shot.shot,
             "camera": shot.camera,
             "camera_folder": camera_name,
+            "take": "01",
             "sequence_range": [shot.start, shot.end],
             "frame_range": [shot.start, shot.end],
             "duration": shot.duration,
@@ -476,23 +574,27 @@ def export_all_layout_preview(
             "file": pattern,
             "first_file": _relative_to(main_version_dir, first_file),
             "last_file": _relative_to(main_version_dir, last_file),
-            "file_count": _count_sequence_files(shot_version_dir, stem, shot.start, shot.end, ".png"),
+            "file_count": _count_sequence_files(take_dir, stem, shot.start, shot.end, ".png"),
+            "camera_publish_state": _preview_locks(project_root, episode, sequence).get(shot.shot, {}),
         }
         write_json(
-            shot_version_dir / "publish.json",
+            shot_version_dir / "output.json",
             {
-                "publish_type": "review",
+                "record_type": "output",
+                "output_type": "review",
                 "subset": dept,
                 "version": shot_version_label,
+                "take": "01",
                 "shot": shot.shot,
-                "files": {"beauty": f"{stem}_####.png"},
+                "files": {"beauty": f"01/{stem}_####.png"},
                 "source_package": _relative_to_project(main_version_dir / "review.json", project_root),
             },
         )
         _update_latest_and_versions(sequence_review_root / shot.shot / camera_name, shot_version_label)
 
     review_json = {
-        "publish_type": "review",
+        "record_type": "output",
+        "output_type": "review",
         "subset": dept,
         "version": version_label,
         "episode": episode,
@@ -506,14 +608,15 @@ def export_all_layout_preview(
         "rv_mode": "editorial_sequence",
         "shots": review_shots,
         "exported_shots": exported_shots,
-        "skipped_locked_shots": [shot.shot for shot in shots if shot.shot not in exported_shots],
+        "skipped_locked_shots": [],
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     write_json(main_version_dir / "review.json", review_json)
     write_json(
-        main_version_dir / "publish.json",
+        main_version_dir / "output.json",
         {
-            "publish_type": "review",
+            "record_type": "output",
+            "output_type": "review",
             "subset": dept,
             "version": version_label,
             "files": {"review_json": "review.json"},
@@ -525,7 +628,7 @@ def export_all_layout_preview(
 
 
 def _next_review_version(project_root: Path, episode: str, sequence: str, shot: str, dept: str) -> Path:
-    base = project_root / "shots" / episode / sequence / shot / "publish" / "review" / dept
+    base = project_root / "shots" / episode / sequence / shot / "output" / "review" / dept / "cam"
     versions = [version for version in (parse_version(path.name) for path in base.glob("v*") if path.is_dir()) if version]
     return base / format_version(next_version(versions))
 
@@ -555,10 +658,6 @@ def _preview_lock_path(project_root: Path, episode: str, sequence: str) -> Path:
 def _preview_locks(project_root: Path, episode: str, sequence: str) -> dict[str, Any]:
     data = read_json(_preview_lock_path(project_root, episode, sequence), {}) or {}
     return data if isinstance(data, dict) else {}
-
-
-def _is_preview_locked(project_root: Path, episode: str, sequence: str, shot: str) -> bool:
-    return shot in _preview_locks(project_root, episode, sequence)
 
 
 def _lock_preview_for_camera(

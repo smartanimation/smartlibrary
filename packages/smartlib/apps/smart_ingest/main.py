@@ -1,0 +1,781 @@
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import replace
+from datetime import date, timedelta
+from pathlib import Path
+
+from PySide6 import QtCore, QtGui, QtWidgets
+
+from smartlib.apps.smart_ingest.service import IngestMetadata, PlanItem, SmartIngestService
+from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.metadata import read_json
+
+
+TARGET_FILTERS = [
+    ("storyreel", "storyreel"),
+    ("editorial", ".mov .edl .xml .otio"),
+    ("audio", ".wav"),
+    ("design", ".pdf .jpeg .png"),
+    ("asset", ".ma .fbx .abc .usd"),
+    ("shot", ".ma .aep .mov"),
+    ("reference", ".pdf .jpeg .png"),
+    ("others", "(others)"),
+    ("rejected", ""),
+]
+
+
+class SmartIngestWindow(QtWidgets.QMainWindow):
+    def __init__(self, service: SmartIngestService):
+        super().__init__()
+        self.service = service
+        self.items: list[PlanItem] = []
+        self.current_row = -1
+        self._updating_metadata_form = False
+        self._reset_selection_on_next_auto_plan = False
+
+        self.setWindowTitle("Smart Ingest")
+        self.resize(1360, 760)
+        self.setMinimumSize(1100, 620)
+        self._build_ui()
+        self._apply_style()
+        self._set_default_dates()
+        self.auto_plan()
+
+    def _build_ui(self) -> None:
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        layout = QtWidgets.QHBoxLayout(central)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        layout.addWidget(self._build_left_panel(), 0)
+        layout.addWidget(self._build_center_tabs(), 1)
+        layout.addWidget(self._build_metadata_panel(), 0)
+
+    def _build_center_tabs(self) -> QtWidgets.QTabWidget:
+        self.center_tabs = QtWidgets.QTabWidget()
+        self.center_tabs.addTab(self._build_plan_panel(), "Incoming")
+        self.center_tabs.addTab(self._build_history_panel(), "History")
+        self.center_tabs.currentChanged.connect(self._center_tab_changed)
+        return self.center_tabs
+
+    def _build_left_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QFrame()
+        panel.setObjectName("panel")
+        panel.setMinimumWidth(260)
+        panel.setMaximumWidth(360)
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        title = QtWidgets.QLabel("Date Range")
+        layout.addWidget(title)
+        date_row = QtWidgets.QHBoxLayout()
+        self.date_from = QtWidgets.QDateEdit(calendarPopup=True)
+        self.date_to = QtWidgets.QDateEdit(calendarPopup=True)
+        for widget in (self.date_from, self.date_to):
+            widget.setDisplayFormat("yyyy/MM/dd")
+            date_row.addWidget(widget)
+        layout.addLayout(date_row)
+
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        layout.addWidget(line)
+
+        header = QtWidgets.QHBoxLayout()
+        header.addWidget(QtWidgets.QLabel("Incoming"))
+        header.addStretch()
+        refresh = QtWidgets.QToolButton()
+        refresh.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_BrowserReload))
+        refresh.clicked.connect(self.auto_plan)
+        header.addWidget(refresh)
+        layout.addLayout(header)
+
+        self.incoming_tree = QtWidgets.QTreeWidget()
+        self.incoming_tree.setHeaderHidden(True)
+        self.incoming_tree.setMinimumHeight(220)
+        layout.addWidget(self.incoming_tree)
+
+        filter_header = QtWidgets.QLabel("Filter (Target Type)")
+        layout.addWidget(filter_header)
+        self.target_filter_checks: dict[str, QtWidgets.QCheckBox] = {}
+        for label, hint in TARGET_FILTERS:
+            row = QtWidgets.QHBoxLayout()
+            check = QtWidgets.QCheckBox(label)
+            check.setChecked(True)
+            check.stateChanged.connect(self.auto_plan)
+            row.addWidget(check)
+            row.addStretch()
+            row.addWidget(QtWidgets.QLabel(hint))
+            layout.addLayout(row)
+            self.target_filter_checks[label] = check
+
+        layout.addStretch()
+        self.summary_label = QtWidgets.QLabel("Total: 0 files")
+        layout.addWidget(self.summary_label)
+        return panel
+
+    def _build_plan_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QFrame()
+        panel.setObjectName("panel")
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        header = QtWidgets.QHBoxLayout()
+        header.addWidget(QtWidgets.QLabel("Ingest Plan"))
+        header.addStretch()
+        auto_btn = QtWidgets.QPushButton("Auto Plan")
+        auto_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_CommandLink))
+        auto_btn.clicked.connect(self.auto_plan)
+        header.addWidget(auto_btn)
+        clear_btn = QtWidgets.QPushButton("Clear Plan")
+        clear_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_TrashIcon))
+        clear_btn.clicked.connect(self.clear_plan)
+        header.addWidget(clear_btn)
+        layout.addLayout(header)
+
+        self.table = QtWidgets.QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["", "Source Path", "Target Path", "Type", "Action", "Target Type", "Status"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(1, 220)
+        self.table.setColumnWidth(2, 520)
+        for column in (3, 4, 5, 6):
+            self.table.horizontalHeader().setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.itemSelectionChanged.connect(self._table_selection_changed)
+        self.table.itemChanged.connect(self._table_item_changed)
+        layout.addWidget(self.table)
+
+        self.plan_summary_label = QtWidgets.QLabel("Plan Items: 0")
+        layout.addWidget(self.plan_summary_label)
+        return panel
+
+    def _build_history_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QFrame()
+        panel.setObjectName("panel")
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        toolbar = QtWidgets.QHBoxLayout()
+        self.history_search = QtWidgets.QLineEdit()
+        self.history_search.setPlaceholderText("Search processed files")
+        self.history_search.setClearButtonEnabled(True)
+        self.history_search.textChanged.connect(self._refresh_history)
+        toolbar.addWidget(self.history_search, 1)
+        self.history_type_combo = QtWidgets.QComboBox()
+        self.history_type_combo.addItems(["All", "Editorial", "Asset", "Shot", "Sequence", "Vendor"])
+        self.history_type_combo.currentTextChanged.connect(self._refresh_history)
+        toolbar.addWidget(self.history_type_combo)
+        refresh = QtWidgets.QToolButton()
+        refresh.setToolTip("Refresh History")
+        refresh.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_BrowserReload))
+        refresh.clicked.connect(self._refresh_history)
+        toolbar.addWidget(refresh)
+        layout.addLayout(toolbar)
+
+        self.history_table = QtWidgets.QTableWidget(0, 6)
+        self.history_table.setHorizontalHeaderLabels(
+            ["Processed", "Source", "Type", "Target Type", "Target", "Status"]
+        )
+        self.history_table.verticalHeader().hide()
+        self.history_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.history_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.history_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.history_table.setShowGrid(False)
+        header = self.history_table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.history_table.setColumnWidth(1, 210)
+        self.history_table.itemDoubleClicked.connect(self._open_history_target)
+        layout.addWidget(self.history_table)
+
+        buttons = QtWidgets.QHBoxLayout()
+        open_source = QtWidgets.QPushButton("Open Processed Source")
+        open_source.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon))
+        open_source.clicked.connect(self._open_history_source)
+        buttons.addWidget(open_source)
+        open_target = QtWidgets.QPushButton("Open Target")
+        open_target.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon))
+        open_target.clicked.connect(self._open_history_target)
+        buttons.addWidget(open_target)
+        restore = QtWidgets.QPushButton("Restore to Incoming")
+        restore.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ArrowBack))
+        restore.clicked.connect(self._restore_history_to_incoming)
+        buttons.addWidget(restore)
+        layout.addLayout(buttons)
+
+        self.history_summary_label = QtWidgets.QLabel("Processed: 0")
+        layout.addWidget(self.history_summary_label)
+        return panel
+
+    def _build_metadata_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QFrame()
+        panel.setObjectName("panel")
+        panel.setMinimumWidth(320)
+        panel.setMaximumWidth(460)
+        layout = QtWidgets.QVBoxLayout(panel)
+
+        layout.addWidget(QtWidgets.QLabel("Target / Metadata"))
+        self.target_type_combo = QtWidgets.QComboBox()
+        self.target_type_combo.addItems(["Asset", "Shot", "Sequence", "Editorial", "Vendor"])
+        layout.addWidget(self._form_row("Target Type", self.target_type_combo))
+
+        self.project_edit = QtWidgets.QLineEdit(self.service.project_name)
+        self.asset_edit = QtWidgets.QLineEdit()
+        self.category_edit = QtWidgets.QLineEdit("characters")
+        self.group_edit = QtWidgets.QLineEdit("main")
+        self.variant_edit = QtWidgets.QLineEdit("default")
+        self.department_edit = QtWidgets.QLineEdit()
+        self.subset_edit = QtWidgets.QLineEdit("main")
+        self.format_edit = QtWidgets.QLineEdit()
+        self.episode_edit = QtWidgets.QLineEdit("ep001")
+        self.sequence_edit = QtWidgets.QLineEdit("sq010")
+        self.shot_edit = QtWidgets.QLineEdit()
+        self.vendor_edit = QtWidgets.QLineEdit()
+        self.delivery_date_edit = QtWidgets.QLineEdit()
+        self.comment_edit = QtWidgets.QPlainTextEdit("ingest via Smart Ingest")
+        self.comment_edit.setFixedHeight(72)
+
+        self.metadata_rows: dict[str, QtWidgets.QWidget] = {}
+        for label, widget, key in [
+            ("Project", self.project_edit, "project"),
+            ("Asset", self.asset_edit, "asset"),
+            ("Category", self.category_edit, "category"),
+            ("Group", self.group_edit, "group"),
+            ("Variant", self.variant_edit, "variant"),
+            ("Department", self.department_edit, "department"),
+            ("Subset", self.subset_edit, "subset"),
+            ("Format", self.format_edit, "format"),
+            ("Episode", self.episode_edit, "episode"),
+            ("Sequence", self.sequence_edit, "sequence"),
+            ("Shot", self.shot_edit, "shot"),
+            ("Vendor", self.vendor_edit, "vendor"),
+            ("Delivery Date", self.delivery_date_edit, "delivery_date"),
+        ]:
+            row = self._form_row(label, widget)
+            self.metadata_rows[key] = row
+            layout.addWidget(row)
+        layout.addWidget(QtWidgets.QLabel("Comment"))
+        layout.addWidget(self.comment_edit)
+
+        self.create_folders_check = QtWidgets.QCheckBox("Create folder structure if not exists")
+        self.create_folders_check.setChecked(True)
+        layout.addWidget(self.create_folders_check)
+
+        inspect_btn = QtWidgets.QPushButton("Inspect")
+        inspect_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView))
+        inspect_btn.clicked.connect(self.apply_metadata_to_selection)
+        layout.addWidget(inspect_btn)
+
+        self.ingest_btn = QtWidgets.QPushButton("Ingest Selected")
+        self.ingest_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.ingest_btn.clicked.connect(self.ingest_selected)
+        layout.addWidget(self.ingest_btn)
+
+        open_btn = QtWidgets.QPushButton("Open Target Folder")
+        open_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon))
+        open_btn.clicked.connect(self.open_target_folder)
+        layout.addWidget(open_btn)
+        layout.addStretch()
+
+        self.target_type_combo.currentTextChanged.connect(self._target_type_changed)
+        for widget in [
+            self.project_edit,
+            self.asset_edit,
+            self.category_edit,
+            self.group_edit,
+            self.variant_edit,
+            self.department_edit,
+            self.subset_edit,
+            self.format_edit,
+            self.episode_edit,
+            self.sequence_edit,
+            self.shot_edit,
+            self.vendor_edit,
+            self.delivery_date_edit,
+        ]:
+            widget.editingFinished.connect(self._metadata_changed)
+        self.comment_edit.textChanged.connect(self._metadata_changed)
+        return panel
+
+    def _form_row(self, label: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        row = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(row)
+        layout.setContentsMargins(0, 2, 0, 2)
+        text = QtWidgets.QLabel(label)
+        text.setFixedWidth(92)
+        layout.addWidget(text)
+        layout.addWidget(widget, 1)
+        return row
+
+    def _set_default_dates(self) -> None:
+        incoming_range = self.service.incoming_date_range()
+        if incoming_range:
+            start, end = incoming_range
+        else:
+            end = date.today()
+            start = end - timedelta(days=7)
+        self.date_from.setDate(QtCore.QDate(start.year, start.month, start.day))
+        self.date_to.setDate(QtCore.QDate(end.year, end.month, end.day))
+
+    def auto_plan(self) -> None:
+        if self.items:
+            self._sync_checkboxes_to_items()
+        selected_by_source = (
+            {}
+            if self._reset_selection_on_next_auto_plan
+            else {str(item.source_path): item.selected for item in self.items}
+        )
+        self._reset_selection_on_next_auto_plan = False
+        date_from = self.date_from.date().toPython()
+        date_to = self.date_to.date().toPython()
+        rejected_check = self.target_filter_checks.get("rejected")
+        planned = self._filter_plan_items(
+            self.service.auto_plan(
+                date_from=date_from,
+                date_to=date_to,
+                include_rejected=bool(rejected_check and rejected_check.isChecked()),
+            )
+        )
+        self.items = [
+            replace(item, selected=selected_by_source.get(str(item.source_path), item.selected))
+            for item in planned
+        ]
+        self._refresh_tree()
+        self._refresh_table()
+
+    def clear_plan(self) -> None:
+        self.items = [replace(item, selected=False) for item in self.items]
+        self._reset_selection_on_next_auto_plan = True
+        self._refresh_table(select_row=self.current_row)
+
+    def apply_metadata_to_selection(self) -> None:
+        rows = self._selected_rows()
+        if not rows and self.current_row >= 0:
+            rows = [self.current_row]
+        for row in rows:
+            previous = self.items[row]
+            self.items[row] = replace(
+                self.service.replan(previous, self._metadata_from_form()),
+                selected=previous.selected,
+            )
+        self._refresh_table(select_row=rows[0] if rows else -1)
+
+    def ingest_selected(self) -> None:
+        self._sync_checkboxes_to_items()
+        result = self.service.ingest_selected(self.items, create_folders=self.create_folders_check.isChecked())
+        QtWidgets.QMessageBox.information(
+            self,
+            "Smart Ingest",
+            f"Copied: {len(result.copied)}\nProcessed: {len(result.processed_sources)}\nRejected: {len(result.rejected)}\nSkipped: {len(result.skipped)}",
+        )
+        self.auto_plan()
+        self._refresh_history()
+
+    def open_target_folder(self) -> None:
+        item = self._current_item()
+        if not item or not item.target_path:
+            return
+        folder = item.target_path if item.target_path.is_dir() else item.target_path.parent
+        try:
+            os.startfile(str(folder))
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Open Target Folder", str(exc))
+
+    def _center_tab_changed(self, index: int) -> None:
+        if self.center_tabs.tabText(index) == "History":
+            self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        if not hasattr(self, "history_table"):
+            return
+        search = self.history_search.text().strip().lower()
+        target_filter = self.history_type_combo.currentText()
+        records = []
+        if self.service.incoming_root.exists():
+            for manifest_path in sorted(
+                self.service.incoming_root.rglob("*.ingest.json"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            ):
+                data = read_json(manifest_path, {}) or {}
+                if data.get("state") != "processed":
+                    continue
+                target_type = str(data.get("target_type") or "")
+                if target_filter != "All" and target_type != target_filter:
+                    continue
+                searchable = " ".join(
+                    str(data.get(key) or "")
+                    for key in ("source_path", "processed_source_path", "output_path", "target_type")
+                ).lower()
+                if search and search not in searchable:
+                    continue
+                records.append((manifest_path, data))
+
+        self.history_table.setRowCount(len(records))
+        for row, (manifest_path, data) in enumerate(records):
+            processed_path = Path(str(data.get("processed_source_path") or data.get("source_path") or ""))
+            target_path = Path(str(data.get("output_path") or ""))
+            values = [
+                str(data.get("created_at") or "").replace("T", " "),
+                processed_path.name,
+                processed_path.suffix.lower().lstrip(".").upper() or "FILE",
+                str(data.get("target_type") or "-"),
+                str(target_path),
+                str(data.get("state") or "-"),
+            ]
+            for column, value in enumerate(values):
+                cell = QtWidgets.QTableWidgetItem(value)
+                cell.setToolTip(value)
+                if column == 0:
+                    cell.setData(QtCore.Qt.ItemDataRole.UserRole, str(manifest_path))
+                    cell.setData(QtCore.Qt.ItemDataRole.UserRole + 1, str(processed_path))
+                    cell.setData(QtCore.Qt.ItemDataRole.UserRole + 2, str(target_path))
+                self.history_table.setItem(row, column, cell)
+        self.history_summary_label.setText(f"Processed: {len(records)}")
+
+    def _history_paths(self) -> tuple[Path | None, Path | None]:
+        row = self.history_table.currentRow()
+        cell = self.history_table.item(row, 0) if row >= 0 else None
+        if cell is None:
+            return None, None
+        source_text = cell.data(QtCore.Qt.ItemDataRole.UserRole + 1)
+        target_text = cell.data(QtCore.Qt.ItemDataRole.UserRole + 2)
+        return Path(source_text) if source_text else None, Path(target_text) if target_text else None
+
+    def _open_history_source(self) -> None:
+        source, _ = self._history_paths()
+        self._open_history_path(source, "Processed Source")
+
+    def _open_history_target(self, *_args) -> None:
+        _, target = self._history_paths()
+        self._open_history_path(target, "Target")
+
+    def _open_history_path(self, path: Path | None, label: str) -> None:
+        if path is None:
+            return
+        folder = path if path.is_dir() else path.parent
+        if not folder.exists():
+            QtWidgets.QMessageBox.warning(self, label, f"Folder was not found:\n{folder}")
+            return
+        try:
+            os.startfile(str(folder))
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, label, str(exc))
+
+    def _restore_history_to_incoming(self) -> None:
+        rows = sorted({index.row() for index in self.history_table.selectionModel().selectedRows()})
+        if not rows:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Restore to Incoming",
+            f"Restore {len(rows)} processed package(s) to Incoming?\n\n"
+            "Processed originals and history will be preserved.",
+        )
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        restored = []
+        errors = []
+        for row in rows:
+            cell = self.history_table.item(row, 0)
+            manifest_path = cell.data(QtCore.Qt.ItemDataRole.UserRole) if cell else None
+            if not manifest_path:
+                continue
+            try:
+                restored.extend(self.service.restore_processed_manifest(manifest_path))
+            except Exception as exc:
+                errors.append(str(exc))
+
+        self._refresh_history()
+        self.auto_plan()
+        message = f"Restored: {len(restored)}"
+        if errors:
+            message += "\n\nErrors:\n" + "\n".join(errors)
+            QtWidgets.QMessageBox.warning(self, "Restore to Incoming", message)
+        else:
+            QtWidgets.QMessageBox.information(self, "Restore to Incoming", message)
+
+    def _refresh_tree(self) -> None:
+        self.incoming_tree.clear()
+        root = QtWidgets.QTreeWidgetItem([str(self.service.incoming_root)])
+        self.incoming_tree.addTopLevelItem(root)
+        counts: dict[str, int] = {}
+        for item in self.items:
+            try:
+                key = item.source_path.relative_to(self.service.incoming_root).parts[0]
+            except Exception:
+                key = "incoming"
+            counts[key] = counts.get(key, 0) + 1
+        for key, count in sorted(counts.items()):
+            QtWidgets.QTreeWidgetItem(root, [f"{key}  ({count})"])
+        root.setExpanded(True)
+
+    def _refresh_table(self, *, select_row: int = -1) -> None:
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(self.items))
+        for row, item in enumerate(self.items):
+            check = QtWidgets.QTableWidgetItem()
+            check.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsUserCheckable | QtCore.Qt.ItemFlag.ItemIsSelectable)
+            check.setCheckState(QtCore.Qt.CheckState.Checked if item.selected else QtCore.Qt.CheckState.Unchecked)
+            self.table.setItem(row, 0, check)
+            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(item.source_path.name))
+            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(self._short_path(item.target_path)))
+            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(item.file_type))
+            self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(item.action))
+            self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(item.target_type or "-"))
+            status = QtWidgets.QTableWidgetItem(item.status)
+            status.setToolTip(item.reason)
+            status.setForeground(self._status_color(item.status))
+            self.table.setItem(row, 6, status)
+        self.table.blockSignals(False)
+        self.plan_summary_label.setText(f"Plan Items: {len(self.items)}   Total Size: {self._format_size(sum(item.size for item in self.items))}")
+        selected = sum(1 for item in self.items if item.selected and item.actionable)
+        self.ingest_btn.setText(f"Ingest Selected ({selected})")
+        if select_row >= 0 and select_row < len(self.items):
+            self.table.selectRow(select_row)
+        elif self.items:
+            self.table.selectRow(0)
+        self._update_summary()
+
+    def _table_selection_changed(self) -> None:
+        rows = self._selected_rows()
+        self.current_row = rows[0] if rows else -1
+        item = self._current_item()
+        if item:
+            self._metadata_to_form(item.metadata)
+
+    def _table_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
+        if item.column() != 0:
+            return
+        self._sync_checkboxes_to_items()
+        self._update_summary()
+        selected = sum(1 for plan_item in self.items if plan_item.selected and plan_item.actionable)
+        self.ingest_btn.setText(f"Ingest Selected ({selected})")
+
+    def _target_type_changed(self) -> None:
+        self._update_metadata_visibility()
+        self._metadata_changed()
+
+    def _metadata_to_form(self, metadata: IngestMetadata) -> None:
+        self._updating_metadata_form = True
+        try:
+            self.target_type_combo.blockSignals(True)
+            if metadata.target_type in ["Asset", "Shot", "Sequence", "Editorial", "Vendor"]:
+                self.target_type_combo.setCurrentText(metadata.target_type)
+            self.target_type_combo.blockSignals(False)
+            self.project_edit.setText(metadata.project)
+            self.asset_edit.setText(metadata.asset)
+            self.category_edit.setText(metadata.category)
+            self.group_edit.setText(metadata.group)
+            self.variant_edit.setText(metadata.variant)
+            self.department_edit.setText(metadata.department)
+            self.subset_edit.setText(metadata.subset)
+            self.format_edit.setText(metadata.format)
+            self.episode_edit.setText(metadata.episode)
+            self.sequence_edit.setText(metadata.sequence)
+            self.shot_edit.setText(metadata.shot)
+            self.vendor_edit.setText(metadata.vendor)
+            self.delivery_date_edit.setText(metadata.delivery_date)
+            self.comment_edit.setPlainText(metadata.comment)
+            self._update_metadata_visibility()
+        finally:
+            self.target_type_combo.blockSignals(False)
+            self._updating_metadata_form = False
+
+    def _update_metadata_visibility(self) -> None:
+        target_type = self.target_type_combo.currentText()
+        visible_by_type = {
+            "Asset": {
+                "project",
+                "asset",
+                "category",
+                "group",
+                "variant",
+                "department",
+                "subset",
+                "format",
+                "delivery_date",
+            },
+            "Shot": {
+                "project",
+                "episode",
+                "sequence",
+                "shot",
+                "department",
+                "subset",
+                "format",
+                "delivery_date",
+            },
+            "Sequence": {
+                "project",
+                "episode",
+                "sequence",
+                "department",
+                "subset",
+                "format",
+                "delivery_date",
+            },
+            "Editorial": {
+                "project",
+                "episode",
+                "sequence",
+                "shot",
+                "department",
+                "format",
+                "delivery_date",
+            },
+            "Vendor": {
+                "project",
+                "vendor",
+                "episode",
+                "sequence",
+                "shot",
+                "department",
+                "subset",
+                "format",
+                "delivery_date",
+            },
+        }
+        visible = visible_by_type.get(target_type, set(self.metadata_rows))
+        for key, row in self.metadata_rows.items():
+            row.setVisible(key in visible)
+
+    def _metadata_from_form(self) -> IngestMetadata:
+        return IngestMetadata(
+            target_type=self.target_type_combo.currentText(),
+            project=self.project_edit.text().strip(),
+            asset=self.asset_edit.text().strip(),
+            category=self.category_edit.text().strip() or "characters",
+            group=self.group_edit.text().strip() or "main",
+            variant=self.variant_edit.text().strip() or "default",
+            department=self.department_edit.text().strip(),
+            subset=self.subset_edit.text().strip() or "main",
+            format=self.format_edit.text().strip(),
+            episode=self.episode_edit.text().strip() or "ep001",
+            sequence=self.sequence_edit.text().strip() or "sq010",
+            shot=self.shot_edit.text().strip(),
+            vendor=self.vendor_edit.text().strip(),
+            delivery_date=self.delivery_date_edit.text().strip(),
+            comment=self.comment_edit.toPlainText().strip(),
+        )
+
+    def _metadata_changed(self) -> None:
+        if self._updating_metadata_form or self.current_row < 0 or self.current_row >= len(self.items):
+            return
+        previous = self.items[self.current_row]
+        self.items[self.current_row] = replace(
+            self.service.replan(previous, self._metadata_from_form()),
+            selected=previous.selected,
+        )
+        self._refresh_table(select_row=self.current_row)
+
+    def _selected_rows(self) -> list[int]:
+        return sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+
+    def _current_item(self) -> PlanItem | None:
+        if self.current_row < 0 or self.current_row >= len(self.items):
+            return None
+        return self.items[self.current_row]
+
+    def _sync_checkboxes_to_items(self) -> None:
+        for row, item in enumerate(self.items):
+            table_item = self.table.item(row, 0)
+            selected = bool(table_item and table_item.checkState() == QtCore.Qt.CheckState.Checked)
+            self.items[row] = replace(item, selected=selected)
+
+    def _filter_plan_items(self, items: list[PlanItem]) -> list[PlanItem]:
+        enabled = {key for key, checkbox in self.target_filter_checks.items() if checkbox.isChecked()}
+        return [item for item in items if self._filter_key(item) in enabled]
+
+    def _filter_key(self, item: PlanItem) -> str:
+        if item.status == "Reject" or item.target_type == "Rejected":
+            return "rejected"
+        target_type = item.target_type.lower()
+        file_type = item.file_type.lower()
+        subset = item.metadata.subset.lower()
+        if target_type == "editorial" and file_type == "wav":
+            return "audio"
+        if target_type == "editorial" and subset == "storyreel":
+            return "storyreel"
+        if target_type in {"asset", "shot", "editorial"}:
+            return target_type
+        if target_type in {"design", "reference"}:
+            return target_type
+        return "others"
+
+    def _update_summary(self) -> None:
+        total = len(self.items)
+        selected = sum(1 for item in self.items if item.selected)
+        size = self._format_size(sum(item.size for item in self.items))
+        self.summary_label.setText(f"Total: {total} files ({size})   Selected: {selected}")
+
+    def _short_path(self, path: Path | None) -> str:
+        if path is None:
+            return "(unresolved)"
+        try:
+            return "..." + path.relative_to(self.service.project_root).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _status_color(self, status: str) -> QtGui.QBrush:
+        colors = {
+            "Ready": "#54b9ff",
+            "Reject": "#ff5d5d",
+            "Conflict": "#ffbf42",
+            "Needs Metadata": "#ffbf42",
+            "Missing": "#ff5d5d",
+        }
+        return QtGui.QBrush(QtGui.QColor(colors.get(status, "#dbe5ee")))
+
+    def _format_size(self, size: int) -> str:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{value:.1f} GB"
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget { background: #111a21; color: #dbe5ee; }
+            QFrame#panel { background: #162029; border: 1px solid #2b3945; border-radius: 6px; }
+            QLineEdit, QPlainTextEdit, QComboBox, QDateEdit, QTreeWidget, QTableWidget {
+                background: #111820; border: 1px solid #314251; border-radius: 4px; padding: 4px;
+                selection-background-color: #1d6fd0;
+            }
+            QPushButton { background: #24323d; border: 1px solid #334755; border-radius: 4px; padding: 7px 10px; }
+            QPushButton:hover { background: #2c3d4a; }
+            QHeaderView::section { background: #1d2832; color: #dbe5ee; padding: 5px; border: 0; }
+            QTableWidget { gridline-color: #253541; }
+            """
+        )
+
+
+def _default_config_dir() -> Path:
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR")
+    if config_dir:
+        return Path(config_dir)
+    root = Path(os.environ.get("SMARTPIPELINE_ROOT") or Path(__file__).resolve().parents[4])
+    return root / "config" / "STKB"
+
+
+def main(argv: list[str] | None = None) -> int:
+    _ = argv
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    service = SmartIngestService(ProjectConfig(_default_config_dir()))
+    window = SmartIngestWindow(service)
+    window.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,5 +1,6 @@
 import os
 import yaml
+import json
 import subprocess
 import sys
 import threading
@@ -15,12 +16,18 @@ except ImportError:
 # --- パス設定 ---
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_FILE_PATH = os.path.join(CURRENT_DIR, "launcherUI.ui")
-PROJECTS_ROOT = os.path.join(CURRENT_DIR, "config")
+SMARTPROJECTS_ROOT = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG_DIR") or os.path.normpath(os.path.join(CURRENT_DIR, "..", "smartprojects"))
+PROJECTS_ROOT = os.environ.get("SMARTPIPELINE_PROJECT_CONFIG_ROOT") or os.path.join(SMARTPROJECTS_ROOT, "config")
+DEFAULT_CONFIG_ROOT = os.path.join(CURRENT_DIR, "config", "default")
+SMARTPIPELINE_TOOLS = os.environ.get("SMARTPIPELINE_TOOLS") or os.path.normpath(os.path.join(CURRENT_DIR, "..", "smarttools"))
 SCRIPTS_DIR = os.path.join(CURRENT_DIR, "scripts")
-GLOBAL_SOFT_PATH = os.path.join(PROJECTS_ROOT, "default", "software_settings.yml")
+GLOBAL_SOFT_PATH = os.path.join(DEFAULT_CONFIG_ROOT, "software_settings.yml")
 
 USER_DATA_DIR = os.path.join(os.environ["APPDATA"], "smartuserdata")
 USER_SETTINGS_PATH = os.path.join(USER_DATA_DIR, "smartlauncher_settings.yml")
+AE_CONTEXT_PATH = os.path.join(USER_DATA_DIR, "smart_ae_browser_context.json")
+MAYA_BOOTSTRAP_STARTUP_DIR = os.path.join(USER_DATA_DIR, "maya_startup")
+DEFAULT_MAYA_USER_SETUP = os.path.join(CURRENT_DIR, "packages", "smartlib", "dcc", "maya", "startup", "userSetup.py")
 
 def load_yml(path):
     if os.path.exists(path):
@@ -41,6 +48,41 @@ def is_maya_software(soft_id, exe_path):
     exe_name = os.path.basename(str(exe_path or "")).lower()
     return "maya" in name or exe_name.startswith("maya")
 
+
+def is_after_effects_software(soft_id, exe_path):
+    name = str(soft_id or "").lower()
+    exe_name = os.path.basename(str(exe_path or "")).lower()
+    return "aftereffects" in name or name.startswith("ae") or exe_name.startswith("afterfx")
+
+
+def is_openrv_software(soft_id):
+    return str(soft_id or "").lower() in {"openrv", "rv", "rvplayer", "rv_player"}
+
+
+def apply_project_context_env(env, *, project_name, project_root, config_dir, source="launcher", episode="", sequence="", shot=""):
+    env["PROJECT_CONFIG_DIR"] = config_dir
+    env["SMART_PROJECT_CONFIG_DIR"] = config_dir
+    env["SMARTPIPELINE_STUDIO_CONFIG_DIR"] = SMARTPROJECTS_ROOT
+    env["SMARTPIPELINE_STUDIO_CONFIG"] = os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
+    env["SMARTPIPELINE_TOOLS"] = SMARTPIPELINE_TOOLS
+    env["SMART_PROJECT"] = str(project_name or "")
+    env["SMART_PROJECT_ROOT"] = str(project_root or "")
+    env["PROJECT_NAME"] = str(project_name or "")
+    env["PROJECT_ROOT"] = str(project_root or "")
+    env["SMART_CONTEXT_SOURCE"] = str(source or "")
+    env["SMART_EPISODE"] = str(episode or "")
+    env["SMART_SEQUENCE"] = str(sequence or "")
+    env["SMART_SHOT"] = str(shot or "")
+
+
+def write_ae_context(context):
+    os.makedirs(os.path.dirname(AE_CONTEXT_PATH), exist_ok=True)
+    payload = dict(context)
+    payload["context_path"] = AE_CONTEXT_PATH
+    with open(AE_CONTEXT_PATH, "w", encoding="utf-8") as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2)
+    return AE_CONTEXT_PATH
+
 def apply_pipeline_pythonpath(env, *, maya_safe=False):
     if maya_safe:
         env.pop("PYTHONPATH", None)
@@ -50,6 +92,107 @@ def apply_pipeline_pythonpath(env, *, maya_safe=False):
     if existing_pythonpath:
         python_paths.append(existing_pythonpath)
     env["PYTHONPATH"] = os.pathsep.join(python_paths)
+
+
+def prepend_env_path(env, key, paths):
+    existing = env.get(key, "")
+    clean_paths = [str(path) for path in paths if path]
+    env[str(key)] = os.pathsep.join(clean_paths) + (os.pathsep + existing if existing else "")
+
+
+def append_unique_env_path(env, key, paths):
+    existing = [path for path in env.get(key, "").split(os.pathsep) if path]
+    seen = {os.path.normcase(os.path.normpath(path)) for path in existing}
+    for path in paths:
+        if not path:
+            continue
+        clean_path = str(path)
+        norm = os.path.normcase(os.path.normpath(clean_path))
+        if norm in seen:
+            continue
+        existing.append(clean_path)
+        seen.add(norm)
+    if existing:
+        env[str(key)] = os.pathsep.join(existing)
+
+
+def _maya_user_setup_from_spec(spec_data, projectroot, env):
+    raw_value = (
+        env.get("SMART_MAYA_USER_SETUP")
+        or spec_data.get("maya_user_setup")
+        or spec_data.get("user_setup")
+        or spec_data.get("userSetup")
+        or ""
+    )
+    if isinstance(raw_value, dict):
+        raw_value = raw_value.get("path") or raw_value.get("file") or ""
+    if isinstance(raw_value, (list, tuple)):
+        raw_value = raw_value[0] if raw_value else ""
+
+    candidate = os.path.normpath(format_config_value(raw_value, projectroot)) if raw_value else ""
+    if candidate and os.path.isdir(candidate):
+        candidate = os.path.join(candidate, "userSetup.py")
+    if candidate and os.path.exists(candidate):
+        return candidate
+    if os.path.exists(DEFAULT_MAYA_USER_SETUP):
+        return DEFAULT_MAYA_USER_SETUP
+    return ""
+
+
+def _write_maya_user_setup_bootstrap(target_path):
+    os.makedirs(MAYA_BOOTSTRAP_STARTUP_DIR, exist_ok=True)
+    bootstrap_path = os.path.join(MAYA_BOOTSTRAP_STARTUP_DIR, "userSetup.py")
+    normalized_target = str(target_path or "").replace("\\", "/")
+    payload = f'''from __future__ import annotations
+
+import os
+import runpy
+import traceback
+
+target = os.environ.get("SMART_MAYA_USER_SETUP") or r"{normalized_target}"
+if target:
+    target = target.replace("\\\\", "/")
+
+marker = target.lower() if target else ""
+already_executed = os.environ.get("SMART_MAYA_USER_SETUP_EXECUTED", "").lower()
+
+if marker and already_executed == marker:
+    pass
+elif target and os.path.exists(target):
+    try:
+        os.environ["SMART_MAYA_USER_SETUP_EXECUTED"] = target
+        runpy.run_path(target, run_name="__smartpipeline_userSetup__")
+    except Exception:
+        os.environ.pop("SMART_MAYA_USER_SETUP_EXECUTED", None)
+        traceback.print_exc()
+else:
+    print("[SmartPipeline] userSetup.py was not found: {{}}".format(target))
+'''
+    with open(bootstrap_path, "w", encoding="utf-8") as stream:
+        stream.write(payload)
+    return MAYA_BOOTSTRAP_STARTUP_DIR
+
+
+def maya_bootstrap_command():
+    bootstrap_path = os.path.join(MAYA_BOOTSTRAP_STARTUP_DIR, "userSetup.py")
+    normalized = bootstrap_path.replace("\\", "/")
+    python_code = (
+        "import runpy; "
+        f"runpy.run_path(r'{normalized}', run_name='__smartpipeline_bootstrap__')"
+    )
+    escaped = python_code.replace("\\", "\\\\").replace('"', '\\"')
+    return f'python("{escaped}")'
+
+
+def apply_maya_startup_path(env, spec_data=None, projectroot=""):
+    spec_data = spec_data or {}
+    target_path = _maya_user_setup_from_spec(spec_data, projectroot, env)
+    if not target_path:
+        return
+    env["SMART_MAYA_USER_SETUP"] = target_path
+    startup_path = _write_maya_user_setup_bootstrap(target_path)
+    prepend_env_path(env, "MAYA_SCRIPT_PATH", [startup_path])
+
 
 def apply_config_env_vars(env, env_vars, projectroot, *, maya_safe=False):
     for k, v in env_vars.items():
@@ -65,8 +208,35 @@ def apply_config_env_vars(env, env_vars, projectroot, *, maya_safe=False):
 
 
 def runtime_python_path():
-    runtime = os.path.join(CURRENT_DIR, "runtime", "python", "Scripts", "python.exe")
-    return runtime if os.path.exists(runtime) else sys.executable
+    candidates = [
+        os.path.join(SMARTPIPELINE_TOOLS, "python", "Scripts", "python.exe"),
+        os.path.join(SMARTPIPELINE_TOOLS, "python", "python.exe"),
+        os.path.join(CURRENT_DIR, "runtime", "python", "Scripts", "python.exe"),
+        os.path.join(CURRENT_DIR, "runtime", "python", "python.exe"),
+    ]
+    for runtime in candidates:
+        if os.path.exists(runtime):
+            return runtime
+    return sys.executable
+
+
+def credentials_path_for_sync():
+    raw_value = (
+        os.environ.get("CREDENTIALS_PATH")
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        or os.environ.get("CREDENTIALS_DIR")
+        or ""
+    )
+    if raw_value:
+        candidate = os.path.normpath(raw_value.strip().strip('"'))
+        if os.path.isdir(candidate):
+            candidate = os.path.join(candidate, "credentials.json")
+        return candidate
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "credentials.json")
+    return ""
 
 
 def format_config_value(value, projectroot):
@@ -75,7 +245,54 @@ def format_config_value(value, projectroot):
         .replace("{project_root}", projectroot)
         .replace("{smartpipeline_root}", CURRENT_DIR)
         .replace("{smartlibrary_root}", CURRENT_DIR)
+        .replace("{smartpipeline_tools}", SMARTPIPELINE_TOOLS)
+        .replace("{smarttools_root}", SMARTPIPELINE_TOOLS)
+        .replace("{SMARTPIPELINE_TOOLS}", SMARTPIPELINE_TOOLS)
     )
+
+
+def resolve_openrv_executable(config_dir, projectroot):
+    for tools_path in (
+        os.path.join(config_dir, "tools.yml") if config_dir else "",
+        os.environ.get("SMARTPIPELINE_STUDIO_CONFIG", ""),
+        os.path.join(SMARTPROJECTS_ROOT, "tools.yml"),
+        os.path.join(DEFAULT_CONFIG_ROOT, "tools.yml"),
+    ):
+        data = load_yml(tools_path) if tools_path else {}
+        raw_path = (((data.get("tools") or {}).get("openrv") or {}).get("path") or "").strip()
+        if not raw_path:
+            continue
+        path = os.path.normpath(format_config_value(raw_path, projectroot))
+        if "{version}" in path:
+            import glob
+
+            matches = sorted(glob.glob(path.replace("{version}", "*")))
+            if matches:
+                path = matches[-1]
+        if path and os.path.exists(path):
+            return path
+
+    for env_name in ("OPENRV_PATH", "RV_PATH", "SMART_RENDER_RV_PATH"):
+        value = os.environ.get(env_name, "").strip().strip('"')
+        if value and os.path.exists(value):
+            return os.path.normpath(value)
+
+    openrv_root = os.path.join(CURRENT_DIR, "tools", "OpenRV")
+    if os.path.isdir(openrv_root):
+        candidates = sorted(
+            os.path.join(openrv_root, name, "bin", "rv.exe")
+            for name in os.listdir(openrv_root)
+            if name.startswith("OpenRV-")
+        )
+        for path in reversed(candidates):
+            if os.path.exists(path):
+                return os.path.normpath(path)
+
+    for name in ("rv.exe", "rv"):
+        found = shutil.which(name)
+        if found:
+            return os.path.normpath(found)
+    return ""
 
 class SmartLauncher(QtWidgets.QMainWindow):
     setup_finished_signal = QtCore.Signal()
@@ -127,6 +344,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
         self.app_model = QtGui.QStandardItemModel()
         self.ui.appview.setModel(self.app_model)
         self.ui.appview.setIconSize(QtCore.QSize(40, 40))
+        self.ui.appview.setUniformItemSizes(True)
+        self.ui.appview.setSpacing(0)
         self.ui.appview.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
 
     def create_symbol_icon(self, char, color_str, size=18):
@@ -140,6 +359,38 @@ class SmartLauncher(QtWidgets.QMainWindow):
             painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, char)
         painter.end()
         return QtGui.QIcon(pixmap)
+
+    def application_icon(self, info, exe_path, provider):
+        raw_icon = str(info.get("icon") or "").strip()
+        if raw_icon:
+            formatted = format_config_value(raw_icon, self.projectroot)
+            candidates = [formatted]
+            if not os.path.isabs(formatted):
+                candidates.extend(
+                    [
+                        os.path.join(CURRENT_DIR, formatted),
+                        os.path.join(CURRENT_DIR, "resources", "icons", formatted),
+                    ]
+                )
+            for candidate in candidates:
+                icon_path = os.path.normpath(candidate)
+                if not os.path.exists(icon_path):
+                    continue
+                if os.path.splitext(icon_path)[1].lower() in {".png", ".jpg", ".jpeg", ".svg", ".ico"}:
+                    icon = QtGui.QIcon(icon_path)
+                else:
+                    icon = provider.icon(QtCore.QFileInfo(icon_path))
+                if not icon.isNull():
+                    return icon
+
+        if exe_path and os.path.exists(exe_path):
+            icon = provider.icon(QtCore.QFileInfo(exe_path))
+            if not icon.isNull():
+                return icon
+
+        return self.style().standardIcon(
+            QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon
+        )
 
     def setup_custom_ui_elements(self):
         if hasattr(self.ui, 'edit_btn'):
@@ -224,19 +475,24 @@ class SmartLauncher(QtWidgets.QMainWindow):
         self.check_asset_sheet_cache(folder_name)
         
         # --- 2. アプリリストの更新 ---
-        enabled = cfg.get('enabled_softwares', [])
+        enabled = [
+            soft_id
+            for soft_id in cfg.get('enabled_softwares', [])
+            if not is_openrv_software(soft_id)
+        ]
+        cfg_dir = os.path.join(PROJECTS_ROOT, folder_name)
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         provider = QtWidgets.QFileIconProvider()
         for soft_id in enabled:
-            info = master_data.get(soft_id, {})
+            info = dict(master_data.get(soft_id, {}))
+            project_info = load_yml(os.path.join(cfg_dir, f"software_{soft_id}.yml"))
+            info.update(project_info)
             item = QtGui.QStandardItem(info.get('name', soft_id.upper()))
             item.setEditable(False)
             raw_path = info.get('path', "")
-            exe_path = os.path.normpath(raw_path.replace("{project_root}", self.projectroot)) if raw_path else ""
-            if exe_path and os.path.exists(exe_path):
-                item.setIcon(provider.icon(QtCore.QFileInfo(exe_path)))
-            #else:
-            #    item.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_ApplicationIcon))
+            exe_path = os.path.normpath(format_config_value(raw_path, self.projectroot)) if raw_path else ""
+            item.setIcon(self.application_icon(info, exe_path, provider))
+            item.setSizeHint(QtCore.QSize(0, 52))
             item.setData(soft_id, QtCore.Qt.UserRole)
             self.app_model.appendRow(item)
 
@@ -248,19 +504,15 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.asset_sync_signal.emit("Asset sheet: not configured")
             return
 
-        credentials = (
-            os.environ.get("CREDENTIALS_PATH")
-            or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-            or os.environ.get("CREDENTIALS_DIR")
-        )
-        if credentials:
-            credentials = credentials.strip().strip('"')
-        if not credentials:
+        credentials = credentials_path_for_sync()
+        if not credentials or not os.path.isfile(credentials):
             cache_path = os.path.join(cfg_dir, ".cache", "asset_list.json")
             if os.path.exists(cache_path):
                 self.asset_sync_signal.emit("Asset sheet: using cache")
             else:
-                self.asset_sync_signal.emit("Asset sheet: credentials not set")
+                self.asset_sync_signal.emit(
+                    f"Asset sheet: credentials not found ({credentials or 'not configured'})"
+                )
             return
 
         script = os.path.join(SCRIPTS_DIR, "sync_asset_sheet.py")
@@ -273,14 +525,11 @@ class SmartLauncher(QtWidgets.QMainWindow):
     def _sync_asset_sheet_worker(self, cfg_dir, credentials, script):
         env = os.environ.copy()
         env["PROJECT_CONFIG_DIR"] = cfg_dir
-        if os.path.isdir(credentials):
-            env["CREDENTIALS_DIR"] = credentials
-        else:
-            env["CREDENTIALS_PATH"] = credentials
+        env["CREDENTIALS_PATH"] = credentials
 
         try:
             result = subprocess.run(
-                [sys.executable, script, "--config-dir", cfg_dir, "--credentials", credentials],
+                [runtime_python_path(), script, "--config-dir", cfg_dir, "--credentials", credentials],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -319,6 +568,19 @@ class SmartLauncher(QtWidgets.QMainWindow):
         display_project = self.ui.projectCombo.currentText()
         folder_name = self.project_map.get(display_project)
         if not folder_name: return
+        cfg_dir = os.path.join(PROJECTS_ROOT, folder_name)
+        base_cfg = load_yml(os.path.join(cfg_dir, "templates_base.yml"))
+        anchors = base_cfg.get("anchors", {})
+        project_name = anchors.get("project_name", display_project)
+        project_root = anchors.get("project_root", self.projectroot)
+
+        if is_openrv_software(soft_id):
+            self.launch_openrv_player(
+                cfg_dir=cfg_dir,
+                project_name=project_name,
+                project_root=project_root,
+            )
+            return
 
         # --- 1. パスの決定 (個別設定を最優先) ---
         # プロジェクト固有の software_xxx.yml をロード
@@ -336,7 +598,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Error", f"Executable path not defined for: {soft_id}")
             return
 
-        exe_p = os.path.normpath(raw_exe_path.replace("{project_root}", self.projectroot))
+        exe_p = os.path.normpath(format_config_value(raw_exe_path, self.projectroot))
 
         if not os.path.exists(exe_p):
             QtWidgets.QMessageBox.warning(self, "Error", f"Executable not found: {exe_p}")
@@ -345,10 +607,29 @@ class SmartLauncher(QtWidgets.QMainWindow):
         # --- 2. 起動準備 ---
         is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
         maya_safe = is_maya_software(soft_id, exe_p)
+        after_effects = is_after_effects_software(soft_id, exe_p)
         full_env = os.environ.copy()
-        full_env["PROJECT_CONFIG_DIR"] = os.path.join(PROJECTS_ROOT, folder_name)
         full_env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
         full_env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
+        apply_project_context_env(
+            full_env,
+            project_name=project_name,
+            project_root=project_root,
+            config_dir=cfg_dir,
+            source="launcher",
+        )
+        if after_effects:
+            write_ae_context(
+                {
+                    "source": "launcher",
+                    "project": project_name,
+                    "projectRoot": project_root,
+                    "configDir": cfg_dir,
+                    "episode": "",
+                    "sequence": "",
+                    "shot": "",
+                }
+            )
 
         apply_pipeline_pythonpath(full_env, maya_safe=maya_safe)
 
@@ -362,8 +643,9 @@ class SmartLauncher(QtWidgets.QMainWindow):
         for k, p_list in spec_data.get('paths', {}).items():
             if isinstance(p_list, list):
                 formatted = [format_config_value(p, self.projectroot) for p in p_list]
-                existing = full_env.get(k, "")
-                full_env[str(k)] = os.pathsep.join(formatted) + (os.pathsep + existing if existing else "")
+                prepend_env_path(full_env, str(k), formatted)
+        if maya_safe:
+            apply_maya_startup_path(full_env, spec_data, self.projectroot)
 
         try:
             if is_batch:
@@ -381,9 +663,15 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 # EXEファイル：環境変数を構築して実行
                 print(f"[LAUNCH] EXE Mode (Custom Env): {exe_p}")
                 full_env = os.environ.copy()
-                full_env["PROJECT_CONFIG_DIR"] = os.path.join(PROJECTS_ROOT, folder_name)
                 full_env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
                 full_env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
+                apply_project_context_env(
+                    full_env,
+                    project_name=project_name,
+                    project_root=project_root,
+                    config_dir=cfg_dir,
+                    source="launcher",
+                )
 
                 apply_pipeline_pythonpath(full_env, maya_safe=maya_safe)
                 
@@ -399,17 +687,81 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 for k, p_list in spec_data.get('paths', {}).items():
                     if isinstance(p_list, list):
                         formatted = [format_config_value(p, self.projectroot) for p in p_list]
-                        existing = full_env.get(k, "")
-                        full_env[str(k)] = os.pathsep.join(formatted) + (os.pathsep + existing if existing else "")
+                        prepend_env_path(full_env, str(k), formatted)
+                if maya_safe:
+                    apply_maya_startup_path(full_env, spec_data, self.projectroot)
+
+                launch_args = [exe_p]
+                if maya_safe:
+                    launch_args.extend(["-command", maya_bootstrap_command()])
 
                 subprocess.Popen(
-                    [exe_p],
+                    launch_args,
                     env=full_env,
                     cwd=self.projectroot if os.path.exists(self.projectroot) else None,
                     creationflags=subprocess.CREATE_NEW_CONSOLE
                 )
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Launch failed: {e}")
+
+    def launch_openrv_player(self, *, cfg_dir, project_name, project_root):
+        rv_path = resolve_openrv_executable(cfg_dir, project_root)
+        if not rv_path:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "OpenRV Not Found",
+                "Set tools.openrv.path in tools.yml or set OPENRV_PATH / RV_PATH.",
+            )
+            return
+
+        env = os.environ.copy()
+        env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+        env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
+        apply_project_context_env(
+            env,
+            project_name=project_name,
+            project_root=project_root,
+            config_dir=cfg_dir,
+            source="launcher",
+        )
+        env["OPENRV_PATH"] = rv_path
+        env["RV_PATH"] = rv_path
+        rv_support_roots = [
+            os.path.join(os.environ.get("APPDATA", ""), "RV"),
+            os.path.join(os.environ.get("APPDATA", ""), "TweakSoftware", "RV"),
+        ]
+        append_unique_env_path(
+            env,
+            "MU_MODULE_PATH",
+            [os.path.join(root, "Mu") for root in rv_support_roots],
+        )
+        append_unique_env_path(
+            env,
+            "RV_SUPPORT_PATH",
+            [os.path.join(root, "Packages") for root in rv_support_roots],
+        )
+        append_unique_env_path(
+            env,
+            "PYTHONPATH",
+            [os.path.join(root, "Python") for root in rv_support_roots],
+        )
+        apply_project_context_env(
+            env,
+            project_name=project_name,
+            project_root=project_root,
+            config_dir=cfg_dir,
+            source="launcher",
+        )
+
+        try:
+            subprocess.Popen(
+                [rv_path, "-flags", "ModeManagerVerbose=true"],
+                cwd=project_root if project_root and os.path.exists(project_root) else os.path.dirname(rv_path),
+                env=env,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "OpenRV", f"Launch failed: {e}")
 
     def delete_current_project(self):
         """プロジェクト削除 (コンフィグのみ / フォルダ含め全ての選択)"""
@@ -473,14 +825,24 @@ class SmartLauncher(QtWidgets.QMainWindow):
             return
         python = runtime_python_path()
         env = os.environ.copy()
-        env["PROJECT_CONFIG_DIR"] = cfg_dir
         env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
         env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
+        display_project = self.ui.projectCombo.currentText()
+        base_cfg = load_yml(os.path.join(cfg_dir, "templates_base.yml"))
+        anchors = base_cfg.get("anchors", {})
+        apply_project_context_env(
+            env,
+            project_name=anchors.get("project_name", display_project),
+            project_root=anchors.get("project_root", self.projectroot),
+            config_dir=cfg_dir,
+            source="launcher",
+        )
         apply_pipeline_pythonpath(env, maya_safe=False)
 
         tool_commands = {
             "asset_manager": [python, os.path.join(SCRIPTS_DIR, "asset_manager_ui.py")],
             "editorial_intake": [python, "-m", "smartlib.apps.editorial_intake"],
+            "smart_ingest": [python, "-m", "smartlib.apps.smart_ingest"],
             "smart_casting": [python, "-m", "smartlib.apps.smart_casting", cfg_dir],
             "shot_manager": [python, os.path.join(SCRIPTS_DIR, "shot_manager_ui.py")],
         }
@@ -498,6 +860,23 @@ class SmartLauncher(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "SmartTools", f"Launch failed: {e}")
 
+    def launch_current_project_openrv(self):
+        cfg_dir = self.current_project_config_dir()
+        if not cfg_dir:
+            QtWidgets.QMessageBox.warning(self, "OpenRV", "Select a project first.")
+            return
+        display_project = self.ui.projectCombo.currentText()
+        base_cfg = load_yml(os.path.join(cfg_dir, "templates_base.yml"))
+        anchors = base_cfg.get("anchors", {})
+        self.launch_openrv_player(
+            cfg_dir=cfg_dir,
+            project_name=anchors.get("project_name", display_project),
+            project_root=anchors.get("project_root", self.projectroot),
+        )
+
+    def launch_current_project_smart_review(self):
+        self.launch_current_project_openrv()
+
     def check_project_status(self, root):
         is_ready = os.path.exists(root) if root else False
         if hasattr(self.ui, 'setup_button'):
@@ -506,7 +885,13 @@ class SmartLauncher(QtWidgets.QMainWindow):
     def run_pipeline_setup(self):
         folder_name = self.project_map.get(self.ui.projectCombo.currentText())
         env = os.environ.copy()
-        env["PROJECT_CONFIG_DIR"] = os.path.join(PROJECTS_ROOT, folder_name)
+        cfg_dir = os.path.join(PROJECTS_ROOT, folder_name)
+        env["PROJECT_CONFIG_DIR"] = cfg_dir
+        env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
+        env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+        env["SMARTPIPELINE_TOOLS"] = SMARTPIPELINE_TOOLS
+        env["SMARTPIPELINE_STUDIO_CONFIG_DIR"] = SMARTPROJECTS_ROOT
+        env["SMARTPIPELINE_STUDIO_CONFIG"] = os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
         script = os.path.join(SCRIPTS_DIR, "init_project.py")
         threading.Thread(target=lambda: (subprocess.run([sys.executable, script], env=env), self.setup_finished_signal.emit()), daemon=True).start()
 
@@ -518,10 +903,16 @@ class SmartLauncher(QtWidgets.QMainWindow):
         asset_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirIcon))
         editorial_action = tools_menu.addAction("Editorial Intake", lambda: self.launch_smart_tool("editorial_intake"))
         editorial_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        ingest_action = tools_menu.addAction("Smart Ingest", lambda: self.launch_smart_tool("smart_ingest"))
+        ingest_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DriveHDIcon))
         casting_action = tools_menu.addAction("Smart Casting", lambda: self.launch_smart_tool("smart_casting"))
         casting_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
         shot_action = tools_menu.addAction("Shot Manager", lambda: self.launch_smart_tool("shot_manager"))
         shot_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon))
+        rv_action = tools_menu.addAction("RV Player", self.launch_current_project_openrv)
+        rv_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay))
+        smart_review_action = tools_menu.addAction("Smart Review", self.launch_current_project_smart_review)
+        smart_review_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
         
         # 1. New Project
         new_action = file_menu.addAction("New Project", self.open_config_creator)

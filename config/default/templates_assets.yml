@@ -8,7 +8,7 @@ templates:
   dept_reference: "{asset_root}/reference"
 
   # work is DCC-first and keeps take numbers in file names.
-  work_scene_dir: "{asset_root}/{variant}/{department}/work/{dcc}/{subset}"
+  work_scene_dir: "{asset_root}/{variant}/work/{department}/{dcc}/{subset}"
   work_scene_file: "{project_name}_{asset_name}_{department}_{variant}_{version}_{take}.{ext}"
   publish_scene_file: "{asset_name}_{variant}_{version}.{ext}"
   work_maya_model_hires: "{dept_work}/maya/model/hires"
@@ -60,6 +60,13 @@ publish_outputs:
     anim:
     - ma
 
+# Shared subset catalog for Asset Manager and Context profile configuration.
+asset_subsets:
+  model: [proxy, render, low, high]
+  rig: [layout, anim]
+  look: [low, high]
+  groom: []
+
 work_subsets_by_category:
   model:
     default: [proxy, render]
@@ -78,12 +85,12 @@ staging_dependencies:
     layout:
       variants: [current, default]
       department: model
-      subsets: [proxy, guide, render, hires]
+      subsets: [high, low, proxy, guide, render, hires]
       format: ma
     default:
       variants: [current, default]
       department: model
-      subsets: [render, hires]
+      subsets: [high, low, render, hires]
       format: ma
   look:
     default:

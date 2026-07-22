@@ -20,6 +20,10 @@ def _qt_modules():
 
 QtCore, QtGui, QtUiTools, QtWidgets = _qt_modules()
 
+CONSTRUCT_TYPES = ("rig", "camera", "animation", "fx", "light", "audio", "cast", "placement", "layout_overlay")
+CONSTRUCT_MODES = ("reference", "import", "apply", "reference_cache", "file")
+FX_CACHE_FILTER = "FX Cache Files (*.abc *.usd *.usda *.usdc);;All Files (*.*)"
+
 
 def _ensure_smartlib_on_path() -> None:
     root = (
@@ -236,8 +240,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.info_widget = self._ui_object("info_widget")
         self.shot_thumbnail_label = self._ui_object("shot_thumbnail_label")
         self.shot_info_table = self._ui_object("shot_info_table")
+        self.set_edit_range_btn = QtWidgets.QPushButton("Set Edit Range")
         self.shot_dept_list = self._ui_object("shot_dept_list")
         self.shot_variant_list = self._ui_object("shot_variant_list")
+        self.shot_dept_label = self._ui_object("shot_dept_label")
+        self.shot_variant_label = self._ui_object("shot_variant_label")
         self.add_shot_variant_btn = self._ui_object("add_shot_variant_btn")
         self.stage_shot_btn = self._ui_object("stage_shot_btn")
         self.tabs = self._ui_object("tabs")
@@ -269,10 +276,16 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.export_beauty_playblast_btn = self._ui_object("export_beauty_playblast_btn")
         self.build_shot_btn = self._ui_object("build_shot_btn")
         self.save_work_btn = self._ui_object("save_work_btn")
+        self.archive_scene_btn = self._ui_object("archive_scene_btn")
         self.publish_animation_curves_btn = QtWidgets.QPushButton("Export Animation Curves")
         self.apply_animation_curves_btn = QtWidgets.QPushButton("Apply Animation Curves")
         self.publish_animation_btn = QtWidgets.QPushButton("Publish Animation")
+        self.data_type_list = QtWidgets.QListWidget()
         self.data_cast_list = QtWidgets.QListWidget()
+        self.construct_tab = QtWidgets.QWidget()
+        self.construct_scene_list = QtWidgets.QListWidget()
+        self.construct_table = QtWidgets.QTableWidget()
+        self.construct_stage_btn = QtWidgets.QPushButton("Stage")
         self.status_label = self._ui_object("status_label")
 
         self.create_action = self._ui_object("actionCreate_Shot")
@@ -291,6 +304,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_variant_list.setCurrentRow(1)
         self.add_shot_variant_btn.setToolTip("Add a shot work option such as acting_A.")
         self.stage_shot_btn.setToolTip("Build shot references from cast, then Save into the selected work option.")
+        self.stage_shot_btn.hide()
+        self.construct_stage_btn.setToolTip("Stage from checked Construct components.")
         self._apply_action_icons()
         if self.is_maya_session:
             self.sync_cast_sheet_action.setEnabled(False)
@@ -300,6 +315,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not self.is_maya_session:
             self.save_work_btn.setEnabled(False)
             self.save_work_btn.setToolTip("Available inside Maya.")
+            self.archive_scene_btn.setEnabled(False)
+            self.archive_scene_btn.setToolTip("Available inside Maya.")
             self.review_layers_btn.setEnabled(False)
             self.review_layers_btn.setToolTip("Available inside Maya.")
             self.export_beauty_playblast_btn.setEnabled(False)
@@ -323,7 +340,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_list.setUniformRowHeights(True)
         self.shot_list.setIconSize(QtCore.QSize(96, 54))
         self.shot_list.setStyleSheet("QTreeWidget::item { height: 58px; }")
-        self.detail_title_label.setStyleSheet("font-weight: bold;")
+        self._install_detail_header()
+        self._apply_detail_visual_style()
         self.info_widget.setMinimumWidth(260)
         self.shot_thumbnail_label.setStyleSheet("QLabel { background: #303030; border: 1px solid #454545; }")
         self.shot_info_table.horizontalHeader().setVisible(False)
@@ -331,6 +349,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_info_table.horizontalHeader().setStretchLastSection(True)
         self.shot_info_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.shot_info_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.set_edit_range_btn.setToolTip("Set Maya playback range to the editorial cut range.")
+        if not self.is_maya_session:
+            self.set_edit_range_btn.setEnabled(False)
+            self.set_edit_range_btn.setToolTip("Available inside Maya.")
         self._hide_detail_json_views()
         self.cast_table.horizontalHeader().setStretchLastSection(True)
         self.cast_table.verticalHeader().setVisible(False)
@@ -343,27 +365,50 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self._install_preview_history_widgets()
         self._setup_data_tree()
         self._setup_context_tab()
+        self._setup_construct_tab()
         self._hide_validation_tab()
         self.work_table.horizontalHeader().setStretchLastSection(True)
         self.work_table.verticalHeader().setVisible(False)
         self.work_table.setColumnCount(7)
         self.work_table.setHorizontalHeaderLabels(["Thumbnail", "File", "Dept", "Option", "Updated", "Comment", "Path"])
-        self.work_table.verticalHeader().setDefaultSectionSize(58)
-        self.work_table.verticalHeader().setMinimumSectionSize(50)
+        self.work_table.verticalHeader().setDefaultSectionSize(64)
+        self.work_table.verticalHeader().setMinimumSectionSize(58)
         self.work_table.setIconSize(QtCore.QSize(88, 50))
         self.work_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.work_table.setShowGrid(False)
+        self.work_table.setAlternatingRowColors(False)
         self.work_table.setColumnHidden(6, True)
         self.work_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.open_work_btn.setText("Open")
+        self.save_work_btn.setText("Save")
+        self.archive_scene_btn.setText("Archive")
+        self.open_work_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+        self.save_work_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DialogSaveButton))
+        self.archive_scene_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DriveHDIcon))
+        for button in (self.open_work_btn, self.save_work_btn, self.archive_scene_btn):
+            button.setIconSize(QtCore.QSize(18, 18))
+        self.refresh_work_btn.setText("")
+        self.refresh_work_btn.setToolTip("Refresh Work")
+        self.refresh_work_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload))
+        self.refresh_work_btn.setIconSize(QtCore.QSize(18, 18))
+        self.refresh_work_btn.setFixedSize(28, 24)
+        for button in (self.open_work_btn, self.save_work_btn, self.archive_scene_btn):
+            button.setMinimumHeight(30)
         self.open_work_btn.setStyleSheet(
-            "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; }"
+            "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; border-radius: 7px; padding: 5px 12px; }"
             "QPushButton:hover { background-color: #3d835f; }"
             "QPushButton:disabled { background-color: #4c5a52; color: #b8b8b8; }"
         )
         self.save_work_btn.setStyleSheet(
-            "QPushButton { background-color: #2f5f9f; color: white; font-weight: bold; }"
+            "QPushButton { background-color: #2f5f9f; color: white; font-weight: bold; border-radius: 7px; padding: 5px 12px; }"
             "QPushButton:hover { background-color: #3b73b8; }"
             "QPushButton:disabled { background-color: #4b5665; color: #b8b8b8; }"
+        )
+        self.archive_scene_btn.setStyleSheet(
+            "QPushButton { background-color: #635a36; color: white; font-weight: bold; border-radius: 7px; padding: 5px 12px; }"
+            "QPushButton:hover { background-color: #756a40; }"
+            "QPushButton:disabled { background-color: #5a5548; color: #b8b8b8; }"
         )
         for widget in (self.shot_json_view, self.cast_json_view, self.validation_view):
             widget.setReadOnly(True)
@@ -382,8 +427,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.validate_btn.clicked.connect(self.validate_current_cast)
         self.tabs.currentChanged.connect(lambda _index: self._on_detail_tab_changed())
         self.build_preview_btn.clicked.connect(self.show_build_preview)
+        self.set_edit_range_btn.clicked.connect(self.set_edit_time_range)
         self.build_shot_btn.clicked.connect(self.build_shot_from_cast)
         self.save_work_btn.clicked.connect(self.save_work_scene)
+        self.archive_scene_btn.clicked.connect(self.archive_scene_snapshot)
         self.open_review_layer_ui_btn.clicked.connect(self.open_review_layer_manager)
         self.review_layers_btn.clicked.connect(self.create_review_layers)
         self.plan_review_publish_btn.clicked.connect(self.plan_review_publish)
@@ -409,6 +456,142 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_list.currentItemChanged.connect(lambda _current, _previous: self.show_current_shot())
         self.shot_list.itemDoubleClicked.connect(self.open_selected_detail)
         self.back_to_shots_btn.clicked.connect(self.show_shot_browser)
+
+    def _install_detail_header(self) -> None:
+        layout = self.shot_detail_page.layout()
+        if layout is None:
+            return
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(4, 4, 4, 2)
+        header.setSpacing(8)
+        self.back_to_shots_btn.setMinimumHeight(24)
+        self.back_to_shots_btn.setMinimumWidth(118)
+        self.detail_title_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.set_edit_range_btn.setMinimumHeight(24)
+        self.set_edit_range_btn.setMinimumWidth(88)
+        header.addWidget(self.back_to_shots_btn)
+        header.addWidget(self.detail_title_label)
+        header.addWidget(self.set_edit_range_btn)
+        header.addStretch(1)
+        layout.insertLayout(0, header)
+
+    def _apply_detail_visual_style(self) -> None:
+        self.ui.setStyleSheet(
+            self.ui.styleSheet()
+            + """
+            QWidget#shot_detail_page {
+                background: #2b2b2b;
+            }
+            QLabel#detail_title_label {
+                color: #d8e3ef;
+                font-size: 20px;
+                font-weight: 700;
+            }
+            QLabel#shot_dept_label,
+            QLabel#shot_variant_label {
+                color: #d8e3ef;
+                font-size: 20px;
+                font-weight: 700;
+            }
+            QPushButton {
+                min-height: 22px;
+                border-radius: 7px;
+                padding: 3px 10px;
+                background: #545454;
+                color: #f0f0f0;
+                border: 1px solid #626262;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #626262;
+            }
+            QTabBar::tab {
+                padding: 5px 14px;
+                min-height: 20px;
+            }
+            QListWidget#shot_dept_list,
+            QListWidget#shot_variant_list {
+                background: #262626;
+                border: 1px solid #3d3d3d;
+                font-size: 13px;
+                color: #ededed;
+                outline: 0;
+            }
+            QListWidget#shot_dept_list::item,
+            QListWidget#shot_variant_list::item {
+                min-height: 24px;
+                padding: 3px 6px;
+            }
+            QListWidget#shot_dept_list::item:selected,
+            QListWidget#shot_variant_list::item:selected {
+                background: #4a8ab0;
+                color: white;
+            }
+            QTableWidget {
+                gridline-color: transparent;
+                background: #282828;
+                alternate-background-color: #2f2f2f;
+                color: #ededed;
+                selection-background-color: #4a8ab0;
+                selection-color: white;
+                border: 1px solid #3d3d3d;
+            }
+            QHeaderView::section {
+                background: #4a4a4a;
+                color: #eeeeee;
+                border: 0;
+                border-right: 1px solid #666666;
+                padding: 5px 8px;
+                font-weight: 600;
+            }
+            """
+        )
+        self.back_to_shots_btn.setStyleSheet(
+            "QPushButton { background-color: #666666; color: #f5f5f5; font-weight: bold; }"
+            "QPushButton:hover { background-color: #747474; }"
+        )
+        self.set_edit_range_btn.setStyleSheet(
+            "QPushButton { background-color: #3478c7; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #4188dc; }"
+            "QPushButton:disabled { background-color: #4b5665; color: #b8b8b8; }"
+        )
+        self.add_shot_variant_btn.setText("+")
+        self.add_shot_variant_btn.setFixedSize(30, 24)
+        self.add_shot_variant_btn.setStyleSheet(
+            "QPushButton { background-color: #5f5f5f; color: white; font-size: 16px; "
+            "font-weight: bold; border-radius: 7px; padding: 0; }"
+            "QPushButton:hover { background-color: #707070; }"
+        )
+        self._move_add_option_button()
+        for table in (
+            self.work_table,
+            self.cast_table,
+            self.build_preview_table,
+            self.shot_info_table,
+            self.shot_data_tree,
+            self.shot_context_tree,
+        ):
+            if hasattr(table, "setShowGrid"):
+                table.setShowGrid(False)
+            if hasattr(table, "setAlternatingRowColors"):
+                table.setAlternatingRowColors(False)
+
+    def _move_add_option_button(self) -> None:
+        option_label = self.shot_variant_label
+        parent_layout = option_label.parentWidget().layout() if option_label.parentWidget() else None
+        if parent_layout is None:
+            return
+        parent_layout.removeWidget(self.add_shot_variant_btn)
+        option_index = parent_layout.indexOf(option_label)
+        parent_layout.removeWidget(option_label)
+        option_row = QtWidgets.QHBoxLayout()
+        option_row.setContentsMargins(0, 0, 0, 0)
+        option_row.setSpacing(6)
+        option_row.addWidget(option_label)
+        option_row.addStretch(1)
+        option_row.addWidget(self.add_shot_variant_btn)
+        parent_layout.insertLayout(max(0, option_index), option_row)
 
     def _install_cast_build_widgets(self) -> None:
         layout = self.cast_tab.layout()
@@ -475,20 +658,53 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
     def _setup_data_tree(self) -> None:
         layout = self.data_tab.layout()
         if layout is not None:
-            header = QtWidgets.QHBoxLayout()
-            header.setContentsMargins(0, 0, 0, 0)
-            header.setSpacing(4)
-            header.addWidget(QtWidgets.QLabel("Animation Data"))
-            header.addStretch(1)
-            header.addWidget(self.publish_animation_curves_btn)
-            header.addWidget(self.apply_animation_curves_btn)
-            header.addWidget(self.publish_animation_btn)
-            self.data_cast_list.setMaximumHeight(96)
+            self._clear_layout(layout)
+            data_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+            data_splitter.setChildrenCollapsible(False)
+
+            type_widget = QtWidgets.QWidget()
+            type_layout = QtWidgets.QVBoxLayout(type_widget)
+            type_layout.setContentsMargins(0, 0, 0, 0)
+            type_layout.setSpacing(4)
+            type_layout.addWidget(QtWidgets.QLabel("DataType :"))
+            self.data_type_list.addItem("animation")
+            self.data_type_list.addItem("camera")
+            self.data_type_list.setFixedWidth(130)
+            self.data_type_list.setStyleSheet("QListWidget::item { height: 34px; }")
+            type_layout.addWidget(self.data_type_list, 1)
+
+            target_widget = QtWidgets.QWidget()
+            target_layout = QtWidgets.QVBoxLayout(target_widget)
+            target_layout.setContentsMargins(0, 0, 0, 0)
+            target_layout.setSpacing(4)
+            self.data_target_label = QtWidgets.QLabel("Name :")
+            target_layout.addWidget(self.data_target_label)
             self.data_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
             self.data_cast_list.setAlternatingRowColors(True)
-            layout.insertLayout(0, header)
-            layout.insertWidget(1, QtWidgets.QLabel("Cast"))
-            layout.insertWidget(2, self.data_cast_list)
+            self.data_cast_list.setMinimumWidth(190)
+            target_layout.addWidget(self.data_cast_list, 1)
+
+            version_widget = QtWidgets.QWidget()
+            version_layout = QtWidgets.QVBoxLayout(version_widget)
+            version_layout.setContentsMargins(0, 0, 0, 0)
+            version_layout.setSpacing(4)
+            version_layout.addWidget(self.shot_data_tree, 1)
+            action_layout = QtWidgets.QHBoxLayout()
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.setSpacing(4)
+            action_layout.addStretch(1)
+            action_layout.addWidget(self.publish_animation_curves_btn)
+            action_layout.addWidget(self.apply_animation_curves_btn)
+            action_layout.addWidget(self.publish_animation_btn)
+            version_layout.addLayout(action_layout)
+
+            data_splitter.addWidget(type_widget)
+            data_splitter.addWidget(target_widget)
+            data_splitter.addWidget(version_widget)
+            data_splitter.setStretchFactor(0, 0)
+            data_splitter.setStretchFactor(1, 0)
+            data_splitter.setStretchFactor(2, 1)
+            layout.addWidget(data_splitter, 1)
         self.shot_data_tree.setColumnCount(4)
         self.shot_data_tree.setHeaderLabels(["Name", "Version", "Updated", "Comment"])
         self.shot_data_tree.setIndentation(10)
@@ -496,6 +712,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_data_tree.header().setStretchLastSection(True)
         self.shot_data_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.shot_data_tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.data_type_list.currentRowChanged.connect(lambda _row: self._on_data_type_changed())
+        self.data_cast_list.currentRowChanged.connect(lambda _row: self.populate_data_tree())
+        if self.data_type_list.count():
+            self.data_type_list.setCurrentRow(0)
+        self._update_data_action_visibility()
 
     def _setup_context_tab(self) -> None:
         layout = self.context_tab.layout()
@@ -541,6 +762,68 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.build_anim_input_btn.clicked.connect(self.build_anim_input_package)
         self.shot_context_tree.itemClicked.connect(self._on_context_tree_item_clicked)
 
+    def _setup_construct_tab(self) -> None:
+        self.construct_tab.setObjectName("construct_tab")
+        layout = QtWidgets.QVBoxLayout(self.construct_tab)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        self.construct_status_label = QtWidgets.QLabel("Construct")
+        self.construct_status_label.setStyleSheet("font-weight: bold;")
+        self.construct_from_cast_btn = QtWidgets.QPushButton("From Stage Inputs")
+        self.add_construct_btn = QtWidgets.QPushButton("Add")
+        self.add_fx_cache_btn = QtWidgets.QPushButton("Add FX Cache")
+        self.remove_construct_btn = QtWidgets.QPushButton("Remove")
+        self.save_construct_btn = QtWidgets.QPushButton("Save")
+        header.addWidget(self.construct_status_label)
+        header.addStretch(1)
+        header.addWidget(self.construct_stage_btn)
+        header.addWidget(self.construct_from_cast_btn)
+        header.addWidget(self.add_construct_btn)
+        header.addWidget(self.add_fx_cache_btn)
+        header.addWidget(self.remove_construct_btn)
+        header.addWidget(self.save_construct_btn)
+        layout.addLayout(header)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+        left_layout.addWidget(QtWidgets.QLabel("Work Files"))
+        self.construct_scene_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.construct_scene_list.setAlternatingRowColors(True)
+        left_layout.addWidget(self.construct_scene_list, 1)
+        splitter.addWidget(left_panel)
+
+        self.construct_table.setColumnCount(11)
+        self.construct_table.setHorizontalHeaderLabels(
+            ["Use", "Type", "Name", "Version", "Mode", "Namespace", "Path", "Required", "Note", "Latest", "State"]
+        )
+        self.construct_table.verticalHeader().setVisible(False)
+        self.construct_table.setAlternatingRowColors(True)
+        self.construct_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.construct_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.construct_table.horizontalHeader().setStretchLastSection(True)
+        self.construct_table.setColumnHidden(6, True)
+        splitter.addWidget(self.construct_table)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 4)
+        layout.addWidget(splitter, 1)
+
+        insert_index = self.tabs.indexOf(self.cast_tab) + 1
+        self.tabs.insertTab(insert_index, self.construct_tab, "Construct")
+
+        self.construct_stage_btn.clicked.connect(self.stage_shot_option)
+        self.construct_from_cast_btn.clicked.connect(self.populate_construct_from_stage_inputs)
+        self.add_construct_btn.clicked.connect(self.add_construct_row)
+        self.add_fx_cache_btn.clicked.connect(self.add_fx_cache_row)
+        self.remove_construct_btn.clicked.connect(self.remove_construct_row)
+        self.save_construct_btn.clicked.connect(self.save_construct)
+        self.construct_scene_list.itemSelectionChanged.connect(self.populate_construct_table)
+
     def _hide_validation_tab(self) -> None:
         index = self.tabs.indexOf(self.validation_view)
         if index >= 0:
@@ -567,6 +850,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         for button, icon_path in (
             (self.back_to_shots_btn, _resource_icon_path("actions", "back.svg")),
             (self.stage_shot_btn, _resource_icon_path("actions", "stage.svg")),
+            (self.construct_stage_btn, _resource_icon_path("actions", "stage.svg")),
         ):
             if icon_path.exists():
                 button.setIcon(QtGui.QIcon(str(icon_path)))
@@ -600,6 +884,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.populate_data_tree()
         elif current == self.context_tab:
             self.populate_layout_publish_status()
+        elif current == self.construct_tab:
+            self.populate_construct_table()
 
     def _on_work_department_changed(self) -> None:
         self.refresh_work_files()
@@ -654,6 +940,13 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not self.is_maya_session:
             QtWidgets.QMessageBox.information(self, "Stage Shot", "Shot staging is available inside Maya.")
             return
+        identity = self.current_identity()
+        if identity:
+            try:
+                self._save_construct_table_for_stage(identity)
+                self.ensure_stage_construct(identity)
+            except Exception:
+                pass
         if (self.work_dept_combo.currentText().strip() or "").lower() == "anim":
             self.stage_anim_from_input()
             return
@@ -699,16 +992,19 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 )
                 return
             preview = self.service.build_preview_from_anim_input(identity)
+            preview = self.service.filter_preview_items_for_construct(identity, preview)
             missing_required = [item for item in preview if item.required and item.status != "resolved"]
             if missing_required:
                 message = "\n".join(f"{item.cast_key}: {item.message or item.status}" for item in missing_required)
                 QtWidgets.QMessageBox.warning(self, "Stage Anim", f"Required cast is not resolved:\n{message}")
                 return
+            construct_data = self.service.load_construct(identity)
             referenced = stage_anim_from_input(
                 [item for item in preview if item.status == "resolved"],
                 anim_input,
                 self.service.load_shot(identity),
                 project_root=self.service.paths.project_root,
+                construct_data=construct_data,
             )
             self.status_label.setText(f"Staged anim scene: {identity.code}, {len(referenced)} references")
             self.populate_build_preview(switch_tab=True)
@@ -934,6 +1230,38 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return data.get("identity")
         return None
 
+    def current_token_context(self, **overrides):
+        _ensure_smartlib_on_path()
+        from smartlib.core.tokens import TokenContext
+
+        identity = self.active_shot_identity or self.current_identity()
+        sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
+        values = {
+            "project_root": self.service.paths.project_root,
+            "project_name": getattr(self.service.project_config, "project_name", "") or self.service.paths.project_name,
+            "department": self.work_dept_combo.currentText().strip() or "",
+            "task": self.work_dept_combo.currentText().strip() or "",
+            "tool": "maya" if self.is_maya_session else "",
+            "subset": self._current_shot_option(for_save=True),
+        }
+        if identity:
+            values.update(
+                {
+                    "episode": identity.episode,
+                    "sequence": identity.sequence,
+                    "shot": identity.shot,
+                }
+            )
+        elif sequence_identity:
+            values.update(
+                {
+                    "episode": sequence_identity.episode,
+                    "sequence": sequence_identity.sequence,
+                }
+            )
+        values.update(overrides)
+        return TokenContext.from_mapping(values)
+
     def show_current_shot(self) -> None:
         sequence_identity = self.current_sequence_identity()
         if sequence_identity:
@@ -957,6 +1285,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.shot_data_tree.clear()
             self.data_cast_list.clear()
             self.shot_context_tree.clear()
+            self.construct_table.setRowCount(0)
+            self.construct_status_label.setText("Construct")
             self._populate_shot_options(keep_option="main")
             return
         self._show_current_shot_identity(identity)
@@ -969,7 +1299,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         editorial = shot_data.get("editorial") or {}
         frames = ""
         if editorial.get("cut_in") is not None and editorial.get("cut_out") is not None:
-            frames = f" | {editorial.get('cut_in')}-{editorial.get('cut_out')}"
+            frames = f" | {editorial.get('cut_in')} - {editorial.get('cut_out')}"
         status = shot_data.get("status", "")
         status_text = f" | {status}" if status else ""
         self.detail_title_label.setText(f"{identity.episode} / {identity.sequence} / {identity.shot}{frames}{status_text}")
@@ -986,6 +1316,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.populate_preview_history()
         self.populate_data_tree()
         self.populate_layout_publish_status()
+        self.populate_construct_table()
 
     def _show_current_sequence(self, sequence_identity) -> None:
         self.active_sequence_identity = sequence_identity
@@ -995,7 +1326,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         editorial = sequence_data.get("editorial") or {}
         frames = ""
         if editorial.get("cut_in") is not None and editorial.get("cut_out") is not None:
-            frames = f" | {editorial.get('cut_in')}-{editorial.get('cut_out')}"
+            frames = f" | {editorial.get('cut_in')} - {editorial.get('cut_out')}"
         status = sequence_data.get("status", "")
         status_text = f" | {status}" if status else ""
         self.detail_title_label.setText(f"{sequence_identity.episode} / {sequence_identity.sequence} / Sequence{frames}{status_text}")
@@ -1011,7 +1342,55 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.populate_preview_history()
         self.populate_data_tree()
         self.populate_layout_publish_status()
+        self.populate_construct_table()
         self.cast_validation_label.setText("Sequence cast")
+
+    def set_edit_time_range(self) -> None:
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, "Set Edit Range", "Set Edit Range is available inside Maya.")
+            return
+        identity = self.active_shot_identity or self.current_identity()
+        sequence_identity = None if identity else (self.active_sequence_identity or self.current_sequence_identity())
+        if identity:
+            data = self.service.load_shot(identity)
+            label = identity.shot
+        elif sequence_identity:
+            data = self.service.load_sequence(sequence_identity)
+            label = sequence_identity.sequence
+        else:
+            QtWidgets.QMessageBox.information(self, "Set Edit Range", "Select a shot or sequence first.")
+            return
+        editorial = data.get("editorial") or {}
+        cut_in = editorial.get("cut_in")
+        cut_out = editorial.get("cut_out")
+        if cut_in is None or cut_out is None:
+            QtWidgets.QMessageBox.warning(self, "Set Edit Range", "editorial.cut_in / cut_out is not set.")
+            return
+        try:
+            start = float(cut_in)
+            end = float(cut_out)
+            if end < start:
+                raise ValueError(f"Invalid edit range: {cut_in} - {cut_out}")
+            import maya.cmds as cmds
+
+            fps = editorial.get("fps")
+            if fps:
+                fps_map = {
+                    24: "film",
+                    25: "pal",
+                    30: "ntsc",
+                    48: "show",
+                    50: "palf",
+                    60: "ntscf",
+                }
+                fps_int = int(float(fps))
+                cmds.currentUnit(time=fps_map.get(fps_int, f"{fps_int}fps"))
+            cmds.playbackOptions(minTime=start, animationStartTime=start)
+            cmds.playbackOptions(maxTime=end, animationEndTime=end)
+            cmds.currentTime(start, edit=True)
+            self.status_label.setText(f"Set edit range: {label} {int(start)}-{int(end)}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Set Edit Range Failed", str(exc))
 
     def populate_sequence_build_preview(self, sequence_identity) -> None:
         preview = self.service.build_sequence_preview(sequence_identity)
@@ -1139,7 +1518,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         identity = self.current_identity()
         if not identity:
             return
-        preview = self.service.build_preview(identity)
+        preview = self.service.build_preview(
+            identity,
+            department=self.work_dept_combo.currentText().strip() or "default",
+        )
+        if stage:
+            preview = self.service.filter_preview_items_for_construct(identity, preview)
         missing_required = [item for item in preview if item.required and item.status != "resolved"]
         if missing_required:
             message = "\n".join(f"{item.cast_key}: {item.message or item.status}" for item in missing_required)
@@ -1174,7 +1558,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         identity = self.current_identity()
         if not identity:
             return
-        preview = self.service.build_preview(identity)
+        preview = self.service.build_preview(
+            identity,
+            department=self.work_dept_combo.currentText().strip() or "default",
+        )
         self.build_preview_table.setRowCount(0)
         for item in preview:
             row = self.build_preview_table.rowCount()
@@ -1235,16 +1622,39 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         identity = self.active_shot_identity or self.current_identity()
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
         self.shot_data_tree.clear()
+        data_type = self._current_data_type()
+        target = self._current_data_target()
         if sequence_identity:
             department = self.work_dept_combo.currentText().strip() or "layout"
-            rows = self.service.list_sequence_data_versions(sequence_identity, department=department)
+            rows = [] if data_type == "animation" else self.service.list_sequence_data_versions(sequence_identity, department=department)
             published_animation_sources = set()
         elif identity:
-            rows = self.service.list_shot_data_versions(identity)
+            if data_type == "animation" and target:
+                rows = self.service.list_animation_curve_versions(identity, target=target, subset="curves")
+            else:
+                rows = self.service.list_shot_data_versions(identity)
             published_animation_sources = self.service.published_animation_source_paths(identity)
         else:
             return
+        rows = self._filter_data_rows(rows, data_type, target)
         published_icon = self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
+        if data_type == "animation":
+            for row_data in rows:
+                item = QtWidgets.QTreeWidgetItem([
+                    Path(row_data.path).name,
+                    row_data.version + ("  latest" if row_data.latest else ""),
+                    row_data.updated,
+                    row_data.comment,
+                ])
+                item.setData(0, QtCore.Qt.UserRole, row_data.path)
+                if self._data_version_is_published_animation(row_data.path, published_animation_sources):
+                    item.setIcon(1, published_icon)
+                    item.setToolTip(1, "Published animation source")
+                self.shot_data_tree.addTopLevelItem(item)
+            self.shot_data_tree.resizeColumnToContents(1)
+            self.shot_data_tree.resizeColumnToContents(2)
+            return
+
         parent_items: dict[str, QtWidgets.QTreeWidgetItem] = {}
         for row_data in rows:
             parent = parent_items.get(row_data.name)
@@ -1263,6 +1673,81 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.shot_data_tree.expandAll()
         self.shot_data_tree.resizeColumnToContents(1)
         self.shot_data_tree.resizeColumnToContents(2)
+
+    def _current_data_type(self) -> str:
+        item = self.data_type_list.currentItem() if getattr(self, "data_type_list", None) else None
+        return item.text().strip().lower() if item else "animation"
+
+    def _current_data_target(self) -> str:
+        item = self.data_cast_list.currentItem() if getattr(self, "data_cast_list", None) else None
+        if not item:
+            return ""
+        data = item.data(QtCore.Qt.UserRole)
+        if isinstance(data, dict):
+            return str(data.get("cast_key") or data.get("target") or item.text()).strip()
+        return item.text().strip()
+
+    def _on_data_type_changed(self) -> None:
+        self._update_data_action_visibility()
+        if self._current_data_type() == "animation":
+            cast_data = self.service.load_cast(self.active_shot_identity) if self.active_shot_identity else (
+                self.service.load_sequence_cast(self.active_sequence_identity.episode, self.active_sequence_identity.sequence)
+                if self.active_sequence_identity else {"cast": {}}
+            )
+            self.populate_data_cast_list(cast_data)
+        else:
+            self._populate_data_targets_from_existing_rows()
+        self.populate_data_tree()
+
+    def _update_data_action_visibility(self) -> None:
+        is_animation = self._current_data_type() == "animation"
+        for button in (self.publish_animation_curves_btn, self.apply_animation_curves_btn, self.publish_animation_btn):
+            button.setVisible(is_animation)
+        if hasattr(self, "data_target_label"):
+            self.data_target_label.setText("Cast :" if is_animation else "Name :")
+
+    def _filter_data_rows(self, rows, data_type: str, target: str):
+        if data_type == "animation":
+            return rows
+        filtered = []
+        for row in rows:
+            parts = str(row.name or "").split("/")
+            if not parts or parts[0] != data_type:
+                continue
+            if target and len(parts) > 1 and parts[1] != target:
+                continue
+            filtered.append(row)
+        return filtered
+
+    def _populate_data_targets_from_existing_rows(self) -> None:
+        identity = self.active_shot_identity or self.current_identity()
+        sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
+        data_type = self._current_data_type()
+        current = self._current_data_target()
+        self.data_cast_list.blockSignals(True)
+        self.data_cast_list.clear()
+        rows = []
+        if sequence_identity:
+            department = self.work_dept_combo.currentText().strip() or "layout"
+            rows = self.service.list_sequence_data_versions(sequence_identity, department=department)
+        elif identity:
+            rows = self.service.list_shot_data_versions(identity)
+        targets = []
+        for row in rows:
+            parts = str(row.name or "").split("/")
+            if parts and parts[0] == data_type:
+                target = parts[1] if len(parts) > 1 else "main"
+                if target not in targets:
+                    targets.append(target)
+        for target in sorted(targets, key=str.lower):
+            item = QtWidgets.QListWidgetItem(target)
+            item.setData(QtCore.Qt.UserRole, {"target": target})
+            self.data_cast_list.addItem(item)
+            if target == current:
+                self.data_cast_list.setCurrentItem(item)
+        if self.data_cast_list.count() and self.data_cast_list.currentRow() < 0:
+            self.data_cast_list.setCurrentRow(0)
+        self.data_cast_list.blockSignals(False)
 
     def _data_version_is_published_animation(self, path: str, published_sources: set[str]) -> bool:
         if not published_sources:
@@ -1432,8 +1917,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 return
             try:
                 result = self.service.build_anim_input_package_for_shot(shot_identity, comment=comment.strip())
+                self.service.ensure_stage_construct(shot_identity)
                 self.status_label.setText(f"Built anim input package: {result.shot}")
                 self.populate_layout_publish_status()
+                self.populate_construct_table()
             except Exception as exc:
                 QtWidgets.QMessageBox.critical(self, "Build Anim Input Package Failed", str(exc))
                 self.populate_layout_publish_status()
@@ -1446,8 +1933,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return
         try:
             results = self.service.build_anim_input_package(sequence_identity, comment=comment.strip())
+            for result in results:
+                shot_identity = self.identity_cls(sequence_identity.episode, sequence_identity.sequence, result.shot)
+                self.service.ensure_stage_construct(shot_identity)
             self.status_label.setText(f"Built anim input packages: {len(results)} shots")
             self.populate_layout_publish_status()
+            self.populate_construct_table()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Build Anim Input Package Failed", str(exc))
             self.populate_layout_publish_status()
@@ -1465,7 +1956,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not root.exists():
             return rows
         for review_json in sorted(root.glob("**/review.json")):
-            version_dir = review_json.parent
+            version_dir = review_json.parent.parent if review_json.parent.name == "metadata" else review_json.parent
             if not version_dir.name.lower().startswith("v"):
                 continue
             data = _read_json_file(review_json)
@@ -1556,11 +2047,15 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self._clear_cast_validation_colors()
 
     def populate_data_cast_list(self, cast_data: dict) -> None:
+        if self._current_data_type() != "animation":
+            self._populate_data_targets_from_existing_rows()
+            return
         current_key = ""
         current_item = self.data_cast_list.currentItem()
         if current_item:
             current_data = current_item.data(QtCore.Qt.UserRole) or {}
-            current_key = str(current_data.get("cast_key") or "")
+            current_key = str(current_data.get("cast_key") or "") if isinstance(current_data, dict) else ""
+        self.data_cast_list.blockSignals(True)
         self.data_cast_list.clear()
         cast = cast_data.get("cast") or {}
         row_to_select = None
@@ -1575,8 +2070,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 "required": bool(entry.get("required", True)),
                 "note": entry.get("note", ""),
             }
-            namespace = row_data["namespace"] or cast_key
-            item = QtWidgets.QListWidgetItem(f"{cast_key}    {namespace}    {row_data['asset']}")
+            item = QtWidgets.QListWidgetItem(cast_key)
             item.setData(QtCore.Qt.UserRole, row_data)
             self.data_cast_list.addItem(item)
             if cast_key == current_key:
@@ -1585,6 +2079,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.data_cast_list.setCurrentItem(row_to_select)
         elif self.data_cast_list.count():
             self.data_cast_list.setCurrentRow(0)
+        self.data_cast_list.blockSignals(False)
+        self.populate_data_tree()
 
     def _clear_cast_validation_colors(self) -> None:
         for row in range(self.cast_table.rowCount()):
@@ -1696,6 +2192,332 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.validate_current_cast(update_tab=False)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Cast Failed", str(exc))
+
+    def populate_construct_table(self, force: bool = False) -> None:
+        if self._restore_state_pending and not force:
+            return
+        if not force and self.tabs.currentWidget() != self.construct_tab:
+            return
+        identity = self.active_shot_identity or self.current_identity()
+        self.construct_table.setRowCount(0)
+        if identity:
+            self.populate_construct_scene_list(identity)
+        record = self._selected_construct_record()
+        is_current_record = record.get("mode") != "work"
+        enabled = bool(identity) and is_current_record
+        for button in (
+            self.construct_stage_btn,
+            self.construct_from_cast_btn,
+            self.add_construct_btn,
+            self.add_fx_cache_btn,
+            self.remove_construct_btn,
+            self.save_construct_btn,
+        ):
+            button.setEnabled(enabled)
+        if self.construct_stage_btn.isEnabled() and not self.is_maya_session:
+            self.construct_stage_btn.setEnabled(False)
+        if not identity:
+            self.construct_scene_list.clear()
+            self.construct_status_label.setText("Construct: select a shot")
+            return
+        try:
+            latest_data = self.service.construct_from_stage_inputs(identity)
+        except Exception:
+            latest_data = {"components": []}
+        latest_map = self._construct_latest_map(latest_data.get("components") or [])
+        if record.get("mode") == "work":
+            data = self._construct_data_from_work_record(record)
+        else:
+            data = self.service.load_construct(identity)
+        if is_current_record and not data.get("components"):
+            try:
+                self.service.ensure_stage_construct(identity)
+                data = self.service.load_construct(identity)
+            except Exception:
+                pass
+        for component in data.get("components") or []:
+            latest_version = latest_map.get(self._construct_component_key(component), "")
+            diff_state = self._construct_diff_state(component, latest_version)
+            self._append_construct_row(
+                enabled=bool(component.get("enabled", True)),
+                component_type=str(component.get("component_type") or "rig"),
+                name=str(component.get("name") or ""),
+                version=str(component.get("version") or "latest"),
+                mode=str(component.get("mode") or "reference"),
+                namespace=str(component.get("namespace") or ""),
+                path=str(component.get("path") or ""),
+                required=bool(component.get("required", True)),
+                note=str(component.get("note") or ""),
+                source=dict(component.get("source") or {}) if isinstance(component.get("source"), dict) else {},
+                latest_version=latest_version,
+                diff_state=diff_state,
+            )
+        self.construct_table.resizeColumnsToContents()
+        self.construct_table.setColumnHidden(6, True)
+        label = "Current" if is_current_record else Path(str(record.get("path") or "")).name
+        self.construct_status_label.setText(f"Construct: {identity.shot} / {label} ({self.construct_table.rowCount()} components)")
+
+    def populate_construct_scene_list(self, identity) -> None:
+        current_data = self._selected_construct_record()
+        current_key = str(current_data.get("path") or current_data.get("mode") or "current")
+        self.construct_scene_list.blockSignals(True)
+        try:
+            self.construct_scene_list.clear()
+            current_item = QtWidgets.QListWidgetItem("Current Construct")
+            current_item.setData(QtCore.Qt.UserRole, {"mode": "current"})
+            self.construct_scene_list.addItem(current_item)
+            department = self.work_dept_combo.currentText().strip() or None
+            option = self._current_shot_option()
+            option_arg = None if option == "all" else option
+            for work_file in self.service.list_shot_work_files(identity, department=department, option=option_arg):
+                item = QtWidgets.QListWidgetItem(work_file.file)
+                item.setToolTip(work_file.path)
+                item.setData(QtCore.Qt.UserRole, {"mode": "work", "path": work_file.path})
+                self.construct_scene_list.addItem(item)
+            target_row = 0
+            for row in range(self.construct_scene_list.count()):
+                data = self.construct_scene_list.item(row).data(QtCore.Qt.UserRole) or {}
+                key = str(data.get("path") or data.get("mode") or "current")
+                if key == current_key:
+                    target_row = row
+                    break
+            self.construct_scene_list.setCurrentRow(target_row)
+        finally:
+            self.construct_scene_list.blockSignals(False)
+
+    def _selected_construct_record(self) -> dict:
+        item = self.construct_scene_list.currentItem()
+        data = item.data(QtCore.Qt.UserRole) if item else {"mode": "current"}
+        return dict(data or {}) if isinstance(data, dict) else {"mode": "current"}
+
+    def _construct_data_from_work_record(self, record: dict) -> dict:
+        path = Path(str(record.get("path") or ""))
+        if not path.exists():
+            return {"components": []}
+        try:
+            from smartlib.core.metadata import sidecar_path
+        except Exception:
+            return {"components": []}
+        metadata = _read_json_file(sidecar_path(path), {}) or {}
+        construct = metadata.get("construct") if isinstance(metadata.get("construct"), dict) else {}
+        return construct if isinstance(construct, dict) else {"components": []}
+
+    def _construct_latest_map(self, components: list[dict]) -> dict[str, str]:
+        result = {}
+        for component in components:
+            key = self._construct_component_key(component)
+            if not key:
+                continue
+            result[key] = str(component.get("version") or "")
+        return result
+
+    def _construct_component_key(self, component: dict) -> str:
+        source = component.get("source") if isinstance(component.get("source"), dict) else {}
+        source_kind = str(source.get("kind") or "")
+        source_field = str(source.get("field") or "")
+        source_key = f"{source_kind}:{source_field}" if source_kind or source_field else ""
+        return "|".join(
+            [
+                str(component.get("component_type") or component.get("type") or "").strip().lower(),
+                str(component.get("name") or "").strip(),
+                source_key,
+            ]
+        )
+
+    def _construct_diff_state(self, component: dict, latest_version: str) -> str:
+        if not bool(component.get("enabled", True)):
+            return "DISABLED"
+        version = str(component.get("version") or "")
+        if not latest_version:
+            return "MISSING"
+        if version and version != latest_version:
+            return "UPDATED"
+        return "OK"
+
+    def ensure_stage_construct(self, identity=None) -> None:
+        identity = identity or self.active_shot_identity or self.current_identity()
+        if not identity:
+            return
+        path = self.service.ensure_stage_construct(identity)
+        if self.tabs.currentWidget() == self.construct_tab:
+            self.populate_construct_table()
+        self.status_label.setText(f"Registered construct inputs: {path.name}")
+
+    def _save_construct_table_for_stage(self, identity) -> None:
+        if self._selected_construct_record().get("mode") == "work":
+            return
+        if self.construct_table.rowCount() <= 0:
+            return
+        self.service.write_construct(identity, {"components": self.construct_table_rows()})
+
+    def populate_construct_from_stage_inputs(self) -> None:
+        identity = self.active_shot_identity or self.current_identity()
+        if not identity:
+            return
+        try:
+            data = self.service.construct_from_stage_inputs(identity)
+            self.construct_table.setRowCount(0)
+            for component in data.get("components") or []:
+                self._append_construct_row(
+                    enabled=bool(component.get("enabled", True)),
+                    component_type=str(component.get("component_type") or "rig"),
+                    name=str(component.get("name") or ""),
+                    version=str(component.get("version") or "approved"),
+                    mode=str(component.get("mode") or "reference"),
+                    namespace=str(component.get("namespace") or ""),
+                    path=str(component.get("path") or ""),
+                    required=bool(component.get("required", True)),
+                    note=str(component.get("note") or ""),
+                    source=dict(component.get("source") or {}) if isinstance(component.get("source"), dict) else {},
+                )
+            self.construct_table.resizeColumnsToContents()
+            self.status_label.setText(f"Construct from stage inputs: {self.construct_table.rowCount()} components")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Construct From Stage Inputs Failed", str(exc))
+
+    def populate_construct_from_cast(self) -> None:
+        self.populate_construct_from_stage_inputs()
+
+    def add_construct_row(self) -> None:
+        self._append_construct_row(
+            enabled=True,
+            component_type="rig",
+            name=f"component_{self.construct_table.rowCount() + 1:03d}",
+            version="latest",
+            mode="reference",
+            namespace="",
+            path="",
+            required=True,
+            note="",
+            source={"kind": "manual"},
+        )
+        self.construct_table.setCurrentCell(self.construct_table.rowCount() - 1, 1)
+
+    def add_fx_cache_row(self) -> None:
+        identity = self.active_shot_identity or self.current_identity()
+        if not identity:
+            return
+        path, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Add FX Cache",
+            str(self.service.shot_root(identity)),
+            FX_CACHE_FILTER,
+        )
+        if not path:
+            return
+        cache_path = Path(path)
+        name = cache_path.stem or f"fx_{self.construct_table.rowCount() + 1:03d}"
+        self._append_construct_row(
+            enabled=True,
+            component_type="fx",
+            name=name,
+            version="latest",
+            mode="reference_cache",
+            namespace=name,
+            path=str(cache_path),
+            required=False,
+            note="",
+            source={"kind": "manual"},
+        )
+        self.construct_table.setCurrentCell(self.construct_table.rowCount() - 1, 6)
+
+    def remove_construct_row(self) -> None:
+        row = self.construct_table.currentRow()
+        if row >= 0:
+            self.construct_table.removeRow(row)
+
+    def save_construct(self) -> None:
+        identity = self.active_shot_identity or self.current_identity()
+        if not identity:
+            return
+        try:
+            path = self.service.write_construct(identity, {"components": self.construct_table_rows()})
+            self.status_label.setText(f"Saved construct.json: {path.name}")
+            self.populate_construct_table()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Save Construct Failed", str(exc))
+
+    def construct_table_rows(self) -> list[dict]:
+        rows = []
+        for row in range(self.construct_table.rowCount()):
+            values = {
+                "enabled": self._construct_table_checked(row, 0, default=True),
+                "component_type": self._construct_table_text(row, 1).lower() or "rig",
+                "name": self._construct_table_text(row, 2),
+                "version": self._construct_table_text(row, 3) or "latest",
+                "mode": self._construct_table_text(row, 4).lower() or "reference",
+                "namespace": self._construct_table_text(row, 5),
+                "path": self._construct_table_text(row, 6),
+                "required": self._construct_table_checked(row, 7, default=True),
+                "note": self._construct_table_text(row, 8),
+                "source": self._construct_table_source(row),
+            }
+            if any(str(value).strip() for key, value in values.items() if key not in {"enabled", "required"}):
+                rows.append(values)
+        return rows
+
+    def _append_construct_row(
+        self,
+        *,
+        enabled: bool,
+        component_type: str,
+        name: str,
+        version: str,
+        mode: str,
+        namespace: str,
+        path: str,
+        required: bool,
+        note: str,
+        source: dict | None = None,
+        latest_version: str = "",
+        diff_state: str = "",
+    ) -> None:
+        row = self.construct_table.rowCount()
+        self.construct_table.insertRow(row)
+        use_item = self._construct_check_item(enabled)
+        use_item.setData(QtCore.Qt.UserRole, dict(source or {}))
+        self.construct_table.setItem(row, 0, use_item)
+        for column, value in enumerate([component_type, name, version, mode, namespace, path], start=1):
+            item = QtWidgets.QTableWidgetItem(str(value))
+            if column == 1:
+                item.setToolTip(", ".join(CONSTRUCT_TYPES))
+            elif column == 4:
+                item.setToolTip(", ".join(CONSTRUCT_MODES))
+            self.construct_table.setItem(row, column, item)
+        self.construct_table.setItem(row, 7, self._construct_check_item(required))
+        self.construct_table.setItem(row, 8, QtWidgets.QTableWidgetItem(str(note)))
+        self.construct_table.setItem(row, 9, QtWidgets.QTableWidgetItem(str(latest_version)))
+        state_item = QtWidgets.QTableWidgetItem(str(diff_state))
+        if diff_state == "UPDATED":
+            state_item.setBackground(QtGui.QColor(120, 90, 35))
+        elif diff_state == "MISSING":
+            state_item.setBackground(QtGui.QColor(120, 58, 45))
+        elif diff_state == "DISABLED":
+            state_item.setForeground(QtGui.QColor(150, 150, 150))
+        elif diff_state == "OK":
+            state_item.setBackground(QtGui.QColor(45, 95, 60))
+        self.construct_table.setItem(row, 10, state_item)
+
+    def _construct_check_item(self, checked: bool) -> QtWidgets.QTableWidgetItem:
+        item = QtWidgets.QTableWidgetItem("")
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+        item.setCheckState(QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked)
+        return item
+
+    def _construct_table_text(self, row: int, column: int) -> str:
+        item = self.construct_table.item(row, column)
+        return item.text().strip() if item else ""
+
+    def _construct_table_checked(self, row: int, column: int, *, default: bool) -> bool:
+        item = self.construct_table.item(row, column)
+        if not item:
+            return default
+        return item.checkState() == QtCore.Qt.Checked
+
+    def _construct_table_source(self, row: int) -> dict:
+        item = self.construct_table.item(row, 0)
+        data = item.data(QtCore.Qt.UserRole) if item else {}
+        return dict(data or {}) if isinstance(data, dict) else {}
 
     def import_cast_csv(self) -> None:
         identity = self.current_identity()
@@ -1989,20 +2811,37 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             from smartlib.dcc.maya.thumbnail import capture_viewport_thumbnail
 
             current_path = cmds.file(query=True, sceneName=True) or None
+            selected_path = self.selected_work_scene_path()
+            base_path = current_path
+            if selected_path and self._should_use_selected_work_as_save_base(current_path, selected_path):
+                base_path = selected_path
             if sequence_identity:
                 tool_name = "maya"
                 target_path = self.service.next_sequence_work_path(
                     sequence_identity,
                     department,
-                    current_path=current_path,
+                    current_path=base_path,
                     tool_name=tool_name,
                 )
                 scene_data = self.service.load_sequence(sequence_identity)
             else:
                 tool_name = ""
-                target_path = self.service.next_shot_work_path(identity, department, current_path=current_path, option=option)
+                target_path = self.service.next_shot_work_path(identity, department, current_path=base_path, option=option)
                 scene_data = self.service.load_shot(identity)
             scene_info = save_current_scene(target_path, scene_data)
+            parsed = self.service.parse_work_file(target_path.name) if hasattr(self.service, "parse_work_file") else None
+            if parsed is None:
+                from smartlib.apps.shot_manager.service import parse_shot_work_file
+
+                parsed = parse_shot_work_file(target_path.name) or {}
+            token_context = self.current_token_context(
+                department=department,
+                task=department,
+                tool=tool_name or "maya",
+                subset=option,
+                version=f"v{int(parsed.get('version') or 0):03d}" if parsed.get("version") else "",
+                take=f"{int(parsed.get('take') or 0):02d}" if parsed.get("take") else "",
+            ).to_dict()
             thumbnail_path = self.service.thumbnail_path_for_workfile(target_path)
             try:
                 capture_viewport_thumbnail(thumbnail_path)
@@ -2017,8 +2856,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     scene_info=scene_info,
                     comment=comment,
                     thumbnail=str(thumbnail_path) if thumbnail_path else "",
+                    token_context=token_context,
                 )
             else:
+                construct_data = {"components": self.construct_table_rows()} if self.construct_table.rowCount() else self.service.load_construct(identity)
                 self.service.write_shot_work_metadata(
                     target_path,
                     identity,
@@ -2027,12 +2868,75 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     scene_info=scene_info,
                     comment=comment,
                     thumbnail=str(thumbnail_path) if thumbnail_path else "",
+                    token_context=token_context,
+                    construct_data=construct_data,
                 )
             self.status_label.setText(f"Saved work scene: {target_path}")
             self.refresh_work_files()
+            self.populate_construct_scene_list(identity) if identity else None
             self.tabs.setCurrentWidget(self.work_tab)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Work Scene Failed", str(exc))
+
+    def _should_use_selected_work_as_save_base(self, current_path: str | None, selected_path: Path) -> bool:
+        if not current_path:
+            return True
+        current = Path(current_path)
+        if current.name.lower() in {"untitled", ""}:
+            return True
+        if "publish" in {part.lower() for part in current.parts}:
+            return True
+        try:
+            current.resolve().relative_to(selected_path.parent.resolve())
+            return False
+        except Exception:
+            return not current.name == selected_path.name
+
+    def archive_scene_snapshot(self) -> None:
+        identity = self.current_identity()
+        sequence_identity = self.current_sequence_identity()
+        if not identity:
+            if sequence_identity:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Archive Scene",
+                    "Archive Scene is currently for shot work scenes. Select a shot detail first.",
+                )
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, "Archive Scene", "Archive Scene is available inside Maya.")
+            return
+        department = self.work_dept_combo.currentText().strip() or self.service.shot_departments[0]
+        option = self._current_shot_option(for_save=True)
+        try:
+            _ensure_smartlib_on_path()
+            import maya.cmds as cmds
+            from smartlib.dcc.maya.shot_builder import archive_current_scene
+
+            source_workfile = cmds.file(query=True, sceneName=True) or ""
+            ext = Path(source_workfile).suffix.lower().lstrip(".") if source_workfile else "ma"
+            if ext not in {"ma", "mb"}:
+                ext = "ma"
+            target_path = self.service.next_shot_scene_archive_path(identity, department, ext=ext)
+            scene_info = archive_current_scene(target_path, self.service.load_shot(identity))
+            self.service.register_shot_scene_archive(
+                identity,
+                department,
+                target_path,
+                source_workfile=source_workfile,
+                option=option,
+                scene_info=scene_info,
+                token_context=self.current_token_context(
+                    department=department,
+                    task=department,
+                    tool="maya",
+                    subset=option,
+                    version=target_path.parent.name,
+                ).to_dict(),
+            )
+            self.status_label.setText(f"Archived scene snapshot: {target_path}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Archive Scene Failed", str(exc))
 
     def create_review_layers(self) -> None:
         identity = self.current_identity()
@@ -2457,14 +3361,22 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 _window = None
 
 
-def show(config_dir: str | os.PathLike[str] | None = None):
+def show(config_dir: str | os.PathLike[str] | None = None, parent=None):
     global _window
     try:
         _window.close()
     except Exception:
         pass
-    _window = ShotManagerWindow(config_dir=config_dir)
+    _ensure_smartlib_on_path()
+    from smartlib.core.qt import parent_for_maya
+
+    window_parent = parent_for_maya(QtWidgets, parent)
+    _window = ShotManagerWindow(config_dir=config_dir, parent=window_parent)
+    if window_parent is not None:
+        _window.setWindowFlags(_window.windowFlags() | QtCore.Qt.Window)
     _window.show()
+    _window.raise_()
+    _window.activateWindow()
     return _window
 
 

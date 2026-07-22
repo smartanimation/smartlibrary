@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>smart AE browser</title>
+    <link rel="stylesheet" href="./css/panel.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="titlebar">
+        <div class="brand">smart AE browser</div>
+        <div class="window-actions" aria-hidden="true">
+          <span></span>
+          <span></span>
+        </div>
+      </header>
+
+      <section class="filters" aria-label="Shot filters">
+        <label>
+          <span>Project:</span>
+          <select id="projectSelect">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label>
+          <span>Episode:</span>
+          <select id="episodeSelect">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label>
+          <span>Sequence:</span>
+          <select id="sequenceSelect">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label>
+          <span>Shot:</span>
+          <select id="shotSelect">
+            <option value="">All</option>
+          </select>
+        </label>
+        <button class="icon-button" id="refreshButton" title="Refresh output status" aria-label="Refresh output status"></button>
+      </section>
+
+      <section class="workspace">
+        <aside class="manifest-browser">
+          <div class="panel-heading">
+            <h2>Manifest</h2>
+            <div class="heading-actions">
+              <button class="ghost-button refresh-mini" id="refreshManifestButton" title="Refresh manifest list"></button>
+            </div>
+          </div>
+          <div class="manifest-list" id="manifestList"></div>
+          <button class="import-button" id="importManifestButton">
+            <span class="import-icon"></span>
+            Import Manifest...
+          </button>
+          <div class="manifest-count" id="manifestCount">0 manifests</div>
+        </aside>
+
+        <section class="main-panel">
+          <section class="manifest-summary" aria-label="Selected manifest">
+            <div class="summary-title-row">
+              <h1>Manifest <span>(from smart render)</span></h1>
+            </div>
+            <div class="file-path-row">
+              <span id="manifestPath">No manifest selected</span>
+              <button class="copy-button" id="copyManifestPathButton" title="Copy manifest path"></button>
+            </div>
+            <div class="metadata-row" id="metadataRow"></div>
+          </section>
+
+          <section class="table-panel">
+            <div class="tabbar">
+              <div class="tabs">
+                <button class="tab is-active" data-tab="watch">Output Watch</button>
+                <button class="tab" data-tab="queue">Replace Queue</button>
+                <button class="tab" data-tab="aep">AEP Files</button>
+                <button class="tab" data-tab="render">Render Queue</button>
+              </div>
+              <div class="table-actions">
+                <span class="take-summary" id="takeSummary"></span>
+                <button class="primary-small" id="replaceAllButton">Replace All</button>
+                <button class="primary-small" id="renderCompButton">Render</button>
+                <button class="icon-button small refresh-mini" id="refreshOutputsButton" title="Refresh output status"></button>
+              </div>
+            </div>
+
+            <div class="table-wrap" id="watchView">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Output Path</th>
+                    <th>Version</th>
+                    <th>Latest</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="outputRows"></tbody>
+              </table>
+            </div>
+
+            <div class="table-wrap is-hidden" id="queueView">
+              <table>
+                <thead>
+                  <tr>
+                    <th>AE Footage</th>
+                    <th>Current</th>
+                    <th>Latest</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="queueRows"></tbody>
+              </table>
+            </div>
+
+            <div class="table-wrap is-hidden" id="aepView">
+              <table class="aep-table">
+                <thead>
+                  <tr>
+                    <th>File Name</th>
+                    <th>Version</th>
+                    <th>Modified</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="aepRows"></tbody>
+              </table>
+              <div class="aep-detail">
+                <label for="aepFileName">File Name:</label>
+                <input id="aepFileName" type="text" readonly>
+              </div>
+            </div>
+
+            <div class="table-wrap is-hidden" id="renderView">
+              <table class="render-table">
+                <thead>
+                  <tr>
+                    <th>Final Comp</th>
+                    <th>Output Path</th>
+                    <th>Module</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="renderRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <footer class="footer-actions">
+            <div class="status-line" id="statusLine">Ready</div>
+            <div class="buttons">
+              <button class="action-button" id="openButton"><span class="folder-icon"></span>Open</button>
+              <button class="action-button" id="saveButton"><span class="save-icon"></span>Save</button>
+              <button class="action-button" id="publishButton"><span class="upload-icon"></span>Publish</button>
+              <button class="action-button primary" id="buildButton"><span class="play-icon"></span>Build</button>
+            </div>
+          </footer>
+        </section>
+      </section>
+    </main>
+
+    <script src="./js/cep-bridge.js"></script>
+    <script src="./js/app.js"></script>
+  </body>
+</html>

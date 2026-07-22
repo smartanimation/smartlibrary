@@ -1,0 +1,2 @@
+[console_scripts]
+smartlauncher = smartlib.apps.launcher.main:main

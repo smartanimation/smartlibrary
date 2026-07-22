@@ -66,6 +66,59 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    merged = dict(base or {})
+    for key, value in (override or {}).items():
+        if isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_project_yaml(config_dir: Path, name: str, *, inherit_default: bool = True) -> dict:
+    project_data = _load_yaml(config_dir / name)
+    if not inherit_default:
+        return project_data
+    root = Path(os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get(ROOT_ENV_VAR) or Path(__file__).resolve().parents[1])
+    merged = _load_yaml(root / "config" / "default" / name)
+    studio_path = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG")
+    if studio_path and name in {"tools.yml", "project_settings.yml"}:
+        merged = _deep_merge(merged, _load_yaml(Path(studio_path)))
+    studio_dir = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG_DIR")
+    if studio_dir:
+        merged = _deep_merge(merged, _load_yaml(Path(studio_dir) / name))
+    return _deep_merge(merged, project_data)
+
+
+def _load_active_context_subsets(config_dir: Path) -> dict[str, list[str]]:
+    """Read legacy Context representations for migration and live compatibility."""
+
+    settings = _load_project_yaml(config_dir, "project_settings.yml")
+    version = str((settings.get("active_contexts") or {}).get("asset") or "v001")
+    root = Path(
+        os.environ.get("SMARTPIPELINE_ROOT")
+        or os.environ.get(ROOT_ENV_VAR)
+        or Path(__file__).resolve().parents[1]
+    )
+    data = _load_yaml(root / "config" / "default" / "contexts" / "asset" / f"{version}.yml")
+    data = _deep_merge(
+        data,
+        _load_yaml(config_dir / "contexts" / "asset" / f"{version}.yml"),
+    )
+    representations = data.get("representations") or {}
+    result: dict[str, list[str]] = {}
+    if isinstance(representations, dict):
+        for department, values in representations.items():
+            if isinstance(values, str):
+                values = [values]
+            if isinstance(values, list):
+                result[str(department)] = [
+                    str(value) for value in values if str(value)
+                ]
+    return result
+
+
 def _load_simple_project_yaml(path: Path) -> dict:
     root: dict = {}
     stack: list[tuple[int, dict | list]] = [(-1, root)]
@@ -238,13 +291,28 @@ class Asset:
 class AssetManager:
     def __init__(self, config_dir: str | os.PathLike[str] | None = None):
         self.config_dir = self._resolve_config_dir(config_dir)
-        base_cfg = _load_yaml(self.config_dir / "templates_base.yml")
-        asset_cfg = _load_yaml(self.config_dir / "templates_assets.yml")
-        self.base_config = base_cfg
-        self.asset_config = asset_cfg
         self._sheet_metadata: dict[tuple[str, str, str], dict] = {}
         self.last_asset_source = "filesystem"
         self.last_asset_source_error = ""
+        self.reload_config()
+
+    def reload_config(self) -> None:
+        """Reload merged project settings used by long-lived manager windows."""
+
+        base_cfg = _load_project_yaml(self.config_dir, "templates_base.yml", inherit_default=False)
+        asset_cfg = _load_project_yaml(self.config_dir, "templates_assets.yml")
+        context_subsets = _load_active_context_subsets(self.config_dir)
+        if context_subsets:
+            catalog = dict(asset_cfg.get("asset_subsets") or {})
+            for department, values in context_subsets.items():
+                existing = list(catalog.get(department) or [])
+                for value in values:
+                    if value not in existing:
+                        existing.append(value)
+                catalog[department] = existing
+            asset_cfg["asset_subsets"] = catalog
+        self.base_config = base_cfg
+        self.asset_config = asset_cfg
 
         anchors = base_cfg.get("anchors", {})
         self.project_name = anchors.get("project_name", self.config_dir.name)
@@ -368,8 +436,22 @@ class AssetManager:
                 "status": self._row_value(row, "Status", "status") or "",
                 "description": self._row_value(row, "Description", "description") or "",
                 "published_by": self._row_value(row, "PublishedBy", "Published By") or "",
+                "thumbnail": self._row_value(row, "Thumbnail", "thumbnail") or "thumbnail.jpg",
             }
             self._sheet_metadata[(category, group, asset_name)] = metadata
+
+        cache_payload = sorted(
+            self._sheet_metadata.values(),
+            key=lambda row: (
+                str(row.get("category", "")).lower(),
+                str(row.get("group", "")).lower(),
+                str(row.get("asset", "")).lower(),
+            ),
+        )
+        try:
+            _write_json(self._sheet_cache_path(), cache_payload)
+        except OSError as exc:
+            self.last_asset_source_error = f"Spreadsheet cache write failed: {exc}"
 
         self.last_asset_source = "spreadsheet"
         return sorted(assets, key=lambda a: (a.category.lower(), a.group.lower(), a.name.lower()))
@@ -454,6 +536,13 @@ class AssetManager:
             asset.root / "asset.yaml",
         ]
 
+    @staticmethod
+    def is_asset_initialized(asset: Asset) -> bool:
+        return (
+            (asset.root / "asset.json").is_file()
+            and (asset.root / "default" / "variant.json").is_file()
+        )
+
     def load_asset_metadata(self, asset: Asset) -> dict:
         metadata = {
             "asset": asset.name,
@@ -533,19 +622,38 @@ class AssetManager:
         return self.work_variants(department, dcc=dcc)
 
     def _work_subsets_for_asset(self, asset: Asset, department: str) -> list[str]:
-        by_department = self.asset_config.get("work_subsets_by_category") or {}
-        rules = by_department.get(department) or {}
-        if not isinstance(rules, dict):
+        try:
+            from smartlib.apps.asset_manager.subsets import subsets_for_asset
+
+            return subsets_for_asset(
+                self.asset_config,
+                department,
+                category=asset.category,
+                group=asset.group,
+            )
+        except ImportError:
             return []
-        for key in (asset.category, asset.group, "default"):
-            values = rules.get(key)
-            if isinstance(values, str):
-                return [values]
-            if isinstance(values, list):
-                return [str(value) for value in values if str(value)]
-        return []
 
     def work_root_dir(
+        self,
+        asset: Asset,
+        *,
+        dcc: str = "maya",
+        department: str,
+        variant: str = "default",
+        subset: str = "",
+    ) -> Path:
+        if asset.uses_variant_structure(variant):
+            path = asset.variant_root(variant) / "work" / department / dcc
+            if subset:
+                path = path / subset
+            return path
+        path = asset.work_dir / dcc / department
+        if subset:
+            path = path / subset
+        return path
+
+    def legacy_work_root_dir(
         self,
         asset: Asset,
         *,
@@ -559,10 +667,13 @@ class AssetManager:
             if subset:
                 path = path / subset
             return path
-        path = asset.work_dir / dcc / department
-        if subset:
-            path = path / subset
-        return path
+        return self.work_root_dir(
+            asset,
+            dcc=dcc,
+            department=department,
+            variant=variant,
+            subset=subset,
+        )
 
     def work_subset_for_path(
         self,
@@ -573,15 +684,19 @@ class AssetManager:
     ) -> str:
         source = _norm(path)
         if asset.uses_variant_structure(variant):
-            work_root = asset.variant_root(variant) / department / "work"
-            try:
-                relative = source.parent.relative_to(work_root)
-                if len(relative.parts) >= 2:
-                    return relative.parts[1]
-                if relative.parts:
-                    return relative.parts[0]
-            except ValueError:
-                pass
+            roots = (
+                asset.variant_root(variant) / "work" / department,
+                asset.variant_root(variant) / department / "work",
+            )
+            for work_root in roots:
+                try:
+                    relative = source.parent.relative_to(work_root)
+                    if len(relative.parts) >= 2:
+                        return relative.parts[1]
+                    if relative.parts:
+                        return relative.parts[0]
+                except ValueError:
+                    pass
         return variant
 
     def ensure_asset_dirs(self, asset: Asset) -> None:
@@ -1275,17 +1390,32 @@ class AssetManager:
                     variant=variant,
                     subset=subset or "",
                 )
+                legacy_dept_root = self.legacy_work_root_dir(
+                    asset,
+                    dcc=dcc or "maya",
+                    department=department,
+                    variant=variant,
+                    subset=subset or "",
+                )
             else:
                 dept_root = asset.work_dir / (dcc or "maya") / department
                 if variant:
                     dept_root = dept_root / variant
+                legacy_dept_root = dept_root
             files = [
                 path for path in files
-                if path == dept_root or dept_root in path.parents
+                if (
+                    path == dept_root
+                    or dept_root in path.parents
+                    or path == legacy_dept_root
+                    or legacy_dept_root in path.parents
+                )
             ]
             if asset.uses_variant_structure(variant or "default"):
-                work_root = asset.variant_root(variant or "default") / department / "work"
-                variant_files = self._list_files(work_root)
+                new_work_root = asset.variant_root(variant or "default") / "work" / department
+                legacy_work_root = asset.variant_root(variant or "default") / department / "work"
+                variant_files = self._list_files(new_work_root)
+                variant_files.extend(self._list_files(legacy_work_root))
                 if subset:
                     if dcc:
                         new_subset_roots = [
@@ -1308,11 +1438,22 @@ class AssetManager:
                             )
                             for work_dcc in WORK_DCC_LAYOUT
                         ]
-                    legacy_subset_root = work_root / subset
+                    legacy_subset_roots = [
+                        self.legacy_work_root_dir(
+                            asset,
+                            dcc=work_dcc,
+                            department=department,
+                            variant=variant or "default",
+                            subset=subset,
+                        )
+                        for work_dcc in ([dcc] if dcc else WORK_DCC_LAYOUT)
+                    ]
+                    legacy_subset_root = legacy_work_root / subset
                     variant_files = [
                         path for path in variant_files
                         if (
                             any(path == root or root in path.parents for root in new_subset_roots)
+                            or any(path == root or root in path.parents for root in legacy_subset_roots)
                             or path == legacy_subset_root
                             or legacy_subset_root in path.parents
                         )

@@ -13,3 +13,5 @@ third_party/python/*
 
 runtime/python/*
 !runtime/python/README.md
+runtime/pytest_cache/
+runtime/pytest_tmp/

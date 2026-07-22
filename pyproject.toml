@@ -9,6 +9,11 @@ description = "Production pipeline toolkit for CG and animation workflows."
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9,<10",
+]
+
 [project.scripts]
 smartlauncher = "smartlib.apps.launcher.main:main"
 
@@ -17,3 +22,6 @@ package-dir = {"" = "packages"}
 
 [tool.setuptools.packages.find]
 where = ["packages"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"

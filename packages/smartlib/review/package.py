@@ -64,6 +64,12 @@ def latest_review_version(shot_root: str | Path, department: str) -> int | None:
 def next_review_take(version_dir: str | Path) -> int:
     version_dir = Path(version_dir)
     takes = []
+    if version_dir.exists():
+        for take_dir in version_dir.glob("take*"):
+            if take_dir.is_dir():
+                match = TAKE_DIR_RE.match(take_dir.name)
+                if match:
+                    takes.append(int(match.group("take")))
     layers_dir = version_dir / "layers"
     if layers_dir.exists():
         for take_dir in layers_dir.glob("*/take*"):
@@ -91,7 +97,9 @@ def build_review_package_plan(
     shot_root = Path(shot_root)
     version = version or next_review_version(shot_root, department)
     version_label = format_version(version)
-    version_dir = shot_root / "publish" / "review" / department / version_label
+    take_label = _take_label(take if take is not None else 1)
+    shot_name = str(shot_data.get("shot") or shot_root.name)
+    version_dir = shot_root / "publish" / "review" / department / version_label / take_label
     editorial = shot_data.get("editorial") or {}
     frame_range = [
         int(editorial.get("cut_in", 1001)),
@@ -103,13 +111,14 @@ def build_review_package_plan(
         "publish_type": "review",
         "subset": department,
         "version": version_label,
-        "shot": shot_data.get("shot", shot_root.name),
+        "shot": shot_name,
         "episode": shot_data.get("episode", ""),
         "sequence": shot_data.get("sequence", ""),
         "department": department,
         "fps": editorial.get("fps", 24),
         "frame_range": frame_range,
-        "movie": "review.mov",
+        "take": take_label,
+        "movie": f"mov/{shot_name}_{department}_{version_label}_{take_label}.mov",
         "layers": {},
         "thumbnails": {},
         "ae": {
@@ -119,8 +128,10 @@ def build_review_package_plan(
     }
 
     files = {
-        "review": "review.mov",
-        "review_json": "review.json",
+        "review": review_data["movie"],
+        "review_json": "metadata/review.json",
+        "playblast_json": "metadata/playblast.json",
+        "source_scene_json": "metadata/source_scene.json",
         "ae_project": "ae/review_project.aep",
         "ae_template_used": "ae/template_used.json",
     }
@@ -130,13 +141,13 @@ def build_review_package_plan(
         members = list(layer.get("members") or [])
         if not members:
             continue
-        take_label = _take_label(take if take is not None else layer.get("take", 1))
         outputs = {}
         for output_name in _outputs_for_layer(layer_name, layer):
-            pattern = f"layers/{layer_name}/{take_label}/{output_name}_####.png"
+            output_label = layer_name if output_name == "beauty" else f"{layer_name}_{output_name}"
+            pattern = f"image_sequence/{layer_name}/{shot_name}_{department}_{output_label}_{version_label}_{take_label}_####.jpg"
             outputs[output_name] = pattern
             files[f"{layer_name}_{take_label}_{output_name}"] = pattern
-        thumbnail = f"thumbnails/{layer_name}.jpg"
+        thumbnail = f"thumbnail/{shot_name}_{department}_{layer_name}_{version_label}_{take_label}.jpg"
         layer_order.append(layer_name)
         review_data["layers"][layer_name] = {
             "members": members,
@@ -172,8 +183,8 @@ def build_review_package_plan(
     )
     return ReviewPackagePlan(
         version_dir=version_dir,
-        publish_json=version_dir / "publish.json",
-        review_json=version_dir / "review.json",
+        publish_json=version_dir / "metadata" / "publish.json",
+        review_json=version_dir / "metadata" / "review.json",
         version=version,
         subset=department,
         files=files,
@@ -194,11 +205,14 @@ def write_review_package_plan(plan: ReviewPackagePlan) -> ReviewPackagePlan:
         status=str(publish_data.get("status") or "planned"),
     )
     write_publish_json(plan.version_dir, record)
+    write_json(plan.publish_json, record.to_dict())
     review_data = dict(plan.review_data)
     review_data.pop("publish", None)
     write_json(plan.review_json, review_data)
+    write_json(plan.version_dir / "metadata" / "playblast.json", {"status": "planned", "version": review_data.get("version"), "take": review_data.get("take")})
+    write_json(plan.version_dir / "metadata" / "source_scene.json", {"source_workfile": record.source_workfile})
     _copy_ae_template_if_possible(plan, review_data)
-    _update_latest_and_versions(plan.version_dir.parent, plan.version)
+    _update_latest_and_versions(plan.version_dir.parents[1], plan.version, str(review_data.get("take") or "take001"))
     return plan
 
 
@@ -211,16 +225,16 @@ def _copy_ae_template_if_possible(plan: ReviewPackagePlan, review_data: dict[str
 
     copy_ae_template_to_publish(
         plan.version_dir,
-        plan.version_dir.parents[3],
+        plan.version_dir.parents[4],
         project_root,
         pipeline_root,
         plan.subset,
     )
 
 
-def _update_latest_and_versions(base_dir: Path, version: int) -> None:
+def _update_latest_and_versions(base_dir: Path, version: int, take_label: str = "take001") -> None:
     version_label = format_version(version)
-    write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/review.json"})
+    write_json(base_dir / "latest.json", {"version": version_label, "take": take_label, "path": f"{version_label}/{take_label}/metadata/review.json"})
     versions_path = base_dir / "versions.json"
     versions = read_json(versions_path, [])
     if not isinstance(versions, list):

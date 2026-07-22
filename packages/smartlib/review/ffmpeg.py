@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,10 @@ class FFMpegCommandResult:
 
 
 def ffmpeg_executable(pipeline_root: str | Path) -> Path:
-    exe = Path(pipeline_root) / "tools" / "ffmpeg" / "ffmpeg.exe"
+    tools_root = Path(os.environ.get("SMARTPIPELINE_TOOLS") or Path(pipeline_root).parent / "smarttools")
+    exe = tools_root / "ffmpeg" / "ffmpeg.exe"
+    if not exe.exists():
+        exe = Path(pipeline_root) / "tools" / "ffmpeg" / "ffmpeg.exe"
     if not exe.exists():
         raise FileNotFoundError(f"ffmpeg.exe was not found: {exe}")
     return exe
@@ -29,7 +33,7 @@ def compose_layer_movies_from_review_json(
     execute: bool = False,
 ) -> list[FFMpegCommandResult]:
     review_json = Path(review_json)
-    version_dir = review_json.parent
+    version_dir = review_json.parent.parent if review_json.parent.name == "metadata" else review_json.parent
     data = read_json(review_json, {})
     ffmpeg = ffmpeg_executable(pipeline_root)
     fps = int(data.get("fps") or 24)
@@ -58,9 +62,11 @@ def compose_layer_movies_from_review_json(
             "-i",
             str(pattern),
             "-c:v",
-            "libx264",
+            "prores_ks",
+            "-profile:v",
+            "0",
             "-pix_fmt",
-            "yuv420p",
+            "yuv422p10le",
             str(output),
         ]
         if execute:

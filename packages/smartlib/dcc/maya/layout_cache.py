@@ -71,44 +71,58 @@ def _layout_export_roots(cmds: Any, namespace: str) -> list[str]:
     if not cmds.objExists(set_name):
         return []
     members = cmds.sets(set_name, query=True) or []
-    transforms = _mesh_transforms_from_members(cmds, members)
-    roots = {_top_namespace_parent(cmds, transform, namespace) for transform in transforms}
-    return sorted(root for root in roots if root)
+    return _minimal_transform_roots(_geometry_roots_from_members(cmds, members))
 
 
-def _mesh_transforms_from_members(cmds: Any, members: list[str]) -> list[str]:
-    mesh_transforms = []
+def _geometry_roots_from_members(cmds: Any, members: list[str]) -> list[str]:
+    roots = []
     for member in members:
         if not cmds.objExists(member):
             continue
-        nodes = [member]
-        nodes.extend(cmds.listRelatives(member, allDescendents=True, fullPath=True) or [])
-        for node in nodes:
-            if not cmds.objExists(node):
-                continue
-            if cmds.nodeType(node) == "mesh":
-                parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
-                mesh_transforms.extend(parents)
-                continue
-            if cmds.nodeType(node) != "transform":
-                continue
-            shapes = cmds.listRelatives(node, shapes=True, fullPath=True, noIntermediate=True) or []
-            if any(cmds.nodeType(shape) == "mesh" for shape in shapes):
-                mesh_transforms.append(node)
-    return sorted(set(mesh_transforms))
+        try:
+            node_type = cmds.nodeType(member)
+        except Exception:
+            continue
+        if node_type == "mesh":
+            roots.extend(cmds.listRelatives(member, parent=True, fullPath=True) or [])
+            continue
+        if node_type != "transform":
+            continue
+        long_member = (cmds.ls(member, long=True) or [member])[0]
+        if _has_mesh_geometry(cmds, long_member):
+            roots.append(long_member)
+    return sorted(set(roots))
 
 
-def _top_namespace_parent(cmds: Any, node: str, namespace: str) -> str:
-    current = node
-    while True:
-        parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
-        if not parents:
-            return current
-        parent = parents[0]
-        short_name = parent.rsplit("|", 1)[-1]
-        if not short_name.startswith(f"{namespace}:"):
-            return current
-        current = parent
+def _minimal_transform_roots(nodes: list[str]) -> list[str]:
+    ordered = sorted(set(nodes), key=lambda value: value.count("|"))
+    result = []
+    for node in ordered:
+        if any(node == parent or node.startswith(f"{parent}|") for parent in result):
+            continue
+        result.append(node)
+    return result
+
+
+def _has_mesh_geometry(cmds: Any, transform: str) -> bool:
+    shapes = cmds.listRelatives(transform, shapes=True, fullPath=True, noIntermediate=True) or []
+    if any(_is_exportable_mesh(cmds, shape) for shape in shapes):
+        return True
+    descendants = cmds.listRelatives(transform, allDescendents=True, fullPath=True) or []
+    return any(_is_exportable_mesh(cmds, node) for node in descendants)
+
+
+def _is_exportable_mesh(cmds: Any, node: str) -> bool:
+    if not cmds.objExists(node):
+        return False
+    try:
+        if cmds.nodeType(node) != "mesh":
+            return False
+        if cmds.getAttr(f"{node}.intermediateObject"):
+            return False
+    except Exception:
+        return False
+    return True
 
 
 def _export_selected_usd(cmds: Any, output: Path, frame_range: tuple[int, int] | None) -> str:
@@ -118,6 +132,9 @@ def _export_selected_usd(cmds: Any, output: Path, frame_range: tuple[int, int] |
                 "file": str(output),
                 "selection": True,
                 "mergeTransformAndShape": True,
+                "exportSkels": "none",
+                "exportSkin": "none",
+                "exportBlendShapes": False,
             }
             if frame_range:
                 kwargs["frameRange"] = frame_range
@@ -129,7 +146,16 @@ def _export_selected_usd(cmds: Any, output: Path, frame_range: tuple[int, int] |
         maya_usd_error = ""
 
     try:
-        options = "exportUVs=1;exportSkels=none;exportSkin=none;exportBlendShapes=0;"
+        options = (
+            "exportUVs=1;"
+            "exportColorSets=1;"
+            "exportSkels=none;"
+            "exportSkin=none;"
+            "exportBlendShapes=0;"
+            "shadingMode=none;"
+            "exportMaterials=0;"
+            "exportAssignedMaterials=0;"
+        )
         if frame_range:
             options += f"frameRange={frame_range[0]} {frame_range[1]};"
         cmds.file(

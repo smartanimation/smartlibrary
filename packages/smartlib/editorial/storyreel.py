@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.config_loader import ProjectConfig, expand_config_tokens, load_config
 from smartlib.core.metadata import read_json, write_json
 
 
@@ -38,7 +39,7 @@ class StoryreelBuilder:
         if project_root is None:
             raise RuntimeError("project_root is not set in templates_base.yml")
         self.project_root = project_root
-        self.pipeline_root = Path(pipeline_root) if pipeline_root else Path(__file__).resolve().parents[4]
+        self.pipeline_root = Path(pipeline_root) if pipeline_root else _pipeline_root()
 
     @property
     def fps(self) -> int:
@@ -148,15 +149,14 @@ class StoryreelBuilder:
         )
 
     def _ffmpeg_path(self) -> Path:
-        tools = self.project_config.load("tools.yml")
+        tools = self.project_config.load("tools.yml") or load_config(self.pipeline_root / "config" / "default" / "tools.yml")
         raw = (((tools.get("tools") or {}).get("ffmpeg") or {}).get("path") or "").strip()
         if raw:
-            raw = raw.replace("{smartpipeline_root}", self.pipeline_root.as_posix())
-            raw = raw.replace("{project_root}", self.project_root.as_posix())
+            raw = expand_config_tokens(raw, self.project_config)
             path = Path(raw)
             if path.exists():
                 return path
-        path = self.pipeline_root / "tools" / "ffmpeg" / "ffmpeg.exe"
+        path = Path(os.environ.get("SMARTPIPELINE_TOOLS") or self.pipeline_root.parent / "smarttools") / "ffmpeg" / "ffmpeg.exe"
         if path.exists():
             return path
         raise FileNotFoundError(f"ffmpeg.exe was not found: {path}")
@@ -221,3 +221,10 @@ class StoryreelBuilder:
 
 def _seconds(frame: int, fps: int) -> str:
     return f"{frame / float(fps):.6f}"
+
+
+def _pipeline_root() -> Path:
+    env_root = os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get("SMARTLIBRARY_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path(__file__).resolve().parents[3]

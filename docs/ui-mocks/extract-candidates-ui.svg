@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="430" height="600" viewBox="0 0 430 600">
+  <defs>
+    <style>
+      .bg { fill: #242424; }
+      .panel { fill: #343434; }
+      .panel2 { fill: #2c2c2c; }
+      .field { fill: #202020; stroke: #454545; stroke-width: 1; }
+      .focus { fill: #202020; stroke: #2f78b7; stroke-width: 1.5; }
+      .button { fill: #424242; }
+      .primary { fill: #2f6f9f; }
+      .row { fill: #292929; stroke: #424242; stroke-width: 1; }
+      .rowSelected { fill: #24384a; stroke: #2f78b7; stroke-width: 1.2; }
+      .text { fill: #d8d8d8; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; }
+      .bold { fill: #f0f0f0; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; font-weight: 600; }
+      .label { fill: #b8b8b8; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; }
+      .tiny { fill: #9a9a9a; font-family: "Segoe UI", Arial, sans-serif; font-size: 8px; }
+      .title { fill: #f2f2f2; font-family: "Segoe UI", Arial, sans-serif; font-size: 14px; font-weight: 600; }
+      .section { fill: #d0d0d0; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; font-weight: 600; }
+      .buttonText { fill: #f3f3f3; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; font-weight: 600; }
+      .line { stroke: #474747; stroke-width: 1; }
+      .check { fill: #2f6f9f; stroke: #8fb9d7; stroke-width: 1; }
+      .emptyCheck { fill: #1e1e1e; stroke: #5a5a5a; stroke-width: 1; }
+      .ready { fill: #76b875; }
+      .warn { fill: #d7a85e; }
+      .pill { fill: #464646; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="430" height="600"/>
+  <rect class="panel" x="12" y="10" width="406" height="580" rx="2"/>
+
+  <text class="title" x="24" y="34">Extract Candidates</text>
+  <text class="tiny" x="24" y="51">Build asset candidates from current Maya selection before publishing.</text>
+
+  <rect class="panel2" x="24" y="66" width="382" height="78"/>
+  <rect fill="#5a5a5a" x="34" y="76" width="104" height="58"/>
+  <g transform="translate(70 87)">
+    <path d="M18 16 L40 20 L40 42 L18 38 Z" fill="#e3b7b7" stroke="#222"/>
+    <path d="M20 17 L20 2 Q20 -1 25 0 L37 3 Q40 4 40 8 L40 19" fill="#e8c0c0" stroke="#222"/>
+    <path d="M20 38 L16 54 M39 42 L45 56 M26 40 L26 57" stroke="#ddd" stroke-width="3" stroke-linecap="round"/>
+    <path d="M16 54 L8 56 M45 56 L54 55 M26 57 L19 59" stroke="#ddd" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <text class="tiny" x="154" y="90">Selection</text>
+  <text class="text" x="154" y="108">3 transform nodes selected</text>
+  <text class="tiny" x="154" y="126">Candidates are not published yet.</text>
+  <rect class="button" x="286" y="90" width="104" height="28" rx="1"/>
+  <text class="buttonText" x="303" y="108">Refresh Selection</text>
+
+  <line class="line" x1="24" y1="162" x2="406" y2="162"/>
+  <text class="section" x="24" y="183">Naming Defaults</text>
+
+  <text class="label" x="42" y="208">Category</text>
+  <rect class="field" x="92" y="195" width="98" height="20"/>
+  <text class="text" x="98" y="209">prop</text>
+  <text class="label" x="218" y="208">Group</text>
+  <rect class="field" x="258" y="195" width="98" height="20"/>
+  <text class="text" x="264" y="209">bp</text>
+
+  <text class="label" x="47" y="236">Variant</text>
+  <rect class="field" x="92" y="223" width="98" height="20"/>
+  <text class="text" x="98" y="237">default</text>
+  <text class="label" x="202" y="236">Department</text>
+  <rect class="focus" x="258" y="223" width="98" height="20"/>
+  <text class="text" x="264" y="237">model</text>
+
+  <text class="label" x="52" y="264">Subset</text>
+  <rect class="field" x="92" y="251" width="98" height="20"/>
+  <text class="text" x="98" y="265">proxy</text>
+  <path d="M178 259 L184 259 L181 263 Z" fill="#bdbdbd"/>
+  <rect class="check" x="258" y="254" width="12" height="12" rx="1"/>
+  <path d="M261 260 L264 263 L268 257" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="text" x="276" y="264">Auto-split by top transform</text>
+
+  <line class="line" x1="24" y1="290" x2="406" y2="290"/>
+  <text class="section" x="24" y="311">Selection / Extract Candidates</text>
+  <text class="tiny" x="256" y="311">Publish assets from these rows.</text>
+
+  <rect class="panel2" x="24" y="322" width="382" height="156"/>
+  <text class="tiny" x="42" y="339">Source Object</text>
+  <text class="tiny" x="154" y="339">Asset</text>
+  <text class="tiny" x="225" y="339">Will Create</text>
+  <text class="tiny" x="332" y="339">Status</text>
+
+  <rect class="rowSelected" x="34" y="348" width="362" height="30"/>
+  <rect class="check" x="43" y="357" width="12" height="12" rx="1"/>
+  <path d="M46 363 L49 366 L53 360" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="bold" x="62" y="367">chairA_geo</text>
+  <text class="text" x="154" y="367">Chair</text>
+  <text class="text" x="225" y="367">Chair_A</text>
+  <circle class="ready" cx="337" cy="363" r="3"/>
+  <text class="tiny" x="346" y="366">Ready</text>
+
+  <rect class="row" x="34" y="382" width="362" height="30"/>
+  <rect class="check" x="43" y="391" width="12" height="12" rx="1"/>
+  <path d="M46 397 L49 400 L53 394" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="bold" x="62" y="401">chairB_geo</text>
+  <text class="text" x="154" y="401">Chair</text>
+  <text class="text" x="225" y="401">Chair_B</text>
+  <circle class="ready" cx="337" cy="397" r="3"/>
+  <text class="tiny" x="346" y="400">Ready</text>
+
+  <rect class="row" x="34" y="416" width="362" height="30"/>
+  <rect class="check" x="43" y="425" width="12" height="12" rx="1"/>
+  <path d="M46 431 L49 434 L53 428" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="bold" x="62" y="435">table_geo</text>
+  <text class="text" x="154" y="435">Table</text>
+  <text class="text" x="225" y="435">Table_A</text>
+  <circle class="warn" cx="337" cy="431" r="3"/>
+  <text class="tiny" x="346" y="434">Check</text>
+
+  <rect class="button" x="34" y="452" width="92" height="18" rx="1"/>
+  <text class="buttonText" x="52" y="465">Add Selection</text>
+  <rect class="button" x="132" y="452" width="92" height="18" rx="1"/>
+  <text class="buttonText" x="150" y="465">Remove Row</text>
+  <rect class="button" x="230" y="452" width="118" height="18" rx="1"/>
+  <text class="buttonText" x="247" y="465">Preview Publish Path</text>
+
+  <text class="section" x="24" y="505">Candidate Details</text>
+  <text class="label" x="34" y="530">Target</text>
+  <rect class="field" x="82" y="517" width="304" height="20"/>
+  <text class="tiny" x="88" y="530">|Kitchen|geo|Props_grp|DiningTable_grp|chairA_geo</text>
+  <text class="label" x="35" y="558">Output</text>
+  <rect class="field" x="82" y="545" width="304" height="20"/>
+  <text class="tiny" x="88" y="558">assets/prop/bp/chair_a/default/model/publish/maya/proxy</text>
+
+  <rect class="primary" x="216" y="570" width="170" height="24" rx="1"/>
+  <text class="buttonText" x="251" y="586">Extract Selected Candidates</text>
+</svg>

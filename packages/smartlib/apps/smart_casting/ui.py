@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from smartlib.apps.smart_casting.service import CastingAsset, SmartCastingService
+from smartlib.apps.common.asset_cards import (
+    asset_card_text,
+    asset_icon,
+    asset_tooltip,
+    configure_asset_card_list,
+    set_label_thumbnail,
+)
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
 
@@ -68,8 +75,8 @@ class AssetDialog(QtWidgets.QDialog):
 
 
 class SmartCastingWindow(QtWidgets.QMainWindow):
-    def __init__(self, config_dir: str | os.PathLike[str] | None = None):
-        super().__init__()
+    def __init__(self, config_dir: str | os.PathLike[str] | None = None, parent=None):
+        super().__init__(parent)
         self.project_config = ProjectConfig(config_dir or _default_config_dir())
         self.service = SmartCastingService(self.project_config)
         self.asset_rows: list[CastingAsset] = []
@@ -175,8 +182,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
 
         center = QtWidgets.QVBoxLayout()
         self.sequence_cast_list = QtWidgets.QListWidget()
-        self.sequence_cast_list.setViewMode(QtWidgets.QListView.IconMode)
-        self.sequence_cast_list.setIconSize(QtCore.QSize(92, 52))
+        configure_asset_card_list(self.sequence_cast_list, QtCore, QtWidgets)
         self.sequence_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.sequence_cast_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         sequence_buttons = QtWidgets.QHBoxLayout()
@@ -196,8 +202,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         shot_buttons.addWidget(self.auto_selection_btn)
         shot_buttons.addStretch(1)
         self.shot_cast_list = QtWidgets.QListWidget()
-        self.shot_cast_list.setViewMode(QtWidgets.QListView.IconMode)
-        self.shot_cast_list.setIconSize(QtCore.QSize(92, 52))
+        configure_asset_card_list(self.shot_cast_list, QtCore, QtWidgets)
         self.shot_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         bottom = QtWidgets.QHBoxLayout()
         bottom.addStretch(1)
@@ -299,7 +304,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 item.setData(QtCore.Qt.UserRole, asset)
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 if column == 0 and asset.thumbnail:
-                    item.setIcon(QtGui.QIcon(asset.thumbnail))
+                    item.setIcon(asset_icon(QtCore, QtGui, thumbnail=asset.thumbnail, label=asset.asset))
                 self.asset_table.setItem(row, column, item)
         self.asset_table.resizeColumnsToContents()
         self.asset_table.horizontalHeader().setStretchLastSection(True)
@@ -480,13 +485,34 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         return data
 
     def _cast_item(self, key: str, entry: dict[str, Any]) -> QtWidgets.QListWidgetItem:
-        label = f"{entry.get('asset', key)}\n{entry.get('role', '')} / {entry.get('variant', 'default')}"
+        asset_name = str(entry.get("asset") or key)
+        variant = str(entry.get("variant") or "default")
+        asset_row = self._asset_for_cast(entry)
+        category = str(entry.get("category") or getattr(asset_row, "category", ""))
+        group = str(entry.get("group") or getattr(asset_row, "group", ""))
+        label = asset_card_text(
+            asset=asset_name,
+            category=category,
+            group=group,
+            variant=variant,
+            status=str(entry.get("status") or getattr(asset_row, "status", "")),
+            asset_type=str(entry.get("role") or category),
+            description=str(entry.get("note") or getattr(asset_row, "description", "")),
+        )
         item = QtWidgets.QListWidgetItem(label)
         row = {"cast_key": key, **entry}
         item.setData(QtCore.Qt.UserRole, row)
-        asset_row = self._asset_for_cast(entry)
-        if asset_row and asset_row.thumbnail:
-            item.setIcon(QtGui.QIcon(asset_row.thumbnail))
+        item.setToolTip(
+            asset_tooltip(
+                asset=asset_name,
+                category=category,
+                group=group,
+                variant=variant,
+                status=str(entry.get("status") or getattr(asset_row, "status", "")),
+                description=str(entry.get("note") or getattr(asset_row, "description", "")),
+            )
+        )
+        item.setIcon(asset_icon(QtCore, QtGui, thumbnail=getattr(asset_row, "thumbnail", ""), label=asset_name))
         return item
 
     def _asset_for_cast(self, entry: dict[str, Any]) -> CastingAsset | None:
@@ -653,22 +679,22 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             item.setSelected(str(data.get("namespace") or data.get("cast_key")) in namespaces)
 
     def _set_label_pixmap(self, label: QtWidgets.QLabel, path: str) -> None:
-        if path and Path(path).exists():
-            pixmap = QtGui.QPixmap(path)
-            label.setPixmap(pixmap.scaled(label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-        else:
-            label.clear()
-            label.setText("Thumbnail")
+        set_label_thumbnail(QtCore, QtGui, label, path)
 
 
 _WINDOW = None
 
 
-def show(config_dir: str | os.PathLike[str] | None = None):
+def show(config_dir: str | os.PathLike[str] | None = None, parent=None):
     global _WINDOW
     existing_app = QtWidgets.QApplication.instance()
     app = existing_app or QtWidgets.QApplication(sys.argv)
-    _WINDOW = SmartCastingWindow(config_dir=config_dir)
+    from smartlib.core.qt import parent_for_maya
+
+    window_parent = parent_for_maya(QtWidgets, parent)
+    _WINDOW = SmartCastingWindow(config_dir=config_dir, parent=window_parent)
+    if window_parent is not None:
+        _WINDOW.setWindowFlags(_WINDOW.windowFlags() | QtCore.Qt.Window)
     _WINDOW.show()
     if existing_app:
         return _WINDOW

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.config_loader import ProjectConfig, expand_config_tokens
 from smartlib.core.metadata import read_json
 
 
@@ -37,6 +38,7 @@ class ReviewPackage:
     frame_range: list[int]
     layer_order: list[str]
     layers: list[ReviewLayerMedia]
+    package_type: str = ""
 
     @property
     def code(self) -> str:
@@ -58,9 +60,13 @@ class ViewerService:
             return []
         latest_paths = list(shots_root.glob("*/*/*/publish/review/*/latest.json"))
         latest_paths.extend(shots_root.glob("*/*/*/publish/review/*/*/latest.json"))
+        latest_paths.extend(shots_root.glob("*/*/*/output/review/*/latest.json"))
+        latest_paths.extend(shots_root.glob("*/*/*/output/review/*/*/latest.json"))
         sequences_root = self.project_root / "sequences"
         latest_paths.extend(sequences_root.glob("*/*/publish/review/*/latest.json"))
         latest_paths.extend(sequences_root.glob("*/*/publish/review/*/*/latest.json"))
+        latest_paths.extend(sequences_root.glob("*/*/output/review/*/latest.json"))
+        latest_paths.extend(sequences_root.glob("*/*/output/review/*/*/latest.json"))
         for latest_json in latest_paths:
             latest = read_json(latest_json, {})
             if not isinstance(latest, dict) or not latest.get("path"):
@@ -77,7 +83,7 @@ class ViewerService:
         data = read_json(review_json, {})
         if not isinstance(data, dict):
             return None
-        version_dir = review_json.parent
+        version_dir = review_json.parent.parent if review_json.parent.name == "metadata" else review_json.parent
         if data.get("type") == "quick_preview":
             layer_order, layers = _quick_preview_layers(version_dir, data)
         elif data.get("rv_mode") == "editorial_sequence" and data.get("shots"):
@@ -102,15 +108,18 @@ class ViewerService:
             frame_range=list(data.get("frame_range") or []),
             layer_order=layer_order,
             layers=layers,
+            package_type=str(data.get("type") or ""),
         )
 
     def rv_executable(self) -> Path | None:
+        config_path = (((self.project_config.load("tools.yml").get("tools") or {}).get("openrv") or {}).get("path") or "").strip()
+        if config_path:
+            config_path = expand_config_tokens(config_path, self.project_config)
+        if config_path and Path(config_path).exists():
+            return Path(config_path)
         env_path = os.environ.get("OPENRV_PATH") or os.environ.get("RV_PATH")
         if env_path and Path(env_path).exists():
             return Path(env_path)
-        config_path = (((self.project_config.load("tools.yml").get("tools") or {}).get("openrv") or {}).get("path") or "").strip()
-        if config_path and Path(config_path).exists():
-            return Path(config_path)
         found = shutil.which("rv.exe") or shutil.which("rv")
         return Path(found) if found else None
 
@@ -128,6 +137,14 @@ class ViewerService:
         return Path(found) if found else None
 
     def rv_args_for_package(self, package: ReviewPackage) -> list[str]:
+        if package.package_type == "quick_preview":
+            inputs = [
+                str(_rv_input_path(package.version_dir, layer))
+                for layer in package.layers
+                if _rv_input_path(package.version_dir, layer)
+            ]
+            if inputs:
+                return ["-tile", "-layout", "packed", "-view", "defaultLayout", *inputs]
         return [str(_rv_input_path(package.version_dir, layer)) for layer in package.layers if _rv_input_path(package.version_dir, layer)]
 
     def rv_args_for_layer(self, package: ReviewPackage, layer_name: str) -> list[str]:
@@ -149,6 +166,32 @@ class ViewerService:
             "layers": [layer.layer for layer in package.layers],
             "review_json": package.review_json,
         }
+
+    def rv_session_for_quick_preview(self, package: ReviewPackage) -> Path | None:
+        """Create an RV layout session so beauty/wireframe/bbox open as a grid."""
+        media = [
+            (layer.layer, _rv_input_path(package.version_dir, layer))
+            for layer in package.layers
+            if _rv_input_path(package.version_dir, layer)
+        ]
+        if len(media) <= 1:
+            return None
+        session_path = Path(package.version_dir) / "quick_preview_grid.rv"
+        try:
+            session = _new_rv_session(self.rv_executable())
+            if session is None:
+                return None
+            layout = session.newNode("Layout", f"{package.shot} Quick Preview")
+            layout.setLayoutMode("packed")
+            for label, path in media:
+                source = session.newNode("Source", label)
+                source.setMedia(str(path).replace("\\", "/"))
+                layout.addInput(source)
+            session.setViewNode(layout)
+            session.write(str(session_path))
+        except Exception:
+            return None
+        return session_path if session_path.exists() else None
 
 
 def _layer_media(version_dir: Path, layer_name: str, layer_data: dict[str, Any]) -> ReviewLayerMedia | None:
@@ -255,3 +298,26 @@ def _sequence_pattern_from_first_file(path: Path) -> Path:
     if not frame.isdigit():
         return path
     return path.with_name(f"{prefix}_%0{len(frame)}d{path.suffix}")
+
+
+def _new_rv_session(rv_executable: Path | None):
+    search_roots = []
+    if rv_executable:
+        rv_root = Path(rv_executable).resolve().parent.parent
+        search_roots.append(rv_root / "src" / "python")
+    search_roots.extend(
+        [
+            Path(os.environ.get("RV_HOME", "")) / "src" / "python",
+            Path("C:/Program Files/ShotGrid/RV-2023.0.2/src/python"),
+        ]
+    )
+    for root in search_roots:
+        if root and root.exists():
+            root_text = str(root)
+            if root_text not in sys.path:
+                sys.path.insert(0, root_text)
+    try:
+        from rvSession.rvSession import Session
+    except Exception:
+        return None
+    return Session()

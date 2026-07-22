@@ -3,6 +3,7 @@
 from smartlib.apps.shot_manager.service import (
     CastEntry,
     BuildPreviewItem,
+    ConstructComponent,
     ReviewLayer,
     ShotCreateRequest,
     ShotIdentity,
@@ -15,6 +16,7 @@ from smartlib.apps.shot_manager.service import (
 __all__ = [
     "CastEntry",
     "BuildPreviewItem",
+    "ConstructComponent",
     "ReviewLayer",
     "ShotCreateRequest",
     "ShotIdentity",

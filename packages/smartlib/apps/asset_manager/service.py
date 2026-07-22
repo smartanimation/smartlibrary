@@ -57,7 +57,11 @@ class AssetManagerService:
         project_root = project_config.project_root
         if project_root is None:
             raise RuntimeError("project_root is not set in templates_base.yml")
-        self.paths = ProjectPaths(project_root)
+        self.paths = ProjectPaths(
+            project_root,
+            templates=project_config.templates,
+            project_name=project_config.project_name,
+        )
 
     @property
     def asset_departments(self) -> list[str]:
@@ -75,7 +79,7 @@ class AssetManagerService:
             variant_root / "publish",
         ]
         for department in self.asset_departments:
-            work_root = variant_root / department / "work"
+            work_root = variant_root / "work" / department
             paths.append(work_root)
             for tool_name in DEFAULT_WORK_TOOLS:
                 paths.append(work_root / tool_name)
@@ -102,6 +106,17 @@ class AssetManagerService:
             variant_root = self.paths.asset_variant_root(request.identity)
             self._ensure_variant_json(request, variant_root)
         return CreatedAsset(request.identity, asset_root, variant_root, created_paths)
+
+    def initialize_assets(self, requests: list[AssetCreateRequest]) -> list[CreatedAsset]:
+        results = []
+        seen = set()
+        for request in requests:
+            key = (request.category, request.group, request.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(self.create_asset(request))
+        return results
 
     def create_variant(self, request: AssetCreateRequest) -> CreatedAsset:
         asset_root = self.paths.asset_root(request.identity)

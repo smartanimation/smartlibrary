@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from smartlib.core.config_loader import load_config
+from smartlib.core.config_loader import ProjectConfig
 
 
 FPS_TO_MAYA_TIME = {
@@ -19,7 +19,7 @@ FPS_TO_MAYA_TIME = {
 
 def maya_scene_policy(config_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     cfg_dir = Path(config_dir or os.environ.get("PROJECT_CONFIG_DIR") or "")
-    data = load_config(cfg_dir / "tools.yml") if cfg_dir else {}
+    data = ProjectConfig(cfg_dir).load("tools.yml") if cfg_dir else {}
     policy = (((data.get("dcc") or {}).get("maya") or {}).get("scene_policy") or {})
     return {
         "unit": {

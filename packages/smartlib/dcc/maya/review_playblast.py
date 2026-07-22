@@ -28,7 +28,7 @@ def export_beauty_sequences(plan) -> dict[str, str]:
         if not beauty_pattern:
             continue
         final_pattern = version_dir / beauty_pattern
-        output_stem = final_pattern.parent / "beauty"
+        output_stem = _prefix_from_pattern(final_pattern)
         final_pattern.parent.mkdir(parents=True, exist_ok=True)
         resolution = layer.get("resolution") or [960, 540]
         _set_review_layer_visibility(cmds, f"review_{layer_name}")
@@ -43,11 +43,11 @@ def export_beauty_sequences(plan) -> dict[str, str]:
             viewer=False,
             showOrnaments=True,
             percent=100,
-            compression="png",
+            compression="jpg",
             widthHeight=[int(resolution[0]), int(resolution[1])],
         )
-        _normalize_playblast_sequence(final_pattern.parent, "beauty", start_frame, end_frame)
-        files = _sequence_files(final_pattern.parent, "beauty", start_frame, end_frame)
+        _normalize_playblast_sequence(output_stem, start_frame, end_frame, ".jpg")
+        files = _sequence_files(output_stem, start_frame, end_frame, ".jpg")
         results[layer_name] = {
             "pattern": beauty_pattern,
             "frame_range": [start_frame, end_frame],
@@ -68,14 +68,19 @@ def _set_review_layer_visibility(cmds, target_layer: str) -> None:
             cmds.setAttr(f"{layer}.visibility", layer == target_layer)
 
 
-def _normalize_playblast_sequence(directory: Path, stem: str, start_frame: int, end_frame: int) -> None:
+def _prefix_from_pattern(pattern: Path) -> Path:
+    name = pattern.name.replace("_####", "").replace(".####", "").replace("####", "")
+    return pattern.parent / Path(name).with_suffix("").name
+
+
+def _normalize_playblast_sequence(prefix: Path, start_frame: int, end_frame: int, suffix: str) -> None:
     for frame in range(start_frame, end_frame + 1):
         frame_text = f"{frame:04d}"
-        target = directory / f"{stem}_{frame_text}.png"
+        target = prefix.parent / f"{prefix.name}_{frame_text}{suffix}"
         candidates = [
-            directory / f"{stem}.{frame_text}.png",
-            directory / f"{stem}_.{frame_text}.png",
-            directory / f"{stem}_{frame_text}.png",
+            prefix.parent / f"{prefix.name}.{frame_text}{suffix}",
+            prefix.parent / f"{prefix.name}_.{frame_text}{suffix}",
+            prefix.parent / f"{prefix.name}_{frame_text}{suffix}",
         ]
         for source in candidates:
             if source == target or not source.exists():
@@ -86,10 +91,10 @@ def _normalize_playblast_sequence(directory: Path, stem: str, start_frame: int, 
             break
 
 
-def _sequence_files(directory: Path, stem: str, start_frame: int, end_frame: int) -> list[Path]:
+def _sequence_files(prefix: Path, start_frame: int, end_frame: int, suffix: str) -> list[Path]:
     files = []
     for frame in range(start_frame, end_frame + 1):
-        path = directory / f"{stem}_{frame:04d}.png"
+        path = prefix.parent / f"{prefix.name}_{frame:04d}{suffix}"
         if path.exists():
             files.append(path)
     return files

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -65,7 +66,8 @@ class SmartShotWindow(QtWidgets.QMainWindow):
             self.ui = loaded_ui
             self.setCentralWidget(loaded_ui)
         self.setWindowTitle(f"Smart Shot - {self.project_config.project_name}")
-        self.resize(900, 520)
+        self.resize(380, 720)
+        self.setMinimumWidth(320)
 
         self.validate_btn = self._ui_object("validate_btn")
         self.set_sequence_range_btn = self._ui_object("set_sequencerange_btn")
@@ -73,10 +75,20 @@ class SmartShotWindow(QtWidgets.QMainWindow):
         self.scale_btn = self._ui_object("shotscale_btn")
         self.move_btn = self._ui_object("shotmove_btn")
         self.preview_btn = self._ui_object("preview_btn")
+        self.preview_btn.setText("Export Preview Playblast")
+        self.preview_btn.setToolTip("Export playblast image sequences for selected sequencer shots.")
         self.spin_box = self._ui_object("spinBox")
         self.shot_table = self._ui_object("shotlist")
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.setToolTip("Playblast display preset")
+        self.sequence_start_btn = self._icon_button("Sequence Start", self._maya_icon("start"))
+        self.sequence_end_btn = self._icon_button("Sequence End", self._maya_icon("end"))
+        self.shot_start_btn = self._icon_button("Shot Start", self._maya_icon("previous"))
+        self.shot_end_btn = self._icon_button("Shot End", self._maya_icon("next"))
+        self.sequence_start_btn.setToolTip("Move the Maya time slider to the first sequencer shot frame.")
+        self.sequence_end_btn.setToolTip("Move the Maya time slider to the last sequencer shot frame.")
+        self.shot_start_btn.setToolTip("Move the Maya time slider to the selected shot start frame.")
+        self.shot_end_btn.setToolTip("Move the Maya time slider to the selected shot end frame.")
 
         self.shot_table.setColumnCount(len(self.COLUMNS))
         self.shot_table.setHorizontalHeaderLabels(self.COLUMNS)
@@ -92,10 +104,9 @@ class SmartShotWindow(QtWidgets.QMainWindow):
         self.shot_table.setSortingEnabled(False)
 
         self.status_label = QtWidgets.QLabel("")
+        self.status_label.setWordWrap(True)
         self.publish_camera_btn = QtWidgets.QPushButton("Publish Camera")
         self.quick_open_rv_btn = QtWidgets.QPushButton("Quick Open Package in RV")
-        self.pip_btn = QtWidgets.QPushButton("Picture in Picture")
-        self.pip_btn.setCheckable(True)
         self.publish_camera_btn.setStyleSheet(
             "QPushButton { background-color: #2f5f9f; color: white; font-weight: bold; }"
             "QPushButton:hover { background-color: #3b73b8; }"
@@ -104,25 +115,25 @@ class SmartShotWindow(QtWidgets.QMainWindow):
             "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; }"
             "QPushButton:hover { background-color: #3d835f; }"
         )
-        self.pip_btn.setStyleSheet(
-            "QPushButton { background-color: #555; color: white; font-weight: bold; }"
-            "QPushButton:checked { background-color: #8a6a22; }"
-        )
+        self._rebuild_control_layout()
         self.ui.layout().insertWidget(1, self.preset_combo)
-        self.ui.layout().addWidget(self.publish_camera_btn)
+        self.ui.layout().insertWidget(self.ui.layout().indexOf(self.preview_btn), self._transport_controls())
         self.ui.layout().addWidget(self.quick_open_rv_btn)
-        self.ui.layout().addWidget(self.pip_btn)
+        self.ui.layout().addWidget(self.publish_camera_btn)
         self.ui.layout().addWidget(self.status_label)
 
         self.validate_btn.clicked.connect(self.validate)
         self.set_sequence_range_btn.clicked.connect(self.set_sequence_range)
         self.set_selected_range_btn.clicked.connect(self.set_selected_range)
+        self.sequence_start_btn.clicked.connect(self.move_to_sequence_start)
+        self.sequence_end_btn.clicked.connect(self.move_to_sequence_end)
+        self.shot_start_btn.clicked.connect(self.move_to_shot_start)
+        self.shot_end_btn.clicked.connect(self.move_to_shot_end)
         self.scale_btn.clicked.connect(self.scale_selected_shot)
         self.move_btn.clicked.connect(self.move_selected_shots)
         self.preview_btn.clicked.connect(self.export_preview)
         self.publish_camera_btn.clicked.connect(self.publish_camera)
         self.quick_open_rv_btn.clicked.connect(self.quick_open_latest_package_in_rv)
-        self.pip_btn.toggled.connect(self.toggle_picture_in_picture)
         self.shot_table.itemDoubleClicked.connect(self.edit_camera_value)
         self._populate_playblast_presets()
 
@@ -131,6 +142,71 @@ class SmartShotWindow(QtWidgets.QMainWindow):
         if obj is None:
             raise RuntimeError(f"UI object was not found: {name}")
         return obj
+
+    def _rebuild_control_layout(self) -> None:
+        original_frame = self._ui_object("frame")
+        original_frame.setVisible(False)
+
+        control_frame = QtWidgets.QFrame()
+        control_frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        control_layout = QtWidgets.QVBoxLayout(control_frame)
+        control_layout.setContentsMargins(4, 4, 4, 4)
+        control_layout.setSpacing(4)
+
+        range_row = QtWidgets.QHBoxLayout()
+        range_row.setSpacing(4)
+        range_row.addWidget(self.validate_btn)
+        range_row.addWidget(self.set_sequence_range_btn)
+        range_row.addWidget(self.set_selected_range_btn)
+        control_layout.addLayout(range_row)
+
+        edit_row = QtWidgets.QHBoxLayout()
+        edit_row.setSpacing(4)
+        edit_row.addWidget(self.scale_btn)
+        edit_row.addWidget(self.move_btn)
+        edit_row.addWidget(self.spin_box)
+        control_layout.addLayout(edit_row)
+
+        self.ui.layout().insertWidget(0, control_frame)
+
+    def _transport_controls(self) -> QtWidgets.QWidget:
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, 8, 0, 8)
+        layout.setSpacing(6)
+        layout.addStretch(1)
+        for button in (self.sequence_start_btn, self.shot_start_btn, self.shot_end_btn, self.sequence_end_btn):
+            layout.addWidget(button)
+        layout.addStretch(1)
+        return widget
+
+    def _icon_button(self, tooltip: str, icon: QtGui.QIcon) -> QtWidgets.QToolButton:
+        button = QtWidgets.QToolButton()
+        button.setToolTip(tooltip)
+        button.setIcon(icon)
+        button.setIconSize(QtCore.QSize(18, 18))
+        button.setFixedSize(30, 26)
+        button.setAutoRaise(False)
+        return button
+
+    def _maya_icon(self, role: str) -> QtGui.QIcon:
+        candidates = {
+            "start": ("timestart.png", "timeStart.png", "timefirst.png", "timeplayStart.png", "playbackStart.png", "goToStart.png"),
+            "previous": ("timeprev.png", "timePrev.png", "timePrevious.png", "playbackPrevious.png"),
+            "next": ("timenext.png", "timeNext.png", "timeForward.png", "playbackNext.png"),
+            "end": ("timeend.png", "timeEnd.png", "timelast.png", "timeplayEnd.png", "playbackEnd.png", "goToEnd.png"),
+        }.get(role, ())
+        for name in candidates:
+            icon = QtGui.QIcon(f":/{name}")
+            if not icon.isNull():
+                return icon
+        fallbacks = {
+            "start": QtWidgets.QStyle.SP_MediaSkipBackward,
+            "previous": QtWidgets.QStyle.SP_MediaSeekBackward,
+            "next": QtWidgets.QStyle.SP_MediaSeekForward,
+            "end": QtWidgets.QStyle.SP_MediaSkipForward,
+        }
+        return self.style().standardIcon(fallbacks.get(role, QtWidgets.QStyle.SP_ArrowRight))
 
     def refresh(self) -> None:
         from smartlib.dcc.maya import smart_shot
@@ -192,6 +268,42 @@ class SmartShotWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self._warn("Set Selected Range", str(exc))
 
+    def move_to_sequence_start(self) -> None:
+        from smartlib.dcc.maya import smart_shot
+
+        try:
+            frame = smart_shot.move_time_to_sequence_start()
+            self.status_label.setText(f"Time slider: sequence start {frame}")
+        except Exception as exc:
+            self._warn("Sequence Start", str(exc))
+
+    def move_to_sequence_end(self) -> None:
+        from smartlib.dcc.maya import smart_shot
+
+        try:
+            frame = smart_shot.move_time_to_sequence_end()
+            self.status_label.setText(f"Time slider: sequence end {frame}")
+        except Exception as exc:
+            self._warn("Sequence End", str(exc))
+
+    def move_to_shot_start(self) -> None:
+        from smartlib.dcc.maya import smart_shot
+
+        try:
+            frame = smart_shot.move_time_to_selected_start(self._selected_shot_nodes())
+            self.status_label.setText(f"Time slider: shot start {frame}")
+        except Exception as exc:
+            self._warn("Shot Start", str(exc))
+
+    def move_to_shot_end(self) -> None:
+        from smartlib.dcc.maya import smart_shot
+
+        try:
+            frame = smart_shot.move_time_to_selected_end(self._selected_shot_nodes())
+            self.status_label.setText(f"Time slider: shot end {frame}")
+        except Exception as exc:
+            self._warn("Shot End", str(exc))
+
     def move_selected_shots(self) -> None:
         from smartlib.dcc.maya import smart_shot
 
@@ -221,15 +333,19 @@ class SmartShotWindow(QtWidgets.QMainWindow):
     def export_preview(self) -> None:
         from smartlib.dcc.maya import smart_shot
 
+        nodes = self._selected_shot_nodes()
+        if not nodes:
+            self._warn("Export Preview Playblast", "Select one or more shot rows.")
+            return
         try:
             path = smart_shot.export_selected_preview(
                 self.project_config,
-                self._selected_shot_nodes(),
+                nodes,
                 playblast_preset=self._current_playblast_preset(),
             )
-            self.status_label.setText(f"Preview package: {path}")
+            self.status_label.setText(f"Preview playblast package: {path}")
         except Exception as exc:
-            self._warn("Preview", str(exc))
+            self._warn("Export Preview Playblast", str(exc))
 
     def _populate_playblast_presets(self) -> None:
         try:
@@ -263,7 +379,6 @@ class SmartShotWindow(QtWidgets.QMainWindow):
             self._warn("Publish Camera", str(exc))
 
     def quick_open_latest_package_in_rv(self) -> None:
-        from smartlib.apps.viewer import ViewerService
         from smartlib.dcc.maya import smart_shot
 
         try:
@@ -271,38 +386,16 @@ class SmartShotWindow(QtWidgets.QMainWindow):
             if project_root is None:
                 raise RuntimeError("project_root is not set in templates_base.yml")
             episode, sequence = smart_shot.scene_episode_sequence(project_root)
-            latest_json = project_root / "sequences" / episode / sequence / "publish" / "review" / "layout" / "main" / "latest.json"
+            latest_json = project_root / "sequences" / episode / sequence / "output" / "review" / "layout" / "main" / "latest.json"
             latest = _read_json(latest_json)
             if not latest.get("path"):
                 raise FileNotFoundError(f"Latest review package was not found: {latest_json}")
             review_json = latest_json.parent / latest["path"]
-            viewer = ViewerService(self.project_config)
-            package = viewer.review_package_from_json(review_json)
-            if not package:
-                raise RuntimeError(f"Review package could not be read: {review_json}")
-            args = viewer.rv_args_for_package(package)
-            if not args:
-                raise RuntimeError("No sequence files were found for RV.")
-            rv = viewer.rv_executable()
-            if not rv:
-                raise RuntimeError("OpenRV was not found. Set tools.openrv.path or OPENRV_PATH.")
-            subprocess.Popen([str(rv), *args])
-            self.status_label.setText(f"Opened latest package in RV: {package.code}")
+            selected_shots = self._selected_shot_names()
+            _open_review_json_in_smart_review_rv(self.project_config, review_json, selected_shots=selected_shots)
+            self.status_label.setText(f"Launched RV Smart Review plugin: {review_json}")
         except Exception as exc:
             self._warn("Quick Open Package in RV", str(exc))
-
-    def toggle_picture_in_picture(self, enabled: bool) -> None:
-        from smartlib.dcc.maya import smart_shot
-
-        try:
-            count = smart_shot.set_picture_in_picture(enabled)
-            state = "ON" if enabled else "OFF"
-            self.status_label.setText(f"Picture in Picture {state}: {count} imagePlane(s)")
-        except Exception as exc:
-            self.pip_btn.blockSignals(True)
-            self.pip_btn.setChecked(not enabled)
-            self.pip_btn.blockSignals(False)
-            self._warn("Picture in Picture", str(exc))
 
     def edit_camera_value(self, item) -> None:
         from smartlib.dcc.maya import smart_shot
@@ -325,13 +418,26 @@ class SmartShotWindow(QtWidgets.QMainWindow):
             self._warn(f"Set {label}", str(exc))
 
     def _selected_shot_nodes(self) -> list[str]:
-        rows = sorted({index.row() for index in self.shot_table.selectedIndexes()})
         nodes = []
-        for row in rows:
+        for row in self._selected_shot_rows():
             item = self.shot_table.item(row, 0)
             if item:
                 nodes.append(item.data(QtCore.Qt.UserRole))
         return [node for node in nodes if node]
+
+    def _selected_shot_names(self) -> list[str]:
+        names = []
+        for row in self._selected_shot_rows():
+            item = self.shot_table.item(row, 0)
+            if item and item.text():
+                names.append(item.text())
+        return names
+
+    def _selected_shot_rows(self) -> list[int]:
+        rows = sorted({index.row() for index in self.shot_table.selectedIndexes()})
+        if not rows and self.shot_table.currentRow() >= 0:
+            rows = [self.shot_table.currentRow()]
+        return rows
 
     def _apply_validation_colors(self) -> None:
         warning = QtGui.QColor(200, 170, 70)
@@ -348,7 +454,7 @@ class SmartShotWindow(QtWidgets.QMainWindow):
                     continue
                 if shot and getattr(shot, "preview_locked", False):
                     item.setBackground(locked)
-                    item.setToolTip("Preview locked by camera publish. Preview export will skip this shot.")
+                    item.setToolTip("Camera has been published. Preview playblast will export a new review version.")
                 elif issue:
                     item.setBackground(warning)
                     item.setToolTip(issue.message)
@@ -384,17 +490,51 @@ def _read_json(path: str | os.PathLike[str]) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _open_review_json_in_smart_review_rv(
+    project_config: ProjectConfig,
+    review_json: str | os.PathLike[str],
+    selected_shots: list[str] | None = None,
+) -> None:
+    from smartlib.review.rv import find_rv_executable
+
+    review_path = Path(review_json)
+    if not review_path.exists():
+        raise FileNotFoundError(f"Review package was not found: {review_path}")
+    rv = find_rv_executable(project_config)
+    if not rv:
+        raise RuntimeError("OpenRV was not found. Set tools.openrv.path or OPENRV_PATH.")
+    root = Path(os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get("SMARTLIBRARY_ROOT") or Path(__file__).resolve().parents[4])
+    env = os.environ.copy()
+    env.setdefault("SMARTLIBRARY_ROOT", str(root))
+    env.setdefault("SMARTPIPELINE_ROOT", str(root))
+    env["SMART_REVIEW_PROJECT"] = project_config.project_name
+    env["SMART_REVIEW_CONFIG_DIR"] = str(project_config.config_dir)
+    env["SMART_REVIEW_REVIEW_JSON"] = str(review_path)
+    env["SMART_REVIEW_AUTO_LOAD"] = "1"
+    env["SMART_REVIEW_SHOW_PANEL"] = "1"
+    if selected_shots:
+        env["SMART_REVIEW_SELECTED_SHOTS"] = json.dumps(selected_shots)
+    if project_config.project_root:
+        env["SMART_REVIEW_PROJECT_ROOT"] = str(project_config.project_root)
+    subprocess.Popen([str(rv)], cwd=str(review_path.parent), env=env)
+
+
 _WINDOW = None
 
 
-def show(config_dir: str | os.PathLike[str] | None = None):
+def show(config_dir: str | os.PathLike[str] | None = None, parent=None):
     global _WINDOW
     if _WINDOW is not None:
         try:
             _WINDOW.close()
         except Exception:
             pass
-    _WINDOW = SmartShotWindow(config_dir=config_dir)
+    from smartlib.core.qt import parent_for_maya
+
+    window_parent = parent_for_maya(QtWidgets, parent)
+    _WINDOW = SmartShotWindow(config_dir=config_dir, parent=window_parent)
+    if window_parent is not None:
+        _WINDOW.setWindowFlags(_WINDOW.windowFlags() | QtCore.Qt.Window)
     _WINDOW.show()
     _WINDOW.raise_()
     _WINDOW.activateWindow()

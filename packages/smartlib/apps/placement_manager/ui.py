@@ -3,21 +3,29 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from smartlib.apps.common.asset_cards import (
+    asset_card_text,
+    asset_icon,
+    asset_tooltip,
+    configure_asset_card_list,
+    set_label_thumbnail,
+)
+from smartlib.apps.smart_casting.service import CastingAsset, SmartCastingService
 from smartlib.core.config_loader import ProjectConfig
 
 
 def _qt_modules():
     try:
-        from PySide6 import QtCore, QtWidgets
+        from PySide6 import QtCore, QtGui, QtWidgets
 
-        return QtCore, QtWidgets
+        return QtCore, QtGui, QtWidgets
     except ImportError:
-        from PySide2 import QtCore, QtWidgets
+        from PySide2 import QtCore, QtGui, QtWidgets
 
-        return QtCore, QtWidgets
+        return QtCore, QtGui, QtWidgets
 
 
-QtCore, QtWidgets = _qt_modules()
+QtCore, QtGui, QtWidgets = _qt_modules()
 
 
 class PlacementTreeWidget(QtWidgets.QTreeWidget):
@@ -59,23 +67,36 @@ def _default_config_dir() -> Path:
     return root / "config" / "STKB"
 
 
-class PlacementManagerWindow(QtWidgets.QMainWindow):
+class SmartMakerWindow(QtWidgets.QMainWindow):
     def __init__(self, config_dir: str | os.PathLike[str] | None = None, parent=None):
         super().__init__(parent)
         self.project_config = ProjectConfig(config_dir or _default_config_dir())
+        self.asset_service = SmartCastingService(self.project_config)
+        self.asset_rows: list[CastingAsset] = []
         self.cast_members = []
         self._populating_tree = False
         self._build_ui()
         self.refresh()
 
     def _build_ui(self) -> None:
-        self.setWindowTitle(f"Placement Manager - {self.project_config.project_name}")
-        self.resize(460, 650)
+        self.setWindowTitle(f"Smart Maker - {self.project_config.project_name}")
+        self.resize(760, 720)
         central = QtWidgets.QWidget()
         root_layout = QtWidgets.QVBoxLayout(central)
         root_layout.setContentsMargins(6, 6, 6, 6)
         root_layout.setSpacing(6)
         self.setCentralWidget(central)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.stage_tab = QtWidgets.QWidget()
+        self.assets_tab = QtWidgets.QWidget()
+        self.tabs.addTab(self.stage_tab, "Stage")
+        self.tabs.addTab(self.assets_tab, "Asset")
+        root_layout.addWidget(self.tabs, 1)
+
+        root_layout = QtWidgets.QVBoxLayout(self.stage_tab)
+        root_layout.setContentsMargins(4, 4, 4, 4)
+        root_layout.setSpacing(6)
 
         top_layout = QtWidgets.QHBoxLayout()
         top_layout.addStretch(1)
@@ -135,6 +156,8 @@ class PlacementManagerWindow(QtWidgets.QMainWindow):
         bottom_layout.addWidget(self.status_label, 1)
         root_layout.addLayout(bottom_layout)
 
+        self._build_assets_tab()
+
         self.create_btn.clicked.connect(self.create_locator)
         self.refresh_btn.clicked.connect(self.refresh)
         self.assign_btn.clicked.connect(self.assign_to_placement)
@@ -146,8 +169,68 @@ class PlacementManagerWindow(QtWidgets.QMainWindow):
         self.publish_btn.clicked.connect(self.publish_placement)
         self.placement_tree.itemChanged.connect(self.rename_placement_item)
 
+    def _build_assets_tab(self) -> None:
+        layout = QtWidgets.QHBoxLayout(self.assets_tab)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
+
+        left = QtWidgets.QVBoxLayout()
+        filter_row = QtWidgets.QHBoxLayout()
+        self.asset_search = QtWidgets.QLineEdit()
+        self.asset_search.setPlaceholderText("Search asset")
+        self.asset_search.setClearButtonEnabled(True)
+        self.asset_refresh_btn = QtWidgets.QPushButton("Refresh")
+        filter_row.addWidget(self.asset_search, 1)
+        filter_row.addWidget(self.asset_refresh_btn)
+
+        self.asset_list = QtWidgets.QListWidget()
+        configure_asset_card_list(self.asset_list, QtCore, QtWidgets)
+        self.asset_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        left.addLayout(filter_row)
+        left.addWidget(self.asset_list, 1)
+
+        action_row = QtWidgets.QHBoxLayout()
+        self.add_asset_cast_btn = QtWidgets.QPushButton("Add To Cast")
+        self.reference_asset_btn = QtWidgets.QPushButton("Reference")
+        self.add_reference_asset_btn = QtWidgets.QPushButton("Add + Reference")
+        self.add_reference_asset_btn.setStyleSheet("QPushButton { background-color:#2d5d86; color:white; font-weight:bold; }")
+        action_row.addStretch(1)
+        action_row.addWidget(self.add_asset_cast_btn)
+        action_row.addWidget(self.reference_asset_btn)
+        action_row.addWidget(self.add_reference_asset_btn)
+        left.addLayout(action_row)
+
+        right = QtWidgets.QVBoxLayout()
+        self.asset_thumb = QtWidgets.QLabel("Thumbnail")
+        self.asset_thumb.setFixedSize(220, 124)
+        self.asset_thumb.setAlignment(QtCore.Qt.AlignCenter)
+        self.asset_thumb.setStyleSheet("background:#30363d; border:1px solid #4a4a4a;")
+        self.asset_detail = QtWidgets.QTableWidget(0, 2)
+        self.asset_detail.setHorizontalHeaderLabels(["Key", "Value"])
+        self.asset_detail.horizontalHeader().setStretchLastSection(True)
+        self.asset_detail.verticalHeader().setVisible(False)
+        self.asset_detail.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        right.addWidget(self.asset_thumb, 0, QtCore.Qt.AlignHCenter)
+        right.addWidget(self.asset_detail, 1)
+
+        layout.addLayout(left, 3)
+        layout.addLayout(right, 1)
+
+        self.asset_search.textChanged.connect(lambda _text: self.populate_asset_cards())
+        self.asset_refresh_btn.clicked.connect(self.refresh)
+        self.asset_list.itemSelectionChanged.connect(self.populate_asset_detail)
+        self.add_asset_cast_btn.clicked.connect(self.add_selected_assets_to_cast)
+        self.reference_asset_btn.clicked.connect(self.reference_selected_assets)
+        self.add_reference_asset_btn.clicked.connect(self.add_and_reference_selected_assets)
+
     def refresh(self) -> None:
         from smartlib.dcc.maya import placement
+
+        try:
+            self.asset_rows = self.asset_service.list_assets()
+        except Exception as exc:
+            self.asset_rows = []
+            self.status_label.setText(str(exc))
 
         try:
             self.cast_members = placement.list_cast_members(self.project_config)
@@ -156,8 +239,115 @@ class PlacementManagerWindow(QtWidgets.QMainWindow):
             self.status_label.setText(str(exc))
             self.cast_members = []
             locators = []
+        self.populate_asset_cards()
         self._populate_cast_table()
         self._populate_placement_tree(locators)
+
+    def populate_asset_cards(self) -> None:
+        if not getattr(self, "asset_list", None):
+            return
+        query = self.asset_search.text().strip().lower()
+        self.asset_list.clear()
+        for asset in self.asset_rows:
+            label = asset_card_text(
+                asset=asset.asset,
+                category=asset.category,
+                group=asset.group,
+                variant=asset.variant,
+                status=asset.status,
+                asset_type=asset.category,
+                description=asset.description,
+            )
+            haystack = " ".join([label, asset.category, asset.group, asset.asset, asset.variant, asset.status, asset.description]).lower()
+            if query and query not in haystack:
+                continue
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, asset)
+            item.setToolTip(
+                asset_tooltip(
+                    asset=asset.asset,
+                    category=asset.category,
+                    group=asset.group,
+                    variant=asset.variant,
+                    status=asset.status,
+                    description=asset.description,
+                    extra={"path": asset.path},
+                )
+            )
+            item.setIcon(asset_icon(QtCore, QtGui, thumbnail=asset.thumbnail, label=asset.asset))
+            self.asset_list.addItem(item)
+        if self.asset_list.count() == 0:
+            item = QtWidgets.QListWidgetItem("No assets")
+            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsSelectable)
+            self.asset_list.addItem(item)
+
+    def populate_asset_detail(self) -> None:
+        assets = self._selected_assets()
+        self.asset_detail.setRowCount(0)
+        if not assets:
+            self.asset_thumb.clear()
+            self.asset_thumb.setText("Thumbnail")
+            return
+        asset = assets[0]
+        set_label_thumbnail(QtCore, QtGui, self.asset_thumb, asset.thumbnail)
+        rows = {
+            "Asset": asset.asset,
+            "Category": asset.category,
+            "Group": asset.group,
+            "Variant": asset.variant,
+            "Status": asset.status,
+            "Path": asset.path,
+        }
+        for key, value in rows.items():
+            row = self.asset_detail.rowCount()
+            self.asset_detail.insertRow(row)
+            self.asset_detail.setItem(row, 0, QtWidgets.QTableWidgetItem(str(key)))
+            self.asset_detail.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
+
+    def add_selected_assets_to_cast(self) -> None:
+        from smartlib.dcc.maya import placement
+
+        assets = self._selected_assets()
+        if not assets:
+            self.status_label.setText("Select assets.")
+            return
+        try:
+            path, rows = placement.add_assets_to_context_cast(self.project_config, assets)
+            self.status_label.setText(f"Added {len(rows)} asset(s) to cast: {path.name}")
+            self.refresh()
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(self, "Add To Cast Failed", str(exc))
+
+    def reference_selected_assets(self) -> None:
+        from smartlib.dcc.maya import placement
+
+        assets = self._selected_assets()
+        if not assets:
+            self.status_label.setText("Select assets.")
+            return
+        try:
+            referenced = placement.reference_assets_to_scene(self.project_config, assets)
+            self.status_label.setText(f"Referenced {len(referenced)} asset(s)")
+            self.refresh()
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(self, "Reference Failed", str(exc))
+
+    def add_and_reference_selected_assets(self) -> None:
+        from smartlib.dcc.maya import placement
+
+        assets = self._selected_assets()
+        if not assets:
+            self.status_label.setText("Select assets.")
+            return
+        try:
+            path, rows, referenced = placement.add_and_reference_assets_to_context_cast(self.project_config, assets)
+            self.status_label.setText(f"Added {len(rows)} to cast and referenced {len(referenced)} asset(s): {path.name}")
+            self.refresh()
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(self, "Add + Reference Failed", str(exc))
 
     def create_locator(self) -> None:
         from smartlib.dcc.maya import placement
@@ -353,20 +543,37 @@ class PlacementManagerWindow(QtWidgets.QMainWindow):
                 nodes.append(str(node))
         return nodes
 
+    def _selected_assets(self) -> list[CastingAsset]:
+        rows = []
+        for item in self.asset_list.selectedItems():
+            data = item.data(QtCore.Qt.UserRole)
+            if isinstance(data, CastingAsset):
+                rows.append(data)
+        return rows
+
 
 _WINDOW = None
+PlacementManagerWindow = SmartMakerWindow
 
 
-def show(config_dir: str | os.PathLike[str] | None = None):
+def show(config_dir: str | os.PathLike[str] | None = None, parent=None):
     global _WINDOW
     app = QtWidgets.QApplication.instance()
     if app is None:
         app = QtWidgets.QApplication([])
+    from smartlib.core.qt import parent_for_maya
+
+    window_parent = parent_for_maya(QtWidgets, parent)
     if _WINDOW is None:
-        _WINDOW = PlacementManagerWindow(config_dir=config_dir)
+        _WINDOW = SmartMakerWindow(config_dir=config_dir, parent=window_parent)
     else:
+        if window_parent is not None and _WINDOW.parent() is not window_parent:
+            _WINDOW.setParent(window_parent)
         _WINDOW.project_config = ProjectConfig(config_dir or _default_config_dir())
+        _WINDOW.asset_service = SmartCastingService(_WINDOW.project_config)
         _WINDOW.refresh()
+    if window_parent is not None:
+        _WINDOW.setWindowFlags(_WINDOW.windowFlags() | QtCore.Qt.Window)
     _WINDOW.show()
     _WINDOW.raise_()
     _WINDOW.activateWindow()

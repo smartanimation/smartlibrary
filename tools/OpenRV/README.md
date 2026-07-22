@@ -1,21 +1,23 @@
 # OpenRV
 
-Place a Windows OpenRV zip extraction here.
+SmartPipeline OpenRV integration lives here.
 
-Expected layout:
+External OpenRV itself should live outside the repository, for example:
 
 ```text
-tools/OpenRV/OpenRV-{version}/
-  bin/
-    rv.exe
+P:/dev/smarttools/openrv/
 ```
 
-Configure `config/STKB/tools.yml`:
+Configure the executable in studio config:
 
 ```yaml
 tools:
   openrv:
-    path: "P:/dev/smartlibrary/tools/OpenRV/OpenRV-{version}/bin/rv.exe"
+    path: "C:/Program Files/Autodesk/RV-2025.1.0/bin/rv.exe"
 ```
 
-The official AcademySoftwareFoundation/OpenRV GitHub releases currently do not provide Windows binary assets. Source archives are not enough for Viewer integration because they do not include `rv.exe`.
+SmartPipeline-owned RV plugin code is kept in:
+
+```text
+tools/openrv/smart-review/
+```

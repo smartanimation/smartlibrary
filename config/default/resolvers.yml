@@ -1,0 +1,56 @@
+asset_resolvers:
+  - consumer: sequence
+    department: layout
+    context: layout
+    version: approved
+    formats: [ma, mb, usd]
+    fallback_contexts: [work, asset_work]
+    fallback_version: latest
+
+  - consumer: shot
+    department: layout
+    context: layout
+    version: approved
+    formats: [ma, mb, usd]
+    fallback_contexts: [work, asset_work]
+    fallback_version: latest
+
+  - consumer: shot
+    department: anim
+    context: anim
+    version: approved
+    formats: [ma, mb]
+    fallback_contexts: [work, asset_work]
+    fallback_version: latest
+
+  - consumer: shot
+    department: lighting
+    context: lighting
+    version: approved
+    formats: [usd, usda, usdc]
+    fallback_contexts: [anim, work, asset_work]
+    fallback_version: latest
+
+  - consumer: shot
+    department: default
+    context: work
+    version: approved
+    formats: [ma, mb]
+    fallback_contexts: [asset_work]
+    fallback_version: latest
+
+  - consumer: external
+    department: unreal
+    context: unreal
+    version: released
+    formats: [fbx, usd]
+    fallback_contexts: []
+    fallback_version: latest
+
+  - consumer: external
+    department: mocap
+    context: mocap
+    version: released
+    formats: [fbx]
+    fallback_contexts: []
+    fallback_version: latest

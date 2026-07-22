@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from smartlib.core.config_loader import load_config
+from smartlib.core.config_loader import ProjectConfig, load_config
 from smartlib.core.metadata import read_json
 
 
@@ -69,6 +69,7 @@ def stage_anim_from_input(
     shot_data: dict | None = None,
     *,
     project_root: str | Path | None = None,
+    construct_data: dict | None = None,
 ) -> list[str]:
     try:
         import maya.cmds as cmds
@@ -89,7 +90,7 @@ def stage_anim_from_input(
     referenced = build_shot_from_preview(preview_items, anim_shot_data)
     frame_offset = _anim_frame_offset(anim_input)
     camera_path = _project_path(root, str(anim_input.get("camera") or ""))
-    if camera_path and camera_path.exists():
+    if _construct_enabled(construct_data, "camera", "camera", "camera") and camera_path and camera_path.exists():
         if camera_path.name == "camera.json":
             camera = _create_camera_from_json(cmds, camera_path, anim_input, frame_offset)
             if camera:
@@ -112,11 +113,13 @@ def stage_anim_from_input(
                 _parent_imported_top_nodes(cmds, imported, _ensure_group(cmds, "camera_grp"))
                 _offset_animation_keys(cmds, imported, frame_offset)
                 referenced.append(str(camera_scene))
-    placement_nodes = _apply_anim_placements(cmds, root, anim_input)
-    _offset_animation_keys(cmds, placement_nodes, frame_offset)
-    layout_overlay = _load_layout_overlay_usd(cmds, root, anim_input)
-    if layout_overlay:
-        referenced.append(layout_overlay)
+    if _construct_enabled(construct_data, "placement", "placements", "placements"):
+        placement_nodes = _apply_anim_placements(cmds, root, anim_input)
+        _offset_animation_keys(cmds, placement_nodes, frame_offset)
+    if _construct_enabled(construct_data, "layout_overlay", "layout_overlay", "layout_overlay"):
+        layout_overlay = _load_layout_overlay_usd(cmds, root, anim_input)
+        if layout_overlay:
+            referenced.append(layout_overlay)
     _apply_shot_timing(cmds, anim_shot_data)
     return referenced
 
@@ -241,6 +244,26 @@ def save_current_scene(path: str | Path, shot_data: dict | None = None) -> dict:
     cmds.file(rename=str(scene_path))
     cmds.file(save=True, type=scene_type)
     return collect_scene_info(cmds)
+
+
+def archive_current_scene(path: str | Path, shot_data: dict | None = None) -> dict:
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Shot scene archive is available inside Maya.") from exc
+    from smartlib.dcc.maya.scene_info import collect_scene_info
+
+    archive_path = Path(path)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    original_path = cmds.file(query=True, sceneName=True) or ""
+    _apply_shot_timing(cmds, shot_data or {})
+    scene_type = "mayaBinary" if archive_path.suffix.lower() == ".mb" else "mayaAscii"
+    cmds.file(rename=str(archive_path))
+    cmds.file(save=True, type=scene_type)
+    scene_info = collect_scene_info(cmds)
+    if original_path:
+        cmds.file(rename=original_path)
+    return scene_info
 
 
 def thumbnail_path_for_workfile(path: str | Path) -> Path:
@@ -419,6 +442,53 @@ def _project_path(project_root: Path, path_text: str) -> Path | None:
         return None
     path = Path(path_text)
     return path if path.is_absolute() else project_root / path
+
+
+def _construct_enabled(
+    construct_data: dict | None,
+    component_type: str,
+    name: str = "",
+    source_field: str = "",
+    *,
+    default: bool = True,
+) -> bool:
+    if not construct_data:
+        return default
+    components = construct_data.get("components") or []
+    if not isinstance(components, list):
+        return default
+    component_type = component_type.strip().lower()
+    name = name.strip()
+    source_field = source_field.strip()
+    typed_components = [
+        component
+        for component in components
+        if isinstance(component, dict)
+        and str(component.get("component_type") or component.get("type") or "").strip().lower() == component_type
+    ]
+    if not typed_components:
+        return default
+    matches = []
+    for component in typed_components:
+        source = component.get("source") if isinstance(component.get("source"), dict) else {}
+        if source_field and str(source.get("field") or "").strip() == source_field:
+            matches.append(component)
+            continue
+        if name and str(component.get("name") or "").strip() == name:
+            matches.append(component)
+    if not matches:
+        return default
+    return any(_truthy(component.get("enabled"), default=True) for component in matches)
+
+
+def _truthy(value, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off", "none"}
 
 
 def _load_layout_overlay_usd(cmds, project_root: Path, anim_input: dict) -> str:
@@ -716,7 +786,7 @@ def _maya_reference_group_config() -> dict:
     config_dir = os.environ.get("PROJECT_CONFIG_DIR")
     if not config_dir:
         return {}
-    return load_config(Path(config_dir) / "templates_assets.yml").get("maya_reference_groups") or {}
+    return ProjectConfig(config_dir).load("templates_assets.yml").get("maya_reference_groups") or {}
 
 
 def _resolve_maya_reference_group(metadata: dict, config: dict) -> str:

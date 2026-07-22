@@ -293,10 +293,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         asset_view_layout.setSpacing(4)
         asset_view_layout.addStretch(1)
         self.create_asset_btn = QtWidgets.QPushButton("Create Asset")
+        self.initialize_asset_btn = QtWidgets.QPushButton("Initialize Asset")
+        self.initialize_asset_btn.setEnabled(False)
         self.create_variant_btn = QtWidgets.QPushButton("Create Variant")
         self.asset_card_btn = QtWidgets.QPushButton("Card")
         self.asset_table_btn = QtWidgets.QPushButton("Table")
         asset_view_layout.addWidget(self.create_asset_btn)
+        asset_view_layout.addWidget(self.initialize_asset_btn)
         asset_view_layout.addWidget(self.create_variant_btn)
         asset_view_layout.addWidget(self.asset_card_btn)
         asset_view_layout.addWidget(self.asset_table_btn)
@@ -489,6 +492,29 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_layout = QtWidgets.QVBoxLayout(data_tab)
         data_layout.setContentsMargins(4, 4, 4, 4)
         data_layout.setSpacing(4)
+        data_header = QtWidgets.QHBoxLayout()
+        data_header.setContentsMargins(0, 0, 0, 0)
+        data_header.setSpacing(4)
+        self.refresh_data_btn = QtWidgets.QPushButton("Refresh")
+        data_header.addStretch(1)
+        data_header.addWidget(self.refresh_data_btn)
+        data_layout.addLayout(data_header)
+        assembly_buttons = QtWidgets.QGridLayout()
+        assembly_buttons.setContentsMargins(0, 0, 0, 0)
+        assembly_buttons.setSpacing(4)
+        self.open_assembly_btn = QtWidgets.QPushButton("Open Assembly")
+        self.reload_assembly_btn = QtWidgets.QPushButton("Reload Assembly")
+        self.save_assembly_btn = QtWidgets.QPushButton("Save Assembly")
+        self.publish_assembly_btn = QtWidgets.QPushButton("Publish Assembly")
+        self.open_assembly_btn.setStyleSheet(green_button_style)
+        self.reload_assembly_btn.setStyleSheet(green_button_style)
+        self.save_assembly_btn.setStyleSheet(blue_button_style)
+        self.publish_assembly_btn.setStyleSheet(blue_button_style)
+        assembly_buttons.addWidget(self.open_assembly_btn, 0, 0)
+        assembly_buttons.addWidget(self.reload_assembly_btn, 0, 1)
+        assembly_buttons.addWidget(self.save_assembly_btn, 1, 0)
+        assembly_buttons.addWidget(self.publish_assembly_btn, 1, 1)
+        data_layout.addLayout(assembly_buttons)
         self.data_list = QtWidgets.QTreeWidget()
         self.data_list.setHeaderLabels(["Name", "Version", "Date", "Comment"])
         self.data_list.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
@@ -498,12 +524,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_buttons.setContentsMargins(0, 0, 0, 0)
         data_buttons.setSpacing(4)
         self.export_mesh_btn = QtWidgets.QPushButton("Export Geo FBX")
+        self.import_assembly_btn = QtWidgets.QPushButton("Import Assembly")
         self.ingest_fbx_btn = QtWidgets.QPushButton("Ingest Model FBX")
         self.export_guide_btn = QtWidgets.QPushButton("Export Guide")
         self.export_skin_btn = QtWidgets.QPushButton("Export Skin")
         self.import_data_btn = QtWidgets.QPushButton("Import")
         data_buttons.addStretch(1)
         data_buttons.addWidget(self.export_mesh_btn)
+        data_buttons.addWidget(self.import_assembly_btn)
         data_buttons.addWidget(self.ingest_fbx_btn)
         data_buttons.addWidget(self.export_guide_btn)
         data_buttons.addWidget(self.export_skin_btn)
@@ -533,11 +561,21 @@ class AssetManagerWindow(QtWidgets.QDialog):
             "QPushButton:hover { background-color: #7c6b3d; }"
             "QPushButton:disabled { background-color: #595447; color: #b8b8b8; }"
         )
+        self.turntable_scene_btn = QtWidgets.QPushButton("Build Turntable Scene")
+        self.turntable_scene_btn.setStyleSheet(
+            "QPushButton { background-color: #465a72; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #526b88; }"
+            "QPushButton:disabled { background-color: #4c4f55; color: #b8b8b8; }"
+        )
         self.open_preview_rv_btn = QtWidgets.QPushButton("Open Package in RV")
         self.open_preview_rv_btn.setStyleSheet(green_button_style)
+        self.open_preview_usdview_btn = QtWidgets.QPushButton("Open in usdview")
+        self.open_preview_usdview_btn.setStyleSheet(green_button_style)
         preview_buttons.addStretch(1)
         preview_buttons.addWidget(self.quick_preview_btn)
+        preview_buttons.addWidget(self.turntable_scene_btn)
         preview_buttons.addWidget(self.open_preview_rv_btn)
+        preview_buttons.addWidget(self.open_preview_usdview_btn)
         preview_layout.addLayout(preview_buttons)
         self.detail_tabs.addTab(preview_tab, "Preview")
 
@@ -567,10 +605,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_version_combo = QtWidgets.QComboBox()
         self.context_version_combo.setVisible(False)
         self.context_assemble_btn = QtWidgets.QPushButton("Assemble")
+        self.publish_client_assembly_btn = QtWidgets.QPushButton("Publish Assembly Client")
         self.context_pack_btn = QtWidgets.QPushButton("Pack")
         self.context_pack_btn.setEnabled(False)
         context_header.addStretch(1)
         context_header.addWidget(self.context_assemble_btn)
+        context_header.addWidget(self.publish_client_assembly_btn)
         context_header.addWidget(self.context_pack_btn)
         context_main_layout.addLayout(context_header)
         self.context_readiness_label = QtWidgets.QLabel("PACK BLOCKED: Assemble a Context first")
@@ -611,10 +651,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.add_assets_to_cast_btn.clicked.connect(self._add_selected_assets_to_shot_cast)
         self.refresh_btn.clicked.connect(self.refresh_assets)
         self.asset_list.currentRowChanged.connect(self._show_current_asset)
+        self.asset_list.itemSelectionChanged.connect(self._update_asset_action_state)
         self.asset_list.itemDoubleClicked.connect(lambda _item: self._show_detail_mode())
         self.asset_card_btn.clicked.connect(self._set_asset_card_view)
         self.asset_table_btn.clicked.connect(self._set_asset_table_view)
         self.create_asset_btn.clicked.connect(self._create_asset)
+        self.initialize_asset_btn.clicked.connect(self._initialize_selected_assets)
         self.create_variant_btn.clicked.connect(self._create_variant)
         self.back_to_assets_btn.clicked.connect(self._show_asset_mode)
         self.asset_variant_combo.currentIndexChanged.connect(lambda _index: self._show_current_asset())
@@ -639,16 +681,32 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.publish_btn.clicked.connect(self._publish_selected_work)
         self.staging_btn.clicked.connect(self._stage_work_scene)
         self.quick_preview_btn.clicked.connect(self._quick_preview_setup)
+        self.turntable_scene_btn.clicked.connect(self._build_turntable_scene)
         self.open_preview_rv_btn.clicked.connect(self._open_selected_preview_in_rv)
+        self.open_preview_usdview_btn.clicked.connect(self._open_selected_preview_in_usdview)
         self.context_version_combo.currentTextChanged.connect(self._populate_context_profiles)
         self.context_profile_list.currentRowChanged.connect(self._on_context_profile_selected)
         self.context_assemble_btn.clicked.connect(self._assemble_selected_asset_context)
+        self.publish_client_assembly_btn.clicked.connect(self._publish_client_assembly)
         self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
+        self.refresh_data_btn.clicked.connect(self._refresh_current_data)
+        self.open_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=False))
+        self.reload_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=True))
+        self.save_assembly_btn.clicked.connect(self._save_selected_asset_assembly)
+        self.publish_assembly_btn.clicked.connect(self._publish_selected_asset_assembly)
         self.export_mesh_btn.clicked.connect(lambda: self._show_export_data_menu("mesh"))
+        self.import_assembly_btn.clicked.connect(self._import_assembly_data)
         self.ingest_fbx_btn.clicked.connect(self._ingest_model_fbx)
         self.export_guide_btn.clicked.connect(lambda: self._show_export_data_menu("guide"))
         self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
         self.import_data_btn.clicked.connect(self._import_selected_data)
+        self.data_watcher = QtCore.QFileSystemWatcher(self)
+        self.data_refresh_timer = QtCore.QTimer(self)
+        self.data_refresh_timer.setSingleShot(True)
+        self.data_refresh_timer.setInterval(350)
+        self.data_watcher.directoryChanged.connect(self._schedule_data_refresh)
+        self.data_watcher.fileChanged.connect(self._schedule_data_refresh)
+        self.data_refresh_timer.timeout.connect(self._refresh_current_data_from_watcher)
         self.context_assembly = None
         self.context_verification = None
         self._populate_context_versions()
@@ -659,6 +717,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         selected_asset_variant = self._current_asset_variant() if keep_selection else "default"
         selected_department = self._current_department() if keep_selection else "model"
         selected_subset = self._current_variant() if keep_selection else ""
+        self.manager.reload_config()
         if not keep_selection:
             self.asset_filter_tree.clear()
         self.assets = self.manager.list_assets_from_sheet(fallback_to_filesystem=True)
@@ -670,8 +729,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._populate_variants()
         self._restore_detail_selection(selected_asset_variant, selected_department, selected_subset)
         self._show_current_asset()
-        if self.manager.last_asset_source == "spreadsheet":
-            self.status_label.setText(f"{len(self.assets)} assets from spreadsheet")
+        if self.manager.last_asset_source.startswith("spreadsheet"):
+            self.status_label.setText(
+                f"{len(self.assets)} assets from {self.manager.last_asset_source}"
+            )
         elif self.manager.last_asset_source_error:
             self.status_label.setText(
                 f"{len(self.assets)} assets from folders. {self.manager.last_asset_source_error}"
@@ -723,6 +784,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             item.setIcon(self._asset_icon(asset, metadata))
             item.setToolTip(self._asset_tooltip(asset, metadata))
             item.setData(QtCore.Qt.UserRole, asset)
+            if not self.manager.is_asset_initialized(asset):
+                item.setForeground(QtGui.QColor("#d9a441"))
             self.asset_list.addItem(item)
             if self._asset_key(asset) == selected_key:
                 row_to_select = self.asset_list.count() - 1
@@ -869,7 +932,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         return category, group, name
 
     def _asset_card_text(self, asset: Asset, metadata: dict) -> str:
-        status = metadata.get("status") or "-"
+        if self.manager.is_asset_initialized(asset):
+            status = metadata.get("status") or "-"
+        else:
+            status = "NOT CREATED"
         asset_type = metadata.get("asset_type") or metadata.get("type") or asset.category
         description = metadata.get("description") or ""
         lines = [
@@ -890,6 +956,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             f"Category: {asset.category}",
             f"Group: {asset.group}",
         ]
+        if not self.manager.is_asset_initialized(asset):
+            rows.append("Production Asset: NOT CREATED")
+            rows.append("Select this card and run Initialize Asset.")
         for key in ("status", "asset_type", "published_by", "published", "description"):
             value = metadata.get(key)
             if value:
@@ -938,7 +1007,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         metadata = self.manager.load_asset_metadata(asset)
         self.detail_thumbnail.setPixmap(self._asset_icon(asset, metadata).pixmap(150, 84))
-        status = metadata.get("status", "")
+        status = (
+            metadata.get("status", "")
+            if self.manager.is_asset_initialized(asset)
+            else "NOT CREATED"
+        )
         asset_type = metadata.get("asset_type") or metadata.get("type") or asset.category
         description = metadata.get("description", "")
         self.detail_info.setText(
@@ -956,6 +1029,31 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return None
         return item.data(QtCore.Qt.UserRole)
 
+    def current_token_context(self, **overrides):
+        _ensure_smartlib_on_path()
+        from smartlib.core.tokens import TokenContext
+
+        asset = self._current_asset()
+        values = {
+            "project_root": self.manager.project_root,
+            "project_name": self.manager.project_name,
+            "department": self._current_department(),
+            "tool": current_dcc_name(),
+            "subset": self._work_subset_arg(asset) or self._current_variant(),
+        }
+        if asset:
+            values.update(
+                {
+                    "asset": asset.name,
+                    "asset_name": asset.name,
+                    "category": asset.category,
+                    "group": asset.group,
+                    "variant": self._work_variant_arg(asset),
+                }
+            )
+        values.update(overrides)
+        return TokenContext.from_mapping(values)
+
     def _selected_assets(self) -> list[Asset]:
         assets: list[Asset] = []
         for item in self.asset_list.selectedItems():
@@ -966,6 +1064,29 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not assets and current:
             assets.append(current)
         return assets
+
+    def _selected_uninitialized_assets(self) -> list[Asset]:
+        return [
+            asset
+            for asset in self._selected_assets()
+            if not self.manager.is_asset_initialized(asset)
+        ]
+
+    def _update_asset_action_state(self) -> None:
+        pending = self._selected_uninitialized_assets()
+        count = len(pending)
+        self.initialize_asset_btn.setEnabled(bool(count))
+        self.initialize_asset_btn.setText(
+            f"Initialize Asset ({count})" if count > 1 else "Initialize Asset"
+        )
+
+        current = self._current_asset()
+        initialized = bool(current and self.manager.is_asset_initialized(current))
+        self.create_variant_btn.setEnabled(initialized)
+        self.staging_btn.setEnabled(initialized)
+        message = "" if initialized else "Initialize Asset before creating variants or staging."
+        self.create_variant_btn.setToolTip(message)
+        self.staging_btn.setToolTip(message)
 
     def _selected_shot_identities(self) -> list:
         return [target["identity"] for target in self._selected_cast_targets() if target.get("kind") == "shot"]
@@ -1024,6 +1145,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _show_current_asset(self) -> None:
         asset = self._current_asset()
+        self._update_asset_action_state()
         self._populate_asset_variants()
         self._populate_variants()
         self.work_list.setSortingEnabled(False)
@@ -1086,6 +1208,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.resizeColumnsToContents()
 
         self._populate_data_tree(asset)
+        self._update_data_watcher(asset)
         self._populate_preview_list(asset)
         self._populate_context_pack_tree()
         self._update_selected_file_info()
@@ -1094,6 +1217,61 @@ class AssetManagerWindow(QtWidgets.QDialog):
             item = QtWidgets.QListWidgetItem(path.relative_to(asset.root).as_posix())
             item.setData(QtCore.Qt.UserRole, str(path))
             self.publish_list.addItem(item)
+
+    def _refresh_current_data(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            return
+        self._populate_data_tree(asset)
+        self._update_data_watcher(asset)
+        self._update_selected_file_info()
+        self.status_label.setText("Data refreshed")
+
+    def _schedule_data_refresh(self, _path: str = "") -> None:
+        self.data_refresh_timer.start()
+
+    def _refresh_current_data_from_watcher(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            return
+        self._populate_data_tree(asset)
+        self._update_data_watcher(asset)
+        self._update_selected_file_info()
+        self.status_label.setText("Data refreshed from folder change")
+
+    def _update_data_watcher(self, asset: Asset | None) -> None:
+        if not getattr(self, "data_watcher", None):
+            return
+        current_dirs = self.data_watcher.directories()
+        if current_dirs:
+            self.data_watcher.removePaths(current_dirs)
+        current_files = self.data_watcher.files()
+        if current_files:
+            self.data_watcher.removePaths(current_files)
+        if not asset:
+            return
+        paths = []
+        roots = [asset.data_dir]
+        for variant in self.manager.asset_variants(asset):
+            roots.append(asset.variant_root(variant) / "data")
+        for root in roots:
+            if not root.exists():
+                continue
+            paths.append(str(root))
+            for path in root.rglob("*"):
+                if path.is_dir():
+                    paths.append(str(path))
+                elif path.name in {"latest.json", "versions.json", "publish.json", "data.json"}:
+                    paths.append(str(path))
+        existing = []
+        seen = set()
+        for path in paths:
+            if path in seen or not Path(path).exists():
+                continue
+            existing.append(path)
+            seen.add(path)
+        if existing:
+            self.data_watcher.addPaths(existing)
 
     def _open_current(self, path_type: str) -> None:
         asset = self._current_asset()
@@ -1268,19 +1446,25 @@ class AssetManagerWindow(QtWidgets.QDialog):
         variant = self._work_variant_arg(asset)
         department = self._current_department()
         subset = self._work_subset_arg(asset) or self._current_variant()
-        base_dir = quick_preview_base_dir(asset, variant, department, subset)
-        if not base_dir.exists():
-            return
         preview_rows = []
-        for version_dir in sorted(base_dir.glob("v*"), reverse=True):
-            review_json = version_dir / "review.json"
-            if not version_dir.is_dir() or not review_json.exists():
+        base_dirs = [
+            quick_preview_base_dir(asset, variant, department, subset),
+            turntable_preview_base_dir(asset, variant),
+        ]
+        seen_dirs = set()
+        for base_dir in base_dirs:
+            if not base_dir.exists() or base_dir in seen_dirs:
                 continue
-            review_data = self._read_json_for_table(review_json)
-            if not isinstance(review_data, dict):
-                continue
-            outputs = review_data.get("outputs") or {}
-            preview_rows.append((version_dir, review_json, review_data, outputs))
+            seen_dirs.add(base_dir)
+            for version_dir in sorted(base_dir.glob("v*"), reverse=True):
+                review_json = version_dir / "review.json"
+                if not version_dir.is_dir() or not review_json.exists():
+                    continue
+                review_data = self._read_json_for_table(review_json)
+                if not isinstance(review_data, dict):
+                    continue
+                outputs = review_data.get("outputs") or {}
+                preview_rows.append((version_dir, review_json, review_data, outputs))
 
         for version_dir, review_json, review_data, outputs in preview_rows:
             row = self.preview_list.rowCount()
@@ -1659,12 +1843,20 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.data_list.clear()
         roots: dict[Path, QtWidgets.QTreeWidgetItem] = {}
         ignored = {"publish.json", "data.json", "source.json", "latest.json", "versions.json"}
-        data_roots = [asset.data_dir]
-        data_roots.extend(asset.variant_root(variant) / "data" for variant in self.manager.asset_variants(asset))
-        files = [
-            path for path in self.manager.list_data_files(asset)
-            if path.name not in ignored and not path.name.endswith(".json")
-        ]
+        selected_asset_variant = self._current_asset_variant()
+        if asset.uses_variant_structure(selected_asset_variant):
+            data_roots = [asset.variant_root(selected_asset_variant) / "data"]
+        else:
+            data_roots = [asset.data_dir]
+        files = []
+        for data_root in data_roots:
+            if not data_root.exists():
+                continue
+            files.extend(
+                path for path in data_root.rglob("*")
+                if path.is_file() and path.name not in ignored and not path.name.endswith(".json")
+            )
+        files = sorted(set(files), key=lambda path: path.as_posix().lower())
 
         def get_dir_item(dir_path: Path) -> QtWidgets.QTreeWidgetItem:
             if dir_path in roots:
@@ -1740,7 +1932,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_variant_list.blockSignals(True)
         self.asset_variant_combo.clear()
         self.asset_variant_list.clear()
-        variants = self.manager.asset_variants(asset) if asset else ["default"]
+        variants = (
+            self.manager.asset_variants(asset)
+            if asset and self.manager.is_asset_initialized(asset)
+            else []
+        )
         selected = 0
         for index, variant in enumerate(variants):
             self.asset_variant_combo.addItem(variant)
@@ -1839,11 +2035,19 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _show_asset_context_menu(self, pos) -> None:
         item = self.asset_list.itemAt(pos)
         if item:
-            self.asset_list.setCurrentItem(item)
+            if not item.isSelected():
+                self.asset_list.clearSelection()
+                item.setSelected(True)
+            self.asset_list.setCurrentItem(
+                item, QtCore.QItemSelectionModel.NoUpdate
+            )
         asset = self._current_asset()
         menu = QtWidgets.QMenu(self)
         create_asset = menu.addAction("Create Asset")
+        initialize_assets = menu.addAction("Initialize Selected Assets")
+        initialize_assets.setEnabled(bool(self._selected_uninitialized_assets()))
         create_variant = menu.addAction("Create Variant")
+        create_variant.setEnabled(bool(asset and self.manager.is_asset_initialized(asset)))
         menu.addSeparator()
         open_root = menu.addAction("Open Asset Root")
         open_data = menu.addAction("Open Data")
@@ -1862,7 +2066,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         create_folders = menu.addAction("Create Asset Folders")
         create_folders.setEnabled(asset is not None)
         set_thumbnail = menu.addAction("Set Thumbnail...")
+        capture_viewport_thumbnail = menu.addAction("Capture Viewport Thumbnail")
         set_thumbnail.setEnabled(asset is not None)
+        capture_viewport_thumbnail.setEnabled(asset is not None)
         menu.addSeparator()
         copy_root = menu.addAction("Copy Asset Root")
         copy_data = menu.addAction("Copy Data Path")
@@ -1875,6 +2081,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         action = menu.exec(self.asset_list.mapToGlobal(pos))
         if action == create_asset:
             self._create_asset()
+        elif action == initialize_assets:
+            self._initialize_selected_assets()
         elif action == create_variant:
             self._create_variant()
         elif action == open_root:
@@ -1895,6 +2103,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._show_current_asset()
         elif action == set_thumbnail:
             self._set_asset_thumbnail(asset)
+        elif action == capture_viewport_thumbnail:
+            self._capture_asset_viewport_thumbnail(asset)
         elif action == copy_root:
             self._copy_text(str(asset.root))
         elif action == copy_data:
@@ -1936,6 +2146,29 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.refresh_assets(keep_selection=True)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Set Thumbnail Failed", str(exc))
+
+    def _capture_asset_viewport_thumbnail(self, asset: Asset | None) -> None:
+        if not asset:
+            return
+        try:
+            from smartlib.dcc.maya.thumbnail import capture_viewport_thumbnail
+
+            asset.root.mkdir(parents=True, exist_ok=True)
+            target = asset.root / "thumbnail.jpg"
+            capture_viewport_thumbnail(target, width=320, height=180)
+            metadata_path = asset.root / "asset.json"
+            metadata = self._read_json_for_table(metadata_path) if metadata_path.exists() else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata.setdefault("asset", asset.name)
+            metadata.setdefault("category", asset.category)
+            metadata.setdefault("group", asset.group)
+            metadata["thumbnail"] = target.name
+            write_json_file(metadata_path, metadata)
+            self.status_label.setText(f"Captured viewport thumbnail: {asset.name}")
+            self.refresh_assets(keep_selection=True)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Capture Viewport Thumbnail Failed", str(exc))
 
     def _send_selected_asset_to_shot_cast(self, asset: Asset | None) -> None:
         if not asset:
@@ -2017,6 +2250,72 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._select_asset(target)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Create Asset Failed", str(exc))
+
+    def _initialize_selected_assets(self) -> None:
+        assets = self._selected_uninitialized_assets()
+        if not assets:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Initialize Asset",
+                "All selected assets are already initialized.",
+            )
+            return
+
+        preview = "\n".join(
+            f"- {asset.category}/{asset.group}/{asset.name}" for asset in assets[:12]
+        )
+        if len(assets) > 12:
+            preview += f"\n- ... and {len(assets) - 12} more"
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Initialize Assets",
+            f"Initialize {len(assets)} selected asset(s)?\n\n{preview}",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            service, request_cls = _asset_service(self.manager.config_dir)
+            requests = []
+            for asset in assets:
+                metadata = self.manager.load_asset_metadata(asset)
+                requests.append(
+                    request_cls(
+                        category=asset.category,
+                        group=asset.group,
+                        name=asset.name,
+                        variant="default",
+                        description=str(metadata.get("description") or ""),
+                    )
+                )
+            results = service.initialize_assets(requests)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Initialize Assets Failed", str(exc))
+            return
+
+        selected_keys = {self._asset_key(asset) for asset in assets}
+        self.refresh_assets(keep_selection=False)
+        self._select_asset_keys(selected_keys)
+        self.status_label.setText(f"Initialized {len(results)} asset(s)")
+
+    def _select_asset_keys(self, keys: set[tuple[str, str, str]]) -> None:
+        self.asset_list.clearSelection()
+        first_item = None
+        for row in range(self.asset_list.count()):
+            item = self.asset_list.item(row)
+            asset = item.data(QtCore.Qt.UserRole)
+            if not isinstance(asset, Asset) or self._asset_key(asset) not in keys:
+                continue
+            item.setSelected(True)
+            if first_item is None:
+                first_item = item
+        if first_item is not None:
+            self.asset_list.setCurrentItem(
+                first_item, QtCore.QItemSelectionModel.NoUpdate
+            )
+        self._update_asset_action_state()
 
     def _create_variant(self) -> None:
         asset = self._current_asset()
@@ -2286,9 +2585,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 subset=subset,
                 ext=ext,
             )
-            comment = self._ask_comment("Save Scene Comment")
-            if comment is None:
-                return
+            comment = ""
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 save_scene_in_current_dcc(target)
@@ -2327,9 +2624,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 ext=ext,
             )
 
-        comment = self._ask_comment("Save Scene Comment")
-        if comment is None:
-            return
+        comment = ""
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             save_scene_in_current_dcc(target)
@@ -2452,6 +2747,45 @@ class AssetManagerWindow(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Quick Preview Failed", str(exc))
 
+    def _build_turntable_scene(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        rotate_lights = (
+            QtWidgets.QMessageBox.question(
+                self,
+                "Build Turntable Scene",
+                "Rotate lights with the asset?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            == QtWidgets.QMessageBox.Yes
+        )
+        try:
+            result = build_turntable_scene_package(
+                asset,
+                self.manager,
+                variant=self._work_variant_arg(asset),
+                subset=self._work_subset_arg(asset) or self._current_variant(),
+                rotate_lights=rotate_lights,
+            )
+            self.status_label.setText(f"Turntable Scene: {result.get('version_dir')}")
+            self._populate_preview_list(asset)
+            dialog = QtWidgets.QMessageBox(self)
+            dialog.setWindowTitle("Build Turntable Scene")
+            dialog.setIcon(QtWidgets.QMessageBox.Information)
+            dialog.setText(
+                "Turntable scene was created.\n"
+                f"Path: {result.get('turntable_usd')}\n"
+                f"Source: {result.get('source_usd')}\n"
+                f"Rotate lights: {rotate_lights}"
+            )
+            dialog.addButton(QtWidgets.QMessageBox.Close)
+            dialog.exec()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Build Turntable Scene Failed", str(exc))
+
     def _effective_work_subset(self, asset: Asset | None, dcc: str | None = None) -> str | None:
         subset = self._work_subset_arg(asset)
         if subset:
@@ -2488,7 +2822,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if rvpush:
             env = os.environ.copy()
             env.setdefault("RVPUSH_RV_EXECUTABLE_PATH", str(rv))
-            subprocess.Popen([str(rvpush), "merge", "[", *args, "]"], env=env)
+            merge_args = [str(rvpush), "merge", *args] if args[:1] == ["-tile"] else [str(rvpush), "merge", "[", *args, "]"]
+            subprocess.Popen(merge_args, env=env)
             self.status_label.setText(f"Sent to RV: {package.shot} {package.version}")
         else:
             subprocess.Popen([str(rv), *args])
@@ -2511,6 +2846,58 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.status_label.setText("Select a preview package first")
             return
         self._open_preview_review_json_in_rv(review_json)
+
+    def _open_selected_preview_in_usdview(self) -> None:
+        review_json = self._selected_preview_review_json()
+        if not review_json:
+            self.status_label.setText("Select a preview package first")
+            return
+        usd_path = self._preview_usd_path(review_json)
+        if not usd_path:
+            self.status_label.setText("Selected preview package has no USD scene")
+            return
+        usdview = resolve_usdview_path(self.manager)
+        if not usdview:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "usdview Not Found",
+                "Set tools.usdview.path in tools.yml or install tools/usd/usdview.bat.",
+            )
+            return
+        try:
+            log_path = launch_usdview(usdview, usd_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Open usdview Failed", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.status_label.setText(f"Opened usdview: {usd_path.name} (log: {log_path})")
+
+    def _preview_usd_path(self, review_json: str | os.PathLike[str]) -> Path | None:
+        review_path = Path(review_json)
+        data = self._read_json_for_table(review_path)
+        if not isinstance(data, dict):
+            return None
+        candidates = []
+        for key in ("turntable_usd", "usd"):
+            value = str(data.get(key) or "").strip()
+            if value:
+                candidates.append(value)
+        manifest_value = str(data.get("manifest") or "").strip()
+        if manifest_value:
+            manifest_path = review_path.parent / manifest_value
+            manifest = self._read_json_for_table(manifest_path)
+            if isinstance(manifest, dict):
+                value = str(manifest.get("turntable_usd") or "").strip()
+                if value:
+                    candidates.append(value)
+        for value in candidates:
+            path = Path(value)
+            if not path.is_absolute():
+                path = review_path.parent / value
+            if path.exists():
+                return path
+        fallback = review_path.parent / "turntable.usd"
+        return fallback if fallback.exists() else None
 
     def _publish_selected_work(self) -> None:
         asset = self._current_asset()
@@ -2695,6 +3082,137 @@ class AssetManagerWindow(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Ingest Model FBX Failed", str(exc))
 
+    def _import_assembly_data(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        source, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Import Assembly",
+            "",
+            "Assembly Files (*.ma *.mb *.usd *.usda *.usdc *.fbx *.abc);;All Files (*.*)",
+        )
+        if not source:
+            return
+        comment = self._ask_comment("Import Assembly Comment")
+        if comment is None:
+            return
+        try:
+            path = import_assembly_data(
+                asset,
+                self.manager,
+                self._asset_context_identity(asset).variant,
+                source,
+                comment,
+            )
+            self.status_label.setText(f"Imported assembly: {path.name}")
+            self._populate_data_tree(asset)
+            QtWidgets.QMessageBox.information(self, "Import Assembly", f"Imported assembly data:\n{path}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Import Assembly Failed", str(exc))
+
+    def _set_selected_asset_assembly_context(self):
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return None
+        _ensure_smartlib_on_path()
+        from smartlib.core.config_loader import ProjectConfig
+        from smartlib.dcc.maya import asset_assembly
+
+        identity = self._asset_context_identity(asset)
+        context = asset_assembly.set_assembly_context(
+            identity.category,
+            identity.group,
+            identity.name,
+            identity.variant,
+        )
+        return ProjectConfig(self.manager.config_dir), context
+
+    def _open_selected_asset_assembly(self, *, reload: bool = False) -> None:
+        try:
+            setup = self._set_selected_asset_assembly_context()
+            if not setup:
+                return
+            project_config, _context = setup
+            from smartlib.dcc.maya import asset_assembly
+
+            path = asset_assembly.open_assembly_usd(project_config, reload=reload)
+            action = "Reloaded" if reload else "Opened"
+            self.status_label.setText(f"{action} assembly: {Path(path).name}")
+        except Exception as exc:
+            title = "Reload Assembly Failed" if reload else "Open Assembly Failed"
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(self, title, str(exc))
+
+    def _save_selected_asset_assembly(self) -> None:
+        try:
+            setup = self._set_selected_asset_assembly_context()
+            if not setup:
+                return
+            project_config, _context = setup
+            from smartlib.dcc.maya import asset_assembly
+
+            comment = self._ask_comment("Save Assembly Comment")
+            if comment is None:
+                return
+            path = asset_assembly.save_assembly(project_config, comment=comment)
+            self.status_label.setText(f"Saved assembly: {Path(path).name}")
+            current_asset = self._current_asset()
+            if current_asset:
+                self._populate_data_tree(current_asset)
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(self, "Save Assembly Failed", str(exc))
+
+    def _publish_selected_asset_assembly(self) -> None:
+        try:
+            setup = self._set_selected_asset_assembly_context()
+            if not setup:
+                return
+            project_config, _context = setup
+            from smartlib.dcc.maya import asset_assembly
+
+            comment = self._ask_comment("Publish Assembly Comment")
+            if comment is None:
+                return
+            path = asset_assembly.publish_assembly(project_config, comment=comment)
+            self.status_label.setText(f"Published assembly: {Path(path).name}")
+            current_asset = self._current_asset()
+            if current_asset:
+                self._populate_data_tree(current_asset)
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(self, "Publish Assembly Failed", str(exc))
+
+    def _publish_client_assembly(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        context_name = self._current_context_profile()
+        if not context_name:
+            self.status_label.setText("Select a Context first")
+            return
+        comment = self._ask_comment("Publish Assembly Client Comment")
+        if comment is None:
+            return
+        try:
+            path = publish_client_assembly(
+                asset,
+                self.manager,
+                self._asset_context_identity(asset).variant,
+                comment,
+                context_name=context_name,
+                context_version=self.context_version_combo.currentText().strip(),
+            )
+            self.status_label.setText(f"Published client assembly: {path.name}")
+            self._populate_context_pack_tree()
+            QtWidgets.QMessageBox.information(self, "Publish Assembly Client", f"Published client assembly:\n{path}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Publish Assembly Client Failed", str(exc))
+
     def _import_latest_publish(self) -> None:
         asset = self._current_asset()
         if not asset:
@@ -2789,8 +3307,14 @@ def stage_asset_work_scene(
         "template": str(template).replace("\\", "/") if template else "",
         "dependencies": {},
     }
+    ensure_asset_top_structure(cmds, asset.name)
     if dependency_plan:
-        reference_file_to_current_dcc(dependency_plan["path"], namespace=dependency_plan["namespace"])
+        groups = ensure_pipeline_work_structure(cmds)
+        reference_file_to_current_dcc(
+            dependency_plan["path"],
+            namespace=dependency_plan["namespace"],
+            parent_group=groups.get("ref"),
+        )
         if dependency_plan.get("base_variant"):
             dependency_info["base_variant"] = dependency_plan["base_variant"]
         dependency_info["dependencies"] = {
@@ -2809,7 +3333,6 @@ def stage_asset_work_scene(
             ],
         }
 
-    ensure_asset_top_structure(cmds, asset.name)
     target.parent.mkdir(parents=True, exist_ok=True)
     scene_type = "mayaBinary" if target.suffix.lower() == ".mb" else "mayaAscii"
     cmds.file(rename=str(target))
@@ -3381,6 +3904,508 @@ def quick_preview_base_dir(asset: Asset, variant: str, department: str, subset: 
     return asset.publish_dir / "review" / department / subset
 
 
+def turntable_preview_base_dir(asset: Asset, variant: str) -> Path:
+    if asset.uses_variant_structure(variant):
+        return asset.variant_root(variant) / "publish" / "review" / "look" / "turntable"
+    return asset.publish_dir / "review" / "look" / "turntable"
+
+
+def build_turntable_scene_package(
+    asset: Asset,
+    manager: AssetManager,
+    *,
+    variant: str,
+    subset: str,
+    rotate_lights: bool = False,
+    frame_count: int = 120,
+) -> dict:
+    base_dir = turntable_preview_base_dir(asset, variant)
+    version = next_review_version(base_dir)
+    version_label = f"v{version:03d}"
+    version_dir = base_dir / version_label
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    source = resolve_turntable_source(asset, manager, variant=variant, subset=subset)
+    camera = turntable_camera_data(asset, manager, variant=variant, subset=subset)
+    templates = turntable_template_paths(manager, version_dir)
+    turntable_usd = version_dir / "turntable.usd"
+    write_turntable_usd(
+        turntable_usd,
+        asset_name=asset.name,
+        source_usd=source["source_usd"],
+        templates=templates,
+        camera=camera,
+        rotate_lights=rotate_lights,
+        frame_count=frame_count,
+    )
+    validation = validate_usd_file(manager, turntable_usd)
+
+    manifest = {
+        "asset": asset.name,
+        "category": asset.category,
+        "group": asset.group,
+        "variant": variant,
+        "department": "look",
+        "subset": "turntable",
+        "version": version_label,
+        "type": "turntable_scene",
+        "turntable_usd": "turntable.usd",
+        "source": source,
+        "templates": templates,
+        "camera": camera,
+        "options": {
+            "rotate_asset": True,
+            "rotate_lights": bool(rotate_lights),
+            "frame_count": frame_count,
+            "preview_format": "jpg",
+            "final_format": "exr",
+        },
+        "validation": validation,
+    }
+    review_data = {
+        "asset": asset.name,
+        "category": asset.category,
+        "group": asset.group,
+        "variant": variant,
+        "department": "look",
+        "subset": "turntable",
+        "version": version_label,
+        "type": "turntable_scene",
+        "views": ["turntable"],
+        "turntable_usd": "turntable.usd",
+        "manifest": "turntable_manifest.json",
+        "outputs": {},
+    }
+    publish_data = {
+        "asset": asset.name,
+        "publish_type": "review",
+        "department": "look",
+        "subset": "turntable",
+        "variant": variant,
+        "version": version,
+        "files": {
+            "usd": "turntable.usd",
+            "manifest": "turntable_manifest.json",
+            "review": "review.json",
+        },
+        "source": source,
+        "validation": validation,
+        "comment": "turntable scene build",
+    }
+    write_json_file(version_dir / "turntable_manifest.json", manifest)
+    write_json_file(version_dir / "review.json", review_data)
+    write_json_file(version_dir / "publish.json", publish_data)
+    write_json_file(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/review.json"})
+    update_versions_json(base_dir / "versions.json", version_label)
+    return {
+        "version_dir": str(version_dir),
+        "turntable_usd": str(turntable_usd),
+        "review_json": str(version_dir / "review.json"),
+        "source_usd": source.get("source_usd", ""),
+        "validation": validation,
+    }
+
+
+def resolve_turntable_source(asset: Asset, manager: AssetManager, *, variant: str, subset: str) -> dict:
+    look_info = manager.latest_publish_info(
+        asset,
+        department="look",
+        variant=variant,
+        subset=subset,
+        publish_format="usd",
+    )
+    model_info = None
+    if look_info and look_info.get("absolute_path"):
+        look_path = Path(look_info["absolute_path"])
+        publish_record = read_json_file(look_path.parent / "publish.json", {}) or {}
+        model_dependency = publish_record.get("model_dependency") or (publish_record.get("dependencies") or {}).get("model") or {}
+        model_path = _dependency_project_path(manager, model_dependency)
+        return {
+            "mode": "look",
+            "source_usd": look_path.as_posix(),
+            "look": _publish_info_summary(look_info, look_path),
+            "model_dependency": model_dependency,
+            "model_usd": model_path.as_posix() if model_path else "",
+        }
+
+    candidate_subsets = [subset, "high", "render", "proxy", "low"]
+    seen = set()
+    for candidate in candidate_subsets:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        model_info = manager.latest_publish_info(
+            asset,
+            department="model",
+            variant=variant,
+            subset=candidate,
+            publish_format="usd",
+        )
+        if model_info and model_info.get("absolute_path"):
+            model_path = Path(model_info["absolute_path"])
+            return {
+                "mode": "model",
+                "source_usd": model_path.as_posix(),
+                "model": _publish_info_summary(model_info, model_path),
+            }
+    raise FileNotFoundError(
+        "Turntable source USD was not found. Expected latest look/{subset}/usd or model/{subset}/usd publish."
+    )
+
+
+def _publish_info_summary(info: dict, path: Path) -> dict:
+    return {
+        "version": str(info.get("version") or ""),
+        "path": path.as_posix(),
+    }
+
+
+def _dependency_project_path(manager: AssetManager, dependency: dict) -> Path | None:
+    raw = str(dependency.get("path") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return manager.project_root / raw
+
+
+def validate_usd_file(manager: AssetManager, path: Path) -> dict:
+    usdcat = resolve_usdcat_path(manager)
+    if not usdcat:
+        return {
+            "status": "skipped",
+            "tool": "usdcat",
+            "message": "usdcat was not found.",
+        }
+    try:
+        command = [str(usdcat), str(path)]
+        if usdcat.suffix.lower() in {".bat", ".cmd"}:
+            command = ["cmd.exe", "/c", *command]
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=30,
+            env=clean_external_usd_env(),
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "tool": str(usdcat),
+            "message": str(exc),
+        }
+    status = "ok" if result.returncode == 0 else "error"
+    return {
+        "status": status,
+        "tool": str(usdcat),
+        "returncode": result.returncode,
+        "stdout": (result.stdout or "")[-2000:],
+        "stderr": (result.stderr or "")[-2000:],
+    }
+
+
+def launch_usdview(usdview: Path, usd_path: Path) -> Path:
+    env = clean_external_usd_env()
+    log_path = usdview_launch_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [str(usdview), str(usd_path)]
+    if usdview.suffix.lower() in {".bat", ".cmd"}:
+        command = ["cmd.exe", "/d", "/s", "/c", str(usdview), str(usd_path)]
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    with log_path.open("a", encoding="utf-8", errors="replace") as log:
+        log.write("\n")
+        log.write(f"[{datetime.now().isoformat(timespec='seconds')}] launch usdview\n")
+        log.write("command: " + " ".join(command) + "\n")
+        log.write(f"cwd: {usdview.parent}\n")
+        log.write(f"usd: {usd_path}\n")
+        log.write(f"env PATH: {env.get('PATH', '')}\n")
+        log.write(f"env SystemRoot: {env.get('SystemRoot', '')}\n")
+        log.write(f"env ComSpec: {env.get('ComSpec', '')}\n")
+        log.flush()
+        subprocess.Popen(
+            command,
+            cwd=str(usdview.parent),
+            stdout=log,
+            stderr=log,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            creationflags=creationflags,
+        )
+    return log_path
+
+
+def usdview_launch_log_path() -> Path:
+    root = Path(
+        os.environ.get("SMARTPIPELINE_ROOT")
+        or os.environ.get("SMARTLIBRARY_ROOT")
+        or Path(__file__).resolve().parents[1]
+    )
+    return root / "runtime" / "logs" / "usdview_launch.log"
+
+
+def clean_external_usd_env() -> dict:
+    env = {}
+    for key in (
+        "SystemRoot",
+        "WINDIR",
+        "ComSpec",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "ProgramData",
+        "USERNAME",
+        "USERDOMAIN",
+        "COMPUTERNAME",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "SMARTPIPELINE_ROOT",
+        "SMARTLIBRARY_ROOT",
+    ):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    system_root = env.get("SystemRoot") or env.get("WINDIR") or r"C:\Windows"
+    env.setdefault("SystemRoot", system_root)
+    env.setdefault("WINDIR", system_root)
+    env.setdefault("ComSpec", str(Path(system_root) / "System32" / "cmd.exe"))
+    env["PATH"] = os.pathsep.join(
+        [
+            str(Path(system_root) / "System32"),
+            system_root,
+            str(Path(system_root) / "System32" / "Wbem"),
+        ]
+    )
+    return env
+
+
+def _is_dcc_runtime_path(path: str) -> bool:
+    text = path.replace("\\", "/").lower()
+    return any(
+        token in text
+        for token in (
+            "/autodesk/maya",
+            "/side effects software/houdini",
+            "/houdini",
+            "/maya20",
+        )
+    )
+
+
+def resolve_usdcat_path(manager: AssetManager) -> Path | None:
+    return resolve_tool_path(manager, "usdcat", "tools/usd/usdcat.bat")
+
+
+def resolve_usdview_path(manager: AssetManager) -> Path | None:
+    return resolve_tool_path(manager, "usdview", "tools/usd/usdview.bat")
+
+
+def resolve_tool_path(manager: AssetManager, tool_name: str, fallback_relative: str) -> Path | None:
+    _ensure_smartlib_on_path()
+    from smartlib.core.config_loader import ProjectConfig, expand_config_tokens, smartpipeline_tools_root
+
+    project_config = ProjectConfig(manager.config_dir)
+    tools = read_json_file(manager.config_dir / "tools.json", {}) or project_config.load("tools.yml")
+    raw = (((tools.get("tools") or {}).get(tool_name) or {}).get("path") or "").strip()
+    root = Path(os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get("SMARTLIBRARY_ROOT") or Path(__file__).resolve().parents[1])
+    if raw:
+        raw = expand_config_tokens(raw, project_config)
+        path = Path(raw)
+        if path.exists():
+            return path
+    tools_fallback = smartpipeline_tools_root() / fallback_relative.replace("tools/", "")
+    if tools_fallback.exists():
+        return tools_fallback
+    fallback = root / fallback_relative
+    return fallback if fallback.exists() else None
+
+
+def _read_yaml_config(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+
+        with path.open("r", encoding="utf-8") as stream:
+            return yaml.safe_load(stream) or {}
+    except Exception:
+        return {}
+
+
+def turntable_template_paths(manager: AssetManager, version_dir: Path) -> dict[str, str]:
+    root = Path(os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get("SMARTLIBRARY_ROOT") or Path(__file__).resolve().parents[1])
+    template_dir = root / "templates" / "usd" / "look"
+    paths = {
+        "look_geo": template_dir / "look_geo.usda",
+        "look_studiolight": template_dir / "look_studiolight.usda",
+    }
+    return {key: _usd_asset_path(path, version_dir) for key, path in paths.items() if path.exists()}
+
+
+def turntable_camera_data(asset: Asset, manager: AssetManager, *, variant: str, subset: str) -> dict:
+    maya_data = _turntable_camera_from_maya(asset.name)
+    if maya_data:
+        return maya_data
+    bbox_data = _latest_preview_bbox(asset, variant, "model", subset) or _latest_preview_bbox(asset, variant, "look", subset)
+    bbox = bbox_data.get("bbox") if bbox_data else None
+    if bbox and len(bbox) == 6:
+        center = [(bbox[0] + bbox[3]) * 0.5, (bbox[1] + bbox[4]) * 0.5, (bbox[2] + bbox[5]) * 0.5]
+        size = [bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]]
+        diagonal = max((size[0] ** 2 + size[1] ** 2 + size[2] ** 2) ** 0.5, 1.0)
+        focus = [center[0], bbox[1] + size[1] * 0.55, center[2]]
+        camera = [center[0], focus[1], center[2] + diagonal * 1.8]
+        return {
+            "source": "quick_preview_bbox",
+            "focus": focus,
+            "position": camera,
+            "rotation": [0.0, 0.0, 0.0],
+            "focal_length": 70.0,
+            "bbox": bbox,
+        }
+    return {
+        "source": "default",
+        "focus": [0.0, 90.0, 0.0],
+        "position": [0.0, 90.0, 320.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "focal_length": 70.0,
+        "bbox": [],
+    }
+
+
+def _turntable_camera_from_maya(asset_name: str) -> dict | None:
+    try:
+        import maya.cmds as cmds
+    except ImportError:
+        return None
+    if not cmds.objExists("preview_focus_LOC") or not cmds.objExists("preview_cam_LOC"):
+        return None
+    focus = cmds.xform("preview_focus_LOC", query=True, worldSpace=True, translation=True)
+    camera = cmds.xform("preview_cam_LOC", query=True, worldSpace=True, translation=True)
+    return {
+        "source": "preview_locators",
+        "focus": [float(value) for value in focus],
+        "position": [float(value) for value in camera],
+        "rotation": [0.0, 0.0, 0.0],
+        "focal_length": 70.0,
+        "bbox": [],
+    }
+
+
+def _latest_preview_bbox(asset: Asset, variant: str, department: str, subset: str) -> dict:
+    base_dir = quick_preview_base_dir(asset, variant, department, subset)
+    if not base_dir.exists():
+        return {}
+    version_dirs = sorted((path for path in base_dir.glob("v*") if path.is_dir()), reverse=True)
+    for version_dir in version_dirs:
+        data = read_json_file(version_dir / "review.json", {}) or {}
+        if data.get("bbox"):
+            return data
+    return {}
+
+
+def write_turntable_usd(
+    path: Path,
+    *,
+    asset_name: str,
+    source_usd: str,
+    templates: dict[str, str],
+    camera: dict,
+    rotate_lights: bool,
+    frame_count: int,
+) -> None:
+    source_layer = _usd_asset_path(Path(source_usd), path.parent)
+    sublayers = [source_layer]
+    sublayers.extend(templates[key] for key in ("look_geo", "look_studiolight") if templates.get(key))
+    sublayer_block = "\n".join(f"        @{item}@," for item in sublayers)
+    position = camera.get("position") or [0.0, 90.0, 320.0]
+    focus = camera.get("focus") or [0.0, 90.0, 0.0]
+    rotation = camera.get("rotation") or [0.0, 0.0, 0.0]
+    focal_length = float(camera.get("focal_length") or 70.0)
+    lights_block = ""
+    if rotate_lights:
+        lights_block = f"""
+over Xform "lights"
+{{
+    double3 xformOp:rotateXYZ.timeSamples = {{
+        1: (0, 0, 0),
+        {frame_count}: (0, 360, 0),
+    }}
+    uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+}}
+"""
+    text = f"""#usda 1.0
+(
+    defaultPrim = "turntable"
+    startTimeCode = 1
+    endTimeCode = {frame_count}
+    framesPerSecond = 24
+    timeCodesPerSecond = 24
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [
+{sublayer_block}
+    ]
+)
+
+def Xform "turntable"
+{{
+    def Xform "turntable_axis"
+    {{
+    }}
+
+    def Xform "camera_rig"
+    {{
+        double3 xformOp:translate = ({_usd_float(position[0])}, {_usd_float(position[1])}, {_usd_float(position[2])})
+        double3 xformOp:rotateXYZ = ({_usd_float(rotation[0])}, {_usd_float(rotation[1])}, {_usd_float(rotation[2])})
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+
+        def Camera "turntable_camera"
+        {{
+            float focalLength = {_usd_float(focal_length)}
+            float horizontalAperture = 20.955
+            float verticalAperture = 11.789
+            custom double3 smartpipeline:focus = ({_usd_float(focus[0])}, {_usd_float(focus[1])}, {_usd_float(focus[2])})
+        }}
+    }}
+}}
+
+over Xform "{asset_name}"
+{{
+        double3 xformOp:rotateXYZ.timeSamples = {{
+            1: (0, 0, 0),
+            {frame_count}: (0, 360, 0),
+        }}
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+}}
+{lights_block}
+"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _usd_asset_path(path: Path, anchor_dir: Path) -> str:
+    try:
+        value = path.relative_to(anchor_dir).as_posix()
+    except ValueError:
+        value = path.as_posix()
+    return value.replace("\\", "/")
+
+
+def _usd_float(value) -> str:
+    try:
+        return f"{float(value):.6g}"
+    except (TypeError, ValueError):
+        return "0"
+
+
 def next_review_version(base_dir: Path) -> int:
     max_version = 0
     if base_dir.exists():
@@ -3682,12 +4707,26 @@ def publish_work_outputs(
                 raise FileExistsError(f"Publish already exists: {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             if publish_format == source_ext:
-                if publish_format in {"ma", "mb"} and snapshot_active:
+                export_root = asset.name if parsed.get("department") == "model" else None
+                if export_root and publish_format in {"ma", "mb"}:
+                    export_current_scene_for_publish(
+                        target,
+                        publish_format,
+                        source_workfile,
+                        export_root=export_root,
+                    )
+                elif publish_format in {"ma", "mb"} and snapshot_active:
                     save_maya_snapshot_copy(target, source_workfile)
                 else:
                     shutil.copy2(source_workfile, target)
             else:
-                export_current_scene_for_publish(target, publish_format, source_workfile)
+                export_root = asset.name if parsed.get("department") == "model" else None
+                export_current_scene_for_publish(
+                    target,
+                    publish_format,
+                    source_workfile,
+                    export_root=export_root,
+                )
             published.append(target)
             files[publish_format] = target.name
             if rig_metadata is not None:
@@ -3958,10 +4997,11 @@ def collect_publish_dependency_info(
     *,
     subset: str | None,
 ) -> dict:
-    if current_dcc_name() != "houdini":
-        return {}
     parsed = manager.parse_work_file(source_workfile) or {}
-    if parsed.get("department") != "look":
+    dcc = current_dcc_name()
+    if dcc == "maya" and parsed.get("department") == "rig":
+        return collect_maya_reference_dependency_info(asset, manager)
+    if dcc != "houdini" or parsed.get("department") != "look":
         return {}
     sublayers = collect_houdini_sublayer_dependencies(asset, manager)
     model_dependency = next(
@@ -3982,6 +5022,58 @@ def collect_publish_dependency_info(
     if model_dependency:
         data["model_dependency"] = model_dependency
         data["dependencies"]["model"] = model_dependency
+    return data
+
+
+def collect_maya_reference_dependency_info(asset: Asset, manager: AssetManager) -> dict:
+    try:
+        import maya.cmds as cmds
+    except ImportError:
+        return {}
+
+    references: list[dict] = []
+    seen: set[str] = set()
+    for ref_node in cmds.ls(type="reference") or []:
+        if ref_node == "sharedReferenceNode":
+            continue
+        try:
+            ref_path = cmds.referenceQuery(ref_node, filename=True, withoutCopyNumber=True)
+            namespace = cmds.referenceQuery(ref_node, namespace=True).lstrip(":")
+        except Exception:
+            continue
+        dependency = dependency_from_publish_path(asset, manager, Path(ref_path))
+        if not dependency:
+            continue
+        dependency["namespace"] = namespace
+        dependency["reference_node"] = ref_node
+        key = dependency.get("path", "")
+        if key in seen:
+            continue
+        references.append(dependency)
+        seen.add(key)
+
+    model_dependency = next(
+        (
+            dependency
+            for dependency in references
+            if dependency.get("publish_type") == "model"
+        ),
+        None,
+    )
+    data: dict = {
+        "dependencies": {
+            "references": references,
+        },
+        "validation": {"issues": [], "status": "ok"},
+    }
+    if model_dependency:
+        data["model_dependency"] = model_dependency
+        data["dependencies"]["model"] = model_dependency
+    else:
+        data["validation"] = {
+            "issues": ["Rig publish has no model publish reference dependency."],
+            "status": "warning",
+        }
     return data
 
 
@@ -4027,9 +5119,16 @@ def _houdini_node_file_paths(node) -> list[str]:
 
 
 def dependency_from_publish_path(asset: Asset, manager: AssetManager, path: Path) -> dict | None:
-    try:
-        relative = path.relative_to(asset.variant_root("default"))
-    except ValueError:
+    relative = None
+    source_variant = "default"
+    for variant in manager.asset_variants(asset):
+        try:
+            relative = path.relative_to(asset.variant_root(variant))
+            source_variant = variant
+            break
+        except ValueError:
+            continue
+    if relative is None:
         try:
             relative = path.relative_to(asset.root)
         except ValueError:
@@ -4042,7 +5141,7 @@ def dependency_from_publish_path(asset: Asset, manager: AssetManager, path: Path
     record = read_json_file(publish_json, {}) if publish_json.exists() else {}
     return {
         "asset": asset.name,
-        "variant": record.get("variant") or "default",
+        "variant": record.get("variant") or source_variant,
         "publish_type": publish_type,
         "department": publish_type,
         "subset": subset,
@@ -4110,6 +5209,8 @@ def export_current_scene_for_publish(
     target: str | os.PathLike[str],
     publish_format: str,
     source_workfile: str | os.PathLike[str],
+    *,
+    export_root: str | None = None,
 ) -> Path:
     clean_format = publish_format.lower().lstrip(".")
     target_path = Path(target)
@@ -4126,13 +5227,53 @@ def export_current_scene_for_publish(
     if clean_format == "usd":
         if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):
             cmds.loadPlugin("mayaUsdPlugin")
-        cmds.file(
-            str(target_path),
-            force=True,
-            options=";",
-            type="USD Export",
-            exportAll=True,
-        )
+        if export_root:
+            if not cmds.objExists(export_root):
+                raise RuntimeError(f"USD export root was not found: {export_root}")
+            selection = cmds.ls(selection=True, long=True) or []
+            try:
+                cmds.select(export_root, replace=True)
+                cmds.file(
+                    str(target_path),
+                    force=True,
+                    options=";",
+                    type="USD Export",
+                    exportSelected=True,
+                )
+            finally:
+                if selection:
+                    cmds.select(selection, replace=True)
+                else:
+                    cmds.select(clear=True)
+        else:
+            cmds.file(
+                str(target_path),
+                force=True,
+                options=";",
+                type="USD Export",
+                exportAll=True,
+            )
+    elif clean_format in {"ma", "mb"}:
+        if not export_root:
+            raise RuntimeError("Maya scene publish export requires an export root.")
+        if not cmds.objExists(export_root):
+            raise RuntimeError(f"Maya export root was not found: {export_root}")
+        selection = cmds.ls(selection=True, long=True) or []
+        try:
+            cmds.select(export_root, replace=True)
+            scene_type = "mayaBinary" if clean_format == "mb" else "mayaAscii"
+            cmds.file(
+                str(target_path),
+                force=True,
+                options="v=0;",
+                type=scene_type,
+                exportSelected=True,
+            )
+        finally:
+            if selection:
+                cmds.select(selection, replace=True)
+            else:
+                cmds.select(clear=True)
     elif clean_format == "fbx":
         if not cmds.pluginInfo("fbxmaya", query=True, loaded=True):
             cmds.loadPlugin("fbxmaya")
@@ -4371,6 +5512,220 @@ def ingest_model_fbx_data(
     return target_path
 
 
+def import_assembly_data(
+    asset: Asset,
+    manager: AssetManager,
+    variant: str,
+    source: str | os.PathLike[str],
+    comment: str = "",
+) -> Path:
+    source_path = Path(source)
+    if not source_path.exists():
+        raise FileNotFoundError(source_path)
+    if not source_path.is_file():
+        raise RuntimeError("Import Assembly currently expects a single file.")
+
+    variant = variant or "default"
+    base_dir = asset.variant_root(variant) / "data" / "assembly" / "client"
+    version_label = _next_folder_version_label(base_dir)
+    version_dir = base_dir / version_label
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = version_dir / source_path.name
+    shutil.copy2(source_path, target_path)
+
+    manifest = {
+        "asset": asset.name,
+        "category": asset.category,
+        "group": asset.group,
+        "variant": variant,
+        "data_type": "assembly",
+        "subset": "client",
+        "version": version_label,
+        "files": {
+            "assembly": target_path.name,
+        },
+        "source_file": str(source_path).replace("\\", "/"),
+        "imported_at": datetime.now().isoformat(timespec="seconds"),
+        "comment": comment,
+    }
+    write_json_file(version_dir / "manifest.json", manifest)
+    write_json_file(
+        base_dir / "latest.json",
+        {
+            "version": version_label,
+            "path": f"{version_label}/{target_path.name}",
+            "manifest": f"{version_label}/manifest.json",
+        },
+    )
+    _update_versions_json_with_comment(base_dir / "versions.json", version_label, comment)
+    return target_path
+
+
+def publish_client_assembly(
+    asset: Asset,
+    manager: AssetManager,
+    variant: str,
+    comment: str = "",
+    *,
+    context_name: str = "work",
+    context_version: str = "",
+) -> Path:
+    variant = variant or "default"
+    data_base = asset.variant_root(variant) / "data" / "assembly" / "client"
+    source_path = _latest_data_assembly_file(data_base)
+    if source_path is None:
+        raise RuntimeError("Imported assembly data was not found. Use Data > Import Assembly first.")
+    if source_path.suffix.lower() not in {".ma", ".mb"}:
+        raise RuntimeError(
+            "Publish Assembly Client for shot staging requires a Maya scene (.ma or .mb). "
+            f"Imported file was: {source_path.name}"
+        )
+
+    source_manifest = read_json_file(source_path.parent / "manifest.json", {}) or {}
+    context_label = str(context_name or "work").strip()
+    context_slug = re.sub(r"[^a-z0-9_-]+", "_", context_label.lower()).strip("_")
+    if not context_slug:
+        raise RuntimeError("A valid Context is required for Publish Assembly Client.")
+    publish_base = asset.variant_root(variant) / "publish" / "asset" / context_slug
+    version_label = _next_folder_version_label(publish_base)
+    version_dir = publish_base / version_label
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    target_name = f"{asset.name}{source_path.suffix.lower()}"
+    target_path = version_dir / target_name
+    shutil.copy2(source_path, target_path)
+
+    build_manifest = {
+        "asset": asset.name,
+        "category": asset.category,
+        "group": asset.group,
+        "variant": variant,
+        "context": {
+            "name": context_slug,
+            "version": context_version,
+            "quality_profile": context_label,
+            "source": "client_assembly",
+        },
+        "resolved_representations": [],
+        "source_data": _relative_to_project_path(manager, source_path),
+        "source_manifest": _relative_to_project_path(manager, source_path.parent / "manifest.json"),
+        "source": source_manifest,
+        "validation": {
+            "status": "OK",
+            "errors": [],
+        },
+    }
+    write_json_file(version_dir / "build_manifest.json", build_manifest)
+
+    scene_key = source_path.suffix.lower().lstrip(".")
+    publish_data = {
+        "asset": asset.name,
+        "category": asset.category,
+        "group": asset.group,
+        "variant": variant,
+        "publish_type": "asset",
+        "subset": context_slug,
+        "version": version_label,
+        "files": {
+            scene_key: target_path.name,
+            "build_manifest": "build_manifest.json",
+        },
+        "context": build_manifest["context"],
+        "composition": {
+            "mode": "client_assembly_snapshot",
+            "client_assembly": _relative_to_project_path(manager, source_path),
+        },
+        "source_data": _relative_to_project_path(manager, source_path),
+        "source_manifest": _relative_to_project_path(manager, source_path.parent / "manifest.json"),
+        "source": source_manifest,
+        "published_at": datetime.now().isoformat(timespec="seconds"),
+        "comment": comment,
+    }
+    write_json_file(version_dir / "publish.json", publish_data)
+    write_json_file(
+        publish_base / "latest.json",
+        {
+            "version": version_label,
+            "path": f"{version_label}/{target_path.name}",
+            "publish": f"{version_label}/publish.json",
+        },
+    )
+    _update_versions_json_with_comment(publish_base / "versions.json", version_label, comment)
+    return target_path
+
+
+def _latest_data_assembly_file(base_dir: Path) -> Path | None:
+    latest = read_json_file(base_dir / "latest.json", {}) or {}
+    raw_path = latest.get("path")
+    if raw_path:
+        candidate = base_dir / str(raw_path)
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    version_dirs = _version_dirs(base_dir)
+    if not version_dirs:
+        return None
+    newest = version_dirs[-1]
+    manifest = read_json_file(newest / "manifest.json", {}) or {}
+    assembly_name = ((manifest.get("files") or {}).get("assembly") or "").strip()
+    if assembly_name:
+        candidate = newest / assembly_name
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    for candidate in newest.iterdir():
+        if candidate.is_file() and candidate.name not in {"manifest.json", "latest.json", "versions.json"}:
+            return candidate
+    return None
+
+
+def _next_folder_version_label(base_dir: Path) -> str:
+    versions = [
+        int(path.name[1:])
+        for path in _version_dirs(base_dir)
+        if path.name[1:].isdigit()
+    ]
+    return f"v{(max(versions) if versions else 0) + 1:03d}"
+
+
+def _version_dirs(base_dir: Path) -> list[Path]:
+    if not base_dir.exists():
+        return []
+    return sorted(
+        [
+            path
+            for path in base_dir.iterdir()
+            if path.is_dir() and path.name.lower().startswith("v") and path.name[1:].isdigit()
+        ],
+        key=lambda path: int(path.name[1:]),
+    )
+
+
+def _update_versions_json_with_comment(path: Path, version_label: str, comment: str = "") -> None:
+    versions = read_json_file(path, []) or []
+    next_versions = []
+    seen = False
+    for item in versions:
+        if not isinstance(item, dict):
+            continue
+        item = dict(item)
+        if item.get("version") == version_label:
+            item["status"] = "latest"
+            if comment:
+                item["comment"] = comment
+            seen = True
+        elif item.get("status") == "latest":
+            item["status"] = "available"
+        next_versions.append(item)
+    if not seen:
+        item = {"version": version_label, "status": "latest"}
+        if comment:
+            item["comment"] = comment
+        next_versions.append(item)
+    write_json_file(path, next_versions)
+
+
 def export_mgear_guide(asset: Asset, manager: AssetManager, variant: str = "default", subset: str = "guide") -> Path:
     try:
         import maya.cmds as cmds
@@ -4512,6 +5867,7 @@ def open_scene_in_current_dcc(path: str | os.PathLike[str]) -> None:
 def reference_file_to_current_dcc(
     path: str | os.PathLike[str],
     namespace: str | None = None,
+    parent_group: str | None = None,
 ) -> None:
     file_path = str(Path(path))
     try:
@@ -4519,13 +5875,16 @@ def reference_file_to_current_dcc(
 
         namespace = namespace or Path(file_path).stem
         namespace = namespace.replace(".", "_").replace("-", "_")
-        cmds.file(
+        new_nodes = cmds.file(
             file_path,
             reference=True,
             ignoreVersion=True,
             mergeNamespacesOnClash=False,
             namespace=namespace,
+            returnNewNodes=True,
         )
+        if parent_group:
+            _parent_new_transform_roots(cmds, new_nodes or [], parent_group)
         return
     except ImportError:
         pass
@@ -4547,6 +5906,38 @@ def reference_file_to_current_dcc(
         pass
 
     raise RuntimeError("Reference is available inside Maya or Houdini.")
+
+
+def _parent_new_transform_roots(cmds, nodes: list[str], parent_group: str) -> list[str]:
+    if not parent_group or not cmds.objExists(parent_group):
+        return []
+    long_nodes = set(cmds.ls(nodes, long=True) or nodes)
+    roots = []
+    for node in nodes:
+        if not node or not cmds.objExists(node):
+            continue
+        try:
+            if cmds.nodeType(node) != "transform":
+                continue
+        except Exception:
+            continue
+        long_node = (cmds.ls(node, long=True) or [node])[0]
+        parents = cmds.listRelatives(long_node, parent=True, fullPath=True) or []
+        if parents and parents[0] in long_nodes:
+            continue
+        if long_node == parent_group or long_node.startswith(f"{parent_group}|"):
+            continue
+        roots.append(long_node)
+    parented = []
+    for root in roots:
+        if not cmds.objExists(root):
+            continue
+        try:
+            result = cmds.parent(root, parent_group)
+            parented.extend(result or [root])
+        except Exception:
+            pass
+    return parented
 
 
 def import_file_to_current_dcc(path: str | os.PathLike[str]) -> None:
@@ -4644,13 +6035,21 @@ def _unique_cast_targets(targets: list[dict]) -> list[dict]:
 _WINDOW = None
 
 
-def show() -> AssetManagerWindow:
+def show(parent=None) -> AssetManagerWindow:
     global _WINDOW
     app = QtWidgets.QApplication.instance()
     if app is None:
         app = QtWidgets.QApplication([])
-    _WINDOW = AssetManagerWindow()
+    _ensure_smartlib_on_path()
+    from smartlib.core.qt import parent_for_maya
+
+    window_parent = parent_for_maya(QtWidgets, parent)
+    _WINDOW = AssetManagerWindow(parent=window_parent)
+    if window_parent is not None:
+        _WINDOW.setWindowFlags(_WINDOW.windowFlags() | QtCore.Qt.Window)
     _WINDOW.show()
+    _WINDOW.raise_()
+    _WINDOW.activateWindow()
     return _WINDOW
 
 

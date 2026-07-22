@@ -1,0 +1,37 @@
+{
+  "name": "STKB_ep01_sq010_sh010_v010.json",
+  "project": "STKB",
+  "episode": "ep01",
+  "sequence": "sq010",
+  "shot": "sh010",
+  "exportedAt": "2025-05-21 14:32",
+  "renderer": "smart render 2.3.1",
+  "version": "v010",
+  "items": [
+    {
+      "id": "comp-main",
+      "name": "comp_main",
+      "sourcePath": "D:/Projects/STKB/shots/ep01/sq010/sh010/output/comp_main/comp_main_v010.mov",
+      "outputPath": "D:/Projects/STKB/shots/ep01/sq010/sh010/output/comp_main/comp_main_v011.mov",
+      "version": "v010",
+      "latestVersion": "v011"
+    },
+    {
+      "id": "comp-fx",
+      "name": "comp_fx",
+      "sourcePath": "D:/Projects/STKB/shots/ep01/sq010/sh010/output/comp_fx/comp_fx_v010.mov",
+      "outputPath": "D:/Projects/STKB/shots/ep01/sq010/sh010/output/comp_fx/comp_fx_v010.mov",
+      "version": "v010",
+      "latestVersion": "v010"
+    },
+    {
+      "id": "plates",
+      "name": "plates",
+      "sourcePath": "D:/Projects/STKB/shots/ep01/sq010/sh010/output/plates/plates_v010.mov",
+      "outputPath": "D:/Projects/STKB/shots/ep01/sq010/sh010/output/plates/plates_v010.mov",
+      "version": "v010",
+      "latestVersion": "v010",
+      "status": "missing"
+    }
+  ]
+}

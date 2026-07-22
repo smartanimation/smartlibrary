@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="640" viewBox="0 0 390 640">
+  <defs>
+    <style>
+      .bg { fill: #262626; }
+      .panel { fill: #343434; }
+      .panel2 { fill: #2c2c2c; }
+      .field { fill: #202020; stroke: #424242; stroke-width: 1; }
+      .fieldFocus { fill: #202020; stroke: #2f78b7; stroke-width: 1.5; }
+      .button { fill: #3b3b3b; }
+      .primary { fill: #2f6f9f; }
+      .text { fill: #d9d9d9; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; }
+      .label { fill: #b8b8b8; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; }
+      .tiny { fill: #9b9b9b; font-family: "Segoe UI", Arial, sans-serif; font-size: 8px; }
+      .title { fill: #f2f2f2; font-family: "Segoe UI", Arial, sans-serif; font-size: 13px; font-weight: 600; }
+      .buttonText { fill: #f2f2f2; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; font-weight: 600; }
+      .section { fill: #cfcfcf; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; font-weight: 600; }
+      .ok { fill: #76b875; }
+      .warn { fill: #d7a85e; }
+      .line { stroke: #474747; stroke-width: 1; }
+      .check { fill: #2f6f9f; stroke: #8fb9d7; stroke-width: 1; }
+      .emptyCheck { fill: #1e1e1e; stroke: #5a5a5a; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="390" height="640"/>
+  <rect class="panel" x="12" y="12" width="366" height="616" rx="2"/>
+
+  <text class="title" x="24" y="35">Extract Asset From Selection</text>
+  <text class="tiny" x="24" y="51">Create a published asset, hide source objects, and place a reference locator.</text>
+
+  <rect class="panel2" x="24" y="66" width="342" height="82"/>
+  <rect fill="#5a5a5a" x="34" y="76" width="116" height="62"/>
+  <g transform="translate(78 89)">
+    <path d="M19 16 L42 21 L42 45 L19 40 Z" fill="#e3b7b7" stroke="#222"/>
+    <path d="M22 18 L22 2 Q22 -1 27 0 L39 3 Q42 4 42 8 L42 20" fill="#e8c0c0" stroke="#222"/>
+    <path d="M21 40 L17 59 M41 45 L48 60 M27 42 L27 60" stroke="#ddd" stroke-width="3" stroke-linecap="round"/>
+    <path d="M18 58 L9 60 M48 60 L57 59 M27 60 L20 62" stroke="#ddd" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <rect class="button" x="243" y="98" width="105" height="30" rx="1"/>
+  <text class="buttonText" x="266" y="117">Select Contents</text>
+  <text class="tiny" x="34" y="166">Run a command</text>
+  <rect class="button" x="34" y="174" width="24" height="20" rx="1"/>
+  <text class="text" x="42" y="188">↻</text>
+  <rect class="button" x="62" y="174" width="24" height="20" rx="1"/>
+  <text class="text" x="71" y="188">□</text>
+  <rect class="button" x="90" y="174" width="24" height="20" rx="1"/>
+  <text class="text" x="98" y="188">⌂</text>
+
+  <line class="line" x1="24" y1="207" x2="366" y2="207"/>
+  <text class="section" x="24" y="228">Asset Info</text>
+
+  <text class="label" x="45" y="252">Target</text>
+  <rect class="field" x="91" y="239" width="258" height="20"/>
+  <text class="text" x="96" y="253">|Kitchen|geo|Props_grp|DiningTable_grp|chair:ChairB_1</text>
+
+  <text class="label" x="50" y="280">Asset</text>
+  <rect class="field" x="91" y="267" width="258" height="20"/>
+  <text class="text" x="96" y="281">Chair</text>
+
+  <text class="label" x="35" y="308">Category</text>
+  <rect class="field" x="91" y="295" width="258" height="20"/>
+  <text class="text" x="96" y="309">prop</text>
+
+  <text class="label" x="52" y="336">Group</text>
+  <rect class="field" x="91" y="323" width="258" height="20"/>
+  <text class="text" x="96" y="337">bp</text>
+
+  <text class="label" x="46" y="364">Variant</text>
+  <rect class="field" x="91" y="351" width="258" height="20"/>
+  <text class="text" x="96" y="365">default</text>
+
+  <text class="label" x="27" y="392">Department</text>
+  <rect class="fieldFocus" x="91" y="379" width="258" height="20"/>
+  <text class="text" x="96" y="393">model</text>
+
+  <text class="label" x="47" y="420">Subset</text>
+  <rect class="field" x="91" y="407" width="84" height="20"/>
+  <text class="text" x="96" y="421">proxy</text>
+  <path d="M164 415 L170 415 L167 419 Z" fill="#bdbdbd"/>
+
+  <line class="line" x1="24" y1="444" x2="366" y2="444"/>
+  <text class="section" x="24" y="465">Placement</text>
+  <rect class="check" x="34" y="480" width="12" height="12" rx="1"/>
+  <path d="M37 486 L40 489 L44 483" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="text" x="54" y="490">Hide selected objects</text>
+  <rect class="check" x="205" y="480" width="12" height="12" rx="1"/>
+  <path d="M208 486 L211 489 L215 483" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="text" x="225" y="490">Create locator at original transform</text>
+
+  <rect class="check" x="34" y="504" width="12" height="12" rx="1"/>
+  <path d="M37 510 L40 513 L44 507" fill="none" stroke="#f2f2f2" stroke-width="1.6"/>
+  <text class="text" x="54" y="514">Reference published asset</text>
+  <rect class="emptyCheck" x="205" y="504" width="12" height="12" rx="1"/>
+  <text class="text" x="225" y="514">Parent locator under same parent</text>
+
+  <text class="section" x="24" y="544">Origin</text>
+  <circle cx="40" cy="562" r="6" fill="#1e1e1e" stroke="#6a6a6a"/>
+  <circle cx="40" cy="562" r="3" fill="#2f78b7"/>
+  <text class="text" x="54" y="566">Selection pivot</text>
+  <circle cx="166" cy="562" r="6" fill="#1e1e1e" stroke="#6a6a6a"/>
+  <text class="text" x="180" y="566">Bounding box center</text>
+
+  <text class="section" x="24" y="590">Publish Path</text>
+  <rect class="field" x="91" y="576" width="258" height="20"/>
+  <text class="tiny" x="96" y="589">D:/Projects/STKB/assets/prop/bp/chair/default/model/publish/maya/proxy</text>
+
+  <rect class="panel2" x="24" y="604" width="146" height="18"/>
+  <circle class="ok" cx="36" cy="613" r="3"/>
+  <text class="tiny" x="44" y="616">Selection OK</text>
+  <circle class="ok" cx="93" cy="613" r="3"/>
+  <text class="tiny" x="101" y="616">Name OK</text>
+  <circle class="warn" cx="142" cy="613" r="3"/>
+  <text class="tiny" x="150" y="616">Path OK</text>
+
+  <rect class="primary" x="190" y="604" width="159" height="22" rx="1"/>
+  <text class="buttonText" x="208" y="619">Extract and Replace with Reference</text>
+</svg>

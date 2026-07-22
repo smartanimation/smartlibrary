@@ -526,8 +526,21 @@ def show(identity=None, config_dir: str | os.PathLike[str] | None = None, depart
     except Exception:
         pass
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    _WINDOW = ReviewLayerWindow(identity=identity, config_dir=config_dir, department=department, parent=parent)
+    _ensure_smartlib_on_path()
+    from smartlib.core.qt import parent_for_maya
+
+    window_parent = parent_for_maya(QtWidgets, parent)
+    _WINDOW = ReviewLayerWindow(
+        identity=identity,
+        config_dir=config_dir,
+        department=department,
+        parent=window_parent,
+    )
+    if window_parent is not None:
+        _WINDOW.setWindowFlags(_WINDOW.windowFlags() | QtCore.Qt.Window)
     _WINDOW.show()
+    _WINDOW.raise_()
+    _WINDOW.activateWindow()
     return _WINDOW
 
 

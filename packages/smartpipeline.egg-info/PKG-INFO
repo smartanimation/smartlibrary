@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: smartpipeline
+Version: 0.1.0
+Summary: Production pipeline toolkit for CG and animation workflows.
+Requires-Python: >=3.10

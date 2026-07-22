@@ -1,0 +1,260 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="860" viewBox="0 0 1360 860">
+  <defs>
+    <style>
+      .bg { fill: #242424; }
+      .panel { fill: #303030; stroke: #444; stroke-width: 1; }
+      .panel2 { fill: #292929; stroke: #414141; stroke-width: 1; }
+      .panel3 { fill: #252525; stroke: #3b3b3b; stroke-width: 1; }
+      .field { fill: #1f1f1f; stroke: #494949; stroke-width: 1; }
+      .focus { fill: #1f1f1f; stroke: #3f86bd; stroke-width: 1.5; }
+      .button { fill: #404040; stroke: #525252; stroke-width: 1; }
+      .primary { fill: #2f6f9f; stroke: #5d9fcc; stroke-width: 1; }
+      .green { fill: #2f6f4e; stroke: #5d9b78; stroke-width: 1; }
+      .amber { fill: #6a5a32; stroke: #9a8548; stroke-width: 1; }
+      .row { fill: #2b2b2b; stroke: #444; stroke-width: 1; }
+      .rowSelected { fill: #24384a; stroke: #3f86bd; stroke-width: 1.2; }
+      .tab { fill: #3a3a3a; stroke: #4a4a4a; stroke-width: 1; }
+      .tabActive { fill: #25506f; stroke: #4b96ca; stroke-width: 1; }
+      .tile { fill: #353535; stroke: #4b4b4b; stroke-width: 1; }
+      .tileActive { fill: #263a47; stroke: #4b96ca; stroke-width: 1.2; }
+      .text { fill: #d8d8d8; font-family: "Segoe UI", Arial, sans-serif; font-size: 12px; }
+      .small { fill: #c7c7c7; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; }
+      .tiny { fill: #9d9d9d; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; }
+      .muted { fill: #aaa; font-family: "Segoe UI", Arial, sans-serif; font-size: 11px; }
+      .bold { fill: #f2f2f2; font-family: "Segoe UI", Arial, sans-serif; font-size: 12px; font-weight: 600; }
+      .title { fill: #f3f3f3; font-family: "Segoe UI", Arial, sans-serif; font-size: 18px; font-weight: 600; }
+      .section { fill: #e0e0e0; font-family: "Segoe UI", Arial, sans-serif; font-size: 12px; font-weight: 600; }
+      .buttonText { fill: #f3f3f3; font-family: "Segoe UI", Arial, sans-serif; font-size: 11px; font-weight: 600; }
+      .pillText { fill: #f4f4f4; font-family: "Segoe UI", Arial, sans-serif; font-size: 10px; font-weight: 600; }
+      .line { stroke: #484848; stroke-width: 1; }
+      .bluePill { fill: #315f86; }
+      .greenPill { fill: #3f7454; }
+      .amberPill { fill: #80693c; }
+      .greyPill { fill: #555; }
+      .purplePill { fill: #655687; }
+      .redPill { fill: #8a4a4a; }
+      .ok { fill: #76b875; }
+      .warn { fill: #d7a85e; }
+      .wire { fill: none; stroke: #9bc3e6; stroke-width: 1; }
+      .bbox { fill: none; stroke: #e6c35e; stroke-width: 1.5; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1360" height="860"/>
+
+  <rect class="panel" x="18" y="14" width="1324" height="52" rx="2"/>
+  <text class="title" x="36" y="46">Smart Review</text>
+  <text class="muted" x="160" y="45">Unified RV composer for asset, shot, lighting, and comp checks</text>
+  <text class="tiny" x="875" y="34">Project</text>
+  <rect class="field" x="875" y="40" width="94" height="20"/>
+  <text class="small" x="884" y="54">STKB</text>
+  <text class="tiny" x="984" y="34">Review Date</text>
+  <rect class="field" x="984" y="40" width="112" height="20"/>
+  <text class="small" x="993" y="54">2026-06-14</text>
+  <rect class="button" x="1110" y="28" width="92" height="26" rx="2"/>
+  <text class="buttonText" x="1126" y="45">Refresh</text>
+  <rect class="green" x="1214" y="28" width="106" height="26" rx="2"/>
+  <text class="buttonText" x="1231" y="45">Open RV</text>
+
+  <rect class="panel" x="18" y="78" width="246" height="764" rx="2"/>
+  <text class="section" x="34" y="104">Scope</text>
+  <rect class="tabActive" x="34" y="118" width="64" height="26" rx="2"/>
+  <text class="buttonText" x="52" y="135">Asset</text>
+  <rect class="tab" x="104" y="118" width="58" height="26" rx="2"/>
+  <text class="buttonText" x="121" y="135">Shot</text>
+  <rect class="tab" x="168" y="118" width="80" height="26" rx="2"/>
+  <text class="buttonText" x="182" y="135">Light/Comp</text>
+
+  <text class="tiny" x="34" y="166">Search asset or shot</text>
+  <rect class="field" x="34" y="174" width="214" height="28" rx="1"/>
+  <text class="muted" x="46" y="193">chr_hero_robot</text>
+
+  <text class="section" x="34" y="230">Context</text>
+  <rect class="rowSelected" x="34" y="244" width="214" height="38"/>
+  <circle class="ok" cx="50" cy="263" r="4"/>
+  <text class="bold" x="62" y="262">chr / hero / robot</text>
+  <text class="tiny" x="62" y="276">variant default, model v014</text>
+  <rect class="row" x="34" y="288" width="214" height="38"/>
+  <circle class="warn" cx="50" cy="307" r="4"/>
+  <text class="bold" x="62" y="306">prp / vehicle / bike</text>
+  <text class="tiny" x="62" y="320">look v008 pending</text>
+  <rect class="row" x="34" y="332" width="214" height="38"/>
+  <circle class="ok" cx="50" cy="351" r="4"/>
+  <text class="bold" x="62" y="350">ep001 sq010 sh020</text>
+  <text class="tiny" x="62" y="364">anim v022, comp v006</text>
+
+  <line class="line" x1="34" y1="394" x2="248" y2="394"/>
+  <text class="section" x="34" y="420">Review Modes</text>
+  <text class="tiny" x="34" y="439">Asset</text>
+  <rect class="tileActive" x="34" y="448" width="214" height="42" rx="2"/>
+  <text class="bold" x="48" y="468">Quick Check Grid</text>
+  <text class="tiny" x="48" y="482">beauty / wireframe / bbox</text>
+  <rect class="tile" x="34" y="496" width="214" height="36" rx="2"/>
+  <text class="small" x="48" y="518">Model Turntable</text>
+  <rect class="tile" x="34" y="538" width="214" height="36" rx="2"/>
+  <text class="small" x="48" y="560">Look Turntable</text>
+
+  <text class="tiny" x="34" y="598">Shot</text>
+  <rect class="tile" x="34" y="606" width="214" height="36" rx="2"/>
+  <text class="small" x="48" y="628">Dept Grid: story/layout/anim/comp</text>
+  <rect class="tile" x="34" y="648" width="214" height="36" rx="2"/>
+  <text class="small" x="48" y="670">Editorial OTIO Replace</text>
+  <rect class="tile" x="34" y="690" width="214" height="36" rx="2"/>
+  <text class="small" x="48" y="712">Handle Trim Stitch</text>
+  <rect class="tile" x="34" y="732" width="214" height="36" rx="2"/>
+  <text class="small" x="48" y="754">AOV Grid</text>
+  <rect class="tile" x="34" y="774" width="214" height="36" rx="2"/>
+  <text class="small" x="48" y="796">Light/Comp Contact Sheet</text>
+
+  <rect class="panel" x="278" y="78" width="758" height="764" rx="2"/>
+  <text class="section" x="296" y="104">Selection</text>
+  <text class="tiny" x="296" y="124">Asset variant, department, version, and source set can be changed before sending to RV.</text>
+  <text class="tiny" x="296" y="156">Variant</text>
+  <rect class="field" x="296" y="164" width="112" height="26" rx="1"/>
+  <text class="small" x="306" y="181">default</text>
+  <text class="tiny" x="422" y="156">Department</text>
+  <rect class="focus" x="422" y="164" width="112" height="26" rx="1"/>
+  <text class="small" x="432" y="181">model</text>
+  <text class="tiny" x="548" y="156">Version</text>
+  <rect class="field" x="548" y="164" width="112" height="26" rx="1"/>
+  <text class="small" x="558" y="181">v014 latest</text>
+  <text class="tiny" x="674" y="156">RV Layout</text>
+  <rect class="field" x="674" y="164" width="150" height="26" rx="1"/>
+  <text class="small" x="684" y="181">Grid 3 x 2</text>
+  <rect class="button" x="842" y="164" width="78" height="26" rx="2"/>
+  <text class="buttonText" x="860" y="181">Build</text>
+  <rect class="primary" x="928" y="164" width="90" height="26" rx="2"/>
+  <text class="buttonText" x="947" y="181">Send</text>
+
+  <line class="line" x1="296" y1="212" x2="1018" y2="212"/>
+  <text class="section" x="296" y="238">Asset Quick Check Grid</text>
+  <text class="tiny" x="296" y="256">One RV session receives three synchronized sources with HUD metadata and version labels.</text>
+
+  <g transform="translate(296 274)">
+    <rect class="panel2" x="0" y="0" width="722" height="320" rx="2"/>
+    <text class="tiny" x="18" y="24">Beauty</text>
+    <text class="tiny" x="254" y="24">Wireframe</text>
+    <text class="tiny" x="490" y="24">BBox</text>
+
+    <rect class="tileActive" x="18" y="36" width="218" height="118" rx="2"/>
+    <rect fill="#59636b" x="32" y="52" width="190" height="78"/>
+    <path d="M88 126 L106 72 L142 64 L176 126 Z" fill="#c9b39c" stroke="#222" stroke-width="1"/>
+    <circle fill="#d5d5d5" cx="126" cy="62" r="16"/>
+    <rect class="bluePill" x="34" y="134" width="62" height="14" rx="2"/>
+    <text class="pillText" x="42" y="145">beauty</text>
+    <text class="tiny" x="105" y="145">chr_hero_robot_model_v014.mov</text>
+
+    <rect class="tile" x="254" y="36" width="218" height="118" rx="2"/>
+    <rect fill="#303840" x="268" y="52" width="190" height="78"/>
+    <path class="wire" d="M322 126 L340 72 L376 64 L410 126 Z"/>
+    <path class="wire" d="M340 72 L410 126 M376 64 L322 126 M322 126 L410 126"/>
+    <circle class="wire" cx="360" cy="62" r="16"/>
+    <rect class="purplePill" x="270" y="134" width="74" height="14" rx="2"/>
+    <text class="pillText" x="278" y="145">wireframe</text>
+    <text class="tiny" x="352" y="145">same frame range</text>
+
+    <rect class="tile" x="490" y="36" width="218" height="118" rx="2"/>
+    <rect fill="#34322c" x="504" y="52" width="190" height="78"/>
+    <rect class="bbox" x="560" y="68" width="92" height="58"/>
+    <path d="M584 126 L596 82 L628 78 L644 126 Z" fill="#b7a883" opacity=".55"/>
+    <rect class="amberPill" x="506" y="134" width="52" height="14" rx="2"/>
+    <text class="pillText" x="516" y="145">bbox</text>
+    <text class="tiny" x="568" y="145">bounding overlay</text>
+
+    <rect class="tile" x="18" y="172" width="218" height="118" rx="2"/>
+    <rect fill="#4d575d" x="32" y="188" width="190" height="78"/>
+    <path d="M74 248 Q126 176 184 248 Z" fill="#bba98f" stroke="#222"/>
+    <text class="tiny" x="34" y="282">model turntable candidate</text>
+
+    <rect class="tile" x="254" y="172" width="218" height="118" rx="2"/>
+    <rect fill="#403b35" x="268" y="188" width="190" height="78"/>
+    <path d="M310 248 Q362 176 420 248 Z" fill="#d2b98c" stroke="#222"/>
+    <circle fill="#e6d0a5" cx="368" cy="204" r="20" opacity=".85"/>
+    <text class="tiny" x="270" y="282">look turntable candidate</text>
+
+    <rect class="tile" x="490" y="172" width="218" height="118" rx="2"/>
+    <text class="bold" x="514" y="214">HUD payload</text>
+    <text class="small" x="514" y="236">asset: chr_hero_robot</text>
+    <text class="small" x="514" y="256">dept: model / version: v014</text>
+    <text class="small" x="514" y="276">views: beauty, wireframe, bbox</text>
+  </g>
+
+  <text class="section" x="296" y="630">Shot Mode Presets</text>
+  <g transform="translate(296 646)">
+    <rect class="panel2" x="0" y="0" width="722" height="172" rx="2"/>
+    <rect class="tile" x="16" y="24" width="160" height="116" rx="2"/>
+    <rect class="greenPill" x="28" y="38" width="72" height="16" rx="2"/>
+    <text class="pillText" x="38" y="50">Dept Grid</text>
+    <text class="small" x="28" y="76">story reel</text>
+    <text class="small" x="28" y="96">layout</text>
+    <text class="small" x="28" y="116">animation</text>
+    <text class="small" x="28" y="136">comp</text>
+
+    <rect class="tile" x="194" y="24" width="160" height="116" rx="2"/>
+    <rect class="amberPill" x="206" y="38" width="82" height="16" rx="2"/>
+    <text class="pillText" x="216" y="50">OTIO Swap</text>
+    <text class="small" x="206" y="78">replace editorial clip</text>
+    <text class="small" x="206" y="100">with selected dept mov</text>
+    <text class="tiny" x="206" y="128">writes review OTIO</text>
+
+    <rect class="tile" x="372" y="24" width="160" height="116" rx="2"/>
+    <rect class="bluePill" x="384" y="38" width="86" height="16" rx="2"/>
+    <text class="pillText" x="394" y="50">Trim Stitch</text>
+    <text class="small" x="384" y="78">remove handle frames</text>
+    <text class="small" x="384" y="100">connect selected shots</text>
+    <text class="tiny" x="384" y="128">timeline preview</text>
+
+    <rect class="tile" x="550" y="24" width="154" height="116" rx="2"/>
+    <rect class="purplePill" x="562" y="38" width="72" height="16" rx="2"/>
+    <text class="pillText" x="572" y="50">AOV Grid</text>
+    <text class="small" x="562" y="78">beauty / diffuse</text>
+    <text class="small" x="562" y="100">spec / z / crypto</text>
+    <text class="tiny" x="562" y="128">per selected shot</text>
+  </g>
+
+  <rect class="panel" x="1050" y="78" width="292" height="764" rx="2"/>
+  <text class="section" x="1068" y="104">RV Targets</text>
+  <text class="tiny" x="1068" y="124">Choose where to push the generated source set.</text>
+  <rect class="rowSelected" x="1068" y="142" width="256" height="52"/>
+  <circle class="ok" cx="1084" cy="162" r="4"/>
+  <text class="bold" x="1096" y="162">RV A - Asset QC</text>
+  <text class="tiny" x="1096" y="178">merge into current review session</text>
+  <rect class="row" x="1068" y="202" width="256" height="52"/>
+  <circle class="warn" cx="1084" cy="222" r="4"/>
+  <text class="bold" x="1096" y="222">RV B - Shot Compare</text>
+  <text class="tiny" x="1096" y="238">dept grid / editorial replacement</text>
+  <rect class="row" x="1068" y="262" width="256" height="52"/>
+  <circle class="ok" cx="1084" cy="282" r="4"/>
+  <text class="bold" x="1096" y="282">RV C - Light Contact</text>
+  <text class="tiny" x="1096" y="298">contact sheet package</text>
+
+  <line class="line" x1="1068" y1="338" x2="1324" y2="338"/>
+  <text class="section" x="1068" y="364">Payload</text>
+  <rect class="panel2" x="1068" y="378" width="256" height="184" rx="2"/>
+  <text class="tiny" x="1082" y="400">Sources</text>
+  <text class="small" x="1082" y="422">3 movie/image-sequence inputs</text>
+  <text class="tiny" x="1082" y="450">RV Layout</text>
+  <text class="small" x="1082" y="472">tile grid, synced playback</text>
+  <text class="tiny" x="1082" y="500">Metadata</text>
+  <text class="small" x="1082" y="522">asset, dept, version, take, frame range</text>
+  <text class="tiny" x="1082" y="546">Action</text>
+  <text class="small" x="1082" y="568">rvpush merge with generated args</text>
+
+  <text class="section" x="1068" y="600">Options</text>
+  <rect class="field" x="1068" y="616" width="18" height="18" rx="1"/>
+  <path d="M1072 625 L1077 630 L1084 620" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+  <text class="small" x="1096" y="630">send HUD metadata</text>
+  <rect class="field" x="1068" y="646" width="18" height="18" rx="1"/>
+  <path d="M1072 655 L1077 660 L1084 650" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+  <text class="small" x="1096" y="660">sync frame ranges</text>
+  <rect class="field" x="1068" y="676" width="18" height="18" rx="1"/>
+  <text class="small" x="1096" y="690">open as new session</text>
+
+  <rect class="button" x="1068" y="724" width="122" height="28" rx="2"/>
+  <text class="buttonText" x="1091" y="742">Preview Args</text>
+  <rect class="button" x="1202" y="724" width="122" height="28" rx="2"/>
+  <text class="buttonText" x="1231" y="742">Save Preset</text>
+  <rect class="primary" x="1068" y="766" width="256" height="34" rx="2"/>
+  <text class="buttonText" x="1145" y="788">Send Selected to RV</text>
+  <text class="tiny" x="1068" y="824">Status: ready to push 3 sources to RV A</text>
+</svg>

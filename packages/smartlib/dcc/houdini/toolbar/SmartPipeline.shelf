@@ -4,6 +4,13 @@
     <memberTool name="smartpipeline_asset_manager"/>
     <memberTool name="smartpipeline_shot_manager"/>
     <memberTool name="smartpipeline_viewer"/>
+    <memberTool name="smartpipeline_car_path_hda"/>
+    <memberTool name="smartpipeline_abc_vehicle_spec_hda"/>
+    <memberTool name="smartpipeline_hair_groom_hda"/>
+    <memberTool name="smartpipeline_smart_crowd_seat_proto"/>
+    <memberTool name="smartpipeline_export_car_anim_json"/>
+    <memberTool name="smartpipeline_import_vehicle_spec_json"/>
+    <memberTool name="smartpipeline_import_abc_vehicle_spec"/>
   </toolshelf>
 
   <tool name="smartpipeline_asset_manager" label="Asset Manager" icon="BUTTONS_list">
@@ -45,6 +52,83 @@ smart_menu.show_shot_manager()
     <script scriptType="python"><![CDATA[
 from smartlib.dcc.houdini import smart_menu
 smart_menu.show_viewer()
+]]></script>
+  </tool>
+
+  <tool name="smartpipeline_car_path_hda" label="Create Car Path HDA" icon="SOP_pathdeform">
+    <helpText><![CDATA[Create the Smart Car Path Locators HDA.]]></helpText>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+from smartlib.dcc.houdini import smart_menu
+smart_menu.create_car_path_locators_hda()
+]]></script>
+  </tool>
+
+  <tool name="smartpipeline_abc_vehicle_spec_hda" label="Create ABC Vehicle Spec HDA" icon="SOP_alembic">
+    <helpText><![CDATA[Create the Smart ABC Vehicle Spec HDA.]]></helpText>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+from smartlib.dcc.houdini import smart_menu
+smart_menu.create_abc_vehicle_spec_hda()
+]]></script>
+  </tool>
+
+  <tool name="smartpipeline_hair_groom_hda" label="Create Hair Groom HDA" icon="SOP_hairgen">
+    <helpText><![CDATA[Create the Smart Hair Groom HDA.]]></helpText>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+from smartlib.dcc.houdini import smart_menu
+smart_menu.create_hair_groom_hda()
+]]></script>
+  </tool>
+
+  <tool name="smartpipeline_smart_crowd_seat_proto" label="Create Crowd Seat Prototype" icon="SOP_agent">
+    <helpText><![CDATA[Create the Smart Crowd single-agent seat prototype from a folder containing FBX clips and YAML files.]]></helpText>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+from smartlib.dcc.houdini import smart_menu
+smart_menu.create_smart_crowd_seat_prototype()
+]]></script>
+  </tool>
+
+  <tool name="smartpipeline_export_car_anim_json" label="Export Car Anim JSON" icon="BUTTONS_save">
+    <helpText><![CDATA[Export selected Smart Car Path Locators SOP animation to JSON.]]></helpText>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+from smartlib.dcc.houdini import smart_menu
+smart_menu.export_car_locator_anim_json()
+]]></script>
+  </tool>
+
+  <tool name="smartpipeline_import_vehicle_spec_json" label="Import Vehicle Spec JSON" icon="BUTTONS_folder">
+    <helpText><![CDATA[Import Maya vehicle spec JSON as Houdini point geometry.]]></helpText>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+from smartlib.dcc.houdini import smart_menu
+smart_menu.import_vehicle_spec_json()
+]]></script>
+  </tool>
+
+  <tool name="smartpipeline_import_abc_vehicle_spec" label="Import ABC Vehicle Spec" icon="SOP_alembic">
+    <helpText><![CDATA[Import Maya locator Alembic directly as vehicle spec points.]]></helpText>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+from smartlib.dcc.houdini import smart_menu
+smart_menu.import_abc_vehicle_spec()
 ]]></script>
   </tool>
 </shelfDocument>

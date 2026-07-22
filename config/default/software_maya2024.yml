@@ -5,6 +5,8 @@ env_vars:
   MAYA_SKIP_BLOCKCHECK: "1"        # 起動速度アップ
   PYTHONDONTWRITEBYTECODE: "1"     # .pycファイルを作らせない
 
+maya_user_setup: "{smartpipeline_root}/packages/smartlib/dcc/maya/startup/userSetup.py"
+
 paths:
   MAYA_PLUG_IN_PATH:
   MAYA_MODULE_PATH:

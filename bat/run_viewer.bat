@@ -1,10 +1,4 @@
 @echo off
-set "SMARTPIPELINE_ROOT=%~dp0.."
-set "SMARTLIBRARY_ROOT=%SMARTPIPELINE_ROOT%"
-set "PROJECT_CONFIG_DIR=%SMARTPIPELINE_ROOT%\config\STKB"
-set "PYTHONPATH=%SMARTPIPELINE_ROOT%\packages;%SMARTPIPELINE_ROOT%"
-
-set "SMARTPIPELINE_PYTHON=%SMARTPIPELINE_ROOT%\runtime\python\Scripts\python.exe"
-if not exist "%SMARTPIPELINE_PYTHON%" set "SMARTPIPELINE_PYTHON=python"
+call "%~dp0smartpipeline_env.bat"
 
 "%SMARTPIPELINE_PYTHON%" "%SMARTPIPELINE_ROOT%\scripts\viewer_ui.py"

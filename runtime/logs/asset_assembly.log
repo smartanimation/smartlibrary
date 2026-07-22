@@ -1,0 +1,202 @@
+[2026-06-05T02:57:58] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T02:57:58] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T02:57:58] reference loaded new_nodes=42
+[2026-06-05T02:57:58] reference roots=['|Chair:Chair', '|Chair:Chair|Chair:geo', '|Chair:Chair|Chair:geo|Chair:render', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:pCylinder169', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:pCylinder177', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:pCylinder205', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface29', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface29|Chair:polySurface87', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface29|Chair:polySurface88', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface31', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface32']
+[2026-06-05T02:57:58] reference complete group=Chair_REF_GRP
+[2026-06-05T03:00:03] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T03:00:03] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T03:00:03] reference loaded new_nodes=42
+[2026-06-05T03:00:03] reference roots=['|Chair:Chair', '|Chair:Chair|Chair:geo', '|Chair:Chair|Chair:geo|Chair:render', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:pCylinder169', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:pCylinder177', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:pCylinder205', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface29', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface29|Chair:polySurface87', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface29|Chair:polySurface88', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface31', '|Chair:Chair|Chair:geo|Chair:render|Chair:ChairB_3|Chair:Geom|Chair:polySurface32']
+[2026-06-05T03:00:03] reference complete group=Chair_REF_GRP
+[2026-06-05T03:02:13] reference start locator=Refridgerator_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Refridgerator\default\publish\model\proxy\v001\model.ma
+[2026-06-05T03:02:13] reference group created Refridgerator_REF_GRP namespace=Refridgerator
+[2026-06-05T03:02:13] reference loaded new_nodes=281
+[2026-06-05T03:02:13] reference roots=['|Refridgerator:Refridgerator', '|Refridgerator:Refridgerator|Refridgerator:geo', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:pCube271', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:pCube273', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:polySurface34', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:polySurface36', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:polySurface39', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:polySurface40', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:polySurface52', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:polySurface53', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Body|Refridgerator:polySurface72', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:GroceryBag', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane154', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane157', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane369', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane372', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane374', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane375', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane378', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane379', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane380', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane381', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane382', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Letters|Refridgerator:pPlane386', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Magnet', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Magnet|Refridgerator:pCube619', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Magnet|Refridgerator:pCube620', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Magnet|Refridgerator:pCylinder374', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:Magnet|Refridgerator:pCylinder375', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane100', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane101', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane103', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane104', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane105', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane108', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane109', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane110', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane112', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane113', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane115', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane116', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane353', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane354', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane355', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane364', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane383', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane384', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane385', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane392', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane393', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane394', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane95', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane96', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane98', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Decorations|Refridgerator:pPlane99', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Handle', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Handle|Refridgerator:pPlane13', '|Refridgerator:Refridgerator|Refridgerator:geo|Refridgerator:render|Refridgerator:Refridgerator_2|Refridgerator:Geom|Refridgerator:Handle|Refridgerator:pPlane14']
+[2026-06-05T03:02:13] reference complete group=Refridgerator_REF_GRP
+[2026-06-05T03:03:38] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T03:03:38] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T03:03:38] reference loaded new_nodes=42
+[2026-06-05T03:03:38] reference roots=['|Chair:Chair']
+[2026-06-05T03:03:38] reference complete group=Chair_REF_GRP
+[2026-06-05T03:22:05] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T03:22:05] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T03:22:05] reference loaded new_nodes=42
+[2026-06-05T03:22:05] reference roots=['|Chair:Chair']
+[2026-06-05T03:22:05] reference complete group=Chair_REF_GRP
+[2026-06-05T03:23:25] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T03:23:25] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T03:23:25] reference loaded new_nodes=42
+[2026-06-05T03:23:25] reference roots=['|Chair:Chair']
+[2026-06-05T03:23:25] reference complete group=Chair_REF_GRP
+[2026-06-05T03:25:19] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T03:25:19] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T03:25:19] reference loaded new_nodes=42
+[2026-06-05T03:25:19] reference roots=['|Chair:Chair']
+[2026-06-05T03:25:19] reference complete group=Chair_REF_GRP
+[2026-06-05T05:17:02] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T05:17:02] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T05:17:02] reference loaded new_nodes=42
+[2026-06-05T05:17:02] reference roots=['|Chair:Chair']
+[2026-06-05T05:17:02] reference complete group=Chair_REF_GRP
+[2026-06-05T05:17:43] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T05:17:43] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T05:17:43] reference loaded new_nodes=42
+[2026-06-05T05:17:43] reference roots=['|Chair:Chair']
+[2026-06-05T05:17:43] reference complete group=Chair_REF_GRP
+[2026-06-05T05:18:18] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T05:18:18] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T05:18:18] reference loaded new_nodes=42
+[2026-06-05T05:18:18] reference roots=['|Chair:Chair']
+[2026-06-05T05:18:18] reference complete group=Chair_REF_GRP
+[2026-06-05T05:28:33] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T05:28:33] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T05:28:33] reference loaded new_nodes=42
+[2026-06-05T05:28:33] reference roots=['|Chair:Chair']
+[2026-06-05T05:28:33] reference complete group=Chair_REF_GRP
+[2026-06-05T05:29:47] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T05:29:47] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T05:29:47] reference loaded new_nodes=42
+[2026-06-05T05:29:47] reference roots=['|Chair:Chair']
+[2026-06-05T05:29:47] reference complete group=Chair_REF_GRP
+[2026-06-05T05:48:21] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v002\model.ma
+[2026-06-05T05:48:21] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T05:48:21] reference loaded new_nodes=41
+[2026-06-05T05:48:21] reference roots=['|Chair:Chair']
+[2026-06-05T05:48:21] reference complete group=Chair_REF_GRP
+[2026-06-05T11:50:06] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T11:50:07] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T11:50:07] reference loaded new_nodes=41
+[2026-06-05T11:50:07] reference roots=['|Chair:Chair']
+[2026-06-05T11:50:07] reference complete group=Chair_REF_GRP
+[2026-06-05T12:08:53] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T12:08:53] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T12:08:53] reference loaded new_nodes=41
+[2026-06-05T12:08:53] reference roots=['|Chair:Chair']
+[2026-06-05T12:08:53] reference complete group=Chair_REF_GRP
+[2026-06-05T12:15:29] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v002\model.ma
+[2026-06-05T12:15:30] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T12:15:31] reference loaded new_nodes=41
+[2026-06-05T12:15:31] reference roots=['|Chair:Chair']
+[2026-06-05T12:15:31] reference complete group=Chair_REF_GRP
+[2026-06-05T12:16:05] reference start locator=Chair_place_LOC1 workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v003\model.ma
+[2026-06-05T12:16:05] reference group created Chair_REF_GRP1 namespace=Chair1
+[2026-06-05T12:16:06] reference loaded new_nodes=41
+[2026-06-05T12:16:06] reference roots=['|Chair1:Chair1']
+[2026-06-05T12:16:06] reference complete group=Chair_REF_GRP1
+[2026-06-05T12:59:48] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v004\model.ma
+[2026-06-05T12:59:48] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T12:59:48] reference loaded new_nodes=41
+[2026-06-05T12:59:48] reference roots=['|Chair:Chair']
+[2026-06-05T12:59:48] reference complete group=Chair_REF_GRP
+[2026-06-05T13:05:55] reference start locator=KitchenTable_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\KitchenTable\default\publish\model\proxy\v001\model.ma
+[2026-06-05T13:05:55] reference group created KitchenTable_REF_GRP namespace=KitchenTable
+[2026-06-05T13:05:55] reference loaded new_nodes=36
+[2026-06-05T13:05:55] reference roots=['|KitchenTable:KitchenTable']
+[2026-06-05T13:05:55] reference complete group=KitchenTable_REF_GRP
+[2026-06-05T13:13:52] reference start locator=cone_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\cone\default\publish\model\proxy\v001\model.ma
+[2026-06-05T13:13:52] reference group created cone_REF_GRP namespace=cone
+[2026-06-05T13:13:52] reference loaded new_nodes=5
+[2026-06-05T13:13:52] reference roots=['|cone:cone']
+[2026-06-05T13:13:52] reference complete group=cone_REF_GRP
+[2026-06-05T15:09:01] reference start locator=Cup_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Cup\default\publish\model\proxy\v001\model.ma
+[2026-06-05T15:09:02] reference group created Cup_REF_GRP namespace=Cup
+[2026-06-05T15:09:02] reference loaded new_nodes=10
+[2026-06-05T15:09:02] reference roots=['|Cup1:Cup1']
+[2026-06-05T15:09:02] reference complete group=Cup_REF_GRP
+[2026-06-05T15:09:11] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Cup\default\publish\model\proxy\v002\model.ma
+[2026-06-05T15:09:14] reference group created Cup_REF_GRP1 namespace=Cup
+[2026-06-05T15:09:14] reference loaded new_nodes=44
+[2026-06-05T15:09:14] reference roots=['|Cup2:Cup2']
+[2026-06-05T15:09:14] reference complete group=Cup_REF_GRP1
+[2026-06-05T15:49:57] reference start locator=Refridgerator_place_LOC1 workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-05T15:49:59] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-05T15:49:59] reference loaded new_nodes=41
+[2026-06-05T15:49:59] reference roots=['|Chair:Chair']
+[2026-06-05T15:49:59] reference complete group=Chair_REF_GRP
+[2026-06-09T14:53:56] reference start locator=Kitchen_geo_Props_grp_DiningTable_grp_ChairB_1_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-09T14:53:56] reference group created Kitchen_geo_Props_grp_DiningTable_grp_ChairB_1_REF_GRP namespace=Chair
+[2026-06-09T14:53:56] reference loaded new_nodes=41
+[2026-06-09T14:53:56] reference roots=['|Chair:Chair']
+[2026-06-09T14:53:56] reference complete group=Kitchen_geo_Props_grp_DiningTable_grp_ChairB_1_REF_GRP
+[2026-06-09T15:17:21] reference start locator=Kitchen_geo_Props_grp_North_grp_FridgeArea_grp_Refridgerator_1_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Refridgerator\default\publish\model\proxy\v001\model.ma
+[2026-06-09T15:17:21] reference group created Kitchen_geo_Props_grp_North_grp_FridgeArea_grp_Refridgerator_1_REF_GRP namespace=Refridgerator
+[2026-06-09T15:17:21] reference loaded new_nodes=280
+[2026-06-09T15:17:21] reference roots=['|Refridgerator:Refridgerator']
+[2026-06-09T15:17:21] reference complete group=Kitchen_geo_Props_grp_North_grp_FridgeArea_grp_Refridgerator_1_REF_GRP
+[2026-06-10T00:10:39] reference start locator=Kitchen_set_geo_Props_grp_North_grp_FridgeArea_grp_Refridgerator_1_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Refridgerator\default\publish\model\proxy\v001\model.ma
+[2026-06-10T00:10:39] reference group created Kitchen_set_geo_Props_grp_North_grp_FridgeArea_grp_Refridgerator_1_REF_GRP namespace=Refridgerator
+[2026-06-10T00:10:39] reference loaded new_nodes=280
+[2026-06-10T00:10:39] reference roots=['|Refridgerator:Refridgerator']
+[2026-06-10T00:10:39] reference complete group=Kitchen_set_geo_Props_grp_North_grp_FridgeArea_grp_Refridgerator_1_REF_GRP
+[2026-06-10T00:11:31] reference start locator=Kitchen_set_geo_Props_grp_DiningTable_grp_ChairB_1_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-10T00:11:31] reference group created Kitchen_set_geo_Props_grp_DiningTable_grp_ChairB_1_REF_GRP namespace=Chair
+[2026-06-10T00:11:31] reference loaded new_nodes=41
+[2026-06-10T00:11:31] reference roots=['|Chair:Chair']
+[2026-06-10T00:11:31] reference complete group=Kitchen_set_geo_Props_grp_DiningTable_grp_ChairB_1_REF_GRP
+[2026-06-10T00:15:45] reference start locator=Kitchen_set_geo_Props_grp_DiningTable_grp_KitchenTable_1_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\KitchenTable\default\publish\model\proxy\v001\model.ma
+[2026-06-10T00:15:45] reference group created Kitchen_set_geo_Props_grp_DiningTable_grp_KitchenTable_1_REF_GRP namespace=KitchenTable
+[2026-06-10T00:15:45] reference loaded new_nodes=36
+[2026-06-10T00:15:45] reference roots=['|KitchenTable:KitchenTable']
+[2026-06-10T00:15:45] reference complete group=Kitchen_set_geo_Props_grp_DiningTable_grp_KitchenTable_1_REF_GRP
+[2026-06-10T00:16:32] reference start locator=Kitchen_set_geo_Props_grp_DiningTable_grp_TableTop_grp_Spoon_2_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Spoon\default\publish\model\proxy\v001\model.ma
+[2026-06-10T00:16:32] reference group created Kitchen_set_geo_Props_grp_DiningTable_grp_TableTop_grp_Spoon_2_REF_GRP namespace=Spoon
+[2026-06-10T00:16:32] reference loaded new_nodes=10
+[2026-06-10T00:16:32] reference roots=['|Spoon1:Spoon1']
+[2026-06-10T00:16:32] reference complete group=Kitchen_set_geo_Props_grp_DiningTable_grp_TableTop_grp_Spoon_2_REF_GRP
+[2026-06-10T00:17:01] reference start locator=Kitchen_set_geo_Props_grp_DiningTable_grp_TableTop_grp_CupCRed_1_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Cup\Red\publish\model\proxy\v001\model.ma
+[2026-06-10T00:17:01] reference group created Kitchen_set_geo_Props_grp_DiningTable_grp_TableTop_grp_CupCRed_1_REF_GRP namespace=Cup
+[2026-06-10T00:17:01] reference loaded new_nodes=10
+[2026-06-10T00:17:01] reference roots=['|Cup1:Cup1']
+[2026-06-10T00:17:01] reference complete group=Kitchen_set_geo_Props_grp_DiningTable_grp_TableTop_grp_CupCRed_1_REF_GRP
+[2026-06-10T00:19:07] reference start locator=StoolWooden_1_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-10T00:19:07] reference group created StoolWooden_1_REF_GRP namespace=Chair1
+[2026-06-10T00:19:07] reference loaded new_nodes=41
+[2026-06-10T00:19:07] reference roots=['|Chair1:Chair']
+[2026-06-10T00:19:07] reference complete group=StoolWooden_1_REF_GRP
+[2026-06-10T00:19:34] reference start locator=Kitchen_set_geo_Props_grp_North_grp_SinkArea_grp_CupCBlue_2_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Cup\Blue\publish\model\proxy\v001\model.ma
+[2026-06-10T00:19:34] reference group created Kitchen_set_geo_Props_grp_North_grp_SinkArea_grp_CupCBlue_2_REF_GRP namespace=Cup
+[2026-06-10T00:19:34] reference loaded new_nodes=10
+[2026-06-10T00:19:34] reference roots=['|Cup2:Cup2']
+[2026-06-10T00:19:34] reference complete group=Kitchen_set_geo_Props_grp_North_grp_SinkArea_grp_CupCBlue_2_REF_GRP
+[2026-06-10T02:13:23] reference start locator=Kitchen_set_geo_Props_grp_North_grp_SinkArea_grp_DryingRack_grp_PlateBClean_1_Geom_Plate_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Plate\default\publish\model\proxy\v001\model.ma
+[2026-06-10T02:13:23] reference group created Kitchen_set_geo_Props_grp_North_grp_SinkArea_grp_DryingRack_grp_PlateBClean_1_Geom_Plate_REF_GRP namespace=Plate
+[2026-06-10T02:13:23] reference loaded new_nodes=8
+[2026-06-10T02:13:23] reference roots=['|Plate1:Plate1']
+[2026-06-10T02:13:23] reference complete group=Kitchen_set_geo_Props_grp_North_grp_SinkArea_grp_DryingRack_grp_PlateBClean_1_Geom_Plate_REF_GRP
+[2026-06-10T02:13:58] reference start locator=PlateBClean_2_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Plate\default\publish\model\proxy\v001\model.ma
+[2026-06-10T02:13:58] reference group created PlateBClean_2_REF_GRP namespace=Plate
+[2026-06-10T02:13:58] reference loaded new_nodes=8
+[2026-06-10T02:13:58] reference roots=['|Plate2:Plate1']
+[2026-06-10T02:13:58] reference complete group=PlateBClean_2_REF_GRP
+[2026-06-10T02:14:55] reference start locator=Top_place_LOC_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-10T02:14:55] reference group created Top_place_LOC_REF_GRP namespace=Chair2
+[2026-06-10T02:14:56] reference loaded new_nodes=41
+[2026-06-10T02:14:56] reference roots=['|Chair2:Chair']
+[2026-06-10T02:14:56] reference complete group=Top_place_LOC_REF_GRP
+[2026-06-10T02:15:46] reference start locator=Top_place_LOC_place_LOC_place_LOC_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-10T02:15:46] reference group created Top_place_LOC_place_LOC_place_LOC_REF_GRP namespace=Chair3
+[2026-06-10T02:15:46] reference loaded new_nodes=41
+[2026-06-10T02:15:46] reference roots=['|Chair3:Chair']
+[2026-06-10T02:15:46] reference complete group=Top_place_LOC_place_LOC_place_LOC_REF_GRP
+[2026-06-10T16:51:49] reference start locator=Kitchen_set_geo_Props_grp_North_grp_NorthWall_grp_CastIron_1_place_LOC1 workfile=D:\Projects\STKB\assets\prop\bp\CastIron\default\publish\model\proxy\v001\model.ma
+[2026-06-10T16:51:49] reference group created Kitchen_set_geo_Props_grp_North_grp_NorthWall_grp_CastIron_1_REF_GRP namespace=CastIron
+[2026-06-10T16:51:49] reference loaded new_nodes=20
+[2026-06-10T16:51:49] reference roots=['|CastIron:CastIron']
+[2026-06-10T16:51:49] reference complete group=Kitchen_set_geo_Props_grp_North_grp_NorthWall_grp_CastIron_1_REF_GRP
+[2026-06-10T17:03:18] reference start locator=CookingUtensils_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\CookingUtensils\default\publish\model\proxy\v001\model.ma
+[2026-06-10T17:03:18] reference group created CookingUtensils_REF_GRP namespace=CookingUtensils
+[2026-06-10T17:03:18] reference loaded new_nodes=76
+[2026-06-10T17:03:18] reference roots=['|CookingUtensils:CookingUtensils']
+[2026-06-10T17:03:18] reference complete group=CookingUtensils_REF_GRP
+[2026-06-10T17:06:38] reference start locator=CookingUtensils_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\CookingUtensils\default\publish\model\proxy\v001\model.ma
+[2026-06-10T17:06:38] reference group created CookingUtensils_REF_GRP namespace=CookingUtensils
+[2026-06-10T17:06:39] reference loaded new_nodes=76
+[2026-06-10T17:06:39] reference roots=['|CookingUtensils:CookingUtensils']
+[2026-06-10T17:06:39] reference complete group=CookingUtensils_REF_GRP
+[2026-06-11T02:34:14] reference start locator=Chair_place_LOC workfile=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\model\proxy\v001\model.ma
+[2026-06-11T02:34:14] reference group created Chair_REF_GRP namespace=Chair
+[2026-06-11T02:34:14] reference loaded new_nodes=41
+[2026-06-11T02:34:14] reference roots=['|Chair:Chair']
+[2026-06-11T02:34:14] reference complete group=Chair_REF_GRP
+[2026-06-11T03:07:30] usd placement start locator=Chair_place_LOC usd=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\usd\v001\Chair.usd
+[2026-06-11T03:07:30] usd placement complete proxy=Chair_USD_PROXY

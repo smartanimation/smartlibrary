@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from smartlib.core.config_loader import load_config
+from smartlib.core.config_loader import ProjectConfig
 
 
 DEFAULT_REQUIRED_PLUGINS = ["mayaUsdPlugin"]
@@ -12,7 +12,7 @@ DEFAULT_REQUIRED_PLUGINS = ["mayaUsdPlugin"]
 
 def maya_plugin_config(config_dir: str | os.PathLike[str] | None = None) -> dict[str, list[str]]:
     cfg_dir = Path(config_dir or os.environ.get("PROJECT_CONFIG_DIR") or "")
-    data = load_config(cfg_dir / "tools.yml") if cfg_dir else {}
+    data = ProjectConfig(cfg_dir).load("tools.yml") if cfg_dir else {}
     plugins = (((data.get("dcc") or {}).get("maya") or {}).get("plugins") or {})
     required = plugins.get("required")
     optional = plugins.get("optional")

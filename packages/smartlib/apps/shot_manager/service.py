@@ -9,7 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.config_loader import ProjectConfig, load_config
+from smartlib.core.asset_publish_resolver import AssetPublishResolver
 from smartlib.core.credentials import credentials_path
 from smartlib.core.metadata import read_json, sidecar_path, write_json
 from smartlib.core.path_resolver import ProjectPaths
@@ -34,6 +35,9 @@ ROLE_ALIASES = {
     "ENVIRONMENT": "BGA",
 }
 VALID_ASSET_PUBLISH = {"approved", "latest"}
+CONSTRUCT_TYPES = {"rig", "camera", "animation", "fx", "light", "audio", "cast", "placement", "layout_overlay"}
+CONSTRUCT_MODES = {"reference", "import", "apply", "reference_cache", "file"}
+FX_CACHE_EXTENSIONS = {".abc", ".usd", ".usda", ".usdc"}
 CAST_CSV_COLUMNS = [
     "episode",
     "sequence",
@@ -47,6 +51,33 @@ CAST_CSV_COLUMNS = [
     "required",
     "note",
 ]
+
+
+def _project_templates(project_config: ProjectConfig) -> dict[str, str]:
+    templates = getattr(project_config, "templates", None)
+    if isinstance(templates, dict):
+        return {str(key): str(value) for key, value in templates.items()}
+
+    merged: dict[str, str] = {}
+    config_dir = Path(getattr(project_config, "config_dir", ""))
+    for filename in ("templates_base.yml", "templates_assets.yml", "templates_shots.yml"):
+        if hasattr(project_config, "load"):
+            data = project_config.load(filename)
+        else:
+            data = load_config(config_dir / filename)
+        values = data.get("templates") or {}
+        if isinstance(values, dict):
+            merged.update({str(key): str(value) for key, value in values.items()})
+    return merged
+
+
+def _project_name(project_config: ProjectConfig) -> str:
+    name = getattr(project_config, "project_name", "")
+    if name:
+        return str(name)
+    base = getattr(project_config, "base", {}) or {}
+    config_dir = Path(getattr(project_config, "config_dir", ""))
+    return str((base.get("anchors") or {}).get("project_name") or config_dir.name)
 
 
 @dataclass(frozen=True)
@@ -148,6 +179,20 @@ class AnimInputBuildResult:
 
 
 @dataclass(frozen=True)
+class ConstructComponent:
+    component_type: str
+    name: str
+    version: str = "latest"
+    mode: str = "reference"
+    namespace: str = ""
+    path: str = ""
+    required: bool = True
+    enabled: bool = True
+    note: str = ""
+    source: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ShotCreateRequest:
     episode: str
     sequence: str
@@ -171,7 +216,12 @@ class ShotManagerService:
         project_root = project_config.project_root
         if project_root is None:
             raise RuntimeError("project_root is not set in templates_base.yml")
-        self.paths = ProjectPaths(project_root)
+        self.paths = ProjectPaths(
+            project_root,
+            templates=_project_templates(project_config),
+            project_name=_project_name(project_config),
+        )
+        self.asset_publish_resolver = AssetPublishResolver(project_config)
 
     @property
     def shot_departments(self) -> list[str]:
@@ -197,8 +247,15 @@ class ShotManagerService:
         if not shots_root.exists():
             return []
         shots: list[ShotIdentity] = []
-        for shot_json in shots_root.glob("*/*/*/shot.json"):
+        for shot_json in shots_root.glob("**/shot.json"):
             shot_root = shot_json.parent
+            data = read_json(shot_json, {}) or {}
+            episode = str(data.get("episode") or "").strip()
+            sequence = str(data.get("sequence") or data.get("seq") or "").strip()
+            shot = str(data.get("shot") or "").strip()
+            if episode and sequence and shot:
+                shots.append(ShotIdentity(episode=episode, sequence=sequence, shot=shot))
+                continue
             try:
                 sequence_root = shot_root.parent
                 episode_root = sequence_root.parent
@@ -217,10 +274,14 @@ class ShotManagerService:
         sequences: dict[tuple[str, str], SequenceIdentity] = {}
         sequences_root = self.paths.sequences_root()
         if sequences_root.exists():
-            for sequence_json in sequences_root.glob("*/*/sequence.json"):
+            for sequence_json in sequences_root.glob("**/sequence.json"):
                 sequence_root = sequence_json.parent
                 episode_root = sequence_root.parent
-                sequences[(episode_root.name, sequence_root.name)] = SequenceIdentity(episode_root.name, sequence_root.name)
+                data = read_json(sequence_json, {}) or {}
+                episode = str(data.get("episode") or episode_root.name).strip()
+                sequence = str(data.get("sequence") or data.get("seq") or sequence_root.name).strip()
+                if episode and sequence:
+                    sequences[(episode, sequence)] = SequenceIdentity(episode, sequence)
         for shot in self.list_shots():
             sequences.setdefault((shot.episode, shot.sequence), SequenceIdentity(shot.episode, shot.sequence))
         return sorted(sequences.values(), key=lambda item: (item.episode.lower(), item.sequence.lower()))
@@ -264,8 +325,30 @@ class ShotManagerService:
             return work_dir / _normalize_work_option(option)
         return work_dir
 
+    def legacy_shot_tool_work_dir(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        option: str | None = None,
+        tool_name: str = "maya",
+    ) -> Path:
+        work_dir = self.paths.legacy_shot_tool_work_dir(
+            identity.episode,
+            identity.sequence,
+            identity.shot,
+            department,
+            _normalize_tool_name(tool_name),
+        )
+        if option:
+            return work_dir / _normalize_work_option(option)
+        return work_dir
+
     def list_shot_work_options(self, identity: ShotIdentity, department: str, tool_name: str = "maya") -> list[str]:
-        work_dirs = [self.shot_work_dir(identity, department, tool_name=tool_name), self.legacy_shot_work_dir(identity, department)]
+        work_dirs = [
+            self.shot_work_dir(identity, department, tool_name=tool_name),
+            self.legacy_shot_tool_work_dir(identity, department, tool_name=tool_name),
+            self.legacy_shot_work_dir(identity, department),
+        ]
         options = {"main"}
         for work_dir in work_dirs:
             if not work_dir.exists():
@@ -492,7 +575,9 @@ class ShotManagerService:
         directories = [self.shot_work_dir(identity, department, option_name, tool_name=tool_name)]
         if option_name == "main":
             directories.append(self.shot_work_dir(identity, department, tool_name=tool_name))
+            directories.append(self.legacy_shot_tool_work_dir(identity, department, tool_name=tool_name))
             directories.append(self.legacy_shot_work_dir(identity, department))
+        directories.append(self.legacy_shot_tool_work_dir(identity, department, option_name, tool_name=tool_name))
         directories.append(self.legacy_shot_work_dir(identity, department, option_name))
         seen = set()
         unique = []
@@ -512,9 +597,12 @@ class ShotManagerService:
         scene_info: dict[str, Any] | None = None,
         comment: str = "",
         thumbnail: str = "",
+        token_context: dict[str, Any] | None = None,
+        construct_data: dict[str, Any] | None = None,
     ) -> Path:
         work_path = Path(path)
         parsed = parse_shot_work_file(work_path.name) or {}
+        construct = self.construct_snapshot(identity, construct_data) if construct_data is not None else {}
         data = {
             "episode": identity.episode,
             "sequence": identity.sequence,
@@ -528,7 +616,10 @@ class ShotManagerService:
             "thumbnail": thumbnail,
             "source": work_path.name,
             "scene_info": scene_info or {},
+            "tokens": token_context or {},
         }
+        if construct:
+            data["construct"] = construct
         return write_json(sidecar_path(work_path), data)
 
     def write_sequence_work_metadata(
@@ -540,6 +631,7 @@ class ShotManagerService:
         scene_info: dict[str, Any] | None = None,
         comment: str = "",
         thumbnail: str = "",
+        token_context: dict[str, Any] | None = None,
     ) -> Path:
         work_path = Path(path)
         parsed = parse_shot_work_file(work_path.name) or {}
@@ -554,6 +646,7 @@ class ShotManagerService:
             "thumbnail": thumbnail,
             "source": work_path.name,
             "scene_info": scene_info or {},
+            "tokens": token_context or {},
         }
         return write_json(sidecar_path(work_path), data)
 
@@ -562,14 +655,69 @@ class ShotManagerService:
         work_path = Path(path)
         return work_path.parent / ".thumbnails" / f"{work_path.stem}.jpg"
 
+    def next_shot_scene_archive_path(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        ext: str = "ma",
+    ) -> Path:
+        base_dir = self.shot_root(identity) / "publish" / department / "scene"
+        version_label = self._next_publish_version(base_dir)
+        clean_ext = str(ext or "ma").lower().lstrip(".")
+        return base_dir / version_label / f"scene.{clean_ext}"
+
+    def register_shot_scene_archive(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        scene_path: str | Path,
+        *,
+        source_workfile: str | Path | None = None,
+        option: str = "main",
+        scene_info: dict[str, Any] | None = None,
+        comment: str = "",
+        token_context: dict[str, Any] | None = None,
+    ) -> Path:
+        scene_file = Path(scene_path)
+        version_label = scene_file.parent.name
+        base_dir = scene_file.parent.parent
+        file_key = scene_file.suffix.lower().lstrip(".") or "ma"
+        publish_data = {
+            "publish_type": department,
+            "subset": "scene",
+            "snapshot_type": "scene_archive",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "department": department,
+            "option": _normalize_work_option(option),
+            "version": version_label,
+            "files": {
+                file_key: scene_file.name,
+            },
+            "source_workfile": self._relative_to_project(Path(source_workfile)) if source_workfile else "",
+            "scene_info": scene_info or {},
+            "tokens": token_context or {},
+            "archived_at": datetime.now().isoformat(timespec="seconds"),
+            "comment": comment,
+        }
+        publish_json = write_json(scene_file.parent / "publish.json", publish_data)
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{scene_file.name}"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return publish_json
+
     def validate_cast(self, identity: ShotIdentity) -> list[ValidationIssue]:
         return validate_cast_data(self.load_cast(identity))
 
-    def build_preview(self, identity: ShotIdentity) -> list[BuildPreviewItem]:
-        return self._build_preview_from_cast(self.load_cast(identity))
+    def build_preview(self, identity: ShotIdentity, department: str = "default") -> list[BuildPreviewItem]:
+        return self._build_preview_from_cast(self.load_cast(identity), department=department)
 
     def build_sequence_preview(self, identity: SequenceIdentity) -> list[BuildPreviewItem]:
-        return self._build_preview_from_cast(self.load_sequence_cast(identity.episode, identity.sequence))
+        return self._build_preview_from_cast(
+            self.load_sequence_cast(identity.episode, identity.sequence),
+            consumer="sequence",
+            department="layout",
+        )
 
     def latest_anim_input(self, identity: ShotIdentity) -> Path | None:
         base_dir = self.shot_root(identity) / "publish" / "anim_input" / "main"
@@ -588,7 +736,269 @@ class ShotManagerService:
             cast_data = self.load_cast(identity)
         if not (cast_data.get("cast") or {}):
             cast_data = self.load_sequence_cast(identity.episode, identity.sequence)
-        return self._build_preview_from_cast(cast_data)
+        return self._build_preview_from_cast(cast_data, department="anim")
+
+    def construct_path(self, identity: ShotIdentity) -> Path:
+        return self.shot_root(identity) / "construct.json"
+
+    def load_construct(self, identity: ShotIdentity) -> dict[str, Any]:
+        data = read_json(self.construct_path(identity), {}) or {}
+        if not isinstance(data, dict):
+            data = {}
+        components = data.get("components") or []
+        normalized = [
+            asdict(component)
+            for component in self.normalize_construct_components(components)
+        ]
+        return {
+            "construct_type": str(data.get("construct_type") or "shot_construct"),
+            "episode": str(data.get("episode") or identity.episode),
+            "sequence": str(data.get("sequence") or identity.sequence),
+            "shot": str(data.get("shot") or identity.shot),
+            "components": normalized,
+        }
+
+    def construct_components(self, identity: ShotIdentity) -> list[ConstructComponent]:
+        return self.normalize_construct_components(self.load_construct(identity).get("components") or [])
+
+    def construct_snapshot(self, identity: ShotIdentity, construct_data: dict[str, Any] | None = None) -> dict[str, Any]:
+        data = construct_data if construct_data is not None else self.load_construct(identity)
+        components = self.normalize_construct_components((data or {}).get("components") or [])
+        return {
+            "schema": "smart_construct_snapshot",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "captured_at": datetime.now().isoformat(timespec="seconds"),
+            "components": [asdict(component) for component in components],
+        }
+
+    def construct_component_enabled(
+        self,
+        identity: ShotIdentity,
+        component_type: str,
+        name: str = "",
+        source_field: str = "",
+        *,
+        default: bool = True,
+    ) -> bool:
+        component_type = component_type.strip().lower()
+        name = name.strip()
+        source_field = source_field.strip()
+        components = [component for component in self.construct_components(identity) if component.component_type == component_type]
+        if not components:
+            return default
+        matches = []
+        for component in components:
+            component_source_field = str(component.source.get("field") or "").strip()
+            if source_field and component_source_field == source_field:
+                matches.append(component)
+                continue
+            if name and component.name == name:
+                matches.append(component)
+        if not matches:
+            return default
+        return any(component.enabled for component in matches)
+
+    def filter_preview_items_for_construct(self, identity: ShotIdentity, preview_items: list[BuildPreviewItem]) -> list[BuildPreviewItem]:
+        rig_components = [
+            component
+            for component in self.construct_components(identity)
+            if component.component_type == "rig"
+        ]
+        if not rig_components:
+            return list(preview_items)
+        enabled_components = [component for component in rig_components if component.enabled]
+        filtered = []
+        for item in preview_items:
+            for component in enabled_components:
+                if _construct_rig_matches_preview(component, item):
+                    filtered.append(item)
+                    break
+        return filtered
+
+    def write_construct(self, identity: ShotIdentity, construct_data: dict[str, Any]) -> Path:
+        components = self.normalize_construct_components(construct_data.get("components") or [])
+        data = {
+            "construct_type": "shot_construct",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "components": [asdict(component) for component in components],
+        }
+        return write_json(self.construct_path(identity), data)
+
+    def construct_from_cast(self, identity: ShotIdentity) -> dict[str, Any]:
+        components: list[dict[str, Any]] = []
+        for item in self.build_preview(identity):
+            components.append(
+                asdict(
+                    ConstructComponent(
+                        component_type="rig",
+                        name=item.cast_key,
+                        version=item.asset_publish or "approved",
+                        mode="reference",
+                        namespace=item.namespace or item.cast_key,
+                        path=item.publish_path,
+                        required=item.required,
+                        enabled=True,
+                        note=item.message if item.status != "resolved" else "",
+                        source={
+                            "kind": "cast",
+                            "asset": item.asset,
+                            "variant": item.variant,
+                            "role": item.role,
+                            "status": item.status,
+                        },
+                    )
+                )
+            )
+        return {
+            "construct_type": "shot_construct",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "components": components,
+        }
+
+    def construct_from_stage_inputs(self, identity: ShotIdentity) -> dict[str, Any]:
+        components: list[dict[str, Any]] = []
+        anim_input_path = self.latest_anim_input(identity)
+        anim_input = read_json(anim_input_path, {}) if anim_input_path else {}
+        if anim_input_path:
+            components.append(
+                asdict(
+                    ConstructComponent(
+                        component_type="animation",
+                        name="anim_input",
+                        version=str(anim_input.get("version") or _version_from_path(anim_input_path) or "latest"),
+                        mode="file",
+                        path=str(anim_input_path),
+                        required=True,
+                        enabled=True,
+                        source={"kind": "anim_input"},
+                    )
+                )
+            )
+            for field, component_type, name, mode, required in (
+                ("cast", "cast", "cast", "file", True),
+                ("placements", "placement", "placements", "file", True),
+                ("camera", "camera", "camera", "import", True),
+                ("layout_overlay", "layout_overlay", "layout_overlay", "reference", False),
+            ):
+                path = self._project_path_from_text(str(anim_input.get(field) or ""))
+                components.append(
+                    asdict(
+                        ConstructComponent(
+                            component_type=component_type,
+                            name=name,
+                            version=_version_from_path(path) or "latest",
+                            mode=mode,
+                            namespace=name if component_type in {"camera", "layout_overlay"} else "",
+                            path=str(path) if path else "",
+                            required=required,
+                            enabled=bool(path and path.exists()) or not required,
+                            note="" if path and path.exists() else f"{field} was not found in latest anim input.",
+                            source={"kind": "anim_input", "field": field},
+                        )
+                    )
+                )
+
+        try:
+            preview = self.build_preview_from_anim_input(identity) if anim_input_path else self.build_preview(identity)
+        except Exception:
+            preview = self.build_preview(identity)
+        for item in preview:
+            components.append(
+                asdict(
+                    ConstructComponent(
+                        component_type="rig",
+                        name=item.cast_key,
+                        version=item.asset_publish or "approved",
+                        mode="reference",
+                        namespace=item.namespace or item.cast_key,
+                        path=item.publish_path,
+                        required=item.required,
+                        enabled=True,
+                        note=item.message if item.status != "resolved" else "",
+                        source={
+                            "kind": "cast_entry",
+                            "asset": item.asset,
+                            "variant": item.variant,
+                            "role": item.role,
+                            "status": item.status,
+                        },
+                    )
+                )
+            )
+        return {
+            "construct_type": "shot_construct",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "components": components,
+        }
+
+    def ensure_stage_construct(self, identity: ShotIdentity) -> Path:
+        existing = self.load_construct(identity)
+        incoming = self.construct_from_stage_inputs(identity)
+        components = list(existing.get("components") or [])
+        seen = {_construct_component_key(component) for component in components}
+        changed = False
+        for component in incoming.get("components") or []:
+            key = _construct_component_key(component)
+            if key in seen:
+                continue
+            components.append(component)
+            seen.add(key)
+            changed = True
+        if not changed and self.construct_path(identity).exists():
+            return self.construct_path(identity)
+        return self.write_construct(identity, {"components": components})
+
+    def _project_path_from_text(self, path_text: str) -> Path | None:
+        if not path_text:
+            return None
+        path = Path(path_text)
+        return path if path.is_absolute() else self.paths.project_root / path
+
+    def normalize_construct_components(self, components: list[Any]) -> list[ConstructComponent]:
+        normalized: list[ConstructComponent] = []
+        for index, raw in enumerate(components):
+            if not isinstance(raw, dict):
+                continue
+            component_type = str(raw.get("component_type") or raw.get("type") or "").strip().lower()
+            if component_type not in CONSTRUCT_TYPES:
+                component_type = "rig"
+            name = str(raw.get("name") or raw.get("target") or f"{component_type}_{index + 1:03d}").strip()
+            version = str(raw.get("version") or "latest").strip()
+            mode = str(raw.get("mode") or "").strip().lower()
+            if not mode:
+                mode = "reference_cache" if component_type == "fx" else "reference"
+            if mode not in CONSTRUCT_MODES:
+                mode = "reference"
+            path = str(raw.get("path") or "").strip()
+            note = str(raw.get("note") or "").strip()
+            if component_type == "fx" and path:
+                suffix = Path(path).suffix.lower()
+                if suffix and suffix not in FX_CACHE_EXTENSIONS:
+                    note = (note + " " if note else "") + "FX cache should be abc/usd/usda/usdc."
+            normalized.append(
+                ConstructComponent(
+                    component_type=component_type,
+                    name=name,
+                    version=version,
+                    mode=mode,
+                    namespace=str(raw.get("namespace") or "").strip(),
+                    path=path,
+                    required=_truthy(raw.get("required"), default=True),
+                    enabled=_truthy(raw.get("enabled"), default=True),
+                    note=note,
+                    source=dict(raw.get("source") or {}) if isinstance(raw.get("source"), dict) else {},
+                )
+            )
+        return normalized
 
     def publish_animation_curves(
         self,
@@ -1244,6 +1654,8 @@ class ShotManagerService:
                     "frame_range": list(frame_range) if frame_range else [],
                     "export_status": export_result.get("export_status", "placeholder"),
                     "export_error": export_result.get("export_error", ""),
+                    "export_content": "transform_geometry_only",
+                    "export_source_set": f"{entry.get('namespace', target)}:rig_geo_grp",
                     "source_nodes": export_result.get("source_nodes", []),
                     "comment": comment,
                 },
@@ -1600,7 +2012,13 @@ class ShotManagerService:
             return f"n_{cleaned}"
         return cleaned
 
-    def _build_preview_from_cast(self, cast_data: dict[str, Any]) -> list[BuildPreviewItem]:
+    def _build_preview_from_cast(
+        self,
+        cast_data: dict[str, Any],
+        *,
+        consumer: str = "shot",
+        department: str = "default",
+    ) -> list[BuildPreviewItem]:
         cast = cast_data.get("cast") or {}
         review_layers = cast_data.get("review_layers") or {}
         member_to_layer = {}
@@ -1651,7 +2069,12 @@ class ShotManagerService:
                 )
                 continue
 
-            publish_path = self.resolve_asset_context_work_publish(variant_root, asset_publish)
+            publish_path = self.resolve_asset_context_work_publish(
+                variant_root,
+                asset_publish,
+                consumer=consumer,
+                department=department,
+            )
             if not publish_path:
                 publish_path = self.resolve_asset_publish(variant_root, asset_publish)
             status = "resolved" if publish_path else ("missing" if required else "optional missing")
@@ -1678,7 +2101,14 @@ class ShotManagerService:
         assets_root = self.paths.assets_root()
         if not asset_name or not assets_root.exists():
             return None
-        matches = sorted(assets_root.glob(f"*/*/{asset_name}"))
+        matches = []
+        for asset_json in assets_root.glob("**/asset.json"):
+            asset_root = asset_json.parent
+            data = read_json(asset_json, {}) or {}
+            if str(data.get("asset") or data.get("name") or asset_root.name) == asset_name:
+                matches.append(asset_root)
+        if not matches:
+            matches = sorted(path for path in assets_root.glob(f"**/{asset_name}") if path.is_dir())
         return matches[0] if matches else None
 
     def resolve_asset_publish(self, variant_root: Path, asset_publish: str) -> Path | None:
@@ -1696,7 +2126,22 @@ class ShotManagerService:
         latest = self._latest_publish_paths(publish_root)
         return _preferred_publish(latest)
 
-    def resolve_asset_context_work_publish(self, variant_root: Path, asset_publish: str) -> Path | None:
+    def resolve_asset_context_work_publish(
+        self,
+        variant_root: Path,
+        asset_publish: str,
+        *,
+        consumer: str = "shot",
+        department: str = "default",
+    ) -> Path | None:
+        configured = self.asset_publish_resolver.resolve(
+            variant_root,
+            consumer=consumer,
+            department=department,
+            version=asset_publish,
+        )
+        if configured:
+            return configured
         context_root = variant_root / "publish" / "asset" / "work"
         legacy_context_root = variant_root / "publish" / "asset" / "asset_work"
         if not context_root.exists() and legacy_context_root.exists():
@@ -2315,6 +2760,58 @@ def _parse_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _truthy(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return _parse_bool(value)
+
+
+def _version_from_path(path: Path | None) -> str:
+    if not path:
+        return ""
+    for part in reversed(path.parts):
+        if _is_version_label(str(part)):
+            return str(part)
+    return ""
+
+
+def _construct_component_key(component: dict[str, Any]) -> tuple[str, str, str]:
+    source = component.get("source") if isinstance(component.get("source"), dict) else {}
+    source_kind = str(source.get("kind") or "")
+    source_field = str(source.get("field") or "")
+    source_key = f"{source_kind}:{source_field}" if source_kind or source_field else ""
+    return (
+        str(component.get("component_type") or component.get("type") or "").strip().lower(),
+        str(component.get("name") or "").strip(),
+        source_key,
+    )
+
+
+def _construct_rig_matches_preview(component: ConstructComponent, item: BuildPreviewItem) -> bool:
+    names = {
+        str(component.name or "").strip(),
+        str(component.namespace or "").strip(),
+    }
+    if component.path:
+        names.add(Path(str(component.path)).as_posix().lower())
+    source_asset = str(component.source.get("asset") or "").strip()
+    source_variant = str(component.source.get("variant") or "").strip()
+    if source_asset:
+        names.add(source_asset)
+    candidates = {
+        str(item.cast_key or "").strip(),
+        str(item.namespace or "").strip(),
+        str(item.asset or "").strip(),
+    }
+    if item.publish_path:
+        candidates.add(Path(str(item.publish_path)).as_posix().lower())
+    names.discard("")
+    candidates.discard("")
+    if source_asset and source_asset == item.asset and (not source_variant or source_variant == item.variant):
+        return True
+    return bool(names & candidates)
 
 
 def _row_matches_identity(row: dict[str, Any], identity: ShotIdentity) -> bool:

@@ -1,0 +1,22 @@
+package: Smart Review
+author: smartlibrary
+organization: smartlibrary
+version: 0.1
+requires: ''
+rv: 2023.0.0
+openrv: 1.0.0
+optional: false
+
+modes:
+  - file: smart_review.py
+    menu: 'Tools/Smart Review'
+    shortcut: ''
+    event: ''
+    load: immediate
+
+description: |
+    <p>
+    Adds a docked Smart Review panel to RV. The panel resolves SmartLibrary
+    review packages and pushes selected asset or shot media into the current
+    RV session.
+    </p>

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
-from smartlib.core.config_loader import ProjectConfig, load_config
+from smartlib.core.config_loader import ProjectConfig
 
 
 def preset_names(project_config: ProjectConfig) -> list[str]:
@@ -16,22 +15,38 @@ def preset_label(project_config: ProjectConfig, name: str) -> str:
     return str(preset.get("label") or name)
 
 
+def apply_playblast_preset(project_config: ProjectConfig, preset_name: str | None) -> None:
+    cmds = _maya_cmds()
+    preset = (_presets(project_config).get(preset_name or "") or {}).get("display") or {}
+    if not preset:
+        return
+    panel = _active_model_panel(cmds)
+    for model_panel in _model_panels(cmds):
+        _apply_panel_preset(cmds, model_panel, preset)
+        _force_playblast_overlays_off(cmds, model_panel)
+    _apply_image_plane_preset(cmds, preset)
+    _focus_panel(cmds, panel)
+    try:
+        cmds.refresh(force=True)
+    except Exception:
+        pass
+
+
 @contextmanager
 def applied_playblast_preset(project_config: ProjectConfig, preset_name: str | None):
     cmds = _maya_cmds()
     preset = (_presets(project_config).get(preset_name or "") or {}).get("display") or {}
-    if not preset:
-        yield
-        return
-
     panel = _active_model_panel(cmds)
     panels = _model_panels(cmds)
     panel_state = {panel: _capture_panel_state(cmds, panel) for panel in panels}
     image_plane_state = _capture_image_planes(cmds)
     try:
+        if preset:
+            for panel in panels:
+                _apply_panel_preset(cmds, panel, preset)
+            _apply_image_plane_preset(cmds, preset)
         for panel in panels:
-            _apply_panel_preset(cmds, panel, preset)
-        _apply_image_plane_preset(cmds, preset)
+            _force_playblast_overlays_off(cmds, panel)
         _focus_panel(cmds, panel)
         try:
             cmds.refresh(force=True)
@@ -49,17 +64,8 @@ def applied_playblast_preset(project_config: ProjectConfig, preset_name: str | N
 
 
 def _presets(project_config: ProjectConfig) -> dict[str, Any]:
-    default_path = _pipeline_root(project_config) / "config" / "default" / "playblast_presets.yml"
-    data = load_config(default_path)
-    project_path = project_config.config_dir / "playblast_presets.yml"
-    project_data = load_config(project_path)
-    merged = dict((data.get("presets") or {}) if isinstance(data, dict) else {})
-    merged.update((project_data.get("presets") or {}) if isinstance(project_data, dict) else {})
-    return merged
-
-
-def _pipeline_root(project_config: ProjectConfig) -> Path:
-    return project_config.config_dir.parent.parent
+    data = project_config.load("playblast_presets.yml")
+    return dict((data.get("presets") or {}) if isinstance(data, dict) else {})
 
 
 def _active_model_panel(cmds: Any) -> str:
@@ -91,7 +97,15 @@ def _focus_panel(cmds: Any, panel: str) -> None:
 
 def _capture_panel_state(cmds: Any, panel: str) -> dict[str, Any]:
     state = {}
-    for flag in ("displayAppearance", "displayTextures", "displayLights", "shadows", "grid", "useDefaultMaterial"):
+    for flag in (
+        "displayAppearance",
+        "displayTextures",
+        "displayLights",
+        "shadows",
+        "grid",
+        "useDefaultMaterial",
+        *_FORCED_PLAYBLAST_OFF_FLAGS,
+    ):
         try:
             state[flag] = cmds.modelEditor(panel, query=True, **{flag: True})
         except Exception:
@@ -148,6 +162,28 @@ def _apply_panel_preset(cmds: Any, panel: str, preset: dict[str, Any]) -> None:
     ):
         try:
             cmds.modelEditor(panel, edit=True, **{flag: value})
+        except Exception:
+            pass
+
+
+_FORCED_PLAYBLAST_OFF_FLAGS = (
+    "cameras",
+    "imagePlane",
+    "lights",
+    "strokes",
+    "texturePlacements",
+    "headsUpDisplay",
+    "holdOuts",
+    "grid",
+    "manipulators",
+    "selectionHiliteDisplay",
+)
+
+
+def _force_playblast_overlays_off(cmds: Any, panel: str) -> None:
+    for flag in _FORCED_PLAYBLAST_OFF_FLAGS:
+        try:
+            cmds.modelEditor(panel, edit=True, **{flag: False})
         except Exception:
             pass
 

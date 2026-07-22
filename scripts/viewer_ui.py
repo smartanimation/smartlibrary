@@ -49,8 +49,9 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self,
         config_dir: str | os.PathLike[str] | None = None,
         review_json: str | os.PathLike[str] | None = None,
+        parent=None,
     ):
-        super().__init__()
+        super().__init__(parent)
         self.service = _service(config_dir)
         self.packages = []
         self.initial_review_json = Path(review_json) if review_json else None
@@ -213,7 +214,14 @@ class ViewerWindow(QtWidgets.QMainWindow):
                 "Set tools.openrv.path in config/STKB/tools.yml or set OPENRV_PATH.",
             )
             return
-        subprocess.Popen([str(rv), *args])
+        rvpush = self.service.rvpush_executable()
+        if rvpush:
+            env = os.environ.copy()
+            env.setdefault("RVPUSH_RV_EXECUTABLE_PATH", str(rv))
+            merge_args = [str(rvpush), "merge", *args] if args[:1] == ["-tile"] else [str(rvpush), "merge", "[", *args, "]"]
+            subprocess.Popen(merge_args, env=env)
+        else:
+            subprocess.Popen([str(rv), *args])
         self.status_label.setText(f"Launched RV: {len(args)} source(s)")
 
 
@@ -223,6 +231,8 @@ _WINDOW = None
 def show(
     config_dir: str | os.PathLike[str] | None = None,
     review_json: str | os.PathLike[str] | None = None,
+    auto_open_rv: bool = False,
+    parent=None,
 ):
     global _WINDOW
     try:
@@ -230,8 +240,18 @@ def show(
     except Exception:
         pass
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    _WINDOW = ViewerWindow(config_dir=config_dir, review_json=review_json)
+    _ensure_smartlib_on_path()
+    from smartlib.core.qt import parent_for_maya
+
+    window_parent = parent_for_maya(QtWidgets, parent)
+    _WINDOW = ViewerWindow(config_dir=config_dir, review_json=review_json, parent=window_parent)
+    if window_parent is not None:
+        _WINDOW.setWindowFlags(_WINDOW.windowFlags() | QtCore.Qt.Window)
     _WINDOW.show()
+    _WINDOW.raise_()
+    _WINDOW.activateWindow()
+    if auto_open_rv:
+        QtCore.QTimer.singleShot(0, _WINDOW.open_package_in_rv)
     return _WINDOW
 
 

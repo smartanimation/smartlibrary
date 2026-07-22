@@ -1,8 +1,12 @@
 tools:
   openrv:
-    path: ""
+    path: "{smartpipeline_tools}/openrv/rv.exe"
   ffmpeg:
-    path: "{smartpipeline_root}/tools/ffmpeg/ffmpeg.exe"
+    path: "{smartpipeline_tools}/ffmpeg/ffmpeg.exe"
+  usdcat:
+    path: "{smartpipeline_root}/tools/usd/usdcat.bat"
+  usdview:
+    path: "{smartpipeline_root}/tools/usd/usdview.bat"
 dcc:
   maya:
     plugins:

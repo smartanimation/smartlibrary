@@ -387,6 +387,13 @@
                  </property>
                 </widget>
                </item>
+               <item>
+                <widget class="QPushButton" name="archive_scene_btn">
+                 <property name="text">
+                  <string>Archive Scene</string>
+                 </property>
+                </widget>
+               </item>
               </layout>
              </item>
             </layout>

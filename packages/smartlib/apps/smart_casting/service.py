@@ -39,7 +39,11 @@ class SmartCastingService:
         project_root = project_config.project_root
         if project_root is None:
             raise RuntimeError("project_root is not set in templates_base.yml")
-        self.paths = ProjectPaths(project_root)
+        self.paths = ProjectPaths(
+            project_root,
+            templates=project_config.templates,
+            project_name=project_config.project_name,
+        )
         self.asset_service = AssetManagerService(project_config)
         self.shot_service = ShotManagerService(project_config)
 
@@ -48,7 +52,7 @@ class SmartCastingService:
         rows: list[CastingAsset] = []
         if not root.exists():
             return rows
-        for asset_json in root.glob("*/*/*/asset.json"):
+        for asset_json in root.glob("**/asset.json"):
             asset_root = asset_json.parent
             metadata = read_json(asset_json, {}) or {}
             category = str(metadata.get("category") or asset_root.parent.parent.name)
@@ -56,7 +60,7 @@ class SmartCastingService:
             asset = str(metadata.get("asset") or metadata.get("name") or asset_root.name)
             description = str(metadata.get("description") or "")
             status = str(metadata.get("status") or "Wait")
-            variants = self.list_variants(category, group, asset)
+            variants = self._variant_names(asset_root)
             if not variants:
                 variants = ["default"]
             for variant in variants:
@@ -69,7 +73,7 @@ class SmartCastingService:
                         variant=variant,
                         status=str(variant_data.get("status") or status),
                         description=str(variant_data.get("description") or description),
-                        thumbnail=str(self.asset_thumbnail_path(category, group, asset) or ""),
+                        thumbnail=str(self._asset_thumbnail_path(asset_root) or ""),
                         path=str(asset_root),
                     )
                 )
@@ -79,8 +83,7 @@ class SmartCastingService:
         asset_root = self.paths.asset_root(AssetIdentity(category, group, asset))
         if not asset_root.exists():
             return []
-        variants = [path.name for path in asset_root.iterdir() if path.is_dir() and (path / "variant.json").exists()]
-        return sorted(variants, key=lambda name: (name != "default", name.lower()))
+        return self._variant_names(asset_root)
 
     def categories(self) -> list[str]:
         return sorted({row.category for row in self.list_assets()})
@@ -98,6 +101,10 @@ class SmartCastingService:
         return self.asset_service.create_variant(AssetCreateRequest(category, group, asset, variant, description))
 
     def asset_root(self, row: CastingAsset) -> Path:
+        if row.path:
+            path = Path(row.path)
+            if path.exists():
+                return path
         return self.paths.asset_root(AssetIdentity(row.category, row.group, row.asset))
 
     def asset_json_path(self, row: CastingAsset) -> Path:
@@ -119,6 +126,17 @@ class SmartCastingService:
 
     def asset_thumbnail_path(self, category: str, group: str, asset: str) -> Path | None:
         asset_root = self.paths.asset_root(AssetIdentity(category, group, asset))
+        return self._asset_thumbnail_path(asset_root)
+
+    @staticmethod
+    def _variant_names(asset_root: Path) -> list[str]:
+        if not asset_root.exists():
+            return []
+        variants = [path.name for path in asset_root.iterdir() if path.is_dir() and (path / "variant.json").exists()]
+        return sorted(variants, key=lambda name: (name != "default", name.lower()))
+
+    @staticmethod
+    def _asset_thumbnail_path(asset_root: Path) -> Path | None:
         data = read_json(asset_root / "asset.json", {}) or {}
         thumb = str(data.get("thumbnail") or "").strip()
         candidates = []

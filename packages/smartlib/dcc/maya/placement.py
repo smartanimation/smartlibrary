@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json, write_json
 
@@ -144,6 +145,79 @@ def assign_member_to_placement(locator: str, member: CastMember, attach_root: st
     if attach_root:
         _set_string_attr(cmds, locator, ATTACH_ROOT_ATTR, attach_root)
     return locator
+
+
+def add_assets_to_context_cast(project_config: ProjectConfig, assets: list[Any]) -> tuple[Path, list[dict[str, Any]]]:
+    project_root = _project_root(project_config)
+    context_root = _context_root(project_root)
+    selections = [_asset_selection_payload(asset) for asset in assets]
+    selections = [selection for selection in selections if selection.get("asset")]
+    if not selections:
+        raise RuntimeError("Select assets to add to cast.")
+
+    from smartlib.apps.shot_manager import ShotManagerService
+
+    service = ShotManagerService(project_config)
+    if _is_sequence_context(context_root):
+        return service.add_asset_selections_to_sequence_cast(
+            context_root.parent.name,
+            context_root.name,
+            selections,
+        )
+    identity = ShotIdentity(
+        episode=context_root.parent.parent.name,
+        sequence=context_root.parent.name,
+        shot=context_root.name,
+    )
+    return service.add_asset_selections_to_cast(identity, selections)
+
+
+def reference_asset_to_scene(
+    project_config: ProjectConfig,
+    asset: Any,
+    *,
+    namespace: str = "",
+) -> Path:
+    cmds = _maya_cmds()
+    from smartlib.dcc.maya import asset_assembly
+
+    payload = _asset_selection_payload(asset)
+    if not payload.get("asset"):
+        raise RuntimeError("Select an asset to reference.")
+    publish_path = asset_assembly.latest_asset_maya_reference(
+        project_config,
+        str(payload.get("category") or ""),
+        str(payload.get("group") or ""),
+        str(payload.get("asset") or ""),
+        str(payload.get("variant") or "default"),
+    )
+    before = set(cmds.ls(assemblies=True) or [])
+    resolved_namespace = _unique_namespace(cmds, namespace or payload.get("asset") or publish_path.stem)
+    cmds.file(
+        str(publish_path).replace("\\", "/"),
+        reference=True,
+        namespace=resolved_namespace,
+        ignoreVersion=True,
+        mergeNamespacesOnClash=False,
+        options="v=0;",
+    )
+    _parent_new_assemblies(cmds, before, _ensure_cast_group(cmds))
+    return publish_path
+
+
+def reference_assets_to_scene(project_config: ProjectConfig, assets: list[Any]) -> list[Path]:
+    referenced = []
+    for asset in assets:
+        referenced.append(reference_asset_to_scene(project_config, asset))
+    return referenced
+
+
+def add_and_reference_assets_to_context_cast(project_config: ProjectConfig, assets: list[Any]) -> tuple[Path, list[dict[str, Any]], list[Path]]:
+    path, rows = add_assets_to_context_cast(project_config, assets)
+    referenced = []
+    for asset, row in zip(assets, rows):
+        referenced.append(reference_asset_to_scene(project_config, asset, namespace=str(row.get("namespace") or row.get("cast_key") or "")))
+    return path, rows, referenced
 
 
 def constrain_member_to_placement(project_config: ProjectConfig, locator: str) -> PlacementAttachTarget:
@@ -466,6 +540,10 @@ def _placement_export_dir(project_root: Path) -> Path:
     return root / "data" / "placements"
 
 
+def _is_sequence_context(context_root: Path) -> bool:
+    return context_root.parent.parent.name == "sequences"
+
+
 def _placement_publish_dir(project_root: Path) -> Path:
     root = _context_root(project_root)
     if root.parent.parent.name == "sequences":
@@ -562,6 +640,50 @@ def _resolve_fallback_target(cmds: Any, member: CastMember, fallback: str = "") 
     return ""
 
 
+def _asset_selection_payload(asset: Any) -> dict[str, Any]:
+    if isinstance(asset, dict):
+        return {
+            "category": str(asset.get("category") or ""),
+            "group": str(asset.get("group") or ""),
+            "asset": str(asset.get("asset") or asset.get("name") or ""),
+            "variant": str(asset.get("variant") or "default") or "default",
+        }
+    return {
+        "category": str(getattr(asset, "category", "") or ""),
+        "group": str(getattr(asset, "group", "") or ""),
+        "asset": str(getattr(asset, "asset", "") or getattr(asset, "name", "") or ""),
+        "variant": str(getattr(asset, "variant", "default") or "default") or "default",
+    }
+
+
+def _ensure_cast_group(cmds: Any) -> str:
+    group = "cast_grp"
+    if cmds.objExists(group):
+        return group
+    return cmds.group(empty=True, name=group)
+
+
+def _parent_new_assemblies(cmds: Any, before: set[str], parent: str) -> None:
+    after = set(cmds.ls(assemblies=True) or [])
+    for node in sorted(after - before):
+        if not cmds.objExists(node) or node == parent:
+            continue
+        try:
+            cmds.parent(node, parent, absolute=True)
+        except Exception:
+            pass
+
+
+def _unique_namespace(cmds: Any, namespace: Any) -> str:
+    base = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in str(namespace or "asset")).strip("_") or "asset"
+    candidate = base
+    index = 2
+    while cmds.namespace(exists=candidate):
+        candidate = f"{base}{index}"
+        index += 1
+    return candidate
+
+
 def _safe_node_name(node: str) -> str:
     return node.replace("|", "_").replace(":", "_")
 
@@ -622,5 +744,5 @@ def _maya_cmds() -> Any:
     try:
         import maya.cmds as cmds
     except ImportError as exc:
-        raise RuntimeError("Placement Manager is available inside Maya.") from exc
+        raise RuntimeError("Smart Maker is available inside Maya.") from exc
     return cmds

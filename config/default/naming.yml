@@ -14,3 +14,11 @@ shot_naming:
 
 resolve_export:
   shot_naming_profile: cut
+
+smart_ingest:
+  editorial:
+    # One client delivery is ingested as a versioned source package.
+    subset: source
+    episode_prefixes: [ep]
+    sequence_prefixes: [seq, sq, s]
+    filename: "{episode}_{sequence}{extension}"

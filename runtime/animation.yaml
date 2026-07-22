@@ -1,0 +1,75 @@
+animation:
+  type: interaction
+  style: normal
+  interaction: seat
+  duration: 24.0
+  durationFrames: 24.0
+  durationSeconds: 1.0
+  fps: 24.0
+  unit: cm
+  startFrame: 1.0
+  endFrame: 24.0
+  rootMotion:
+    axis: tz
+    delta:
+      x: 0.0
+      y: 0.0
+      z: 6.0
+    delta_houdini:
+      x: 0.0
+      y: 0.0
+      z: 0.06
+    distance: 6.0
+    distance_houdini: 0.06
+    duration_frames: 24.0
+    duration_seconds: 1.0
+    end:
+      x: 0.0
+      y: 0.0
+      z: 6.0
+    end_houdini:
+      x: 0.0
+      y: 0.0
+      z: 0.06
+    fps: 24.0
+    local:
+      delta:
+        x: 0.0
+        y: 0.0
+        z: 6.0
+      end:
+        x: 0.0
+        y: 0.0
+        z: 6.0
+      start:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+    source: 'Male:local_C0_ctl'
+    source_namespace: Male
+    source_node: local_C0_ctl
+    speed: 6.0
+    speed_houdini: 0.06
+    start:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    start_houdini:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    unit: cm
+    unit_scale_to_houdini: 0.01
+  speed: 6.0
+  speed_houdini: 0.06
+  loop: false
+  boundingBox:
+    max:
+      x: 3.384479075522938
+      y: 9.775527528893496
+      z: 9.839088547436964
+    min:
+      x: -3.2403255750981614
+      y: -0.7448327022153819
+      z: 3.2974332611620443
+  foot_contact: []

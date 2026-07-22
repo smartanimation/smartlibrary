@@ -1,2 +1,3 @@
-SET "CREDENTIALS_PATH=C:/Users/smart/Downloads/credentials.json"
-python P:/dev/smartlibrary/launcher.py
+@echo off
+call "%~dp0smartpipeline_env.bat"
+"%SMARTPIPELINE_PYTHON%" "%SMARTPIPELINE_ROOT%\launcher.py"

@@ -1,0 +1,25 @@
+playblast_package:
+  roots:
+    output: "{shot_root}/output/review/{dept}/{layer}/{version}/{take}"
+    publish: "{shot_root}/publish/review/{dept}/{layer}/{version}/{take}"
+    output_review_build: "{shot_root}/output/review/{dept}/review_build/{version}/{take}"
+    publish_review_build: "{shot_root}/publish/review/{dept}/review_build/{version}/{take}"
+  paths:
+    mov: "mov/{shot}_{dept}_{version}_{take}.mov"
+    image_sequence: "images/{shot}_{dept}_{layer}_{version}_{take}_{frame}.png"
+    slate_sequence: "slate/{shot}_{dept}_slate_{version}_{take}_{frame}.png"
+    metadata_review: "metadata/review.json"
+    metadata_playblast: "metadata/playblast.json"
+    metadata_source_scene: "metadata/source_scene.json"
+    thumbnail: "thumbnail/{shot}_{dept}_{version}_{take}.jpg"
+    ae_dir: "ae"
+    review_build_manifest: "{shot}_{dept}_build_{version}_{take}.json"
+    review_build_script: "ae/scripts/{shot}_{dept}_build_{version}_{take}.jsx"
+    review_build_log: "ae/data/{shot}_{dept}_build_{version}_{take}.log"
+    review_build_template_project: "ae/review_project.aep"
+    review_build_template_used: "ae/template_used.json"
+    review_build_slots: "slots.json"
+  movie:
+    codec: prores_ks
+    profile: 0
+    pixel_format: yuv422p10le
