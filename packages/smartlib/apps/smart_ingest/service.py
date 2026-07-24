@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
+import socket
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -45,10 +47,16 @@ SEQUENCE_EXTENSIONS = SHOT_EXTENSIONS | {".edl", ".otio", ".xml"}
 VENDOR_EXTENSIONS = SUPPORTED_EXTENSIONS | {".rar", ".7z"}
 
 DATE_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
+DELIVERY_FOLDER_RE = re.compile(r"^20\d{6}_\d{2}$")
 VERSION_RE = re.compile(r"v\d{3,}", re.IGNORECASE)
 SHOT_RE = re.compile(r"(?<![a-z0-9])(?P<shot>sh\d{3,4})(?![a-z0-9])", re.IGNORECASE)
 EP_RE = re.compile(r"(?<![a-z0-9])(?P<episode>ep\d{2,4})(?![a-z0-9])", re.IGNORECASE)
 SEQ_RE = re.compile(r"(?<![a-z0-9])(?P<sequence>(?:sq|seq)\d{2,4})(?![a-z0-9])", re.IGNORECASE)
+VIRTUAL_CAMERA_RE = re.compile(
+    r"(?P<episode>ep\d{2,4})(?P<sequence>(?:s|sq|seq)\d{2,4})"
+    r".*?(?P<target>c\d{2,4}).*?(?P<take>take\d+)",
+    re.IGNORECASE,
+)
 DEPARTMENT_ALIASES = {
     "anim": "anim",
     "animation": "anim",
@@ -115,15 +123,14 @@ class SmartIngestService:
     """Plan and execute incoming-file ingest.
 
     Recommended project layout:
-      incoming/editorial/YYYYMMDD/
-      incoming/vendors/<vendor>/YYYYMMDD/
-      incoming/assets/YYYYMMDD/
-      incoming/shots/YYYYMMDD/
+      incoming/client/YYYYMMDD_##/
+      incoming/vendors/<vendor>/YYYYMMDD_##/
+      incoming/assets/YYYYMMDD_##/
+      incoming/shots/YYYYMMDD_##/
       incoming/_rejected/YYYYMMDD/
-      incoming/<type>/YYYYMMDD/_processed/
 
-    ``incoming`` remains a receipt area. Known files are copied into the
-    production data roots, and every handled source gets an audit manifest.
+    ``incoming`` is an immutable receipt area. Known files are copied into
+    production roots while processing state stays in delivery/processed.json.
     """
 
     def __init__(self, project_config: ProjectConfig):
@@ -136,8 +143,8 @@ class SmartIngestService:
         self.incoming_root = self._resolve_template(templates.get("incoming_root"), project_root / "incoming")
         self.staging_root = self._resolve_template(templates.get("staging_root"), project_root / "staging")
         self.project_name = project_config.project_name
-        naming = project_config.load("naming.yml")
-        self.editorial_naming = (naming.get("smart_ingest") or {}).get("editorial") or {}
+        self.naming_config = project_config.load("naming.yml")
+        self.editorial_naming = (self.naming_config.get("smart_ingest") or {}).get("editorial") or {}
 
     def scan(
         self,
@@ -152,11 +159,15 @@ class SmartIngestService:
         allowed = {ext.lower() for ext in extensions} if extensions else None
         files: list[Path] = []
         for path in sorted(self.incoming_root.rglob("*")):
+            if path.name == "processed.json":
+                continue
             if path.suffix.lower() == ".json" and path.name.endswith((".reject.json", ".ingest.json")):
                 continue
             if not path.is_file() or self._is_internal_incoming_path(path, include_rejected=include_rejected):
                 continue
             if self._is_fbm_member(path):
+                continue
+            if self._is_processed_source(path):
                 continue
             if allowed is not None and path.suffix.lower() not in allowed:
                 continue
@@ -203,6 +214,17 @@ class SmartIngestService:
         file_type = source.suffix.lower().lstrip(".").upper() or "FILE"
         if not source.exists():
             return self._item(source, None, file_type, "none", meta.target_type, "Missing", "source file does not exist", meta)
+        if not self._is_rejected_path(source) and self._delivery_root(source) is None:
+            return self._item(
+                source,
+                None,
+                file_type,
+                "none",
+                meta.target_type,
+                "Needs Metadata",
+                "delivery folder must match YYYYMMDD_##",
+                meta,
+            )
         if source.suffix.lower() not in SUPPORTED_EXTENSIONS:
             reject_meta = replace(meta, target_type="Rejected", format=source.suffix.lower().lstrip("."))
             return self._item(
@@ -236,54 +258,82 @@ class SmartIngestService:
         processed_sources: list[Path] = []
         skipped: list[PlanItem] = []
         manifests: list[Path] = []
+        editorial_records: list[tuple[PlanItem, Path]] = []
 
-        for item in items:
-            if not item.selected or not item.actionable or item.target_path is None:
-                skipped.append(item)
-                continue
-            if create_folders:
-                item.target_path.parent.mkdir(parents=True, exist_ok=True)
-            if item.action == "copy":
-                checksum = _sha1(item.source_path)
-                companion = self._fbm_companion(item.source_path)
-                shutil.copy2(item.source_path, item.target_path)
-                companion_target = None
-                companion_manifest = None
-                if companion:
-                    companion_target = item.target_path.with_suffix(".fbm")
-                    shutil.copytree(companion, companion_target)
-                    companion_manifest = self._fbm_manifest(companion, companion_target)
-                processed_path = self._move_to_processed(item.source_path)
-                if companion:
-                    processed_companion = self._move_to_processed(companion)
-                    if companion_manifest is not None:
-                        companion_manifest["processed_source_path"] = str(processed_companion)
-                copied.append(item.target_path)
-                processed_sources.append(processed_path)
-                manifests.append(
-                    self._write_processed_manifest(
+        actionable = [
+            item
+            for item in items
+            if item.selected and item.actionable and item.target_path is not None
+        ]
+        delivery_roots = sorted(
+            {root for item in actionable if (root := self._delivery_root(item.source_path))},
+            key=lambda path: str(path).lower(),
+        )
+        locks: list[Path] = []
+        try:
+            for delivery_root in delivery_roots:
+                locks.append(self._acquire_delivery_lock(delivery_root))
+
+            for item in items:
+                if not item.selected or not item.actionable or item.target_path is None:
+                    skipped.append(item)
+                    continue
+                if create_folders:
+                    item.target_path.parent.mkdir(parents=True, exist_ok=True)
+                if item.action == "copy":
+                    checksum = _sha1(item.source_path)
+                    companion = self._fbm_companion(item.source_path)
+                    shutil.copy2(item.source_path, item.target_path)
+                    companion_manifest = None
+                    if companion:
+                        companion_target = item.target_path.with_suffix(".fbm")
+                        shutil.copytree(companion, companion_target)
+                        companion_manifest = self._fbm_manifest(companion, companion_target)
+                    copied.append(item.target_path)
+                    processed_sources.append(item.source_path)
+                    state_path = self._record_processed(
                         item,
                         item.target_path,
-                        processed_path,
                         checksum,
                         companion=companion_manifest,
                     )
-                )
-                if item.target_type == "Editorial":
-                    manifests.append(self._write_editorial_source_metadata(item, item.target_path, checksum))
-            elif item.action == "reject":
-                shutil.copy2(item.source_path, item.target_path)
-                rejected.append(item.target_path)
-                manifests.append(self._write_rejection_manifest(item, item.target_path))
-            else:
-                skipped.append(item)
+                    if state_path not in manifests:
+                        manifests.append(state_path)
+                    if item.target_type == "Editorial":
+                        manifests.append(self._write_editorial_source_metadata(item, item.target_path, checksum))
+                        editorial_records.append((item, item.target_path))
+                    elif item.target_type == "Sequence" and item.metadata.department == "virtual_camera":
+                        manifests.append(self._write_sequence_package_metadata(item, item.target_path, checksum))
+                elif item.action == "reject":
+                    shutil.copy2(item.source_path, item.target_path)
+                    rejected.append(item.target_path)
+                    manifests.append(self._write_rejection_manifest(item, item.target_path))
+                else:
+                    skipped.append(item)
+            manifests.extend(self._write_editorial_delivery_manifests(editorial_records))
+        finally:
+            for lock_path in reversed(locks):
+                self._release_delivery_lock(lock_path)
         return IngestRunResult(copied, rejected, processed_sources, skipped, manifests)
 
     def update_item_metadata(self, item: PlanItem, **changes: Any) -> PlanItem:
         metadata = replace(item.metadata, **changes)
         return self.replan(item, metadata)
 
+    def sequence_data_types(self) -> list[str]:
+        config = self.project_config.load("templates_shots.yml")
+        values = (config.get("sequence_data") or {}).get("types") or []
+        return _config_list(values) or ["virtual_camera", "mocap"]
+
+    def editorial_data_roles(self) -> list[str]:
+        roles = self.editorial_naming.get("roles") or {}
+        return [str(value).strip() for value in roles if str(value).strip()]
+
     def restore_processed_manifest(self, manifest_path: str | Path) -> list[Path]:
+        """Restore a legacy _processed record.
+
+        New deliveries keep originals in place and use retry_processed_record().
+        """
         manifest_file = Path(manifest_path)
         data = read_json(manifest_file, {}) or {}
         if data.get("state") != "processed":
@@ -322,6 +372,38 @@ class SmartIngestService:
         write_json(manifest_file, data)
         return restored
 
+    def retry_processed_record(self, state_path: str | Path, record_key: str) -> Path:
+        state_file = Path(state_path)
+        delivery_root = state_file.parent
+        if state_file.name != "processed.json" or self._delivery_root(state_file) != delivery_root:
+            raise ValueError(f"Invalid delivery state path: {state_file}")
+        lock_path = self._acquire_delivery_lock(delivery_root)
+        try:
+            data = read_json(state_file, {}) or {}
+            files = data.get("files") if isinstance(data.get("files"), dict) else {}
+            record = files.get(record_key)
+            if not isinstance(record, dict):
+                raise KeyError(f"Processed record was not found: {record_key}")
+            source_path = delivery_root / Path(record_key)
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Incoming source was not found: {source_path}")
+            record["status"] = "pending"
+            retries = record.get("retries") if isinstance(record.get("retries"), list) else []
+            retries.append(
+                {
+                    "requested_at": datetime.now().isoformat(timespec="seconds"),
+                    "user": os.environ.get("USERNAME") or os.environ.get("USER") or "",
+                }
+            )
+            record["retries"] = retries
+            files[record_key] = record
+            data["files"] = files
+            data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _write_json_atomic(state_file, data)
+            return source_path
+        finally:
+            self._release_delivery_lock(lock_path)
+
     def _require_incoming_path(self, path: Path) -> None:
         try:
             path.resolve().relative_to(self.incoming_root.resolve())
@@ -344,6 +426,18 @@ class SmartIngestService:
         shot = _first_match(SHOT_RE, source.name, "shot") or ""
         department = self._infer_department(stem_tokens)
         subset = self._infer_subset(stem_tokens, department)
+        virtual_camera = VIRTUAL_CAMERA_RE.search(source.stem)
+        if virtual_camera and source.suffix.lower() in {".fbx", ".mov", ".mp4"}:
+            return IngestMetadata(
+                target_type="Sequence",
+                project=self.project_name,
+                department="virtual_camera",
+                subset=virtual_camera.group("take").lower(),
+                format=extension,
+                episode=virtual_camera.group("episode").lower(),
+                sequence=_normalize_sequence_code(virtual_camera.group("sequence")),
+                delivery_date=delivery_text,
+            )
 
         is_editorial_delivery = bool(
             parts
@@ -351,15 +445,16 @@ class SmartIngestService:
             and parts[0] in {"client", "editorial"}
         )
         if is_editorial_delivery:
+            editorial_subset, editorial_shot = self._editorial_role(source, episode, sequence)
             return IngestMetadata(
                 target_type="Editorial",
                 project=self.project_name,
                 department=department or "editorial",
-                subset=str(self.editorial_naming.get("subset") or "source"),
+                subset=editorial_subset,
                 format=extension,
                 episode=episode,
                 sequence=sequence,
-                shot=shot,
+                shot=editorial_shot or shot,
                 delivery_date=delivery_text,
             )
         if len(parts) >= 3 and parts[0] == "vendors":
@@ -419,6 +514,8 @@ class SmartIngestService:
             if extension not in EDITORIAL_EXTENSIONS:
                 return None, "extension is not editorial-ready"
             subset = metadata.subset or self._infer_editorial_subset(source)
+            if subset == "shot_media" and not metadata.shot:
+                return None, "shot is required for editorial shot_media"
             version = self._next_editorial_data_version(metadata.episode, metadata.sequence, subset)
             filename = self._editorial_filename(source, metadata)
             return (
@@ -499,45 +596,101 @@ class SmartIngestService:
                 return None, "extension is not sequence data"
             if not metadata.episode or not metadata.sequence or not metadata.department:
                 return None, "episode, sequence, and department are required"
-            version = self._next_version(
+            sequence_data_root = (
                 self.project_root
                 / "sequences"
                 / metadata.episode
                 / metadata.sequence
                 / "data"
                 / metadata.department
-                / metadata.format
-                / metadata.subset
             )
+            if metadata.department == "virtual_camera":
+                if not metadata.subset or metadata.subset == "main":
+                    return None, "take is required for virtual_camera data"
+                package_root = sequence_data_root / metadata.subset
+            else:
+                package_root = sequence_data_root / metadata.format / metadata.subset
+            version = self._next_version(package_root)
             return (
-                self.project_root
-                / "sequences"
-                / metadata.episode
-                / metadata.sequence
-                / "data"
-                / metadata.department
-                / metadata.format
-                / metadata.subset
+                package_root
                 / version
                 / source.name
             ), "sequence data copy"
         return None, "target type is unknown"
 
-    def _write_processed_manifest(
+    def _write_sequence_package_metadata(
         self,
         item: PlanItem,
         target_path: Path,
-        processed_path: Path,
+        checksum: str,
+    ) -> Path:
+        version_dir = target_path.parent
+        package_root = version_dir.parent
+        manifest_path = version_dir / "manifest.json"
+        manifest = read_json(manifest_path, {}) or {}
+        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+        files[target_path.suffix.lower().lstrip(".")] = {
+            "name": target_path.name,
+            "path": target_path.name,
+            "source": item.source_path.name,
+            "sha1": checksum,
+            "size": item.size,
+        }
+        manifest.update(
+            {
+                "schema": "smartpipeline.sequence_data.v1",
+                "episode": item.metadata.episode,
+                "sequence": item.metadata.sequence,
+                "data_type": item.metadata.department,
+                "take": item.metadata.subset,
+                "version": version_dir.name,
+                "files": files,
+                "comment": item.metadata.comment,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        write_json(manifest_path, manifest)
+        self._update_editorial_version_index(package_root, version_dir.name)
+        return manifest_path
+
+    def _record_processed(
+        self,
+        item: PlanItem,
+        target_path: Path,
         checksum: str,
         *,
         companion: dict[str, Any] | None = None,
     ) -> Path:
-        manifest = processed_path.with_suffix(processed_path.suffix + ".ingest.json")
-        data = self._manifest_data(item, target_path, "processed", checksum=checksum)
-        data["processed_source_path"] = str(processed_path)
+        delivery_root = self._delivery_root(item.source_path)
+        if delivery_root is None:
+            raise ValueError(f"Delivery folder must match YYYYMMDD_##: {item.source_path}")
+        manifest = delivery_root / "processed.json"
+        data = read_json(manifest, {}) or {}
+        files = data.get("files") if isinstance(data.get("files"), dict) else {}
+        key = item.source_path.relative_to(delivery_root).as_posix()
+        stat = item.source_path.stat()
+        record = self._manifest_data(item, target_path, "processed", checksum=checksum)
+        record.update(
+            {
+                "status": "processed",
+                "source": key,
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "processed_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
         if companion:
-            data["companions"] = [companion]
-        return write_json(manifest, data)
+            record["companions"] = [companion]
+        files[key] = record
+        data.update(
+            {
+                "schema": "smartpipeline.ingest_state.v1",
+                "delivery": delivery_root.name,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "files": files,
+            }
+        )
+        return _write_json_atomic(manifest, data)
 
     def _write_rejection_manifest(self, item: PlanItem, rejected_path: Path) -> Path:
         sidecar = rejected_path.with_suffix(rejected_path.suffix + ".reject.json")
@@ -562,7 +715,7 @@ class SmartIngestService:
         files.sort(key=lambda value: (value.get("format", ""), value.get("name", "")))
         manifest.update(
             {
-                "schema": "smartpipeline.editorial_source.v1",
+                "schema": "smartpipeline.editorial_data.v1",
                 "episode": item.metadata.episode,
                 "sequence": item.metadata.sequence,
                 "subset": item.metadata.subset,
@@ -586,6 +739,55 @@ class SmartIngestService:
         )
         self._update_editorial_version_index(source_root, version_dir.name)
         return manifest_path
+
+    def _write_editorial_delivery_manifests(self, records: list[tuple[PlanItem, Path]]) -> list[Path]:
+        grouped: dict[tuple[str, str, str], list[tuple[PlanItem, Path]]] = {}
+        for item, target_path in records:
+            delivery_id = self._delivery_id(item.source_path)
+            key = (item.metadata.episode, item.metadata.sequence, delivery_id)
+            grouped.setdefault(key, []).append((item, target_path))
+
+        written = []
+        for (episode, sequence, delivery_id), values in grouped.items():
+            manifest_path = (
+                self.project_root
+                / "editorial"
+                / "data"
+                / episode
+                / sequence
+                / "deliveries"
+                / delivery_id
+                / "manifest.json"
+            )
+            data = read_json(manifest_path, {}) or {}
+            entries = data.get("entries") if isinstance(data.get("entries"), list) else []
+            by_output = {str(entry.get("output")): dict(entry) for entry in entries if isinstance(entry, dict)}
+            for item, target_path in values:
+                relative_output = target_path.relative_to(
+                    self.project_root / "editorial" / "data" / episode / sequence
+                ).as_posix()
+                by_output[relative_output] = {
+                    "role": item.metadata.subset,
+                    "shot": item.metadata.shot or None,
+                    "version": target_path.parent.name,
+                    "file": target_path.name,
+                    "output": relative_output,
+                    "source": item.source_path.name,
+                }
+            data.update(
+                {
+                    "schema": "smartpipeline.editorial_delivery.v1",
+                    "episode": episode,
+                    "sequence": sequence,
+                    "delivery": delivery_id,
+                    "received_at": values[0][0].metadata.delivery_date
+                    or datetime.now().strftime("%Y%m%d"),
+                    "entries": sorted(by_output.values(), key=lambda entry: entry["output"]),
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
+            written.append(write_json(manifest_path, data))
+        return written
 
     def _update_editorial_version_index(self, source_root: Path, version: str) -> None:
         existing = read_json(source_root / "versions.json", []) or []
@@ -706,9 +908,75 @@ class SmartIngestService:
         parts = relative.parts
         if not parts:
             return False
+        if ".ingest.lock" in parts:
+            return True
         if include_rejected and parts[0] == "_rejected":
             return any(part.startswith("_") for part in parts[1:])
         return any(part.startswith("_") for part in parts)
+
+    def _delivery_root(self, path: Path) -> Path | None:
+        try:
+            relative = path.resolve().relative_to(self.incoming_root.resolve())
+        except ValueError:
+            return None
+        current = self.incoming_root
+        for part in relative.parts:
+            current = current / part
+            if DELIVERY_FOLDER_RE.fullmatch(part):
+                return current
+        return None
+
+    def _is_processed_source(self, path: Path) -> bool:
+        delivery_root = self._delivery_root(path)
+        if delivery_root is None:
+            return False
+        state = read_json(delivery_root / "processed.json", {}) or {}
+        files = state.get("files") if isinstance(state.get("files"), dict) else {}
+        try:
+            key = path.relative_to(delivery_root).as_posix()
+        except ValueError:
+            return False
+        record = files.get(key)
+        if not isinstance(record, dict) or record.get("status") != "processed":
+            return False
+        stat = path.stat()
+        return record.get("size") == stat.st_size and record.get("mtime_ns") == stat.st_mtime_ns
+
+    def _acquire_delivery_lock(self, delivery_root: Path) -> Path:
+        self._require_incoming_path(delivery_root)
+        lock_path = delivery_root / ".ingest.lock"
+        try:
+            lock_path.mkdir()
+        except FileExistsError as exc:
+            owner = read_json(lock_path / "owner.json", {}) or {}
+            owner_text = " / ".join(
+                value
+                for value in (
+                    str(owner.get("user") or ""),
+                    str(owner.get("machine") or ""),
+                    str(owner.get("acquired_at") or ""),
+                )
+                if value
+            )
+            suffix = f"\nOwner: {owner_text}" if owner_text else ""
+            raise RuntimeError(f"Delivery is locked by another ingest process: {delivery_root}{suffix}") from exc
+        owner = {
+            "schema": "smartpipeline.ingest_lock.v1",
+            "delivery": delivery_root.name,
+            "user": os.environ.get("USERNAME") or os.environ.get("USER") or "",
+            "machine": socket.gethostname(),
+            "pid": os.getpid(),
+            "acquired_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        _write_json_atomic(lock_path / "owner.json", owner)
+        return lock_path
+
+    def _release_delivery_lock(self, lock_path: Path) -> None:
+        self._require_incoming_path(lock_path)
+        if lock_path.name != ".ingest.lock":
+            raise ValueError(f"Refusing to remove non-ingest lock: {lock_path}")
+        if lock_path.exists():
+            shutil.rmtree(lock_path)
 
     def _is_rejected_path(self, path: Path) -> bool:
         relative = self._relative_to_incoming(path)
@@ -753,10 +1021,33 @@ class SmartIngestService:
             return "cut"
         return "main"
 
+    def _editorial_role(self, source: Path, episode: str, sequence: str) -> tuple[str, str]:
+        extension = source.suffix.lower().lstrip(".")
+        edit_extensions = self._editorial_role_extensions("edit_source", {"aaf", "edl", "xml", "otio"})
+        sequence_extensions = self._editorial_role_extensions("offline", {"mov", "mp4", "wav"})
+        shot_extensions = self._editorial_role_extensions("shot_media", {"mov", "mp4"})
+        if extension in edit_extensions:
+            return "edit_source", ""
+        if extension in shot_extensions:
+            suffix = self._editorial_identity_suffix(source, episode, sequence)
+            shot = self._shot_token(suffix)
+            if shot:
+                return f"shot_media/{shot}", shot
+        if extension in sequence_extensions:
+            return "offline", ""
+        return "edit_source", ""
+
+    def _editorial_role_extensions(self, role: str, fallback: set[str]) -> set[str]:
+        roles = self.editorial_naming.get("roles") or {}
+        config = roles.get(role) if isinstance(roles, dict) else None
+        values = config.get("extensions") if isinstance(config, dict) else None
+        parsed = _config_list(values)
+        return {value.lower().lstrip(".") for value in parsed} if parsed else fallback
+
     def _infer_editorial_identity(self, source: Path) -> tuple[str, str]:
         value = "/".join(self._relative_to_incoming(source).parts)
-        episode_prefixes = self.editorial_naming.get("episode_prefixes") or ["ep"]
-        sequence_prefixes = self.editorial_naming.get("sequence_prefixes") or ["seq", "sq", "s"]
+        episode_prefixes = _config_list(self.editorial_naming.get("episode_prefixes")) or ["ep"]
+        sequence_prefixes = _config_list(self.editorial_naming.get("sequence_prefixes")) or ["seq", "sq", "s"]
         episode = _prefixed_number(value, episode_prefixes)
         sequence = _prefixed_number(value, sequence_prefixes)
         return episode, sequence
@@ -778,17 +1069,16 @@ class SmartIngestService:
         return format_version(next_version([value for value in versions if value]))
 
     def _editorial_filename(self, source: Path, metadata: IngestMetadata) -> str:
-        if metadata.subset == str(self.editorial_naming.get("subset") or "source"):
-            template = str(self.editorial_naming.get("filename") or "{episode}_{sequence}{extension}")
-            base_name = template.format(
-                episode=metadata.episode,
-                sequence=metadata.sequence,
-                extension=source.suffix.lower(),
-                stem=source.stem,
-            )
-            suffix = self._editorial_source_suffix(source, metadata)
-            if suffix:
-                return f"{Path(base_name).stem}_{suffix}{source.suffix.lower()}"
+        template = str(self.editorial_naming.get("filename") or "{episode}_{sequence}{extension}")
+        base_name = template.format(
+            episode=metadata.episode,
+            sequence=metadata.sequence,
+            extension=source.suffix.lower(),
+            stem=source.stem,
+        )
+        if metadata.subset.startswith("shot_media/") and metadata.shot:
+            return f"{Path(base_name).stem}_{metadata.shot}{source.suffix.lower()}"
+        if metadata.subset in {"edit_source", "offline"}:
             return base_name
         if source.suffix.lower() in {".mov", ".mp4"}:
             return "offline" + source.suffix.lower()
@@ -799,9 +1089,9 @@ class SmartIngestService:
         return source.name
 
     @staticmethod
-    def _editorial_source_suffix(source: Path, metadata: IngestMetadata) -> str:
+    def _editorial_identity_suffix(source: Path, episode: str, sequence: str) -> str:
         identity = re.search(
-            rf"{re.escape(metadata.episode)}[_-]?{re.escape(metadata.sequence)}",
+            rf"{re.escape(episode)}[_-]?{re.escape(sequence)}",
             source.stem,
             re.IGNORECASE,
         )
@@ -810,17 +1100,47 @@ class SmartIngestService:
         suffix = source.stem[identity.end() :].strip("_- .")
         return re.sub(r"[^A-Za-z0-9_-]+", "_", suffix).strip("_")
 
-    def _move_to_processed(self, source: Path) -> Path:
-        processed_dir = source.parent / "_processed"
-        processed_dir.mkdir(parents=True, exist_ok=True)
-        target = _unique_path(processed_dir / source.name)
-        shutil.move(str(source), str(target))
-        return target
+    def _shot_token(self, value: str) -> str:
+        prefixes = {"c", "sh"}
+        for profile in (self.naming_config.get("shot_naming") or {}).get("profiles", {}).values():
+            if isinstance(profile, dict) and profile.get("prefix"):
+                prefixes.add(str(profile["prefix"]).lower())
+        for prefix in sorted(prefixes, key=len, reverse=True):
+            match = re.match(rf"(?P<shot>{re.escape(prefix)}\d+)(?:[_-]|$)", value, re.IGNORECASE)
+            if match:
+                return match.group("shot").lower()
+        return ""
+
+    def _delivery_id(self, source: Path) -> str:
+        delivery_root = self._delivery_root(source)
+        parent_name = delivery_root.name if delivery_root else ""
+        delivery_date = self._date_from_path(source)
+        value = parent_name or (delivery_date.strftime("%Y%m%d") if delivery_date else "delivery")
+        return re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_") or "delivery"
 
 
 def _first_match(pattern: re.Pattern[str], value: str, group: str) -> str:
     match = pattern.search(value)
     return match.group(group).lower() if match else ""
+
+
+def _normalize_sequence_code(value: str) -> str:
+    match = re.fullmatch(r"(?P<prefix>seq|sq|s)(?P<number>\d+)", value, re.IGNORECASE)
+    if not match:
+        return value.lower()
+    number = match.group("number")
+    return f"{match.group('prefix').lower()}{number.zfill(max(3, len(number)))}"
+
+
+def _config_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        return [item.strip().strip("'\"") for item in text.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def _prefixed_number(value: str, prefixes: list[str]) -> str:
@@ -845,6 +1165,14 @@ def _sha1(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    write_json(temporary, data)
+    temporary.replace(path)
+    return path
 
 
 def _unique_path(path: Path) -> Path:

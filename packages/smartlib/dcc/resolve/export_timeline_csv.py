@@ -327,11 +327,24 @@ def stage_editorial_source(
     version_dir.mkdir(parents=True, exist_ok=True)
     movie = Path(movie_path)
     _import_media(resolve_app, movie)
+    timeline_import_path = None
+    shot_media_links = []
     if reference_path:
+        reference = Path(reference_path)
+        if reference_type.lower() in {"aaf", "edl", "xml"}:
+            timeline, timeline_import_path = _import_editorial_timeline(
+                resolve_app,
+                reference,
+                timeline_name=f"{episode}_{sequence}",
+                source_clips_path=movie.parent,
+            )
+            shot_media = latest_ingested_shot_media(project_config, episode, sequence)
+            if shot_media:
+                shot_media_links = _link_timeline_to_shot_media(timeline, shot_media)
         rule = shot_naming_rule(project_config, profile_name=shot_naming_profile)
         _create_markers_from_reference_or_timeline(
             resolve_app=resolve_app,
-            reference_path=Path(reference_path),
+            reference_path=reference,
             reference_type=reference_type,
             sequence_note=sequence,
             shot_prefix=rule["prefix"],
@@ -350,9 +363,98 @@ def stage_editorial_source(
             "reference_file": Path(reference_path).name if reference_path else "",
             "reference_path": Path(reference_path).as_posix() if reference_path else "",
             "reference_type": reference_type,
+            "timeline_import_file": timeline_import_path.name if timeline_import_path else "",
+            "timeline_import_path": timeline_import_path.as_posix() if timeline_import_path else "",
+            "timeline_import_type": timeline_import_path.suffix.lower().lstrip(".") if timeline_import_path else "",
+            "shot_media_links": shot_media_links,
         },
     )
     return version_dir
+
+
+def ingested_editorial_files(
+    project_config: ProjectConfig,
+    episode: str,
+    sequence: str,
+    role: str,
+    *,
+    extension: str = "",
+    version: str = "latest",
+) -> list[Path]:
+    project_root = project_config.project_root
+    if project_root is None:
+        raise RuntimeError("project_root is not set in templates_base.yml")
+    role_root = project_root / "editorial" / "data" / episode / sequence / role
+    if not role_root.exists():
+        return []
+    version_dirs = [
+        path
+        for path in role_root.iterdir()
+        if path.is_dir() and parse_version(path.name) is not None
+    ]
+    if not version_dirs:
+        return []
+    if version.lower() == "latest":
+        version_dir = max(version_dirs, key=lambda path: parse_version(path.name) or 0)
+    else:
+        version_dir = role_root / format_version(parse_version(version) or 0)
+        if not version_dir.is_dir():
+            return []
+    suffix = extension.lower()
+    if suffix and not suffix.startswith("."):
+        suffix = "." + suffix
+    return sorted(
+        path
+        for path in version_dir.iterdir()
+        if path.is_file() and (not suffix or path.suffix.lower() == suffix)
+    )
+
+
+def latest_ingested_offline_movie(
+    project_config: ProjectConfig,
+    episode: str,
+    sequence: str,
+) -> Path | None:
+    files = ingested_editorial_files(
+        project_config,
+        episode,
+        sequence,
+        "offline",
+        version="latest",
+    )
+    movies = [path for path in files if path.suffix.lower() in {".mov", ".mp4", ".mxf"}]
+    return movies[0] if movies else None
+
+
+def latest_ingested_shot_media(
+    project_config: ProjectConfig,
+    episode: str,
+    sequence: str,
+) -> list[tuple[str, Path]]:
+    project_root = project_config.project_root
+    if project_root is None:
+        raise RuntimeError("project_root is not set in templates_base.yml")
+    root = project_root / "editorial" / "data" / episode / sequence / "shot_media"
+    if not root.exists():
+        return []
+    result = []
+    for shot_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        version_dirs = [
+            path
+            for path in shot_dir.iterdir()
+            if path.is_dir() and parse_version(path.name) is not None
+        ]
+        if not version_dirs:
+            continue
+        version_dir = max(version_dirs, key=lambda path: parse_version(path.name) or 0)
+        movies = sorted(
+            path
+            for path in version_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in {".mov", ".mp4", ".mxf"}
+        )
+        if movies:
+            result.append((shot_dir.name, movies[0]))
+    return result
 
 
 def resolve_project_manifest_data(resolve_app: Any = None) -> dict[str, Any]:
@@ -601,6 +703,173 @@ def _import_media(resolve_app: Any, movie: Path) -> None:
     if not media_pool:
         raise RuntimeError("No Resolve media pool.")
     media_pool.ImportMedia([movie.as_posix()])
+
+
+def _import_editorial_timeline(
+    resolve_app: Any,
+    reference: Path,
+    *,
+    timeline_name: str,
+    source_clips_path: Path | None = None,
+) -> tuple[Any, Path]:
+    if not reference.is_file():
+        raise FileNotFoundError(f"Editorial source was not found: {reference}")
+    resolve = _resolve_app(resolve_app)
+    project = resolve.GetProjectManager().GetCurrentProject()
+    media_pool = project.GetMediaPool() if project else None
+    if not media_pool:
+        raise RuntimeError("No Resolve media pool.")
+    importer = getattr(media_pool, "ImportTimelineFromFile", None)
+    if not callable(importer):
+        raise RuntimeError("This Resolve version does not provide ImportTimelineFromFile.")
+    path = reference.as_posix()
+    options = {
+        "timelineName": timeline_name,
+        "importSourceClips": True,
+    }
+    if source_clips_path:
+        options["sourceClipsPath"] = Path(source_clips_path).as_posix()
+    timeline = None
+    errors = []
+    try:
+        timeline = importer(path, options)
+    except Exception as exc:
+        errors.append(str(exc))
+    if not timeline:
+        try:
+            # Some Resolve builds only accept the standard one-argument call.
+            timeline = importer(path)
+        except Exception as exc:
+            errors.append(str(exc))
+    if not timeline and reference.suffix.lower() == ".aaf":
+        timeline = _import_aaf_into_empty_timeline(
+            project,
+            media_pool,
+            reference,
+            timeline_name=timeline_name,
+            source_clips_path=source_clips_path,
+            errors=errors,
+        )
+    imported_reference = reference
+    if not timeline and reference.suffix.lower() == ".aaf":
+        for fallback_suffix in (".xml", ".edl"):
+            fallback = reference.with_suffix(fallback_suffix)
+            if not fallback.is_file():
+                continue
+            fallback_options = {
+                "timelineName": timeline_name,
+                "importSourceClips": True,
+            }
+            if source_clips_path:
+                fallback_options["sourceClipsPath"] = Path(source_clips_path).as_posix()
+            try:
+                timeline = importer(fallback.as_posix(), fallback_options)
+                if not timeline:
+                    timeline = importer(fallback.as_posix())
+            except Exception as exc:
+                errors.append(f"{fallback.name}: {exc}")
+                timeline = None
+            if timeline:
+                imported_reference = fallback
+                break
+    if not timeline:
+        detail = f"\nResolve API: {' | '.join(errors)}" if errors else ""
+        raise RuntimeError(
+            f"Resolve could not construct a timeline from {reference.name}. "
+            "Try Resolve's File > Import > Timeline with the same file to confirm "
+            f"the format and linked media.{detail}"
+        )
+    setter = getattr(project, "SetCurrentTimeline", None)
+    if callable(setter):
+        setter(timeline)
+    return timeline, imported_reference
+
+
+def _import_aaf_into_empty_timeline(
+    project: Any,
+    media_pool: Any,
+    reference: Path,
+    *,
+    timeline_name: str,
+    source_clips_path: Path | None,
+    errors: list[str],
+) -> Any:
+    creator = getattr(media_pool, "CreateEmptyTimeline", None)
+    if not callable(creator):
+        return None
+    timeline = creator(timeline_name)
+    if not timeline:
+        errors.append("CreateEmptyTimeline returned no timeline")
+        return None
+    setter = getattr(project, "SetCurrentTimeline", None)
+    if callable(setter):
+        setter(timeline)
+    importer = getattr(timeline, "ImportIntoTimeline", None)
+    if not callable(importer):
+        errors.append("Timeline.ImportIntoTimeline is unavailable")
+        _delete_timeline(media_pool, timeline)
+        return None
+    options = {
+        "autoImportSourceClipsIntoMediaPool": True,
+        "ignoreFileExtensionsWhenMatching": True,
+        "insertAdditionalTracks": True,
+    }
+    if source_clips_path:
+        options["sourceClipsPath"] = Path(source_clips_path).as_posix()
+    try:
+        imported = importer(reference.as_posix(), options)
+    except Exception as exc:
+        errors.append(str(exc))
+        imported = False
+    if imported:
+        return timeline
+    errors.append("Timeline.ImportIntoTimeline returned False")
+    _delete_timeline(media_pool, timeline)
+    return None
+
+
+def _delete_timeline(media_pool: Any, timeline: Any) -> None:
+    deleter = getattr(media_pool, "DeleteTimelines", None)
+    if callable(deleter):
+        try:
+            deleter([timeline])
+        except Exception:
+            pass
+
+
+def _link_timeline_to_shot_media(
+    timeline: Any,
+    shot_media: list[tuple[str, Path]],
+    *,
+    track_index: int = 1,
+) -> list[dict[str, Any]]:
+    items = list(timeline.GetItemListInTrack("video", int(track_index)) or [])
+    items.sort(key=lambda item: int(_call_or_default(item, "GetStart", 0) or 0))
+    if len(items) != len(shot_media):
+        raise RuntimeError(
+            "Timeline/shot_media count mismatch. "
+            f"Timeline V{track_index}: {len(items)}, shot_media: {len(shot_media)}"
+        )
+    links = []
+    for item, (shot, media_path) in zip(items, shot_media):
+        if not media_path.is_file():
+            raise FileNotFoundError(f"Shot media was not found: {media_path}")
+        media_pool_item = _call_or_default(item, "GetMediaPoolItem", None)
+        if not media_pool_item:
+            raise RuntimeError(f"Timeline item has no MediaPoolItem: {shot}")
+        replacer = getattr(media_pool_item, "ReplaceClip", None)
+        if not callable(replacer) or not replacer(media_path.as_posix()):
+            raise RuntimeError(f"Could not link {shot} to shot_media: {media_path}")
+        links.append(
+            {
+                "shot": shot,
+                "file": media_path.name,
+                "path": media_path.as_posix(),
+                "timeline_start": int(_call_or_default(item, "GetStart", 0) or 0),
+                "timeline_end": int(_call_or_default(item, "GetEnd", 0) or 0),
+            }
+        )
+    return links
 
 
 def _create_markers_from_reference_or_timeline(

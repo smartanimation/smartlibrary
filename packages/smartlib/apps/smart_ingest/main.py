@@ -33,6 +33,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.items: list[PlanItem] = []
         self.current_row = -1
         self._updating_metadata_form = False
+        self._dirty_metadata_fields: set[str] = set()
         self._reset_selection_on_next_auto_plan = False
 
         self.setWindowTitle("Smart Ingest")
@@ -123,6 +124,11 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         header = QtWidgets.QHBoxLayout()
         header.addWidget(QtWidgets.QLabel("Ingest Plan"))
         header.addStretch()
+        open_source_btn = QtWidgets.QToolButton()
+        open_source_btn.setToolTip("Open Source in Explorer")
+        open_source_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon))
+        open_source_btn.clicked.connect(self.open_source_folder)
+        header.addWidget(open_source_btn)
         auto_btn = QtWidgets.QPushButton("Auto Plan")
         auto_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_CommandLink))
         auto_btn.clicked.connect(self.auto_plan)
@@ -145,6 +151,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_plan_context_menu)
         self.table.itemSelectionChanged.connect(self._table_selection_changed)
         self.table.itemChanged.connect(self._table_item_changed)
         layout.addWidget(self.table)
@@ -196,7 +204,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.history_table)
 
         buttons = QtWidgets.QHBoxLayout()
-        open_source = QtWidgets.QPushButton("Open Processed Source")
+        open_source = QtWidgets.QPushButton("Open Source")
         open_source.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon))
         open_source.clicked.connect(self._open_history_source)
         buttons.addWidget(open_source)
@@ -204,7 +212,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         open_target.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon))
         open_target.clicked.connect(self._open_history_target)
         buttons.addWidget(open_target)
-        restore = QtWidgets.QPushButton("Restore to Incoming")
+        restore = QtWidgets.QPushButton("Retry Ingest")
         restore.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ArrowBack))
         restore.clicked.connect(self._restore_history_to_incoming)
         buttons.addWidget(restore)
@@ -232,6 +240,10 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.group_edit = QtWidgets.QLineEdit("main")
         self.variant_edit = QtWidgets.QLineEdit("default")
         self.department_edit = QtWidgets.QLineEdit()
+        self.sequence_data_type_combo = QtWidgets.QComboBox()
+        self.sequence_data_type_combo.addItems(self.service.sequence_data_types())
+        self.editorial_data_role_combo = QtWidgets.QComboBox()
+        self.editorial_data_role_combo.addItems(self.service.editorial_data_roles())
         self.subset_edit = QtWidgets.QLineEdit("main")
         self.format_edit = QtWidgets.QLineEdit()
         self.episode_edit = QtWidgets.QLineEdit("ep001")
@@ -243,6 +255,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.comment_edit.setFixedHeight(72)
 
         self.metadata_rows: dict[str, QtWidgets.QWidget] = {}
+        self.metadata_labels: dict[str, QtWidgets.QLabel] = {}
         for label, widget, key in [
             ("Project", self.project_edit, "project"),
             ("Asset", self.asset_edit, "asset"),
@@ -250,6 +263,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             ("Group", self.group_edit, "group"),
             ("Variant", self.variant_edit, "variant"),
             ("Department", self.department_edit, "department"),
+            ("Data Type", self.sequence_data_type_combo, "sequence_data_type"),
+            ("Data Role", self.editorial_data_role_combo, "editorial_data_role"),
             ("Subset", self.subset_edit, "subset"),
             ("Format", self.format_edit, "format"),
             ("Episode", self.episode_edit, "episode"),
@@ -260,6 +275,9 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         ]:
             row = self._form_row(label, widget)
             self.metadata_rows[key] = row
+            row_label = row.findChild(QtWidgets.QLabel)
+            if row_label:
+                self.metadata_labels[key] = row_label
             layout.addWidget(row)
         layout.addWidget(QtWidgets.QLabel("Comment"))
         layout.addWidget(self.comment_edit)
@@ -268,10 +286,12 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.create_folders_check.setChecked(True)
         layout.addWidget(self.create_folders_check)
 
-        inspect_btn = QtWidgets.QPushButton("Inspect")
-        inspect_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView))
-        inspect_btn.clicked.connect(self.apply_metadata_to_selection)
-        layout.addWidget(inspect_btn)
+        self.apply_metadata_btn = QtWidgets.QPushButton("Apply Metadata to Selected")
+        self.apply_metadata_btn.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView)
+        )
+        self.apply_metadata_btn.clicked.connect(self.apply_metadata_to_selection)
+        layout.addWidget(self.apply_metadata_btn)
 
         self.ingest_btn = QtWidgets.QPushButton("Ingest Selected")
         self.ingest_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
@@ -285,23 +305,30 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         layout.addStretch()
 
         self.target_type_combo.currentTextChanged.connect(self._target_type_changed)
-        for widget in [
-            self.project_edit,
-            self.asset_edit,
-            self.category_edit,
-            self.group_edit,
-            self.variant_edit,
-            self.department_edit,
-            self.subset_edit,
-            self.format_edit,
-            self.episode_edit,
-            self.sequence_edit,
-            self.shot_edit,
-            self.vendor_edit,
-            self.delivery_date_edit,
-        ]:
-            widget.editingFinished.connect(self._metadata_changed)
-        self.comment_edit.textChanged.connect(self._metadata_changed)
+        self.sequence_data_type_combo.currentTextChanged.connect(self._sequence_data_type_changed)
+        self.editorial_data_role_combo.currentTextChanged.connect(
+            lambda _value: self._mark_metadata_dirty("subset")
+        )
+        field_widgets = {
+            "project": self.project_edit,
+            "asset": self.asset_edit,
+            "category": self.category_edit,
+            "group": self.group_edit,
+            "variant": self.variant_edit,
+            "department": self.department_edit,
+            "subset": self.subset_edit,
+            "format": self.format_edit,
+            "episode": self.episode_edit,
+            "sequence": self.sequence_edit,
+            "shot": self.shot_edit,
+            "vendor": self.vendor_edit,
+            "delivery_date": self.delivery_date_edit,
+        }
+        for field_name, widget in field_widgets.items():
+            widget.editingFinished.connect(
+                lambda name=field_name: self._mark_metadata_dirty(name)
+            )
+        self.comment_edit.textChanged.connect(lambda: self._mark_metadata_dirty("comment"))
         return panel
 
     def _form_row(self, label: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
@@ -356,15 +383,32 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self._refresh_table(select_row=self.current_row)
 
     def apply_metadata_to_selection(self) -> None:
+        if not self._dirty_metadata_fields:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Apply Metadata",
+                "No metadata fields have been changed.",
+            )
+            return
         rows = self._selected_rows()
-        if not rows and self.current_row >= 0:
+        checked_rows = [row for row, item in enumerate(self.items) if item.selected]
+        if len(rows) <= 1 and len(checked_rows) > 1:
+            rows = checked_rows
+        elif not rows and self.current_row >= 0:
             rows = [self.current_row]
+        form_metadata = self._metadata_from_form()
         for row in rows:
             previous = self.items[row]
+            changes = {
+                field_name: getattr(form_metadata, field_name)
+                for field_name in self._dirty_metadata_fields
+            }
+            metadata = replace(previous.metadata, **changes)
             self.items[row] = replace(
-                self.service.replan(previous, self._metadata_from_form()),
+                self.service.replan(previous, metadata),
                 selected=previous.selected,
             )
+        self._dirty_metadata_fields.clear()
         self._refresh_table(select_row=rows[0] if rows else -1)
 
     def ingest_selected(self) -> None:
@@ -388,6 +432,48 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Open Target Folder", str(exc))
 
+    def open_source_folder(self) -> None:
+        item = self._current_item()
+        if not item:
+            return
+        self._reveal_in_explorer(item.source_path, "Open Source")
+
+    def _show_plan_context_menu(self, position: QtCore.QPoint) -> None:
+        index = self.table.indexAt(position)
+        if index.isValid() and index.row() != self.current_row:
+            self.table.selectRow(index.row())
+        item = self._current_item()
+        if not item:
+            return
+
+        menu = QtWidgets.QMenu(self.table)
+        open_source = menu.addAction(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon),
+            "Open Source in Explorer",
+        )
+        open_target = menu.addAction(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon),
+            "Open Target Folder",
+        )
+        open_target.setEnabled(item.target_path is not None)
+        selected = menu.exec(self.table.viewport().mapToGlobal(position))
+        if selected == open_source:
+            self.open_source_folder()
+        elif selected == open_target:
+            self.open_target_folder()
+
+    def _reveal_in_explorer(self, path: Path, label: str) -> None:
+        if not path.exists():
+            QtWidgets.QMessageBox.warning(self, label, f"Path was not found:\n{path}")
+            return
+        try:
+            if path.is_file():
+                QtCore.QProcess.startDetached("explorer.exe", ["/select,", str(path)])
+            else:
+                os.startfile(str(path))
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, label, str(exc))
+
     def _center_tab_changed(self, index: int) -> None:
         if self.center_tabs.tabText(index) == "History":
             self._refresh_history()
@@ -399,6 +485,22 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         target_filter = self.history_type_combo.currentText()
         records = []
         if self.service.incoming_root.exists():
+            for state_path in self.service.incoming_root.rglob("processed.json"):
+                state = read_json(state_path, {}) or {}
+                files = state.get("files") if isinstance(state.get("files"), dict) else {}
+                for record_key, data in files.items():
+                    if not isinstance(data, dict) or data.get("status") != "processed":
+                        continue
+                    target_type = str(data.get("target_type") or "")
+                    if target_filter != "All" and target_type != target_filter:
+                        continue
+                    searchable = " ".join(
+                        str(data.get(key) or "")
+                        for key in ("source_path", "source", "output_path", "target_type")
+                    ).lower()
+                    if search and search not in searchable:
+                        continue
+                    records.append((state_path, str(record_key), data, False))
             for manifest_path in sorted(
                 self.service.incoming_root.rglob("*.ingest.json"),
                 key=lambda path: path.stat().st_mtime,
@@ -416,27 +518,34 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 ).lower()
                 if search and search not in searchable:
                     continue
-                records.append((manifest_path, data))
+                records.append((manifest_path, "", data, True))
+
+        records.sort(
+            key=lambda value: str(value[2].get("processed_at") or value[2].get("created_at") or ""),
+            reverse=True,
+        )
 
         self.history_table.setRowCount(len(records))
-        for row, (manifest_path, data) in enumerate(records):
-            processed_path = Path(str(data.get("processed_source_path") or data.get("source_path") or ""))
+        for row, (manifest_path, record_key, data, legacy) in enumerate(records):
+            source_path = Path(str(data.get("source_path") or data.get("processed_source_path") or ""))
             target_path = Path(str(data.get("output_path") or ""))
             values = [
-                str(data.get("created_at") or "").replace("T", " "),
-                processed_path.name,
-                processed_path.suffix.lower().lstrip(".").upper() or "FILE",
+                str(data.get("processed_at") or data.get("created_at") or "").replace("T", " "),
+                source_path.name,
+                source_path.suffix.lower().lstrip(".").upper() or "FILE",
                 str(data.get("target_type") or "-"),
                 str(target_path),
-                str(data.get("state") or "-"),
+                str(data.get("status") or data.get("state") or "-"),
             ]
             for column, value in enumerate(values):
                 cell = QtWidgets.QTableWidgetItem(value)
                 cell.setToolTip(value)
                 if column == 0:
                     cell.setData(QtCore.Qt.ItemDataRole.UserRole, str(manifest_path))
-                    cell.setData(QtCore.Qt.ItemDataRole.UserRole + 1, str(processed_path))
+                    cell.setData(QtCore.Qt.ItemDataRole.UserRole + 1, str(source_path))
                     cell.setData(QtCore.Qt.ItemDataRole.UserRole + 2, str(target_path))
+                    cell.setData(QtCore.Qt.ItemDataRole.UserRole + 3, record_key)
+                    cell.setData(QtCore.Qt.ItemDataRole.UserRole + 4, legacy)
                 self.history_table.setItem(row, column, cell)
         self.history_summary_label.setText(f"Processed: {len(records)}")
 
@@ -451,7 +560,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
 
     def _open_history_source(self) -> None:
         source, _ = self._history_paths()
-        self._open_history_path(source, "Processed Source")
+        self._open_history_path(source, "Source")
 
     def _open_history_target(self, *_args) -> None:
         _, target = self._history_paths()
@@ -475,33 +584,38 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             return
         answer = QtWidgets.QMessageBox.question(
             self,
-            "Restore to Incoming",
-            f"Restore {len(rows)} processed package(s) to Incoming?\n\n"
-            "Processed originals and history will be preserved.",
+            "Retry Ingest",
+            f"Mark {len(rows)} processed package(s) for ingest again?\n\n"
+            "Incoming originals and history will remain unchanged.",
         )
         if answer != QtWidgets.QMessageBox.StandardButton.Yes:
             return
 
-        restored = []
+        retried = []
         errors = []
         for row in rows:
             cell = self.history_table.item(row, 0)
             manifest_path = cell.data(QtCore.Qt.ItemDataRole.UserRole) if cell else None
+            record_key = cell.data(QtCore.Qt.ItemDataRole.UserRole + 3) if cell else ""
+            legacy = bool(cell.data(QtCore.Qt.ItemDataRole.UserRole + 4)) if cell else False
             if not manifest_path:
                 continue
             try:
-                restored.extend(self.service.restore_processed_manifest(manifest_path))
+                if legacy:
+                    retried.extend(self.service.restore_processed_manifest(manifest_path))
+                else:
+                    retried.append(self.service.retry_processed_record(manifest_path, record_key))
             except Exception as exc:
                 errors.append(str(exc))
 
         self._refresh_history()
         self.auto_plan()
-        message = f"Restored: {len(restored)}"
+        message = f"Ready to retry: {len(retried)}"
         if errors:
             message += "\n\nErrors:\n" + "\n".join(errors)
-            QtWidgets.QMessageBox.warning(self, "Restore to Incoming", message)
+            QtWidgets.QMessageBox.warning(self, "Retry Ingest", message)
         else:
-            QtWidgets.QMessageBox.information(self, "Restore to Incoming", message)
+            QtWidgets.QMessageBox.information(self, "Retry Ingest", message)
 
     def _refresh_tree(self) -> None:
         self.incoming_tree.clear()
@@ -539,6 +653,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.plan_summary_label.setText(f"Plan Items: {len(self.items)}   Total Size: {self._format_size(sum(item.size for item in self.items))}")
         selected = sum(1 for item in self.items if item.selected and item.actionable)
         self.ingest_btn.setText(f"Ingest Selected ({selected})")
+        self._update_apply_metadata_label()
         if select_row >= 0 and select_row < len(self.items):
             self.table.selectRow(select_row)
         elif self.items:
@@ -551,6 +666,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         item = self._current_item()
         if item:
             self._metadata_to_form(item.metadata)
+        self._update_apply_metadata_label()
 
     def _table_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         if item.column() != 0:
@@ -559,10 +675,38 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self._update_summary()
         selected = sum(1 for plan_item in self.items if plan_item.selected and plan_item.actionable)
         self.ingest_btn.setText(f"Ingest Selected ({selected})")
+        self._update_apply_metadata_label()
+
+    def _update_apply_metadata_label(self) -> None:
+        if not hasattr(self, "apply_metadata_btn"):
+            return
+        rows = self._selected_rows()
+        checked_count = sum(1 for item in self.items if item.selected)
+        count = len(rows) if len(rows) > 1 else max(checked_count, len(rows))
+        field_count = len(self._dirty_metadata_fields)
+        prefix = f"Apply {field_count} Changed Field(s)" if field_count else "Apply Metadata"
+        self.apply_metadata_btn.setText(
+            f"{prefix} to Selected ({count})" if count else f"{prefix} to Selected"
+        )
+        self.apply_metadata_btn.setToolTip(
+            "Changed fields: " + ", ".join(sorted(self._dirty_metadata_fields))
+            if self._dirty_metadata_fields
+            else "Edit one or more metadata fields, then apply them to selected rows."
+        )
 
     def _target_type_changed(self) -> None:
         self._update_metadata_visibility()
-        self._metadata_changed()
+        self._mark_metadata_dirty("target_type")
+
+    def _sequence_data_type_changed(self) -> None:
+        self._update_metadata_visibility()
+        self._mark_metadata_dirty("department")
+
+    def _mark_metadata_dirty(self, field_name: str) -> None:
+        if self._updating_metadata_form:
+            return
+        self._dirty_metadata_fields.add(field_name)
+        self._update_apply_metadata_label()
 
     def _metadata_to_form(self, metadata: IngestMetadata) -> None:
         self._updating_metadata_form = True
@@ -577,6 +721,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             self.group_edit.setText(metadata.group)
             self.variant_edit.setText(metadata.variant)
             self.department_edit.setText(metadata.department)
+            self._set_combo_value(self.sequence_data_type_combo, metadata.department)
+            self._set_combo_value(self.editorial_data_role_combo, metadata.subset.split("/", 1)[0])
             self.subset_edit.setText(metadata.subset)
             self.format_edit.setText(metadata.format)
             self.episode_edit.setText(metadata.episode)
@@ -586,6 +732,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             self.delivery_date_edit.setText(metadata.delivery_date)
             self.comment_edit.setPlainText(metadata.comment)
             self._update_metadata_visibility()
+            self._dirty_metadata_fields.clear()
         finally:
             self.target_type_combo.blockSignals(False)
             self._updating_metadata_form = False
@@ -618,7 +765,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 "project",
                 "episode",
                 "sequence",
-                "department",
+                "sequence_data_type",
                 "subset",
                 "format",
                 "delivery_date",
@@ -628,7 +775,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 "episode",
                 "sequence",
                 "shot",
-                "department",
+                "editorial_data_role",
                 "format",
                 "delivery_date",
             },
@@ -647,35 +794,51 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         visible = visible_by_type.get(target_type, set(self.metadata_rows))
         for key, row in self.metadata_rows.items():
             row.setVisible(key in visible)
+        subset_label = self.metadata_labels.get("subset")
+        if subset_label:
+            is_virtual_camera = (
+                target_type == "Sequence"
+                and self.sequence_data_type_combo.currentText() == "virtual_camera"
+            )
+            subset_label.setText("Take" if is_virtual_camera else "Subset")
 
     def _metadata_from_form(self) -> IngestMetadata:
+        target_type = self.target_type_combo.currentText()
+        shot = self.shot_edit.text().strip()
+        if target_type == "Editorial":
+            editorial_role = self.editorial_data_role_combo.currentText().strip() or "edit_source"
+            subset = f"shot_media/{shot}" if editorial_role == "shot_media" and shot else editorial_role
+        else:
+            subset = self.subset_edit.text().strip() or "main"
         return IngestMetadata(
-            target_type=self.target_type_combo.currentText(),
+            target_type=target_type,
             project=self.project_edit.text().strip(),
             asset=self.asset_edit.text().strip(),
             category=self.category_edit.text().strip() or "characters",
             group=self.group_edit.text().strip() or "main",
             variant=self.variant_edit.text().strip() or "default",
-            department=self.department_edit.text().strip(),
-            subset=self.subset_edit.text().strip() or "main",
+            department=(
+                self.sequence_data_type_combo.currentText().strip()
+                if target_type == "Sequence"
+                else self.department_edit.text().strip()
+            ),
+            subset=subset,
             format=self.format_edit.text().strip(),
             episode=self.episode_edit.text().strip() or "ep001",
             sequence=self.sequence_edit.text().strip() or "sq010",
-            shot=self.shot_edit.text().strip(),
+            shot=shot,
             vendor=self.vendor_edit.text().strip(),
             delivery_date=self.delivery_date_edit.text().strip(),
             comment=self.comment_edit.toPlainText().strip(),
         )
 
-    def _metadata_changed(self) -> None:
-        if self._updating_metadata_form or self.current_row < 0 or self.current_row >= len(self.items):
-            return
-        previous = self.items[self.current_row]
-        self.items[self.current_row] = replace(
-            self.service.replan(previous, self._metadata_from_form()),
-            selected=previous.selected,
-        )
-        self._refresh_table(select_row=self.current_row)
+    @staticmethod
+    def _set_combo_value(combo: QtWidgets.QComboBox, value: str) -> None:
+        index = combo.findText(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        elif combo.count() and not value:
+            combo.setCurrentIndex(0)
 
     def _selected_rows(self) -> list[int]:
         return sorted({index.row() for index in self.table.selectionModel().selectedRows()})

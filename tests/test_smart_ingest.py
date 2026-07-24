@@ -33,7 +33,7 @@ def write_config(config_dir: Path, project_root: Path) -> None:
 def test_auto_plan_asset_copy(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    source = project_root / "incoming" / "assets" / "20260605" / "kuma_model_render_v001.fbx"
+    source = project_root / "incoming" / "assets" / "20260605_01" / "kuma_model_render_v001.fbx"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"fbx")
 
@@ -53,21 +53,21 @@ def test_auto_plan_asset_copy(tmp_path: Path) -> None:
 
     assert result.copied == [item.target_path]
     assert item.target_path.exists()
-    processed_source = source.parent / "_processed" / source.name
-    assert result.processed_sources == [processed_source]
-    assert processed_source.exists()
-    assert not source.exists()
-    assert result.manifests[0].exists()
-    manifest = read_json(result.manifests[0])
-    assert manifest["state"] == "processed"
-    assert manifest["processed_source_path"] == str(processed_source)
-    assert manifest["metadata"]["asset"] == "KUMA"
+    assert result.processed_sources == [source]
+    assert source.exists()
+    state_path = source.parent / "processed.json"
+    assert state_path in result.manifests
+    state = read_json(state_path)
+    record = state["files"][source.name]
+    assert record["status"] == "processed"
+    assert record["metadata"]["asset"] == "KUMA"
+    assert not (source.parent / ".ingest.lock").exists()
 
 
 def test_fbm_companion_is_hidden_and_ingested_with_parent_fbx(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    delivery = project_root / "incoming" / "assets" / "20260722"
+    delivery = project_root / "incoming" / "assets" / "20260722_01"
     source = delivery / "kuma_model_render_v001.fbx"
     texture = delivery / "kuma_model_render_v001.fbm" / "colNml_u21_v1.png"
     texture.parent.mkdir(parents=True)
@@ -85,17 +85,18 @@ def test_fbm_companion_is_hidden_and_ingested_with_parent_fbx(tmp_path: Path) ->
     target = items[0].target_path
     assert target is not None
     assert (target.with_suffix(".fbm") / texture.name).read_bytes() == b"png-data"
-    assert (delivery / "_processed" / source.name).exists()
-    assert (delivery / "_processed" / texture.parent.name / texture.name).exists()
-    manifest = read_json(result.manifests[0])
-    assert manifest["companions"][0]["type"] == "fbm"
-    assert manifest["companions"][0]["files"][0]["path"] == texture.name
+    assert source.exists()
+    assert texture.exists()
+    state = read_json(delivery / "processed.json")
+    record = state["files"][source.name]
+    assert record["companions"][0]["type"] == "fbm"
+    assert record["companions"][0]["files"][0]["path"] == texture.name
 
 
 def test_auto_plan_editorial_copy_uses_data_root(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    source = project_root / "incoming" / "editorial" / "20260430" / "V_con_260106_1_24fps.mov"
+    source = project_root / "incoming" / "editorial" / "20260430_01" / "V_con_260106_1_24fps.mov"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"mov")
 
@@ -106,13 +107,13 @@ def test_auto_plan_editorial_copy_uses_data_root(tmp_path: Path) -> None:
     assert item.action == "copy"
     assert item.target_type == "Editorial"
     assert item.target_path is not None
-    assert "editorial/data/ep001/sq010/source/v001/ep001_sq010.mov" in item.target_path.as_posix()
+    assert "editorial/data/ep001/sq010/offline/v001/ep001_sq010.mov" in item.target_path.as_posix()
 
 
-def test_client_editorial_delivery_is_grouped_and_indexed(tmp_path: Path) -> None:
+def test_client_editorial_delivery_is_split_by_role_and_indexed(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    delivery = project_root / "incoming" / "client" / "20260722"
+    delivery = project_root / "incoming" / "client" / "20260722_01"
     delivery.mkdir(parents=True)
     sources = []
     for extension in (".aaf", ".edl", ".xml", ".mov"):
@@ -126,7 +127,12 @@ def test_client_editorial_delivery_is_grouped_and_indexed(tmp_path: Path) -> Non
     assert all(item.target_type == "Editorial" for item in items)
     assert all(item.metadata.episode == "ep02" for item in items)
     assert all(item.metadata.sequence == "s027" for item in items)
-    assert all(item.metadata.subset == "source" for item in items)
+    assert [item.metadata.subset for item in items] == [
+        "edit_source",
+        "edit_source",
+        "edit_source",
+        "offline",
+    ]
     assert {item.target_path.name for item in items if item.target_path} == {
         "ep02_s027.aaf",
         "ep02_s027.edl",
@@ -135,20 +141,27 @@ def test_client_editorial_delivery_is_grouped_and_indexed(tmp_path: Path) -> Non
     }
 
     result = service.ingest_selected(items)
-    version_root = project_root / "editorial" / "data" / "ep02" / "s027" / "source"
-    manifest = read_json(version_root / "v001" / "manifest.json")
+    editorial_root = project_root / "editorial" / "data" / "ep02" / "s027"
+    edit_root = editorial_root / "edit_source"
+    offline_root = editorial_root / "offline"
+    edit_manifest = read_json(edit_root / "v001" / "manifest.json")
 
     assert len(result.copied) == 4
-    assert [item["format"] for item in manifest["files"]] == ["aaf", "edl", "mov", "xml"]
-    assert read_json(version_root / "latest.json")["version"] == "v001"
-    assert read_json(version_root / "versions.json") == [{"version": "v001", "status": "latest"}]
-    assert read_json(version_root / "v001" / "validation.json")["status"] == "OK"
+    assert [item["format"] for item in edit_manifest["files"]] == ["aaf", "edl", "xml"]
+    assert read_json(edit_root / "latest.json")["version"] == "v001"
+    assert read_json(offline_root / "latest.json")["version"] == "v001"
+    assert read_json(edit_root / "versions.json") == [{"version": "v001", "status": "latest"}]
+    delivery_manifest = read_json(editorial_root / "deliveries" / "20260722_01" / "manifest.json")
+    assert {entry["role"] for entry in delivery_manifest["entries"]} == {
+        "edit_source",
+        "offline",
+    }
 
 
 def test_editorial_cut_movies_keep_unique_suffixes(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    delivery = project_root / "incoming" / "client" / "20260722"
+    delivery = project_root / "incoming" / "client" / "20260722_01"
     delivery.mkdir(parents=True)
     sources = [delivery / f"ep02_s027_c00{index}.mov" for index in range(1, 4)]
     for source in sources:
@@ -162,12 +175,22 @@ def test_editorial_cut_movies_keep_unique_suffixes(tmp_path: Path) -> None:
         "ep02_s027_c002.mov",
         "ep02_s027_c003.mov",
     ]
+    assert [item.metadata.subset for item in items] == [
+        "shot_media/c001",
+        "shot_media/c002",
+        "shot_media/c003",
+    ]
+    assert [item.target_path.parent.parent.name for item in items if item.target_path] == [
+        "c001",
+        "c002",
+        "c003",
+    ]
 
 
-def test_processed_package_can_be_restored_without_deleting_history(tmp_path: Path) -> None:
+def test_processed_package_can_be_marked_for_retry(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    source = project_root / "incoming" / "assets" / "20260722" / "kuma_model_render_v001.fbx"
+    source = project_root / "incoming" / "assets" / "20260722_01" / "kuma_model_render_v001.fbx"
     texture = source.with_suffix(".fbm") / "normal.png"
     texture.parent.mkdir(parents=True)
     source.write_bytes(b"fbx")
@@ -175,20 +198,20 @@ def test_processed_package_can_be_restored_without_deleting_history(tmp_path: Pa
 
     service = SmartIngestService(ProjectConfig(tmp_path / "config"))
     result = service.ingest_selected(service.auto_plan())
-    manifest_path = result.manifests[0]
-    restored = service.restore_processed_manifest(manifest_path)
+    state_path = source.parent / "processed.json"
+    retried = service.retry_processed_record(state_path, source.name)
 
-    assert source in restored
+    assert retried == source
     assert source.read_bytes() == b"fbx"
     assert texture.read_bytes() == b"png"
-    assert manifest_path.exists()
-    assert read_json(manifest_path)["restores"][-1]["paths"][0] == str(source)
+    assert read_json(state_path)["files"][source.name]["status"] == "pending"
+    assert service.auto_plan()[0].source_path == source
 
 
 def test_unknown_file_is_rejected_with_sidecar(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    source = project_root / "incoming" / "editorial" / "20260605" / "notes.tmp"
+    source = project_root / "incoming" / "editorial" / "20260605_01" / "notes.tmp"
     source.parent.mkdir(parents=True)
     source.write_text("not an ingest asset", encoding="utf-8")
 
@@ -213,7 +236,7 @@ def test_unknown_file_is_rejected_with_sidecar(tmp_path: Path) -> None:
 def test_processed_files_are_not_scanned_again(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    source = project_root / "incoming" / "assets" / "20260605" / "kuma_model_render_v001.fbx"
+    source = project_root / "incoming" / "assets" / "20260605_01" / "kuma_model_render_v001.fbx"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"fbx")
 
@@ -221,6 +244,50 @@ def test_processed_files_are_not_scanned_again(tmp_path: Path) -> None:
     service.ingest_selected(service.auto_plan())
 
     assert service.auto_plan() == []
+
+
+def test_delivery_folder_requires_numbered_receipt_name(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "assets" / "20260605" / "kuma_model_render_v001.fbx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"fbx")
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    item = service.plan_file(source)
+
+    assert item.status == "Needs Metadata"
+    assert item.reason == "delivery folder must match YYYYMMDD_##"
+
+
+def test_delivery_lock_blocks_parallel_ingest(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    delivery = project_root / "incoming" / "assets" / "20260605_01"
+    source = delivery / "kuma_model_render_v001.fbx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"fbx")
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    items = service.auto_plan()
+    lock_path = delivery / ".ingest.lock"
+    lock_path.mkdir()
+    (lock_path / "owner.json").write_text(
+        '{"user":"other","machine":"workstation","acquired_at":"2026-07-23T12:00:00"}',
+        encoding="utf-8",
+    )
+
+    try:
+        service.ingest_selected(items)
+    except RuntimeError as exc:
+        assert "locked by another ingest process" in str(exc)
+        assert "other / workstation" in str(exc)
+    else:
+        raise AssertionError("Parallel ingest should have been blocked")
+
+    assert source.exists()
+    assert items[0].target_path is not None
+    assert not items[0].target_path.exists()
 
 
 def test_rejected_folder_is_scanned_only_when_requested(tmp_path: Path) -> None:
@@ -242,7 +309,7 @@ def test_rejected_folder_is_scanned_only_when_requested(tmp_path: Path) -> None:
 def test_manual_metadata_makes_unknown_ready(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
-    source = project_root / "incoming" / "20260605" / "delivery.fbx"
+    source = project_root / "incoming" / "20260605_01" / "delivery.fbx"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"fbx")
 
@@ -268,3 +335,116 @@ def test_manual_metadata_makes_unknown_ready(tmp_path: Path) -> None:
     assert updated.action == "copy"
     assert updated.target_path is not None
     assert "shots/ep001/sq010/sh020/data/layout/fbx/cache/v001" in updated.target_path.as_posix()
+
+
+def test_sequence_data_types_are_loaded_from_default_config(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+
+    assert service.sequence_data_types() == ["virtual_camera", "mocap"]
+
+
+def test_virtual_camera_fbx_and_mov_share_take_version_package(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    delivery = project_root / "incoming" / "client" / "20260722_01"
+    delivery.mkdir(parents=True)
+    sources = [
+        delivery / "ep02s27_ep02s27c01_Take06.fbx",
+        delivery / "ep02s27_ep02s27c01_Take06.mov",
+    ]
+    for source in sources:
+        source.write_bytes(source.suffix.encode("ascii"))
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    metadata = IngestMetadata(
+        target_type="Sequence",
+        project="TEST",
+        department="virtual_camera",
+        subset="take06",
+        episode="ep02",
+        sequence="s027",
+    )
+
+    items = [service.plan_file(source, metadata) for source in sources]
+
+    expected_root = (
+        project_root
+        / "sequences"
+        / "ep02"
+        / "s027"
+        / "data"
+        / "virtual_camera"
+        / "take06"
+    )
+    assert [item.target_path for item in items] == [
+        expected_root / "v001" / sources[0].name,
+        expected_root / "v001" / sources[1].name,
+    ]
+
+    service.ingest_selected(items)
+
+    manifest = read_json(expected_root / "v001" / "manifest.json")
+    assert manifest["data_type"] == "virtual_camera"
+    assert manifest["take"] == "take06"
+    assert set(manifest["files"]) == {"fbx", "mov"}
+    assert read_json(expected_root / "latest.json")["version"] == "v001"
+    assert read_json(expected_root / "versions.json") == [{"version": "v001", "status": "latest"}]
+
+
+def test_virtual_camera_metadata_is_inferred_from_compact_filename(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    delivery = project_root / "incoming" / "client" / "20260722_01"
+    delivery.mkdir(parents=True)
+    sources = [
+        delivery / "ep02s27_ep02s27c01_Take06.fbx",
+        delivery / "ep02s27_ep02s27c01_Take06.mov",
+    ]
+    for source in sources:
+        source.write_bytes(source.suffix.encode("ascii"))
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    items = service.auto_plan()
+
+    assert all(item.status == "Ready" for item in items)
+    assert all(item.target_type == "Sequence" for item in items)
+    assert all(item.metadata.department == "virtual_camera" for item in items)
+    assert all(item.metadata.episode == "ep02" for item in items)
+    assert all(item.metadata.sequence == "s027" for item in items)
+    assert all(item.metadata.subset == "take06" for item in items)
+    assert all("/data/virtual_camera/take06/v001/" in item.target_path.as_posix() for item in items)
+
+
+def test_editorial_data_roles_are_loaded_from_naming_config(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+
+    assert service.editorial_data_roles() == ["edit_source", "offline", "shot_media"]
+
+
+def test_manual_editorial_shot_media_requires_shot(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "client" / "20260722_01" / "preview.mov"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"mov")
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+
+    item = service.plan_file(
+        source,
+        IngestMetadata(
+            target_type="Editorial",
+            project="TEST",
+            episode="ep02",
+            sequence="s027",
+            subset="shot_media",
+            format="mov",
+        ),
+    )
+
+    assert item.status == "Needs Metadata"
+    assert item.reason == "shot is required for editorial shot_media"

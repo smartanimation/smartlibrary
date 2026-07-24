@@ -14,3 +14,8 @@ templates:
   publish_review: "{shot_root}/publish/review/{dept}/{layer}/{version}/{take}"
   output_review_build: "{shot_root}/output/review/{dept}/review_build/{version}/{take}"
   publish_review_build: "{shot_root}/publish/review/{dept}/review_build/{version}/{take}"
+
+sequence_data:
+  types:
+    - virtual_camera
+    - mocap

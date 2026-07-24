@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib
 from pathlib import Path
 
 
@@ -26,9 +27,12 @@ def main() -> None:
     except Exception:
         pass
 
-    from smartlib.dcc.resolve.export_timeline_ui import show
+    from smartlib.dcc.resolve import export_timeline_csv, export_timeline_ui
 
-    show(config_dir=config_dir, resolve_app=resolve_app)
+    importlib.reload(export_timeline_csv)
+    importlib.reload(export_timeline_ui)
+
+    export_timeline_ui.show(config_dir=config_dir, resolve_app=resolve_app)
 
 
 main()

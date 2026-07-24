@@ -17,8 +17,14 @@ resolve_export:
 
 smart_ingest:
   editorial:
-    # One client delivery is ingested as a versioned source package.
-    subset: source
+    # Editorial structures and linked media have independent version streams.
     episode_prefixes: [ep]
     sequence_prefixes: [seq, sq, s]
     filename: "{episode}_{sequence}{extension}"
+    roles:
+      edit_source:
+        extensions: [aaf, edl, xml, otio]
+      offline:
+        extensions: [mov, mp4, wav]
+      shot_media:
+        extensions: [mov, mp4]

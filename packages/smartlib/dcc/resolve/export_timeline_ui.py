@@ -14,7 +14,9 @@ from smartlib.dcc.resolve.export_timeline_csv import (
     editorial_work_sequence_dir,
     editorial_work_versions,
     export_marker_events_to_work,
+    ingested_editorial_files,
     latest_editorial_work_version_dir,
+    latest_ingested_offline_movie,
     next_editorial_work_version_dir,
     resolve_project_manifest_data,
     shot_naming_profile_names,
@@ -114,9 +116,9 @@ class ResolveTimelineExportWindow:
         file_menu.add_command(label="New Sequence", command=self.new_sequence)
         file_menu.add_separator()
         file_menu.add_command(label="Stage MOV", command=self.stage_mov)
-        file_menu.add_command(label="stage aaf", command=lambda: self.stage_reference("aaf"))
-        file_menu.add_command(label="stage xml", command=lambda: self.stage_reference("xml"))
-        file_menu.add_command(label="stage edl", command=lambda: self.stage_reference("edl"))
+        file_menu.add_command(label="Stage AAF", command=lambda: self.stage_reference("aaf"))
+        file_menu.add_command(label="Stage XML", command=lambda: self.stage_reference("xml"))
+        file_menu.add_command(label="Stage EDL", command=lambda: self.stage_reference("edl"))
         menu_bar.add_cascade(label="File", menu=file_menu)
 
         marker_menu = tk.Menu(menu_bar, tearoff=False)
@@ -220,17 +222,60 @@ class ResolveTimelineExportWindow:
         self._stage(movie_path=movie)
 
     def stage_reference(self, reference_type: str) -> None:
-        movie = self._ask_movie()
+        episode = self.episode_var.get().strip()
+        sequence = self.sequence_var.get().strip()
+        reference = self._ingested_reference(episode, sequence, reference_type)
+        if not reference:
+            return
+        movie = latest_ingested_offline_movie(self.project_config, episode, sequence)
+        if movie is None:
+            messagebox.showinfo(
+                "Offline Movie",
+                f"No ingested offline movie was found for {episode}/{sequence}.\n"
+                "Select a movie manually.",
+            )
+            movie = self._ask_movie()
         if not movie:
             return
         self._set_manifest_movie(movie)
-        reference = filedialog.askopenfilename(
-            title=f"Select {reference_type.upper()}",
-            filetypes=[(reference_type.upper(), f"*.{reference_type}"), ("All Files", "*.*")],
+        answer = messagebox.askyesno(
+            f"Stage {reference_type.upper()}",
+            f"Construct a Resolve timeline from the ingested editorial source?\n\n"
+            f"Reference:\n{reference}\n\n"
+            f"Offline:\n{movie}",
         )
-        if not reference:
+        if not answer:
             return
-        self._stage(movie_path=movie, reference_path=Path(reference), reference_type=reference_type)
+        self._stage(movie_path=movie, reference_path=reference, reference_type=reference_type)
+
+    def _ingested_reference(self, episode: str, sequence: str, reference_type: str) -> Path | None:
+        files = ingested_editorial_files(
+            self.project_config,
+            episode,
+            sequence,
+            "edit_source",
+            extension=reference_type,
+            version="latest",
+        )
+        if not files:
+            messagebox.showwarning(
+                f"Stage {reference_type.upper()}",
+                "No ingested editorial source was found.\n\n"
+                f"Expected:\neditorial/data/{episode}/{sequence}/edit_source/v###/*.{reference_type}",
+            )
+            return None
+        preferred_stem = f"{episode}_{sequence}".lower()
+        preferred = [path for path in files if path.stem.lower() == preferred_stem]
+        if len(preferred) == 1:
+            return preferred[0]
+        if len(files) == 1:
+            return files[0]
+        selected = filedialog.askopenfilename(
+            title=f"Select Ingested {reference_type.upper()}",
+            initialdir=str(files[0].parent),
+            filetypes=[(reference_type.upper(), f"*.{reference_type}")],
+        )
+        return Path(selected) if selected else None
 
     def new_cutting_marker(self) -> None:
         sequence_name = simpledialog.askstring(
@@ -280,7 +325,24 @@ class ResolveTimelineExportWindow:
                 work_dir=self._selected_work_dir(),
                 shot_naming_profile=self.shot_naming_profile_var.get().strip() or None,
             )
-            self.status_var.set(f"Staged: {self.current_work_dir}")
+            manifest_path = self.current_work_dir / "manifest.json"
+            manifest = {}
+            if manifest_path.is_file():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except Exception:
+                    manifest = {}
+            imported_type = str(manifest.get("timeline_import_type") or "").upper()
+            requested_type = reference_type.upper()
+            suffix = ""
+            if imported_type:
+                suffix = f" | Timeline: {imported_type}"
+                if requested_type and imported_type != requested_type:
+                    suffix += f" (fallback from {requested_type})"
+            shot_media_links = manifest.get("shot_media_links")
+            if isinstance(shot_media_links, list) and shot_media_links:
+                suffix += f" | shot_media: {len(shot_media_links)} linked"
+            self.status_var.set(f"Staged: {self.current_work_dir}{suffix}")
             self.version_var.set(self.current_work_dir.name)
             self._refresh_versions(keep_current=True)
             self.refresh()
