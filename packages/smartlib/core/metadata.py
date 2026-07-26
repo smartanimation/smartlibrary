@@ -10,7 +10,9 @@ def read_json(path: str | os.PathLike[str], default: Any = None) -> Any:
     json_path = Path(path)
     if not json_path.exists():
         return default
-    with json_path.open("r", encoding="utf-8") as stream:
+    # utf-8-sig accepts regular UTF-8 and strips a BOM when external tools
+    # such as Windows PowerShell add one.
+    with json_path.open("r", encoding="utf-8-sig") as stream:
         return json.load(stream)
 
 

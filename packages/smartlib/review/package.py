@@ -162,6 +162,7 @@ def build_review_package_plan(
             ],
             "order": int(layer.get("order", 0)),
             "ae_slot": (layer.get("ae") or {}).get("template_slot", layer_name),
+            "frame_range": list(layer.get("export_frame_range") or frame_range),
         }
         review_data["thumbnails"][layer_name] = thumbnail
         files[f"{layer_name}_thumbnail"] = thumbnail

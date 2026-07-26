@@ -22,6 +22,30 @@ def open_output_in_rv(settings: dict[str, Any], project_config=None) -> tuple[bo
     return True, str(targets[0])
 
 
+def open_review_json_in_smart_review(
+    review_json: str | Path,
+    project_config=None,
+) -> tuple[bool, str]:
+    """Launch RV with the Smart Review panel focused on a review package."""
+    review_path = Path(review_json)
+    if not review_path.is_file():
+        return False, f"Review metadata was not found: {review_path}"
+    executable = find_rv_executable(project_config)
+    if not executable:
+        return False, "OpenRV executable was not found."
+    env = os.environ.copy()
+    env["SMART_REVIEW_REVIEW_JSON"] = str(review_path)
+    env["SMART_REVIEW_AUTO_LOAD"] = "1"
+    env["SMART_REVIEW_SHOW_PANEL"] = "1"
+    if project_config is not None:
+        env["SMART_REVIEW_PROJECT"] = str(project_config.project_name)
+        env["SMART_REVIEW_CONFIG_DIR"] = str(project_config.config_dir)
+        if getattr(project_config, "project_root", None):
+            env["SMART_REVIEW_PROJECT_ROOT"] = str(project_config.project_root)
+    subprocess.Popen([executable], cwd=str(review_path.parent), env=env)
+    return True, str(review_path)
+
+
 def find_rv_executable(project_config=None) -> str:
     config_path = _rv_path_from_config(project_config)
     if config_path:

@@ -957,7 +957,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Stage Sequence", "Sequence layout staging is available inside Maya.")
             return
         try:
-            from smartlib.dcc.maya.shot_builder import stage_sequence_layout_from_preview
+            import importlib
+            from smartlib.dcc.maya import shot_builder
+
+            importlib.invalidate_caches()
+            shot_builder = importlib.reload(shot_builder)
 
             preview = self.service.build_sequence_preview(sequence_identity)
             missing_required = [item for item in preview if item.required and item.status != "resolved"]
@@ -966,7 +970,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.warning(self, "Stage Sequence", f"Required sequence cast is not resolved:\n{message}")
                 return
             sequence_data = self.service.load_sequence(sequence_identity)
-            referenced = stage_sequence_layout_from_preview(
+            referenced = shot_builder.stage_sequence_layout_from_preview(
                 [item for item in preview if item.status == "resolved"],
                 sequence_data,
                 project_root=self.service.paths.project_root,

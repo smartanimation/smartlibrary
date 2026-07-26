@@ -1,4 +1,4 @@
-from smartlib.review.rv import output_targets
+from smartlib.review.rv import open_review_json_in_smart_review, output_targets
 
 
 def test_output_targets_finds_playblast_sequence_first_frame(tmp_path):
@@ -45,3 +45,20 @@ def test_output_targets_finds_package_images_folder(tmp_path):
     targets = output_targets({"package_root": str(package)})
 
     assert targets == [frame]
+
+
+def test_open_review_json_sets_smart_review_environment(tmp_path, monkeypatch):
+    review_json = tmp_path / "metadata" / "review.json"
+    review_json.parent.mkdir()
+    review_json.write_text("{}", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr("smartlib.review.rv.find_rv_executable", lambda _config=None: "rv.exe")
+    monkeypatch.setattr("smartlib.review.rv.subprocess.Popen", lambda command, **kwargs: calls.append((command, kwargs)))
+
+    opened, message = open_review_json_in_smart_review(review_json)
+
+    assert opened is True
+    assert message == str(review_json)
+    assert calls[0][0] == ["rv.exe"]
+    assert calls[0][1]["env"]["SMART_REVIEW_REVIEW_JSON"] == str(review_json)
+    assert calls[0][1]["env"]["SMART_REVIEW_SHOW_PANEL"] == "1"

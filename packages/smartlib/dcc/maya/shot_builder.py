@@ -202,14 +202,18 @@ def build_layout_sequence_all(
     storyreel_root = _latest_storyreel_root(root, episode, sequence)
     shots_grp = _ensure_group(cmds, "shots_grp")
     referenced = []
+    created_shots = []
     for index, row in enumerate(shots):
         shot_name = row["shot"]
         namespace = _clean_namespace(shot_name)
         before = set(cmds.ls(assemblies=True) or [])
-        _reference_file(cmds, camera_rig, namespace)
+        cameras_before = set(cmds.ls(type="camera", long=True) or [])
+        actual_namespace = _reference_file(cmds, camera_rig, namespace)
         _parent_new_assemblies(cmds, before, shots_grp)
         referenced.append(str(camera_rig))
-        camera = _first_camera_in_namespace(cmds, namespace)
+        camera = _first_new_camera(cmds, cameras_before)
+        if not camera:
+            camera = _first_camera_in_namespace(cmds, actual_namespace)
         storyreel = _storyreel_first_frame(storyreel_root, shot_name, row["cut_in"])
         image_plane = ""
         if camera and storyreel:
@@ -220,8 +224,21 @@ def build_layout_sequence_all(
             image_plane = _attach_image_plane(cmds, camera, storyreel) or ""
         if camera:
             shot_node = _create_camera_sequencer_shot(cmds, row, camera, track=(index % 2) + 1)
+            if shot_node:
+                created_shots.append(shot_node)
             if shot_node and image_plane and storyreel:
                 _connect_storyreel_to_camera_sequencer(cmds, shot_node, image_plane, storyreel, row)
+    if len(created_shots) != len(shots):
+        missing = [
+            str(row["shot"])
+            for row in shots
+            if not any(node == f"{row['shot']}_shot" or node.startswith(f"{row['shot']}_shot") for node in created_shots)
+        ]
+        raise RuntimeError(
+            "Camera Sequencer construction was incomplete. "
+            f"Expected {len(shots)} shots, created {len(created_shots)}. "
+            f"Missing: {', '.join(missing) or 'unknown'}"
+        )
     if shots:
         try:
             cmds.currentTime(float(shots[0]["cut_in"]), edit=True)
@@ -391,16 +408,46 @@ def _unique_nodes(nodes: list[str]) -> list[str]:
     return unique
 
 
-def _reference_file(cmds, path: Path, namespace: str) -> None:
+def _reference_file(cmds, path: Path, namespace: str) -> str:
     namespace = _unique_namespace(cmds, namespace)
-    cmds.file(
+    references_before = set(cmds.ls(type="reference") or [])
+    referenced_file = cmds.file(
         str(path),
         reference=True,
         namespace=namespace,
+        defaultNamespace=False,
         ignoreVersion=True,
         mergeNamespacesOnClash=False,
         options="v=0;",
     )
+    references_after = set(cmds.ls(type="reference") or [])
+    new_references = sorted(
+        node for node in references_after - references_before if node != "sharedReferenceNode"
+    )
+    if new_references:
+        reference_node = new_references[0]
+        try:
+            actual_namespace = str(cmds.referenceQuery(reference_node, namespace=True) or "").strip(":")
+        except Exception:
+            actual_namespace = ""
+        try:
+            if actual_namespace != namespace:
+                cmds.file(referenced_file, edit=True, namespace=namespace)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not assign namespace '{namespace}' to reference "
+                f"'{path.name}': {exc}"
+            ) from exc
+        try:
+            actual_namespace = str(cmds.referenceQuery(reference_node, namespace=True) or "").strip(":")
+        except Exception:
+            actual_namespace = ""
+        if actual_namespace and actual_namespace != namespace:
+            raise RuntimeError(
+                f"Camera rig namespace mismatch. Expected '{namespace}', "
+                f"but Maya assigned '{actual_namespace}'."
+            )
+    return namespace
 
 
 def _import_file(cmds, path: Path, namespace: str) -> list[str]:
@@ -869,11 +916,21 @@ def _storyreel_first_frame(storyreel_root: Path | None, shot: str, cut_in: int) 
 
 
 def _first_camera_in_namespace(cmds, namespace: str) -> str:
-    shapes = cmds.ls(f"{namespace}:*", type="camera") or []
+    shapes = cmds.ls(f"{namespace}:*", type="camera", recursive=True, long=True) or []
     if not shapes:
         return ""
     parents = cmds.listRelatives(shapes[0], parent=True, fullPath=False) or []
     return parents[0] if parents else shapes[0]
+
+
+def _first_new_camera(cmds, cameras_before: set[str]) -> str:
+    cameras_after = set(cmds.ls(type="camera", long=True) or [])
+    for shape in sorted(cameras_after - cameras_before):
+        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        if parents:
+            return parents[0]
+        return shape
+    return ""
 
 
 def _attach_image_plane(cmds, camera: str, image_path: Path) -> str:
@@ -890,6 +947,7 @@ def _attach_image_plane(cmds, camera: str, image_path: Path) -> str:
                 cmds.setAttr(f"{shape}.displayOnlyIfCurrent", True)
             if cmds.attributeQuery("depth", node=shape, exists=True):
                 cmds.setAttr(f"{shape}.depth", 10)
+            _apply_picture_in_picture(cmds, shape)
             # Set the frame before enabling sequence loading, otherwise Maya may
             # try to resolve frame 1 and throw "Unable to load the image file".
             frame_number = _frame_number_from_path(image_path)
@@ -906,6 +964,24 @@ def _attach_image_plane(cmds, camera: str, image_path: Path) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _apply_picture_in_picture(cmds, image_plane: str) -> None:
+    values = {
+        "sizeX": 0.28,
+        "sizeY": 0.1575,
+        "offsetX": 0.34,
+        "offsetY": 0.18,
+        "depth": 10.0,
+        "displayOnlyIfCurrent": True,
+    }
+    for name, value in values.items():
+        if not cmds.attributeQuery(name, node=image_plane, exists=True):
+            continue
+        try:
+            cmds.setAttr(f"{image_plane}.{name}", value)
+        except Exception:
+            pass
 
 
 def _qt_can_load_image(path: Path) -> bool:
@@ -937,11 +1013,26 @@ def _create_camera_sequencer_shot(cmds, row: dict, camera: str, track: int) -> s
             sequenceStartTime=float(row["cut_in"]),
             sequenceEndTime=float(row["cut_out"]),
             currentCamera=camera,
-            track=int(track),
         )
-        return shot_node
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not create Camera Sequencer shot '{shot_node}' "
+            f"({row['cut_in']}-{row['cut_out']}): {exc}"
+        ) from exc
+
+    # Some Maya versions reject a new track number during shot creation.
+    # Assigning it after the node exists keeps every editorial shot intact.
+    try:
+        cmds.shot(shot_node, edit=True, track=int(track))
     except Exception:
+        try:
+            if cmds.attributeQuery("track", node=shot_node, exists=True):
+                cmds.setAttr(f"{shot_node}.track", int(track))
+        except Exception:
+            pass
+    if not cmds.objExists(shot_node):
         return ""
+    return shot_node
 
 
 def _connect_storyreel_to_camera_sequencer(cmds, shot_node: str, image_plane: str, image_path: Path, row: dict) -> None:

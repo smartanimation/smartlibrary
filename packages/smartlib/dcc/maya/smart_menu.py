@@ -36,6 +36,16 @@ DEFAULT_MENU_CONFIG = {
             ],
             "Layout": [
                 {
+                    "label": "Smart Sequence Builder",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_sequence_builder",
+                    "enabled": True,
+                },
+                {
+                    "label": "Smart Set Dress",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_set_dress",
+                    "enabled": True,
+                },
+                {
                     "label": "MAYA Layout Panel",
                     "command": "smartlib.dcc.maya.smart_menu.show_maya_layout_panel",
                     "enabled": True,
@@ -51,8 +61,8 @@ DEFAULT_MENU_CONFIG = {
                     "enabled": True,
                 },
                 {
-                    "label": "Review Layer Manager",
-                    "command": "smartlib.dcc.maya.smart_menu.show_review_layer_manager",
+                    "label": "Smart Playblast",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_playblast",
                     "enabled": True,
                 },
             ],
@@ -269,7 +279,7 @@ def _build_configured_menu(cmds, main_window: str) -> str:
         for item in categories:
             _add_menu_item(cmds, menu, item)
     cmds.menuItem(divider=True, parent=menu)
-    cmds.menuItem(label="Reload SmartMenu", parent=menu, command=lambda *_args: install())
+    cmds.menuItem(label="Reload SmartMenu", parent=menu, command=lambda *_args: reload_smart_menu())
     return menu
 
 
@@ -313,6 +323,19 @@ def show_review_layer_manager() -> None:
     review_layer_ui.show(config_dir=config_dir)
 
 
+def show_smart_playblast() -> None:
+    ensure_runtime_paths()
+    _reload(
+        "smartlib.dcc.maya.review_playblast",
+        "smartlib.review.rv",
+        "smartlib.apps.smart_playblast.ui",
+        "smartlib.apps.smart_playblast",
+    )
+    from smartlib.apps import smart_playblast
+
+    smart_playblast.show(config_dir=str(_config_dir()))
+
+
 def show_viewer() -> None:
     ensure_runtime_paths()
     _reload(
@@ -337,6 +360,32 @@ def show_smart_shot() -> None:
 
     config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
     smart_shot.show(config_dir=config_dir)
+
+
+def show_smart_sequence_builder() -> None:
+    ensure_runtime_paths()
+    _reload(
+        "smartlib.dcc.maya.shot_builder",
+        "smartlib.apps.smart_sequence_builder.service",
+        "smartlib.apps.smart_sequence_builder.ui",
+        "smartlib.apps.smart_sequence_builder",
+    )
+    from smartlib.apps import smart_sequence_builder
+
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
+    smart_sequence_builder.show(config_dir=config_dir)
+
+
+def show_smart_set_dress() -> None:
+    ensure_runtime_paths()
+    _reload(
+        "smartlib.dcc.maya.set_dress",
+        "smartlib.apps.set_dress.ui",
+        "smartlib.apps.set_dress",
+    )
+    from smartlib.apps import set_dress
+
+    set_dress.show()
 
 
 def show_maya_layout_panel() -> None:
@@ -445,6 +494,18 @@ def install() -> str:
     if cmds.menu(MENU_NAME, exists=True):
         cmds.deleteUI(MENU_NAME, menu=True)
     return _build_configured_menu(cmds, main_window)
+
+
+def reload_smart_menu() -> str:
+    """Reload this module from disk, then rebuild Maya's SmartMenu.
+
+    The menu callback can belong to an older module object, so the newly
+    reloaded module is used explicitly for installation.
+    """
+    ensure_runtime_paths()
+    importlib.invalidate_caches()
+    module = importlib.reload(sys.modules[__name__])
+    return module.install()
 
 
 def uninstall() -> None:

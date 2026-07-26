@@ -1,0 +1,10 @@
+recipes:
+  Mocap + Virtual Camera:
+    version: v001
+    inputs:
+      - editorial
+      - mocap
+      - virtual_camera
+      - cast
+      - storyreel
+      - audio
