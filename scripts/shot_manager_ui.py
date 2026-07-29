@@ -280,6 +280,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.publish_animation_curves_btn = QtWidgets.QPushButton("Export Animation Curves")
         self.apply_animation_curves_btn = QtWidgets.QPushButton("Apply Animation Curves")
         self.publish_animation_btn = QtWidgets.QPushButton("Publish Animation")
+        self.publish_animation_cache_btn = QtWidgets.QPushButton("Publish Cache")
+        self.build_animation_package_btn = QtWidgets.QPushButton("Build Package")
+        self.build_animation_review_scene_btn = QtWidgets.QPushButton("Build Review Scene")
+        self.export_camera_btn = QtWidgets.QPushButton("Export Camera")
+        self.apply_camera_btn = QtWidgets.QPushButton("Apply Camera")
+        self.publish_camera_btn = QtWidgets.QPushButton("Publish Camera")
+        self.publish_preview_render_btn = QtWidgets.QPushButton("Publish Preview Render")
+        self.apply_set_dress_btn = QtWidgets.QPushButton("Apply Set Dress")
         self.data_type_list = QtWidgets.QListWidget()
         self.data_cast_list = QtWidgets.QListWidget()
         self.construct_tab = QtWidgets.QWidget()
@@ -325,6 +333,20 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.publish_animation_curves_btn.setToolTip("Available inside Maya.")
             self.apply_animation_curves_btn.setEnabled(False)
             self.apply_animation_curves_btn.setToolTip("Available inside Maya.")
+            self.publish_animation_cache_btn.setEnabled(False)
+            self.publish_animation_cache_btn.setToolTip("Available inside Maya.")
+            self.build_animation_review_scene_btn.setEnabled(False)
+            self.build_animation_review_scene_btn.setToolTip("Available inside Maya.")
+            self.export_camera_btn.setEnabled(False)
+            self.export_camera_btn.setToolTip("Available inside Maya.")
+            self.apply_camera_btn.setEnabled(False)
+            self.apply_camera_btn.setToolTip("Available inside Maya.")
+            self.publish_camera_btn.setEnabled(False)
+            self.publish_camera_btn.setToolTip("Available inside Maya.")
+            self.publish_preview_render_btn.setEnabled(False)
+            self.publish_preview_render_btn.setToolTip("Available inside Maya.")
+            self.apply_set_dress_btn.setEnabled(False)
+            self.apply_set_dress_btn.setToolTip("Available inside Maya.")
         self.main_stack.setCurrentWidget(self.shot_browser_page)
         self.episode_listview.setMaximumHeight(120)
         self.episode_listview.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
@@ -438,6 +460,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.publish_animation_curves_btn.clicked.connect(self.publish_animation_curves)
         self.apply_animation_curves_btn.clicked.connect(self.apply_animation_curves)
         self.publish_animation_btn.clicked.connect(self.publish_animation)
+        self.publish_animation_cache_btn.clicked.connect(self.publish_animation_cache)
+        self.build_animation_package_btn.clicked.connect(self.build_animation_package)
+        self.build_animation_review_scene_btn.clicked.connect(self.build_animation_review_scene)
+        self.export_camera_btn.clicked.connect(self.export_camera_data)
+        self.apply_camera_btn.clicked.connect(self.apply_camera_data)
+        self.publish_camera_btn.clicked.connect(self.publish_camera_data)
+        self.publish_preview_render_btn.clicked.connect(self.publish_preview_render)
+        self.apply_set_dress_btn.clicked.connect(self.apply_set_dress)
         self.open_preview_rv_btn.clicked.connect(self.open_selected_preview_in_rv)
         self.refresh_preview_history_btn.clicked.connect(self.populate_preview_history)
         self.preview_history_table.itemDoubleClicked.connect(lambda _item: self.open_selected_preview_in_rv())
@@ -669,6 +699,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             type_layout.addWidget(QtWidgets.QLabel("DataType :"))
             self.data_type_list.addItem("animation")
             self.data_type_list.addItem("camera")
+            preview_render_item = QtWidgets.QListWidgetItem("Preview Render")
+            preview_render_item.setData(QtCore.Qt.UserRole, "preview_render")
+            self.data_type_list.addItem(preview_render_item)
+            set_dress_item = QtWidgets.QListWidgetItem("Set Dress")
+            set_dress_item.setData(QtCore.Qt.UserRole, "set_dress")
+            self.data_type_list.addItem(set_dress_item)
             self.data_type_list.setFixedWidth(130)
             self.data_type_list.setStyleSheet("QListWidget::item { height: 34px; }")
             type_layout.addWidget(self.data_type_list, 1)
@@ -696,6 +732,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             action_layout.addWidget(self.publish_animation_curves_btn)
             action_layout.addWidget(self.apply_animation_curves_btn)
             action_layout.addWidget(self.publish_animation_btn)
+            action_layout.addWidget(self.publish_animation_cache_btn)
+            action_layout.addWidget(self.build_animation_package_btn)
+            action_layout.addWidget(self.build_animation_review_scene_btn)
+            action_layout.addWidget(self.export_camera_btn)
+            action_layout.addWidget(self.apply_camera_btn)
+            action_layout.addWidget(self.publish_camera_btn)
+            action_layout.addWidget(self.publish_preview_render_btn)
+            action_layout.addWidget(self.apply_set_dress_btn)
             version_layout.addLayout(action_layout)
 
             data_splitter.addWidget(type_widget)
@@ -1630,11 +1674,28 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         target = self._current_data_target()
         if sequence_identity:
             department = self.work_dept_combo.currentText().strip() or "layout"
-            rows = [] if data_type == "animation" else self.service.list_sequence_data_versions(sequence_identity, department=department)
+            rows = (
+                self.service.list_sequence_set_dress_publish_versions(sequence_identity)
+                if data_type == "set_dress"
+                else []
+                if data_type in {"animation", "camera", "preview_render"}
+                else self.service.list_sequence_data_versions(sequence_identity, department=department)
+            )
             published_animation_sources = set()
         elif identity:
             if data_type == "animation" and target:
                 rows = self.service.list_animation_curve_versions(identity, target=target, subset="curves")
+                rows.extend(self.service.list_animation_cache_versions(identity, target=target))
+                rows.extend(self.service.list_animation_package_versions(identity))
+            elif data_type == "camera":
+                rows = self.service.list_shot_scene_publish_versions(identity, data_type)
+            elif data_type == "preview_render":
+                rows = self.service.list_preview_render_versions(
+                    identity,
+                    department=self._data_target_token(target) if target else "",
+                )
+            elif data_type == "set_dress":
+                rows = self.service.list_set_dress_publish_versions(identity)
             else:
                 rows = self.service.list_shot_data_versions(identity)
             published_animation_sources = self.service.published_animation_source_paths(identity)
@@ -1644,8 +1705,13 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         published_icon = self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
         if data_type == "animation":
             for row_data in rows:
+                display_name = Path(row_data.path).name
+                if row_data.name.endswith("/cache"):
+                    display_name = "Cache"
+                elif row_data.name == "publish/animation/package/main":
+                    display_name = "Animation Package"
                 item = QtWidgets.QTreeWidgetItem([
-                    Path(row_data.path).name,
+                    display_name,
                     row_data.version + ("  latest" if row_data.latest else ""),
                     row_data.updated,
                     row_data.comment,
@@ -1680,7 +1746,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 
     def _current_data_type(self) -> str:
         item = self.data_type_list.currentItem() if getattr(self, "data_type_list", None) else None
-        return item.text().strip().lower() if item else "animation"
+        if not item:
+            return "animation"
+        key = item.data(QtCore.Qt.UserRole)
+        return str(key or item.text()).strip().lower().replace(" ", "_")
 
     def _current_data_target(self) -> str:
         item = self.data_cast_list.currentItem() if getattr(self, "data_cast_list", None) else None
@@ -1693,35 +1762,117 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 
     def _on_data_type_changed(self) -> None:
         self._update_data_action_visibility()
-        if self._current_data_type() == "animation":
+        data_type = self._current_data_type()
+        if data_type == "animation":
             cast_data = self.service.load_cast(self.active_shot_identity) if self.active_shot_identity else (
                 self.service.load_sequence_cast(self.active_sequence_identity.episode, self.active_sequence_identity.sequence)
                 if self.active_sequence_identity else {"cast": {}}
             )
             self.populate_data_cast_list(cast_data)
+        elif data_type == "preview_render":
+            self._populate_preview_render_targets()
+        elif self.is_maya_session and data_type == "camera":
+            self._populate_scene_data_targets(data_type)
         else:
             self._populate_data_targets_from_existing_rows()
         self.populate_data_tree()
 
     def _update_data_action_visibility(self) -> None:
-        is_animation = self._current_data_type() == "animation"
-        for button in (self.publish_animation_curves_btn, self.apply_animation_curves_btn, self.publish_animation_btn):
+        data_type = self._current_data_type()
+        is_animation = data_type == "animation"
+        for button in (
+            self.publish_animation_curves_btn,
+            self.apply_animation_curves_btn,
+            self.publish_animation_btn,
+            self.publish_animation_cache_btn,
+            self.build_animation_package_btn,
+            self.build_animation_review_scene_btn,
+        ):
             button.setVisible(is_animation)
+        self.export_camera_btn.setVisible(False)
+        for button in (self.apply_camera_btn, self.publish_camera_btn):
+            button.setVisible(data_type == "camera")
+        self.publish_preview_render_btn.setVisible(data_type == "preview_render")
+        self.apply_set_dress_btn.setVisible(data_type == "set_dress")
         if hasattr(self, "data_target_label"):
-            self.data_target_label.setText("Cast :" if is_animation else "Name :")
+            labels = {
+                "animation": "Cast :",
+                "camera": "Camera :",
+                "preview_render": "Department :",
+                "set_dress": "Package :",
+            }
+            self.data_target_label.setText(labels.get(data_type, "Name :"))
+
+    def _populate_preview_render_targets(self) -> None:
+        current = self._current_data_target()
+        identity = self.active_shot_identity or self.current_identity()
+        departments = {self.work_dept_combo.currentText().strip() or "default"}
+        if identity:
+            for row in self.service.list_preview_render_versions(identity):
+                parts = str(row.name or "").split("/")
+                if len(parts) > 1:
+                    departments.add(parts[1])
+        self.data_cast_list.blockSignals(True)
+        self.data_cast_list.clear()
+        for department in sorted(departments, key=str.lower):
+            item = QtWidgets.QListWidgetItem(department)
+            item.setData(QtCore.Qt.UserRole, {"target": department})
+            self.data_cast_list.addItem(item)
+            if department == current:
+                self.data_cast_list.setCurrentItem(item)
+        if self.data_cast_list.count() and self.data_cast_list.currentRow() < 0:
+            self.data_cast_list.setCurrentRow(0)
+        self.data_cast_list.blockSignals(False)
+
+    def _populate_scene_data_targets(self, data_type: str) -> None:
+        current = self._current_data_target()
+        self.data_cast_list.blockSignals(True)
+        self.data_cast_list.clear()
+        targets = []
+        try:
+            from smartlib.dcc.maya.shot_scene_data import list_scene_cameras
+
+            targets = list_scene_cameras()
+        except Exception:
+            targets = []
+        identity = self.active_shot_identity or self.current_identity()
+        targets_by_token = {self._data_target_token(target): target for target in targets}
+        if identity:
+            for row in self.service.list_shot_scene_publish_versions(identity, data_type):
+                parts = str(row.name or "").split("/")
+                if len(parts) > 1 and parts[0] == data_type:
+                    targets_by_token.setdefault(parts[1], parts[1])
+        for target in sorted(targets_by_token.values(), key=lambda value: str(value).lower()):
+            display_name = str(target).rsplit("|", 1)[-1]
+            item = QtWidgets.QListWidgetItem(display_name)
+            item.setData(QtCore.Qt.UserRole, {"target": str(target)})
+            self.data_cast_list.addItem(item)
+            if str(target) == current:
+                self.data_cast_list.setCurrentItem(item)
+        if self.data_cast_list.count() and self.data_cast_list.currentRow() < 0:
+            self.data_cast_list.setCurrentRow(0)
+        self.data_cast_list.blockSignals(False)
 
     def _filter_data_rows(self, rows, data_type: str, target: str):
         if data_type == "animation":
             return rows
+        target_token = self._data_target_token(target)
         filtered = []
         for row in rows:
             parts = str(row.name or "").split("/")
             if not parts or parts[0] != data_type:
                 continue
-            if target and len(parts) > 1 and parts[1] != target:
+            if target_token and len(parts) > 1 and parts[1] != target_token:
                 continue
             filtered.append(row)
         return filtered
+
+    @staticmethod
+    def _data_target_token(value: str) -> str:
+        import re
+
+        cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").rsplit("|", 1)[-1]).strip("_")
+        return cleaned or "main"
 
     def _populate_data_targets_from_existing_rows(self) -> None:
         identity = self.active_shot_identity or self.current_identity()
@@ -1733,9 +1884,17 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         rows = []
         if sequence_identity:
             department = self.work_dept_combo.currentText().strip() or "layout"
-            rows = self.service.list_sequence_data_versions(sequence_identity, department=department)
+            rows = (
+                self.service.list_sequence_set_dress_publish_versions(sequence_identity)
+                if data_type == "set_dress"
+                else self.service.list_sequence_data_versions(sequence_identity, department=department)
+            )
         elif identity:
-            rows = self.service.list_shot_data_versions(identity)
+            rows = (
+                self.service.list_set_dress_publish_versions(identity)
+                if data_type == "set_dress"
+                else self.service.list_shot_data_versions(identity)
+            )
         targets = []
         for row in rows:
             parts = str(row.name or "").split("/")
@@ -3217,6 +3376,426 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Publish Animation Failed", str(exc))
 
+    def publish_animation_cache(self) -> None:
+        identity = self.current_identity()
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, "Publish Cache", "Available inside Maya.")
+            return
+        cast_row = self._selected_data_cast_row_data()
+        if not cast_row:
+            QtWidgets.QMessageBox.warning(self, "Publish Cache", "Select one cast in the Data tab first.")
+            return
+        comment, accepted = QtWidgets.QInputDialog.getText(self, "Publish Cache", "Comment")
+        if not accepted:
+            return
+        try:
+            import maya.cmds as cmds
+            from smartlib.dcc.maya.animation_curves import export_animation_geometry_cache
+
+            namespace = cast_row["namespace"] or cast_row["cast_key"]
+            if hasattr(self.service, "shot_frame_range"):
+                start, end = self.service.shot_frame_range(identity)
+            else:
+                shot_data = self.service.load_shot(identity)
+                editorial = shot_data.get("editorial") or {}
+                frame_range = editorial.get("frame_range") or shot_data.get("frame_range")
+                if isinstance(frame_range, (list, tuple)) and len(frame_range) >= 2:
+                    start, end = int(frame_range[0]), int(frame_range[1])
+                else:
+                    start = int(editorial.get("cut_in", shot_data.get("cut_in")))
+                    end = int(editorial.get("cut_out", shot_data.get("cut_out")))
+                if end < start:
+                    raise RuntimeError(f"Invalid shot.json frame range: {start}-{end}")
+            source_workfile = cmds.file(query=True, sceneName=True) or ""
+            plan = self.service.plan_animation_cache_publish(identity, target=cast_row["cast_key"])
+            result = export_animation_geometry_cache(
+                namespace=namespace,
+                output_dir=plan["version_dir"],
+                frame_range=(start, end),
+            )
+            cache_path = self.service.finalize_animation_cache_publish(
+                identity,
+                result,
+                target=cast_row["cast_key"],
+                asset=cast_row["asset"],
+                variant=cast_row["variant"],
+                namespace=namespace,
+                source_workfile=source_workfile,
+                comment=comment.strip(),
+                version=plan["version"],
+            )
+            self.populate_data_tree()
+            self.status_label.setText(f"Published animation cache: {cache_path}")
+            QtWidgets.QMessageBox.information(
+                self,
+                "Publish Cache",
+                f"Published evaluated geometry cache:\n{cache_path.parent}",
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Publish Cache Failed", str(exc))
+
+    def build_animation_package(self) -> None:
+        identity = self.current_identity()
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        comment, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            "Build Animation Package",
+            "Comment",
+        )
+        if not accepted:
+            return
+        try:
+            manifest_path = self.service.build_animation_package_snapshot(
+                identity,
+                comment=comment.strip(),
+                preferred_format="abc",
+            )
+            from smartlib.core.metadata import read_json
+
+            package_data = read_json(manifest_path, {}) or {}
+            missing = package_data.get("missing_casts") or []
+            self.populate_data_tree()
+            self.status_label.setText(f"Built animation package: {manifest_path}")
+            message = f"Built animation package:\n{manifest_path}"
+            if missing:
+                message += "\n\nNo cache (not included):\n" + "\n".join(
+                    f"- {item.get('cast_key')}: {item.get('reason')}"
+                    for item in missing
+                )
+            QtWidgets.QMessageBox.information(self, "Build Animation Package", message)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Build Animation Package Failed", str(exc))
+
+    def build_animation_review_scene(self) -> None:
+        identity = self.current_identity()
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Build Animation Review Scene",
+                "Available inside Maya.",
+            )
+            return
+        try:
+            import maya.cmds as cmds
+            from smartlib.core.metadata import read_json
+            from smartlib.dcc.maya.shot_builder import build_animation_review_scene
+
+            package_path = self._selected_animation_package_path()
+            plan = self.service.animation_review_build_plan(
+                identity,
+                package_path=package_path or None,
+            )
+            manifest = read_json(plan["animation_manifest"], {}) or {}
+            animated_cast = set((manifest.get("casts") or {}).keys())
+            preview = self.service.build_preview(
+                identity,
+                department=self.work_dept_combo.currentText().strip() or "anim",
+            )
+            static_items = [
+                item
+                for item in preview
+                if item.status == "resolved" and item.cast_key not in animated_cast
+            ]
+            unresolved_static = [
+                item
+                for item in preview
+                if item.cast_key not in animated_cast and item.required and item.status != "resolved"
+            ]
+            if unresolved_static:
+                details = "\n".join(
+                    f"- {item.cast_key}: {item.message or item.status}"
+                    for item in unresolved_static
+                )
+                raise RuntimeError(f"Required static cast is unresolved:\n{details}")
+
+            current_scene = cmds.file(query=True, sceneName=True) or "untitled"
+            modified = bool(cmds.file(query=True, modified=True))
+            message = (
+                "The current scene will be replaced by a generated review scene.\n\n"
+                f"Current: {current_scene}\n"
+                f"Package: {plan['package_version']}\n"
+                f"Animated caches: {len(animated_cast)}\n"
+                f"Static references: {len(static_items)}\n"
+                f"Cameras: {len(plan.get('camera_paths') or [])}\n\n"
+                f"Output:\n{plan['scene_path']}"
+            )
+            if modified:
+                message = "The current scene has unsaved changes.\n\n" + message
+            accepted = QtWidgets.QMessageBox.question(
+                self,
+                "Build Animation Review Scene",
+                message,
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Cancel,
+            )
+            if accepted != QtWidgets.QMessageBox.Yes:
+                return
+
+            result = build_animation_review_scene(
+                plan,
+                self.service.load_shot(identity),
+                static_items,
+                project_root=self.service.project_config.project_root,
+            )
+            build_manifest = self.service.write_animation_review_build_manifest(plan, result)
+            self.status_label.setText(f"Built Animation Review Scene: {result['scene_path']}")
+            warning_count = len(result.get("set_dress_warnings") or [])
+            completed = (
+                f"Built Animation Review Scene:\n{result['scene_path']}\n\n"
+                f"Animation caches: {len(result.get('imported_caches') or [])}\n"
+                f"Static references: {len(result.get('static_references') or [])}\n"
+                f"Cameras: {len(result.get('cameras') or [])}\n"
+                f"Set Dress warnings: {warning_count}\n"
+                f"Build manifest: {build_manifest}"
+            )
+            QtWidgets.QMessageBox.information(
+                self,
+                "Build Animation Review Scene",
+                completed,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Build Animation Review Scene Failed",
+                str(exc),
+            )
+
+    def export_camera_data(self) -> None:
+        self._export_scene_component_data("camera")
+
+    def apply_camera_data(self) -> None:
+        self._apply_scene_component_data("camera")
+
+    def publish_camera_data(self) -> None:
+        self._publish_scene_component_data("camera")
+
+    def _export_scene_component_data(self, data_type: str) -> None:
+        identity = self.current_identity()
+        title = "Camera"
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, f"Export {title}", "Available inside Maya.")
+            return
+        target = self._current_data_target()
+        if not target:
+            QtWidgets.QMessageBox.warning(self, f"Export {title}", f"Select one {title} first.")
+            return
+        comment, accepted = QtWidgets.QInputDialog.getText(self, f"Export {title}", "Comment")
+        if not accepted:
+            return
+        try:
+            import maya.cmds as cmds
+            from smartlib.dcc.maya.shot_scene_data import collect_camera_data
+
+            payload = collect_camera_data(target)
+            path = self.service.export_shot_scene_data(
+                identity,
+                data_type,
+                payload,
+                target=self._data_target_token(target),
+                subset="main",
+                filename=f"{data_type}.json",
+                source_workfile=cmds.file(query=True, sceneName=True) or "",
+                comment=comment.strip(),
+            )
+            self.status_label.setText(f"Exported {title} data: {path}")
+            self.populate_data_tree()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, f"Export {title} Failed", str(exc))
+
+    def _apply_scene_component_data(self, data_type: str) -> None:
+        identity = self.current_identity()
+        title = "Camera"
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, f"Apply {title}", "Available inside Maya.")
+            return
+        path = self._selected_scene_component_data_path(data_type)
+        if not path:
+            QtWidgets.QMessageBox.warning(
+                self,
+                f"Apply {title}",
+                f"Select a published {title} version in the Data tree first.",
+            )
+            return
+        try:
+            from smartlib.core.metadata import read_json
+            from smartlib.dcc.maya.shot_scene_data import apply_camera_data
+
+            payload = read_json(path, {}) or {}
+            result = apply_camera_data(payload)
+            self.status_label.setText(f"Applied {title}: {result}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, f"Apply {title} Failed", str(exc))
+
+    def _publish_scene_component_data(self, data_type: str) -> None:
+        identity = self.current_identity()
+        title = "Camera"
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(self, f"Publish {title}", "Available inside Maya.")
+            return
+        target = self._current_data_target()
+        if not target:
+            QtWidgets.QMessageBox.warning(self, f"Publish {title}", f"Select one {title} first.")
+            return
+        comment, accepted = QtWidgets.QInputDialog.getText(self, f"Publish {title}", "Comment")
+        if not accepted:
+            return
+        try:
+            import maya.cmds as cmds
+            from smartlib.dcc.maya.shot_scene_data import collect_camera_data
+
+            payload = collect_camera_data(target)
+            published = self.service.publish_shot_scene_snapshot(
+                identity,
+                payload,
+                data_type=data_type,
+                target=self._data_target_token(target),
+                subset="main",
+                source_workfile=cmds.file(query=True, sceneName=True) or "",
+                comment=comment.strip(),
+            )
+            self.status_label.setText(f"Published {title}: {published}")
+            self.populate_data_tree()
+            QtWidgets.QMessageBox.information(self, f"Publish {title}", f"Published:\n{published}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, f"Publish {title} Failed", str(exc))
+
+    def _selected_scene_component_data_path(self, data_type: str) -> str:
+        item = self.shot_data_tree.currentItem()
+        if not item:
+            return ""
+        raw_path = item.data(0, QtCore.Qt.UserRole)
+        if not raw_path:
+            return ""
+        path = Path(str(raw_path))
+        if path.is_dir():
+            path = path / f"{data_type}.json"
+        if path.name != f"{data_type}.json" or not path.exists():
+            return ""
+        return str(path)
+
+    def apply_set_dress(self) -> None:
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(
+                self, "Apply Set Dress", "Available inside Maya."
+            )
+            return
+        item = self.shot_data_tree.currentItem()
+        raw_path = item.data(0, QtCore.Qt.UserRole) if item else ""
+        path = Path(str(raw_path)) if raw_path else None
+        if not path or not path.exists():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Apply Set Dress",
+                "Select a published Set Dress version in the Data tree first.",
+            )
+            return
+        try:
+            from smartlib.dcc.maya import set_dress
+
+            package = set_dress.load_package(path)
+            warnings = set_dress.apply_stack(package.layers)
+            message = f"Applied Set Dress: {path.name}"
+            if warnings:
+                message += f" ({len(warnings)} warnings)"
+            self.status_label.setText(message)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "Apply Set Dress Failed", str(exc)
+            )
+
+    def publish_preview_render(self) -> None:
+        identity = self.current_identity()
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Publish Preview Render",
+                "Available inside Maya.",
+            )
+            return
+        comment, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            "Publish Preview Render",
+            "Comment",
+        )
+        if not accepted:
+            return
+        try:
+            import maya.cmds as cmds
+            from smartlib.dcc.maya.review_playblast import load_scene_playblast_settings
+
+            settings = load_scene_playblast_settings(cmds)
+            if not settings:
+                raise RuntimeError(
+                    "Smart Playblast settings were not found in the current Maya scene."
+                )
+            department = self._current_data_target() or self.work_dept_combo.currentText().strip() or "default"
+            settings = dict(settings)
+            settings["department"] = department
+            source_scene = cmds.file(query=True, sceneName=True) or ""
+            plan = dict(settings.get("last_preview_render_plan") or {})
+            results = dict(settings.get("last_results") or {})
+            if not plan or not results:
+                raise RuntimeError(
+                    "No completed Smart Playblast output was found. "
+                    "Run Smart Playblast before publishing the Preview Render manifest."
+                )
+            expected_context = (identity.episode, identity.sequence, identity.shot)
+            plan_context = (
+                str(plan.get("episode") or ""),
+                str(plan.get("sequence") or ""),
+                str(plan.get("shot") or ""),
+            )
+            if plan_context != expected_context:
+                raise RuntimeError(
+                    "The latest Smart Playblast output belongs to another shot: "
+                    + "/".join(plan_context)
+                )
+            if str(plan.get("department") or "") != self._data_target_token(department):
+                raise RuntimeError(
+                    "The latest Smart Playblast output belongs to another department: "
+                    f"{plan.get('department')}"
+                )
+            path = self.service.finalize_preview_render_publish(
+                identity,
+                plan,
+                results,
+                source_scene=source_scene,
+                comment=comment,
+            )
+            self.status_label.setText(f"Published Preview Render manifest: {path}")
+            self.populate_data_tree()
+            QtWidgets.QMessageBox.information(
+                self,
+                "Publish Preview Render",
+                f"Published:\n{path}",
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Publish Preview Render Failed",
+                str(exc),
+            )
+
     def _selected_animation_curve_data_path(self, cast_key: str) -> str:
         item = self.shot_data_tree.currentItem()
         if not item:
@@ -3233,6 +3812,16 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         expected = f"/data/animation/{cast_key}/curves/"
         legacy_expected = f"/publish/animation/{cast_key}/curves/"
         if expected not in normalized and legacy_expected not in normalized:
+            return ""
+        return str(path)
+
+    def _selected_animation_package_path(self) -> str:
+        item = self.shot_data_tree.currentItem()
+        if not item:
+            return ""
+        raw_path = item.data(0, QtCore.Qt.UserRole)
+        path = Path(str(raw_path)) if raw_path else None
+        if not path or path.name != "animation_manifest.json" or not path.is_file():
             return ""
         return str(path)
 

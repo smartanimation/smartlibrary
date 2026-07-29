@@ -1,18 +1,26 @@
 ###############################################################################
 # Smart Viewport Gate Guides
 #
-# Maya 2026 Python plug-in.
+# Maya 2024+ Python plug-in.
 # Draws text and composition guides inside the active camera resolution gate.
 ###############################################################################
 
 import datetime
 import getpass
+import json
 import os
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 import maya.api.OpenMayaRender as omr
 import maya.api.OpenMayaUI as omui
 import maya.cmds as cmds
+
+
+_SCENE_CALLBACK_IDS = []
+_STATE_NODE = "smartGateGuideState"
+_STATE_ATTR = "guideStateJson"
+_SCENE_LABEL = "untitled"
 
 
 def maya_useNewAPI():
@@ -42,7 +50,9 @@ class SmartGateGuideCmd(om.MPxCommand):
 
 class SmartGateGuideLocator(omui.MPxLocatorNode):
     NAME = "SmartViewportGateGuide"
-    TYPE_ID = om.MTypeId(0x0012B901)
+    # Local development ID range. The former 0x0012B901 collided with
+    # assumptions inside Maya 2024 XGen's guide baking callback.
+    TYPE_ID = om.MTypeId(0x000FF7A1)
     DRAW_DB_CLASSIFICATION = "drawdb/geometry/smartViewportGateGuide"
     DRAW_REGISTRANT_ID = "SmartViewportGateGuideRegistrant"
     DEFAULT_CAMERA_NAMES = frozenset(
@@ -234,10 +244,9 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
             text = dag_fn.findPlug(long_name, False).asString()
             data.text_values.append(self._parse_text(text, camera_path, data))
 
-        try:
-            data.real_scale_value = cmds.mayaDpiSetting(query=True, rsv=True)
-        except Exception:
-            data.real_scale_value = 1.0
+        # Draw overrides may run outside Maya's main UI thread. Calling
+        # maya.cmds here can deadlock or crash during scene save callbacks.
+        data.real_scale_value = 1.0
 
         return data
 
@@ -343,7 +352,7 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
     def _get_gate_size(self, camera_path, vp_width, vp_height):
         camera_fn = om.MFnCamera(camera_path)
         camera_aspect_ratio = camera_fn.aspectRatio()
-        device_aspect_ratio = cmds.getAttr("defaultResolution.deviceAspectRatio")
+        device_aspect_ratio = self._device_aspect_ratio()
         vp_aspect_ratio = vp_width / float(vp_height)
         scale = 1.0
 
@@ -382,25 +391,21 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
         return gate_width, gate_height
 
     def _parse_text(self, text, camera_path, data):
-        current_time = cmds.currentTime(query=True)
+        current_time = oma.MAnimControl.currentTime().value
         current_frame = int(round(current_time))
-        scene_name = cmds.file(query=True, sceneName=True, shortName=True)
-        scene_name = os.path.splitext(scene_name)[0] if scene_name else "untitled"
+        frame_start = int(round(oma.MAnimControl.minTime().value))
+        frame_end = int(round(oma.MAnimControl.maxTime().value))
 
         replacements = {
             "{counter}": str(current_frame).zfill(data.counter_padding),
             "{animTime}": self._format_anim_time(current_frame),
-            "{scene}": scene_name,
+            "{scene}": _SCENE_LABEL,
             "{camera}": self._camera_transform_name(camera_path),
             "{camera_clean}": self._camera_transform_name(camera_path, remove_namespace=True),
             "{focal_length}": str(int(round(om.MFnCamera(camera_path).focalLength))),
-            "{frame_start}": str(int(cmds.playbackOptions(query=True, minTime=True))),
-            "{frame_end}": str(int(cmds.playbackOptions(query=True, maxTime=True))),
-            "{total_frames}": str(
-                int(cmds.playbackOptions(query=True, maxTime=True))
-                - int(cmds.playbackOptions(query=True, minTime=True))
-                + 1
-            ),
+            "{frame_start}": str(frame_start),
+            "{frame_end}": str(frame_end),
+            "{total_frames}": str(frame_end - frame_start + 1),
             "{username}": getpass.getuser(),
             "{date}": datetime.date.today().strftime("%Y/%m/%d"),
         }
@@ -409,6 +414,17 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
         for token, value in replacements.items():
             parsed = parsed.replace(token, value)
         return parsed
+
+    @staticmethod
+    def _device_aspect_ratio():
+        try:
+            selection = om.MSelectionList()
+            selection.add("defaultResolution")
+            node_fn = om.MFnDependencyNode(selection.getDependNode(0))
+            value = node_fn.findPlug("deviceAspectRatio", False).asFloat()
+            return value if value > 0.0 else 1.0
+        except RuntimeError:
+            return 1.0
 
     @staticmethod
     def _format_anim_time(frame):
@@ -466,6 +482,166 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
         return
 
 
+def _guide_shapes():
+    return cmds.ls(type=SmartGateGuideLocator.NAME, long=True) or []
+
+
+def _capture_guide_state():
+    states = []
+    string_attrs = ["camera"] + [item[0] for item in SmartGateGuideLocator.TEXT_ATTRS] + ["fontName"]
+    color_attrs = ["fontColor", "gateColor", "centerColor", "thirdsColor"]
+    scalar_attrs = [
+        "textPadding",
+        "fontAlpha",
+        "fontScale",
+        "counterPadding",
+        "showResolutionGate",
+        "showCenterLine",
+        "showRuleOfThirds",
+        "showDiagonalCross",
+        "gateAlpha",
+        "centerAlpha",
+        "thirdsAlpha",
+        "lineWidth",
+    ]
+    for shape in _guide_shapes():
+        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        if not parents:
+            continue
+        transform = parents[0]
+        values = {}
+        for name in string_attrs + scalar_attrs:
+            plug = f"{shape}.{name}"
+            if cmds.objExists(plug):
+                values[name] = cmds.getAttr(plug)
+        for name in color_attrs:
+            plug = f"{shape}.{name}"
+            if cmds.objExists(plug):
+                value = cmds.getAttr(plug)
+                values[name] = list(value[0]) if value else [1.0, 1.0, 1.0]
+        states.append(
+            {
+                "name": transform.rsplit("|", 1)[-1],
+                "matrix": cmds.xform(transform, query=True, worldSpace=True, matrix=True),
+                "values": values,
+            }
+        )
+    return states
+
+
+def _write_guide_state(states):
+    if not cmds.objExists(_STATE_NODE):
+        cmds.createNode("network", name=_STATE_NODE)
+    plug = f"{_STATE_NODE}.{_STATE_ATTR}"
+    if not cmds.objExists(plug):
+        cmds.addAttr(_STATE_NODE, longName=_STATE_ATTR, dataType="string")
+    cmds.setAttr(plug, json.dumps(states, ensure_ascii=True), type="string")
+
+
+def _read_guide_state():
+    plug = f"{_STATE_NODE}.{_STATE_ATTR}"
+    if not cmds.objExists(plug):
+        return []
+    try:
+        value = cmds.getAttr(plug) or "[]"
+        data = json.loads(value)
+        return data if isinstance(data, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _remove_runtime_guides():
+    transforms = []
+    for shape in _guide_shapes():
+        transforms.extend(cmds.listRelatives(shape, parent=True, fullPath=True) or [])
+    if transforms:
+        cmds.delete(sorted(set(transforms), key=len, reverse=True))
+
+
+def _restore_runtime_guides():
+    if _guide_shapes():
+        return
+    states = _read_guide_state()
+    for state in states:
+        shape = cmds.createNode(SmartGateGuideLocator.NAME, name="SmartGateGuideShape#")
+        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        if not parents:
+            continue
+        transform = parents[0]
+        requested_name = str(state.get("name") or "SmartGateGuide#")
+        if not cmds.objExists(requested_name):
+            transform = cmds.rename(transform, requested_name)
+        matrix = state.get("matrix") or []
+        if len(matrix) == 16:
+            cmds.xform(transform, worldSpace=True, matrix=matrix)
+        shapes = cmds.listRelatives(transform, shapes=True, fullPath=True) or []
+        if not shapes:
+            continue
+        shape = shapes[0]
+        for name, value in dict(state.get("values") or {}).items():
+            plug = f"{shape}.{name}"
+            if not cmds.objExists(plug):
+                continue
+            try:
+                if isinstance(value, str):
+                    cmds.setAttr(plug, value, type="string")
+                elif isinstance(value, list) and len(value) == 3:
+                    cmds.setAttr(plug, *value, type="double3")
+                else:
+                    cmds.setAttr(plug, value)
+            except (RuntimeError, TypeError):
+                continue
+
+
+def _before_save_check(_client_data):
+    _update_scene_label()
+    states = _capture_guide_state()
+    _write_guide_state(states)
+    _remove_runtime_guides()
+    return True
+
+
+def _after_save(_client_data):
+    _update_scene_label()
+    _restore_runtime_guides()
+    cmds.file(modified=False)
+
+
+def _after_open(_client_data):
+    _update_scene_label()
+    cmds.evalDeferred(_restore_runtime_guides)
+
+
+def _update_scene_label():
+    global _SCENE_LABEL
+    scene_path = cmds.file(query=True, sceneName=True) or ""
+    scene_name = os.path.basename(scene_path)
+    _SCENE_LABEL = os.path.splitext(scene_name)[0] if scene_name else "untitled"
+
+
+def _register_scene_callbacks():
+    _update_scene_label()
+    cmds.evalDeferred(_restore_runtime_guides)
+    _SCENE_CALLBACK_IDS.append(
+        om.MSceneMessage.addCheckCallback(om.MSceneMessage.kBeforeSaveCheck, _before_save_check)
+    )
+    _SCENE_CALLBACK_IDS.append(
+        om.MSceneMessage.addCallback(om.MSceneMessage.kAfterSave, _after_save)
+    )
+    _SCENE_CALLBACK_IDS.append(
+        om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, _after_open)
+    )
+
+
+def _remove_scene_callbacks():
+    while _SCENE_CALLBACK_IDS:
+        callback_id = _SCENE_CALLBACK_IDS.pop()
+        try:
+            om.MMessage.removeCallback(callback_id)
+        except RuntimeError:
+            pass
+
+
 def initializePlugin(obj):
     plugin_fn = om.MFnPlugin(obj, "SmartLibrary", "1.0.0", "2026")
 
@@ -505,9 +681,12 @@ def initializePlugin(obj):
         om.MGlobal.displayError("Failed to register SmartViewportGateGuide draw override.")
         raise
 
+    _register_scene_callbacks()
+
 
 def uninitializePlugin(obj):
     plugin_fn = om.MFnPlugin(obj)
+    _remove_scene_callbacks()
 
     try:
         omr.MDrawRegistry.deregisterDrawOverrideCreator(

@@ -294,6 +294,26 @@ def resolve_openrv_executable(config_dir, projectroot):
             return os.path.normpath(found)
     return ""
 
+
+def resolve_configured_tool(config_dir, projectroot, tool_name):
+    for tools_path in (
+        os.path.join(config_dir, "tools.yml") if config_dir else "",
+        os.environ.get("SMARTPIPELINE_STUDIO_CONFIG", ""),
+        os.path.join(SMARTPROJECTS_ROOT, "tools.yml"),
+        os.path.join(DEFAULT_CONFIG_ROOT, "tools.yml"),
+    ):
+        data = load_yml(tools_path) if tools_path else {}
+        raw_path = (((data.get("tools") or {}).get(tool_name) or {}).get("path") or "").strip()
+        if not raw_path:
+            continue
+        path = os.path.normpath(format_config_value(raw_path, projectroot))
+        if path and os.path.exists(path):
+            return path
+    env_value = os.environ.get(f"{str(tool_name).upper()}_PATH", "").strip().strip('"')
+    if env_value and os.path.exists(env_value):
+        return os.path.normpath(env_value)
+    return ""
+
 class SmartLauncher(QtWidgets.QMainWindow):
     setup_finished_signal = QtCore.Signal()
     asset_sync_signal = QtCore.Signal(str)
@@ -481,6 +501,12 @@ class SmartLauncher(QtWidgets.QMainWindow):
             if not is_openrv_software(soft_id)
         ]
         cfg_dir = os.path.join(PROJECTS_ROOT, folder_name)
+        if hasattr(self, "usdview_action"):
+            usdview_path = resolve_configured_tool(cfg_dir, self.projectroot, "usdview")
+            self.usdview_action.setEnabled(bool(usdview_path))
+            self.usdview_action.setToolTip(
+                usdview_path or "Set tools.usdview.path in tools.yml or USDVIEW_PATH."
+            )
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         provider = QtWidgets.QFileIconProvider()
         for soft_id in enabled:
@@ -845,6 +871,13 @@ class SmartLauncher(QtWidgets.QMainWindow):
             "smart_ingest": [python, "-m", "smartlib.apps.smart_ingest"],
             "smart_casting": [python, "-m", "smartlib.apps.smart_casting", cfg_dir],
             "shot_manager": [python, os.path.join(SCRIPTS_DIR, "shot_manager_ui.py")],
+            "review_build_manager": [
+                python,
+                "-m",
+                "smartlib.apps.review_build_manager",
+                "--config-dir",
+                cfg_dir,
+            ],
         }
         command = tool_commands.get(tool_name)
         if not command:
@@ -876,6 +909,57 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
     def launch_current_project_smart_review(self):
         self.launch_current_project_openrv()
+
+    def launch_current_project_usdview(self):
+        cfg_dir = self.current_project_config_dir()
+        if not cfg_dir:
+            QtWidgets.QMessageBox.warning(self, "USD View", "Select a project first.")
+            return
+        usdview_path = resolve_configured_tool(cfg_dir, self.projectroot, "usdview")
+        if not usdview_path:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "USD View Not Found",
+                "Set tools.usdview.path in tools.yml or set USDVIEW_PATH.",
+            )
+            return
+        usd_file, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open USD in usdview",
+            self.projectroot if self.projectroot and os.path.exists(self.projectroot) else "",
+            "USD Files (*.usd *.usda *.usdc *.usdz);;All Files (*)",
+        )
+        if not usd_file:
+            return
+        env = os.environ.copy()
+        env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
+        env["SMARTPIPELINE_ROOT"] = CURRENT_DIR
+        env["SMARTPIPELINE_TOOLS"] = SMARTPIPELINE_TOOLS
+        display_project = self.ui.projectCombo.currentText()
+        base_cfg = load_yml(os.path.join(cfg_dir, "templates_base.yml"))
+        anchors = base_cfg.get("anchors", {})
+        apply_project_context_env(
+            env,
+            project_name=anchors.get("project_name", display_project),
+            project_root=anchors.get("project_root", self.projectroot),
+            config_dir=cfg_dir,
+            source="launcher",
+        )
+        suffix = os.path.splitext(usdview_path)[1].lower()
+        if suffix in {".bat", ".cmd"}:
+            batch_command = subprocess.list2cmdline([usdview_path, os.path.normpath(usd_file)])
+            command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", batch_command]
+        else:
+            command = [usdview_path, os.path.normpath(usd_file)]
+        try:
+            subprocess.Popen(
+                command,
+                cwd=self.projectroot if self.projectroot and os.path.exists(self.projectroot) else CURRENT_DIR,
+                env=env,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "USD View", f"Launch failed: {e}")
 
     def check_project_status(self, root):
         is_ready = os.path.exists(root) if root else False
@@ -909,10 +993,20 @@ class SmartLauncher(QtWidgets.QMainWindow):
         casting_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
         shot_action = tools_menu.addAction("Shot Manager", lambda: self.launch_smart_tool("shot_manager"))
         shot_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon))
+        review_build_action = tools_menu.addAction(
+            "Review Build Manager",
+            lambda: self.launch_smart_tool("review_build_manager"),
+        )
+        review_build_action.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay)
+        )
         rv_action = tools_menu.addAction("RV Player", self.launch_current_project_openrv)
         rv_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay))
         smart_review_action = tools_menu.addAction("Smart Review", self.launch_current_project_smart_review)
         smart_review_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.usdview_action = tools_menu.addAction("Open USD in usdview", self.launch_current_project_usdview)
+        self.usdview_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView))
+        self.usdview_action.setEnabled(False)
         
         # 1. New Project
         new_action = file_menu.addAction("New Project", self.open_config_creator)

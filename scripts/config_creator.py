@@ -116,6 +116,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.shot_depts_list = self.create_list_page("Shot Depts")
         self.asset_depts_list = self.create_list_page("Asset Depts")
         self.template_table = self.create_table_page("Templates", ["Key", "Path Value"])
+        self.naming_tab = self.setup_naming_tab()
         self.context_tab = self.setup_context_tab()
         self.resolvers_tab = self.setup_resolvers_tab()
 
@@ -124,6 +125,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs.addTab(self.shot_depts_list["widget"], "Shot Depts")
         self.tabs.addTab(self.asset_depts_list["widget"], "Asset Depts")
         self.tabs.addTab(self.template_table["widget"], "Templates")
+        self.tabs.addTab(self.naming_tab, "Naming")
         self.tabs.addTab(self.context_tab, "Contexts")
         self.tabs.addTab(self.resolvers_tab, "Resolvers")
         main_layout.addWidget(self.tabs)
@@ -140,6 +142,23 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         command_layout.addWidget(self.revert_btn)
         command_layout.addWidget(self.save_btn)
         main_layout.addLayout(command_layout)
+
+    def setup_naming_tab(self):
+        page = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(page)
+        form.setContentsMargins(12, 12, 12, 12)
+        self.playblast_filename_input = QtWidgets.QLineEdit()
+        self.playblast_filename_input.setPlaceholderText(
+            "{project}*{episode}*{sequence}*{shot}*{dept}_{preview}_v{version}*t{take}*####.{ext}"
+        )
+        form.addRow("Smart Playblast File Name:", self.playblast_filename_input)
+        tokens = QtWidgets.QLabel(
+            "Tokens: {project} {episode} {sequence} {shot} {dept} "
+            "{preview} {version} {take} {ext}"
+        )
+        tokens.setWordWrap(True)
+        form.addRow("", tokens)
+        return page
 
     def setup_context_tab(self):
         page = QtWidgets.QWidget()
@@ -1140,6 +1159,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             if k: config['templates'][k] = v
 
         save_yml(os.path.join(proj_dir, "templates_base.yml"), config)
+        naming_path = os.path.join(proj_dir, "naming.yml")
+        naming_data = load_yml(naming_path)
+        naming_data["smart_playblast"] = {
+            "filename": self.playblast_filename_input.text().strip()
+            or "{project}*{episode}*{sequence}*{shot}*{dept}_{preview}_v{version}*t{take}*####.{ext}"
+        }
+        save_yml(naming_path, naming_data)
         self._save_context_configs(proj_dir)
         self._save_resolver_rules(proj_dir)
         self.config_saved.emit()
@@ -1168,6 +1194,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.software_configs[sid] = conf
             
         self._apply_data_to_ui(data)
+        naming = merge_dicts(
+            load_yml(os.path.join(DEFAULT_DIR, "naming.yml")),
+            load_yml(os.path.join(proj_dir, "naming.yml")),
+        )
+        self.playblast_filename_input.setText(
+            str((naming.get("smart_playblast") or {}).get("filename") or "")
+        )
         self._load_context_editor(project_name)
         self._load_resolver_editor(project_name)
 
@@ -1178,6 +1211,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         for sid in sorted(master.keys()):
             self._add_item_with_icon(self.global_list, sid, master[sid].get('icon', ""), master[sid].get('path', ""))
         self._apply_data_to_ui(load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")))
+        naming = load_yml(os.path.join(DEFAULT_DIR, "naming.yml"))
+        self.playblast_filename_input.setText(
+            str((naming.get("smart_playblast") or {}).get("filename") or "")
+        )
         self._load_context_editor()
         self._load_resolver_editor()
 

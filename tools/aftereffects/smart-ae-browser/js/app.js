@@ -471,12 +471,72 @@
           return;
         }
       });
+      scanPreviewRenderManifests(
+        pathModule.join(shotRoot, "publish", "preview_render"),
+        shotContext,
+        manifests,
+        maxFiles
+      );
     });
 
     manifests.sort(function (a, b) {
       return String(b.exportedAt || "").localeCompare(String(a.exportedAt || ""));
     });
     return manifests;
+  }
+
+  function scanPreviewRenderManifests(root, context, manifests, maxFiles) {
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    if (!fs || !pathModule || !root || !fs.existsSync(root)) {
+      return;
+    }
+    try {
+      fs.readdirSync(root, { withFileTypes: true }).forEach(function (departmentEntry) {
+        var packagesRoot;
+        if (!departmentEntry.isDirectory() || manifests.length >= maxFiles) {
+          return;
+        }
+        packagesRoot = pathModule.join(root, departmentEntry.name, "packages");
+        if (!fs.existsSync(packagesRoot)) {
+          return;
+        }
+        fs.readdirSync(packagesRoot, { withFileTypes: true }).forEach(function (versionEntry) {
+          var manifestPath;
+          var data;
+          var stat;
+          if (!versionEntry.isDirectory() || manifests.length >= maxFiles) {
+            return;
+          }
+          manifestPath = pathModule.join(packagesRoot, versionEntry.name, "render_manifest.json");
+          if (!fs.existsSync(manifestPath)) {
+            return;
+          }
+          try {
+            data = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+          } catch (error) {
+            return;
+          }
+          if (!data || data.schema !== "preview_render_manifest/v1") {
+            return;
+          }
+          try {
+            stat = fs.statSync(manifestPath);
+            data.exported_at = data.exported_at || formatDate(stat.mtime);
+          } catch (error) {}
+          manifests.push(normalizeManifest(
+            data,
+            manifestPath.replace(/\\/g, "/"),
+            Object.assign({}, context, {
+              department: departmentEntry.name,
+              area: "publish"
+            })
+          ));
+        });
+      });
+    } catch (error) {
+      return;
+    }
   }
 
   function scanReviewBuildRoot(root, context, manifests, maxFiles) {
@@ -1801,7 +1861,9 @@
 
   function isAeBuildManifest(manifest) {
     var manifestPath = String(manifest.path || "");
-    return manifest.schema === "smart_render_ae_build" || /(?:review_build\.json|_build_v\d{2,5}_\d{1,5}\.json)$/i.test(manifestPath);
+    return manifest.schema === "smart_render_ae_build"
+      || manifest.schema === "preview_render_manifest/v1"
+      || /(?:review_build\.json|_build_v\d{2,5}_\d{1,5}\.json)$/i.test(manifestPath);
   }
 
   async function saveSettings() {
@@ -1951,7 +2013,10 @@
 
   async function runSelectedManifestBuild(manifest) {
     setStatus("Running AE build: " + basename(manifest.path));
-    var result = await window.SmartCEPBridge.callHost("runAeBuildManifest", { path: manifest.path }, "");
+    var hostMethod = manifest.schema === "preview_render_manifest/v1"
+      ? "buildPreviewRenderManifest"
+      : "runAeBuildManifest";
+    var result = await window.SmartCEPBridge.callHost(hostMethod, { path: manifest.path }, "");
     var payload;
     try {
       payload = result ? JSON.parse(result) : {};

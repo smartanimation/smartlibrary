@@ -168,6 +168,7 @@ def _apply_panel_preset(cmds: Any, panel: str, preset: dict[str, Any]) -> None:
 
 _FORCED_PLAYBLAST_OFF_FLAGS = (
     "cameras",
+    "nurbsCurves",
     "imagePlane",
     "lights",
     "strokes",

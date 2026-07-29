@@ -124,6 +124,157 @@ def stage_anim_from_input(
     return referenced
 
 
+def build_animation_review_scene(
+    plan: dict,
+    shot_data: dict,
+    static_preview_items: Iterable,
+    *,
+    project_root: str | Path,
+) -> dict:
+    """Reconstruct a generated Maya review scene from an Animation Package."""
+
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Animation Review Scene build is available inside Maya.") from exc
+
+    root = Path(project_root)
+    manifest_path = Path(str(plan.get("animation_manifest") or ""))
+    manifest = read_json(manifest_path, {}) or {}
+    if not manifest.get("casts"):
+        raise RuntimeError(f"Animation Package has no cast caches: {manifest_path}")
+
+    cmds.file(new=True, force=True)
+    _apply_scene_policy(cmds, shot_data or {})
+    _apply_shot_timing(cmds, shot_data or {})
+    animation_group = _ensure_group(cmds, "animation_grp")
+    shots_group = _ensure_group(cmds, "shots_grp")
+
+    static_items = list(static_preview_items)
+    static_references = build_shot_from_preview(static_items, shot_data or {}) if static_items else []
+    static_nodes: dict[str, list[str]] = {}
+    for item in static_items:
+        cast_key = str(getattr(item, "cast_key", "") or "").strip()
+        namespace = _clean_namespace(
+            getattr(item, "namespace", "") or cast_key
+        )
+        if not cast_key or not namespace:
+            continue
+        transforms = cmds.ls(f"{namespace}:*", type="transform", long=True) or []
+        roots = []
+        for node in transforms:
+            parent = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            if not parent or not str(parent[0]).split("|")[-1].startswith(f"{namespace}:"):
+                roots.append(node)
+        static_nodes[cast_key] = sorted(set(roots or transforms))
+    imported_caches = []
+    cache_nodes: dict[str, list[str]] = {}
+    try:
+        if not cmds.pluginInfo("AbcImport", query=True, loaded=True):
+            cmds.loadPlugin("AbcImport", quiet=True)
+    except Exception as exc:
+        raise RuntimeError(f"Could not load AbcImport: {exc}") from exc
+
+    preferred = str(plan.get("preferred_format") or manifest.get("preferred_format") or "abc").lower()
+    for cast_key, cast_data in sorted((manifest.get("casts") or {}).items()):
+        files = dict(cast_data.get("files") or {})
+        order = [preferred] + [name for name in ("abc", "usd") if name != preferred]
+        cache_path = None
+        cache_type = ""
+        for file_type in order:
+            candidate = _project_path(root, str(files.get(file_type) or ""))
+            if candidate and candidate.is_file():
+                cache_path = candidate
+                cache_type = file_type
+                break
+        if not cache_path:
+            raise RuntimeError(f"No cache file was found for cast: {cast_key}")
+        if cache_type != "abc":
+            raise RuntimeError(
+                f"Animation Review Scene currently requires Alembic. "
+                f"ABC was not found for {cast_key}: {cache_path.parent}"
+            )
+        before = set(cmds.ls(assemblies=True, long=True) or [])
+        cmds.AbcImport(str(cache_path), mode="import")
+        after = set(cmds.ls(assemblies=True, long=True) or [])
+        created = sorted(after - before)
+        cast_group = cmds.group(
+            empty=True,
+            name=_unique_node_name(cmds, f"{_clean_namespace(cast_key)}_cache_grp"),
+            parent=animation_group,
+        )
+        parented = []
+        for node in created:
+            if node == f"|{animation_group}" or node == animation_group:
+                continue
+            try:
+                cmds.parent(node, cast_group)
+            except Exception:
+                pass
+        parented = cmds.listRelatives(
+            cast_group,
+            children=True,
+            fullPath=True,
+        ) or []
+        cache_nodes[cast_key] = parented
+        imported_caches.append(str(cache_path))
+
+    cameras = []
+    from smartlib.dcc.maya.shot_scene_data import apply_camera_data
+
+    for raw_path in plan.get("camera_paths") or []:
+        camera_path = Path(str(raw_path))
+        if camera_path.name == "publish.json":
+            publish_data = read_json(camera_path, {}) or {}
+            camera_name = str((publish_data.get("files") or {}).get("camera") or "camera.json")
+            camera_path = camera_path.parent / camera_name
+        if camera_path.name != "camera.json" or not camera_path.is_file():
+            continue
+        camera = apply_camera_data(read_json(camera_path, {}) or {})
+        try:
+            cmds.parent(camera, shots_group)
+        except Exception:
+            pass
+        cameras.append(camera)
+
+    set_dress_warnings = []
+    if plan.get("set_dress_paths"):
+        from smartlib.dcc.maya import set_dress
+
+        for raw_path in plan.get("set_dress_paths") or []:
+            package = set_dress.load_package(raw_path)
+            set_dress_warnings.extend(set_dress.apply_stack(package.layers))
+
+    frame_range = plan.get("frame_range") or []
+    if len(frame_range) >= 2:
+        cmds.playbackOptions(
+            minTime=float(frame_range[0]),
+            maxTime=float(frame_range[1]),
+            animationStartTime=float(frame_range[0]),
+            animationEndTime=float(frame_range[1]),
+        )
+        cmds.currentTime(float(frame_range[0]), edit=True)
+
+    scene_path = Path(str(plan.get("scene_path") or ""))
+    if not scene_path:
+        raise RuntimeError("Animation Review Scene output path was not resolved.")
+    scene_path.parent.mkdir(parents=True, exist_ok=True)
+    cmds.file(rename=str(scene_path))
+    scene_type = "mayaBinary" if scene_path.suffix.lower() == ".mb" else "mayaAscii"
+    cmds.file(save=True, type=scene_type)
+    return {
+        "scene_path": str(scene_path),
+        "animation_manifest": str(manifest_path),
+        "imported_caches": imported_caches,
+        "cache_nodes": cache_nodes,
+        "static_nodes": static_nodes,
+        "static_references": static_references,
+        "cameras": cameras,
+        "set_dress_warnings": set_dress_warnings,
+        "frame_range": list(frame_range),
+    }
+
+
 def resolve_shot_work_template(
     department: str,
     *,

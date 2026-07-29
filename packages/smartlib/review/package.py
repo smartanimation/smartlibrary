@@ -17,7 +17,7 @@ DEFAULT_REVIEW_OUTPUTS = {
     "FX": ["beauty"],
     "ENV": ["beauty"],
 }
-TAKE_DIR_RE = re.compile(r"^take(?P<take>\d+)$", re.IGNORECASE)
+TAKE_DIR_RE = re.compile(r"^(?:take|t)(?P<take>\d+)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -65,14 +65,14 @@ def next_review_take(version_dir: str | Path) -> int:
     version_dir = Path(version_dir)
     takes = []
     if version_dir.exists():
-        for take_dir in version_dir.glob("take*"):
+        for take_dir in version_dir.iterdir():
             if take_dir.is_dir():
                 match = TAKE_DIR_RE.match(take_dir.name)
                 if match:
                     takes.append(int(match.group("take")))
     layers_dir = version_dir / "layers"
     if layers_dir.exists():
-        for take_dir in layers_dir.glob("*/take*"):
+        for take_dir in layers_dir.glob("*/*"):
             if not take_dir.is_dir():
                 continue
             match = TAKE_DIR_RE.match(take_dir.name)
@@ -163,6 +163,7 @@ def build_review_package_plan(
             "order": int(layer.get("order", 0)),
             "ae_slot": (layer.get("ae") or {}).get("template_slot", layer_name),
             "frame_range": list(layer.get("export_frame_range") or frame_range),
+            "playblast_preset": str(layer.get("playblast_preset") or ""),
         }
         review_data["thumbnails"][layer_name] = thumbnail
         files[f"{layer_name}_thumbnail"] = thumbnail
@@ -213,7 +214,7 @@ def write_review_package_plan(plan: ReviewPackagePlan) -> ReviewPackagePlan:
     write_json(plan.version_dir / "metadata" / "playblast.json", {"status": "planned", "version": review_data.get("version"), "take": review_data.get("take")})
     write_json(plan.version_dir / "metadata" / "source_scene.json", {"source_workfile": record.source_workfile})
     _copy_ae_template_if_possible(plan, review_data)
-    _update_latest_and_versions(plan.version_dir.parents[1], plan.version, str(review_data.get("take") or "take001"))
+    _update_latest_and_versions(plan.version_dir.parents[1], plan.version, str(review_data.get("take") or "t001"))
     return plan
 
 
@@ -233,7 +234,7 @@ def _copy_ae_template_if_possible(plan: ReviewPackagePlan, review_data: dict[str
     )
 
 
-def _update_latest_and_versions(base_dir: Path, version: int, take_label: str = "take001") -> None:
+def _update_latest_and_versions(base_dir: Path, version: int, take_label: str = "t001") -> None:
     version_label = format_version(version)
     write_json(base_dir / "latest.json", {"version": version_label, "take": take_label, "path": f"{version_label}/{take_label}/metadata/review.json"})
     versions_path = base_dir / "versions.json"
@@ -266,4 +267,4 @@ def _take_label(value: Any) -> str:
         take = int(value)
     except (TypeError, ValueError):
         take = 1
-    return f"take{take:03d}"
+    return f"t{take:03d}"

@@ -32,10 +32,19 @@ When **Selected hierarchy** is disabled, all scene transforms are inspected.
 Layer files are saved as `*.setdress.json`. Node UUIDs are stored alongside DAG
 paths so renames and reparenting can usually be resolved.
 
-The default save locations are:
+The default working-data locations are:
 
-- Shot: `<PROJECT_ROOT>/data/setdress/shot/<sequence>/<shot>.setdress.json`
-- Sequence: `<PROJECT_ROOT>/data/setdress/sequence/<sequence>.setdress.json`
+- Shot: `<shot_root>/data/setdress/<package>.setdress.json`
+- Sequence: `<sequence_root>/data/setdress/<package>.setdress.json`
 
-`SMART_SET_DRESS_ROOT` can override `PROJECT_ROOT`. If neither environment
-variable exists, the current directory is used as the project root.
+**Publish** validates and saves the current package, then creates an immutable
+version:
+
+- Shot: `<shot_root>/publish/setdress/<package>/v###/<package>.setdress.json`
+- Sequence: `<sequence_root>/publish/setdress/<package>/v###/<package>.setdress.json`
+
+Shot Manager exposes these versions under the **Set Dress** DataType. In Maya,
+select a published version and click **Apply Set Dress**.
+
+Project paths are resolved through the active project configuration and its
+`shot_root`/`sequences_root` templates.

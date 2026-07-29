@@ -23,9 +23,9 @@ def test_output_targets_accepts_existing_movie(tmp_path):
 
 
 def test_output_targets_prefers_package_movie(tmp_path):
-    package = tmp_path / "output" / "review" / "layout" / "v001" / "take001"
-    movie = package / "mov" / "shot010_layout_v001_take001.mov"
-    sequence = package / "image_sequence" / "CHA" / "shot010_layout_CHA_v001_take001_1001.jpg"
+    package = tmp_path / "output" / "review" / "layout" / "v001" / "t001"
+    movie = package / "mov" / "shot010_layout_v001_t001.mov"
+    sequence = package / "image_sequence" / "CHA" / "shot010_layout_CHA_v001_t001_1001.jpg"
     movie.parent.mkdir(parents=True)
     sequence.parent.mkdir(parents=True)
     movie.write_text("movie", encoding="utf-8")

@@ -28,3 +28,6 @@ smart_ingest:
         extensions: [mov, mp4, wav]
       shot_media:
         extensions: [mov, mp4]
+
+smart_playblast:
+  filename: "{project}*{episode}*{sequence}*{shot}*{dept}*{preview}*v{version}*t{take}*####.{ext}"

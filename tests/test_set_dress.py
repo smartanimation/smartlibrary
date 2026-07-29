@@ -42,9 +42,9 @@ def test_package_round_trip(tmp_path):
 
 def test_suggested_paths_are_under_project_data(monkeypatch, tmp_path):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
-    context = {"sequence": "sq010", "shot": "sh020"}
+    context = {"episode": "ep001", "sequence": "sq010", "shot": "sh020", "package": "main"}
     assert suggested_path("shot", context) == (
-        tmp_path / "data" / "setdress" / "shot" / "sq010" / "sh020.setdress.json"
+        tmp_path / "shots" / "ep001" / "sq010" / "sh020" / "data" / "setdress" / "main.setdress.json"
     )
     assert suggested_path("sequence", context) == (
         tmp_path / "data" / "setdress" / "sequence" / "sq010.setdress.json"

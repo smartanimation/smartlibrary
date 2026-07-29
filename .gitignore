@@ -4,6 +4,19 @@
 *pyc
 .venv/
 venv/
+delete
+old
+tests
+*.*
+!packages/smartlib/dcc/maya/shot_scene_data.py
+!packages/smartlib/setdress/
+!packages/smartlib/setdress/*.py
+!packages/smartlib/apps/review_build_manager/
+!packages/smartlib/apps/review_build_manager/*.py
+!bat/run_review_build_manager.bat
+!tests/
+tests/*
+!tests/test_set_dress_publish.py
 
 tools/ffmpeg/*
 !tools/ffmpeg/README.md

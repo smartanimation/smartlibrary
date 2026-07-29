@@ -246,29 +246,32 @@ class ShotManagerService:
         shots_root = self.paths.shots_root()
         if not shots_root.exists():
             return []
-        shots: list[ShotIdentity] = []
-        for shot_json in shots_root.glob("**/shot.json"):
+        shots: dict[tuple[str, str, str], ShotIdentity] = {}
+        for shot_json in shots_root.glob("*/*/*/shot.json"):
             shot_root = shot_json.parent
             data = read_json(shot_json, {}) or {}
             episode = str(data.get("episode") or "").strip()
             sequence = str(data.get("sequence") or data.get("seq") or "").strip()
             shot = str(data.get("shot") or "").strip()
             if episode and sequence and shot:
-                shots.append(ShotIdentity(episode=episode, sequence=sequence, shot=shot))
+                identity = ShotIdentity(episode=episode, sequence=sequence, shot=shot)
+                shots[(episode, sequence, shot)] = identity
                 continue
             try:
                 sequence_root = shot_root.parent
                 episode_root = sequence_root.parent
-                shots.append(
-                    ShotIdentity(
-                        episode=episode_root.name,
-                        sequence=sequence_root.name,
-                        shot=shot_root.name,
-                    )
+                identity = ShotIdentity(
+                    episode=episode_root.name,
+                    sequence=sequence_root.name,
+                    shot=shot_root.name,
                 )
+                shots[(identity.episode, identity.sequence, identity.shot)] = identity
             except Exception:
                 continue
-        return sorted(shots, key=lambda item: (item.episode.lower(), item.sequence.lower(), item.shot.lower()))
+        return sorted(
+            shots.values(),
+            key=lambda item: (item.episode.lower(), item.sequence.lower(), item.shot.lower()),
+        )
 
     def list_sequences(self) -> list[SequenceIdentity]:
         sequences: dict[tuple[str, str], SequenceIdentity] = {}
@@ -300,6 +303,26 @@ class ShotManagerService:
 
     def load_shot(self, identity: ShotIdentity) -> dict[str, Any]:
         return read_json(self.shot_root(identity) / "shot.json", {})
+
+    def shot_frame_range(self, identity: ShotIdentity) -> tuple[int, int]:
+        shot_data = self.load_shot(identity)
+        editorial = shot_data.get("editorial") or {}
+        frame_range = editorial.get("frame_range") or shot_data.get("frame_range")
+        if isinstance(frame_range, (list, tuple)) and len(frame_range) >= 2:
+            start, end = frame_range[0], frame_range[1]
+        else:
+            start = editorial.get("cut_in", shot_data.get("cut_in"))
+            end = editorial.get("cut_out", shot_data.get("cut_out"))
+        try:
+            start, end = int(start), int(end)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"shot.json does not define a valid editorial frame range: "
+                f"{self.shot_root(identity) / 'shot.json'}"
+            ) from exc
+        if end < start:
+            raise RuntimeError(f"Invalid shot.json frame range: {start}-{end}")
+        return start, end
 
     def shot_work_dir(
         self,
@@ -705,6 +728,340 @@ class ShotManagerService:
         write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{scene_file.name}"})
         self._update_versions(base_dir / "versions.json", version_label)
         return publish_json
+
+    def plan_preview_render_publish(
+        self,
+        identity: ShotIdentity,
+        settings: dict[str, Any],
+        *,
+        department: str = "",
+    ) -> dict[str, Any]:
+        """Resolve immutable group versions/takes and the next package version."""
+        rows = [
+            dict(row)
+            for row in (settings.get("rows") or [])
+            if isinstance(row, dict) and bool(row.get("enabled", True))
+        ]
+        if not rows:
+            raise ValueError("Smart Playblast settings contain no enabled rows.")
+        clean_department = _clean_publish_token(
+            department or str(settings.get("department") or "default")
+        )
+        base_dir = self.shot_root(identity) / "publish" / "preview_render" / clean_department
+        packages_dir = base_dir / "packages"
+        package_version = self._next_publish_version(packages_dir)
+        groups = []
+        used_groups: set[str] = set()
+        filename_template = str(
+            (
+                self.project_config.load("naming.yml").get(
+                    "smart_playblast"
+                ) or {}
+            ).get("filename")
+            or (
+                "{project}_{episode}_{sequence}_{shot}_{dept}_"
+                "{preview}_v{version}_t{take}_####.{ext}"
+            )
+        )
+        for order, row in enumerate(rows):
+            layer_name = str(row.get("layer") or "").strip()
+            group_name = layer_name
+            if group_name.lower().startswith("review_"):
+                group_name = group_name[7:]
+            clean_group = _clean_publish_token(group_name or f"group_{order + 1}")
+            base_group = clean_group
+            suffix = 2
+            while clean_group in used_groups:
+                clean_group = f"{base_group}_{suffix}"
+                suffix += 1
+            used_groups.add(clean_group)
+            requested_version = max(1, int(row.get("version") or 1))
+            version_label = format_version(requested_version)
+            version_dir = base_dir / "groups" / clean_group / version_label
+            requested_take = max(1, int(row.get("take") or 1))
+            take_number = requested_take
+            while (version_dir / f"t{take_number:03d}").exists():
+                take_number += 1
+            take_label = f"t{take_number:03d}"
+            camera_name = str(row.get("camera") or "").replace("\\", "|").rsplit("|", 1)[-1]
+            pattern_template = str(
+                row.get("output_override") or filename_template
+            ).strip()
+            pattern = pattern_template.format(
+                project=self.project_config.project_name,
+                episode=identity.episode,
+                sequence=identity.sequence,
+                shot=identity.shot,
+                dept=clean_department,
+                preview=clean_group,
+                cam=camera_name,
+                version=f"{requested_version:03d}",
+                take=f"{take_number:03d}",
+                ext="png",
+            ).replace("*", "_")
+            pattern = re.sub(r"\.[^./\\]+$", ".png", pattern)
+            groups.append(
+                {
+                    "group": clean_group,
+                    "source_layer": layer_name,
+                    "order": order,
+                    "version": version_label,
+                    "take": take_label,
+                    "output_dir": str(version_dir / take_label),
+                    "pattern": pattern,
+                    "camera": str(row.get("camera") or ""),
+                    "frame_range": [int(row.get("start", 1)), int(row.get("end", 1))],
+                    "resolution": [int(row.get("width", 1280)), int(row.get("height", 720))],
+                    "playblast_preset": str(row.get("preset") or ""),
+                }
+            )
+        return {
+            "schema": "preview_render_plan/v1",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "base_dir": str(base_dir),
+            "packages_dir": str(packages_dir),
+            "package_version": package_version,
+            "department": clean_department,
+            "groups": groups,
+        }
+
+    def finalize_preview_render_publish(
+        self,
+        identity: ShotIdentity,
+        plan: dict[str, Any],
+        results: dict[str, dict[str, Any]],
+        *,
+        source_scene: str = "",
+        comment: str = "",
+    ) -> Path:
+        """Register rendered group outputs and write a fixed package manifest."""
+        if not results:
+            raise RuntimeError("Preview Render produced no image sequences.")
+        base_dir = Path(str(plan.get("base_dir") or ""))
+        packages_dir = Path(str(plan.get("packages_dir") or ""))
+        package_version = str(plan.get("package_version") or "")
+        department = str(plan.get("department") or "")
+        if not base_dir or not packages_dir or not package_version:
+            raise ValueError("Preview Render plan is incomplete.")
+        package_dir = packages_dir / package_version
+        manifest_groups: dict[str, Any] = {}
+        for group in plan.get("groups") or []:
+            group_name = str(group.get("group") or "")
+            result = results.get(group_name)
+            if not result:
+                continue
+            first_file = str(result.get("first_file") or "")
+            last_file = str(result.get("last_file") or "")
+            file_count = int(result.get("file_count") or 0)
+            if file_count <= 0 or not first_file or not Path(first_file).exists():
+                raise RuntimeError(f"Preview Render output validation failed: {group_name}")
+            version_label = str(group.get("version") or "")
+            take_label = str(group.get("take") or "")
+            group_base = base_dir / "groups" / group_name
+            pattern_path = Path(str(group.get("output_dir") or "")) / str(group.get("pattern") or "")
+            write_json(
+                Path(str(group.get("output_dir") or "")) / "output.json",
+                {
+                    "schema": "preview_render_group_output/v1",
+                    "group": group_name,
+                    "version": version_label,
+                    "take": take_label,
+                    "pattern": pattern_path.name,
+                    "camera": str(group.get("camera") or ""),
+                    "frame_range": list(group.get("frame_range") or []),
+                    "resolution": list(group.get("resolution") or []),
+                    "file_count": file_count,
+                    "first_file": Path(first_file).name,
+                    "last_file": Path(last_file).name if last_file else "",
+                    "members": list(result.get("members") or []),
+                },
+            )
+            write_json(
+                group_base / "latest.json",
+                {
+                    "version": version_label,
+                    "take": take_label,
+                    "path": f"{version_label}/{take_label}/{pattern_path.name}",
+                },
+            )
+            versions_path = group_base / "versions.json"
+            versions = read_json(versions_path, []) or []
+            if not isinstance(versions, list):
+                versions = []
+            next_versions = []
+            found = False
+            for item in versions:
+                if not isinstance(item, dict):
+                    continue
+                item = dict(item)
+                if item.get("version") == version_label:
+                    takes = list(item.get("takes") or [])
+                    if take_label not in takes:
+                        takes.append(take_label)
+                    item.update({"status": "latest", "latest_take": take_label, "takes": takes})
+                    found = True
+                elif item.get("status") == "latest":
+                    item["status"] = "available"
+                next_versions.append(item)
+            if not found:
+                next_versions.append(
+                    {
+                        "version": version_label,
+                        "status": "latest",
+                        "latest_take": take_label,
+                        "takes": [take_label],
+                    }
+                )
+            write_json(versions_path, next_versions)
+            manifest_groups[group_name] = {
+                "order": int(group.get("order", 0)),
+                "version": version_label,
+                "take": take_label,
+                "pattern": self._relative_path(package_dir, pattern_path),
+                "camera": str(group.get("camera") or ""),
+                "frame_range": list(group.get("frame_range") or []),
+                "resolution": list(group.get("resolution") or []),
+                "file_count": file_count,
+                "first_file": self._relative_path(package_dir, Path(first_file)) if first_file else "",
+                "last_file": self._relative_path(package_dir, Path(last_file)) if last_file else "",
+                "members": list(result.get("members") or []),
+            }
+        if not manifest_groups:
+            raise RuntimeError("All Preview Render groups were skipped or empty.")
+        source_scene_value = self._relative_to_project(Path(source_scene)) if source_scene else ""
+        template_candidates = [
+            self.project_config.project_root
+            / "settings"
+            / "templates"
+            / "ae"
+            / "review"
+            / f"review_{department}.aep",
+            self.project_config.project_root
+            / "settings"
+            / "templates"
+            / "ae"
+            / "review"
+            / "review_base.aep",
+            _pipeline_root() / "templates" / "ae" / "review" / "review_base.aep",
+        ]
+        template_project = next(
+            (candidate.as_posix() for candidate in template_candidates if candidate.is_file()),
+            "",
+        )
+        manifest = {
+            "schema": "preview_render_manifest/v1",
+            "publish_type": "preview_render",
+            "name": f"{identity.shot}_{department}_{package_version}",
+            "project": self.project_config.project_name,
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "department": department,
+            "version": package_version,
+            "package_root": package_dir.as_posix(),
+            "template_project": template_project,
+            "source_scene": source_scene_value,
+            "groups": manifest_groups,
+            "group_order": [
+                name
+                for name, _data in sorted(
+                    manifest_groups.items(), key=lambda item: int(item[1].get("order", 0))
+                )
+            ],
+            "comment": comment,
+            "published_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        manifest["exported_at"] = manifest["published_at"]
+        manifest["items"] = [
+            {
+                "id": group_name,
+                "name": group_name,
+                "layer": group_name,
+                "sourcePath": str(results.get(group_name, {}).get("source_first_file") or ""),
+                "outputPath": group_data["pattern"],
+                "first_frame_file": group_data["first_file"],
+                "version": group_data["version"],
+                "latestVersion": group_data["version"],
+                "take": group_data["take"],
+                "latestTake": group_data["take"],
+                "status": "ready",
+                "camera": group_data["camera"],
+                "frame_range": group_data["frame_range"],
+                "resolution": group_data["resolution"],
+            }
+            for group_name, group_data in sorted(
+                manifest_groups.items(), key=lambda item: int(item[1].get("order", 0))
+            )
+        ]
+        manifest_path = write_json(package_dir / "render_manifest.json", manifest)
+        write_json(
+            package_dir / "publish.json",
+            {
+                "publish_type": "preview_render",
+                "department": department,
+                "version": package_version,
+                "files": {"manifest": "render_manifest.json"},
+                "source_scene": source_scene_value,
+                "comment": comment,
+            },
+        )
+        write_json(
+            packages_dir / "latest.json",
+            {"version": package_version, "path": f"{package_version}/render_manifest.json"},
+        )
+        self._update_versions(packages_dir / "versions.json", package_version)
+        return manifest_path
+
+    def list_preview_render_versions(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "",
+    ) -> list[ShotDataVersion]:
+        publish_root = self.shot_root(identity) / "publish" / "preview_render"
+        rows: list[ShotDataVersion] = []
+        if not publish_root.exists():
+            return rows
+        clean_department = _clean_publish_token(department) if department else ""
+        department_dirs = [publish_root / clean_department] if clean_department else list(publish_root.iterdir())
+        for department_dir in department_dirs:
+            packages_dir = department_dir / "packages"
+            if not packages_dir.is_dir():
+                continue
+            latest = read_json(packages_dir / "latest.json", {}) or {}
+            latest_version = str(latest.get("version") or "")
+            for version_dir in packages_dir.glob("v*"):
+                if not version_dir.is_dir() or not version_dir.name[1:].isdigit():
+                    continue
+                manifest_path = version_dir / "render_manifest.json"
+                if not manifest_path.exists():
+                    continue
+                metadata = read_json(version_dir / "publish.json", {}) or {}
+                updated = ""
+                try:
+                    updated = datetime.fromtimestamp(manifest_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    pass
+                rows.append(
+                    ShotDataVersion(
+                        name=f"preview_render/{department_dir.name}",
+                        version=version_dir.name,
+                        path=str(manifest_path),
+                        updated=updated,
+                        comment=str(metadata.get("comment") or ""),
+                        latest=version_dir.name == latest_version,
+                    )
+                )
+        return sorted(rows, key=lambda row: (row.name, parse_version(row.version)), reverse=True)
+
+    @staticmethod
+    def _relative_path(root: Path, path: Path) -> str:
+        try:
+            return Path(os.path.relpath(path, root)).as_posix()
+        except (OSError, ValueError):
+            return path.as_posix()
 
     def validate_cast(self, identity: ShotIdentity) -> list[ValidationIssue]:
         return validate_cast_data(self.load_cast(identity))
@@ -1223,6 +1580,319 @@ class ShotManagerService:
         self._update_versions(base_dir / "versions.json", version_label)
         return animation_curve_file
 
+    def plan_animation_cache_publish(
+        self,
+        identity: ShotIdentity,
+        *,
+        target: str,
+    ) -> dict[str, Any]:
+        clean_target = _clean_publish_token(target or "main")
+        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / "cache"
+        version = self._next_publish_version(base_dir)
+        return {
+            "target": clean_target,
+            "version": version,
+            "base_dir": base_dir,
+            "version_dir": base_dir / version,
+        }
+
+    def finalize_animation_cache_publish(
+        self,
+        identity: ShotIdentity,
+        export_result: dict[str, Any],
+        *,
+        target: str,
+        asset: str = "",
+        variant: str = "default",
+        namespace: str = "",
+        source_workfile: str | Path = "",
+        comment: str = "",
+        version: str,
+    ) -> Path:
+        clean_target = _clean_publish_token(target or "main")
+        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / "cache"
+        version_dir = base_dir / version
+        files = dict(export_result.get("files") or {})
+        missing = [name for name in files.values() if not (version_dir / str(name)).exists()]
+        if not files or missing:
+            raise RuntimeError(f"Animation cache export is incomplete. Missing: {', '.join(missing) or 'files'}")
+
+        cache_data = {
+            "schema": "smartpipeline.animation_cache.v1",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "target": clean_target,
+            "asset": asset,
+            "variant": variant or "default",
+            "namespace": namespace or clean_target,
+            "version": version,
+            "frame_range": list(export_result.get("frame_range") or []),
+            "source_set": str(export_result.get("source_set") or ""),
+            "source_nodes": list(export_result.get("source_nodes") or []),
+            "geometry": list(export_result.get("geometry") or []),
+            "topology_signature": str(export_result.get("topology_signature") or ""),
+            "files": files,
+            "comment": comment,
+        }
+        if source_workfile:
+            cache_data["source_workfile"] = self._relative_to_project(Path(source_workfile))
+        cache_path = write_json(version_dir / "cache.json", cache_data)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "animation",
+                "target": clean_target,
+                "subset": "cache",
+                "version": version,
+                "files": {**files, "cache": "cache.json"},
+                "asset_dependency": {
+                    "asset": asset,
+                    "variant": variant or "default",
+                    "namespace": namespace or clean_target,
+                },
+                "topology_signature": cache_data["topology_signature"],
+                "source_workfile": cache_data.get("source_workfile", ""),
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/cache.json"})
+        self._update_versions(base_dir / "versions.json", version)
+        return cache_path
+
+    def list_animation_cache_versions(
+        self,
+        identity: ShotIdentity,
+        *,
+        target: str = "main",
+    ) -> list[ShotDataVersion]:
+        clean_target = _clean_publish_token(target or "main")
+        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / "cache"
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        latest_version = str(latest.get("version") or "")
+        rows = []
+        for version_dir in base_dir.glob("v*"):
+            cache_path = version_dir / "cache.json"
+            if not version_dir.is_dir() or not cache_path.exists():
+                continue
+            metadata = read_json(version_dir / "publish.json", {}) or {}
+            updated = datetime.fromtimestamp(cache_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            rows.append(
+                ShotDataVersion(
+                    name=f"publish/animation/{clean_target}/cache",
+                    version=version_dir.name,
+                    path=str(cache_path),
+                    updated=updated,
+                    comment=str(metadata.get("comment") or ""),
+                    latest=version_dir.name == latest_version,
+                )
+            )
+        return sorted(rows, key=lambda row: parse_version(row.version) or 0, reverse=True)
+
+    def build_animation_package_snapshot(
+        self,
+        identity: ShotIdentity,
+        *,
+        comment: str = "",
+        preferred_format: str = "abc",
+    ) -> Path:
+        cast_data = self.load_cast(identity)
+        cast_entries = cast_data.get("cast") or {}
+        resolved: dict[str, Any] = {}
+        missing: list[dict[str, str]] = []
+        for cast_key, entry in sorted(cast_entries.items()):
+            clean_target = _clean_publish_token(cast_key)
+            cache_root = self.shot_root(identity) / "publish" / "animation" / clean_target / "cache"
+            latest = read_json(cache_root / "latest.json", {}) or {}
+            cache_path = cache_root / str(latest.get("path") or "")
+            if not cache_path.exists():
+                missing.append(
+                    {
+                        "cast_key": cast_key,
+                        "asset": str(entry.get("asset") or ""),
+                        "reason": "animation cache latest was not found",
+                    }
+                )
+                continue
+            cache = read_json(cache_path, {}) or {}
+            files = dict(cache.get("files") or {})
+            version_dir = cache_path.parent
+            fixed_files = {}
+            for file_type in ("abc", "usd"):
+                candidate = version_dir / str(files.get(file_type) or "")
+                if candidate.is_file():
+                    fixed_files[file_type] = self._relative_to_project(candidate)
+            if not fixed_files:
+                missing.append(
+                    {
+                        "cast_key": cast_key,
+                        "asset": str(entry.get("asset") or ""),
+                        "reason": f"cache files were not found in {cache_path.parent}",
+                    }
+                )
+                continue
+            resolved[cast_key] = {
+                "asset": str(entry.get("asset") or cache.get("asset") or ""),
+                "variant": str(entry.get("variant") or cache.get("variant") or "default"),
+                "namespace": str(entry.get("namespace") or cache.get("namespace") or cast_key),
+                "cache_version": str(cache.get("version") or latest.get("version") or version_dir.name),
+                "cache_metadata": self._relative_to_project(cache_path),
+                "files": fixed_files,
+                "topology_signature": str(cache.get("topology_signature") or ""),
+            }
+        if not resolved:
+            raise RuntimeError(
+                "No published animation caches were found for this shot. "
+                "Publish Cache for at least one cast first."
+            )
+
+        base_dir = self.shot_root(identity) / "publish" / "animation" / "package" / "main"
+        version = self._next_publish_version(base_dir)
+        version_dir = base_dir / version
+        version_dir.mkdir(parents=True, exist_ok=True)
+        frame_range = self.shot_frame_range(identity)
+        preferred = str(preferred_format or "abc").lower()
+        if preferred not in {"abc", "usd"}:
+            preferred = "abc"
+        manifest = {
+            "schema": "smartpipeline.animation_package.v1",
+            "package_type": "animation",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "version": version,
+            "frame_range": list(frame_range),
+            "preferred_format": preferred,
+            "casts": resolved,
+            "missing_casts": missing,
+            "comment": comment,
+        }
+        manifest_path = write_json(version_dir / "animation_manifest.json", manifest)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "animation",
+                "target": "package",
+                "subset": "main",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version,
+                "files": {"manifest": "animation_manifest.json"},
+                "preferred_format": preferred,
+                "cast_versions": {
+                    cast_key: data["cache_version"]
+                    for cast_key, data in resolved.items()
+                },
+                "missing_casts": [item["cast_key"] for item in missing],
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/animation_manifest.json"})
+        self._update_versions(base_dir / "versions.json", version)
+        return manifest_path
+
+    def list_animation_package_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
+        base_dir = self.shot_root(identity) / "publish" / "animation" / "package" / "main"
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        latest_version = str(latest.get("version") or "")
+        rows = []
+        for version_dir in base_dir.glob("v*"):
+            manifest_path = version_dir / "animation_manifest.json"
+            if not version_dir.is_dir() or not manifest_path.exists():
+                continue
+            metadata = read_json(version_dir / "publish.json", {}) or {}
+            updated = datetime.fromtimestamp(manifest_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            rows.append(
+                ShotDataVersion(
+                    name="publish/animation/package/main",
+                    version=version_dir.name,
+                    path=str(manifest_path),
+                    updated=updated,
+                    comment=str(metadata.get("comment") or ""),
+                    latest=version_dir.name == latest_version,
+                )
+            )
+        return sorted(rows, key=lambda row: parse_version(row.version) or 0, reverse=True)
+
+    def latest_animation_package_path(self, identity: ShotIdentity) -> Path | None:
+        base_dir = self.shot_root(identity) / "publish" / "animation" / "package" / "main"
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        path = base_dir / str(latest.get("path") or "")
+        return path if path.is_file() else None
+
+    def animation_review_build_plan(
+        self,
+        identity: ShotIdentity,
+        *,
+        package_path: str | Path | None = None,
+    ) -> dict[str, Any]:
+        manifest_path = Path(package_path) if package_path else self.latest_animation_package_path(identity)
+        if not manifest_path or not manifest_path.is_file():
+            raise RuntimeError("Animation Package was not found. Build Package first.")
+        manifest = read_json(manifest_path, {}) or {}
+        if manifest.get("schema") != "smartpipeline.animation_package.v1":
+            raise RuntimeError(f"Unsupported Animation Package: {manifest_path}")
+
+        package_version = str(manifest.get("version") or manifest_path.parent.name)
+        camera_paths = self._latest_review_camera_paths(identity)
+        set_dress_paths = [
+            row.path
+            for row in self.list_set_dress_publish_versions(identity)
+            if row.latest and Path(row.path).is_file()
+        ]
+        output_dir = self.shot_root(identity) / "output" / "review" / "animation" / package_version
+        return {
+            "schema": "smartpipeline.animation_review_build.v1",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "package_version": package_version,
+            "animation_manifest": str(manifest_path),
+            "preferred_format": str(manifest.get("preferred_format") or "abc"),
+            "frame_range": list(manifest.get("frame_range") or self.shot_frame_range(identity)),
+            "camera_paths": camera_paths,
+            "set_dress_paths": set_dress_paths,
+            "output_dir": str(output_dir),
+            "scene_path": str(output_dir / f"{identity.shot}_animation_review_{package_version}.mb"),
+        }
+
+    def write_animation_review_build_manifest(
+        self,
+        plan: dict[str, Any],
+        result: dict[str, Any],
+    ) -> Path:
+        output_dir = Path(str(plan["output_dir"]))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        payload = dict(plan)
+        payload.update(
+            {
+                "built_at": datetime.now().isoformat(timespec="seconds"),
+                "result": result,
+            }
+        )
+        return write_json(output_dir / "build_manifest.json", payload)
+
+    def _latest_review_camera_paths(self, identity: ShotIdentity) -> list[str]:
+        camera_root = self.shot_root(identity) / "publish" / "camera"
+        by_target: dict[str, Path] = {}
+        for latest_path in camera_root.glob("*/*/latest.json") if camera_root.exists() else []:
+            latest = read_json(latest_path, {}) or {}
+            path = latest_path.parent / str(latest.get("path") or "")
+            if path.is_file():
+                by_target[latest_path.parent.parent.name] = path
+        preferred = {
+            target: path
+            for target, path in by_target.items()
+            if target.lower().startswith("cam_")
+        }
+        selected = preferred or by_target
+        if not selected:
+            sequence_camera = self._latest_shot_camera_publish(identity)
+            if sequence_camera:
+                selected["main"] = sequence_camera
+        return [str(path) for _target, path in sorted(selected.items())]
+
     def published_animation_source_paths(self, identity: ShotIdentity) -> set[str]:
         root = self.shot_root(identity) / "publish" / "animation"
         sources: set[str] = set()
@@ -1239,6 +1909,255 @@ class ShotManagerService:
 
     def list_shot_data_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
         return self._list_data_versions(self.shot_root(identity) / "data")
+
+    def list_set_dress_publish_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
+        from smartlib.setdress import SetDressIdentity, SetDressPublishService
+
+        service = SetDressPublishService(self.project_config)
+        rows = service.list_versions(
+            SetDressIdentity(identity.episode, identity.sequence, identity.shot)
+        )
+        return [
+            ShotDataVersion(
+                name=f"set_dress/{row.package}",
+                version=row.version,
+                path=row.path,
+                updated=row.updated.replace("T", " ")[:16],
+                comment=row.comment,
+                latest=row.latest,
+            )
+            for row in rows
+        ]
+
+    def list_sequence_set_dress_publish_versions(
+        self, identity: SequenceIdentity
+    ) -> list[ShotDataVersion]:
+        from smartlib.setdress import SetDressIdentity, SetDressPublishService
+
+        rows = SetDressPublishService(self.project_config).list_versions(
+            SetDressIdentity(identity.episode, identity.sequence), scope="sequence"
+        )
+        return [
+            ShotDataVersion(
+                name=f"set_dress/{row.package}",
+                version=row.version,
+                path=row.path,
+                updated=row.updated.replace("T", " ")[:16],
+                comment=row.comment,
+                latest=row.latest,
+            )
+            for row in rows
+        ]
+
+    def export_shot_scene_data(
+        self,
+        identity: ShotIdentity,
+        data_type: str,
+        payload: dict[str, Any],
+        *,
+        target: str = "main",
+        subset: str = "main",
+        filename: str | None = None,
+        source_workfile: str | Path = "",
+        comment: str = "",
+    ) -> Path:
+        """Write a DCC scene component as versioned shot data."""
+        clean_type = _clean_publish_token(data_type)
+        if clean_type != "camera":
+            raise ValueError(f"Unsupported shot scene data type: {data_type}")
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "main")
+        output_name = filename or f"{clean_type}.json"
+        base_dir = self.shot_root(identity) / "data" / clean_type / clean_target / clean_subset
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+
+        data = dict(payload)
+        data.update(
+            {
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "data_type": clean_type,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "comment": comment,
+            }
+        )
+        if source_workfile:
+            data["source_workfile"] = self._relative_to_project(Path(source_workfile))
+        output_path = write_json(version_dir / output_name, data)
+        write_json(
+            version_dir / "data.json",
+            {
+                "data_type": clean_type,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "files": {clean_type: output_name},
+                "source_workfile": data.get("source_workfile", ""),
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{output_name}"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return output_path
+
+    def publish_shot_scene_data(
+        self,
+        identity: ShotIdentity,
+        data_path: str | Path,
+        *,
+        data_type: str,
+        target: str = "main",
+        subset: str = "main",
+        comment: str = "",
+    ) -> Path:
+        """Publish an immutable camera or render-layer snapshot from shot data."""
+        source_path = Path(data_path)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Shot data was not found: {source_path}")
+        clean_type = _clean_publish_token(data_type)
+        if clean_type != "camera":
+            raise ValueError(f"Unsupported shot scene data type: {data_type}")
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "main")
+        source_data = read_json(source_path, {}) or {}
+        base_dir = self.shot_root(identity) / "publish" / clean_type / clean_target / clean_subset
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+
+        published_data = dict(source_data)
+        published_data.update(
+            {
+                "publish_type": clean_type,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "source_data": self._relative_to_project(source_path),
+                "comment": comment,
+                "published_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        output_path = write_json(version_dir / source_path.name, published_data)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": clean_type,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "files": {clean_type: source_path.name},
+                "source_data": self._relative_to_project(source_path),
+                "source_workfile": source_data.get("source_workfile", ""),
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{source_path.name}"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return output_path
+
+    def publish_shot_scene_snapshot(
+        self,
+        identity: ShotIdentity,
+        payload: dict[str, Any],
+        *,
+        data_type: str,
+        target: str = "main",
+        subset: str = "main",
+        source_workfile: str | Path = "",
+        comment: str = "",
+    ) -> Path:
+        """Publish a camera or render-layer snapshot directly from a DCC scene."""
+        clean_type = _clean_publish_token(data_type)
+        if clean_type != "camera":
+            raise ValueError(f"Unsupported shot scene publish type: {data_type}")
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "main")
+        base_dir = self.shot_root(identity) / "publish" / clean_type / clean_target / clean_subset
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        output_name = f"{clean_type}.json"
+
+        published_data = dict(payload)
+        published_data.update(
+            {
+                "publish_type": clean_type,
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "comment": comment,
+                "published_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        if source_workfile:
+            published_data["source_workfile"] = self._relative_to_project(Path(source_workfile))
+        output_path = write_json(version_dir / output_name, published_data)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": clean_type,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version_label,
+                "files": {clean_type: output_name},
+                "source_workfile": published_data.get("source_workfile", ""),
+                "comment": comment,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{output_name}"})
+        self._update_versions(base_dir / "versions.json", version_label)
+        return output_path
+
+    def list_shot_scene_publish_versions(
+        self,
+        identity: ShotIdentity,
+        data_type: str,
+    ) -> list[ShotDataVersion]:
+        clean_type = _clean_publish_token(data_type)
+        publish_root = self.shot_root(identity) / "publish" / clean_type
+        rows: list[ShotDataVersion] = []
+        if not publish_root.exists():
+            return rows
+        for latest_json in publish_root.glob("*/*/latest.json"):
+            base_dir = latest_json.parent
+            latest = read_json(latest_json, {}) or {}
+            latest_version = str(latest.get("version") or "")
+            try:
+                target = base_dir.parent.name
+                subset = base_dir.name
+            except Exception:
+                continue
+            for version_dir in base_dir.glob("v*"):
+                if not version_dir.is_dir() or not version_dir.name[1:].isdigit():
+                    continue
+                data_path = version_dir / f"{clean_type}.json"
+                if not data_path.exists():
+                    continue
+                metadata = read_json(version_dir / "publish.json", {}) or {}
+                updated = ""
+                try:
+                    updated = datetime.fromtimestamp(data_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    pass
+                rows.append(
+                    ShotDataVersion(
+                        name=f"{clean_type}/{target}/{subset}",
+                        version=version_dir.name,
+                        path=str(data_path),
+                        updated=updated,
+                        comment=str(metadata.get("comment") or ""),
+                        latest=version_dir.name == latest_version,
+                    )
+                )
+        return sorted(rows, key=lambda row: (row.name, parse_version(row.version)), reverse=True)
 
     def list_sequence_data_versions(self, identity: SequenceIdentity, department: str = "layout") -> list[ShotDataVersion]:
         return self._list_data_versions(self.sequence_workspace_root(identity.episode, identity.sequence) / department / "data")
@@ -1260,6 +2179,7 @@ class ShotManagerService:
                 for path in version_dir.iterdir()
                 if path.is_file() and path.suffix.lower() in {".json", ".yml", ".yaml"}
             )
+            metadata = read_json(version_dir / "data.json", {}) or {}
             try:
                 rel_name = base_dir.relative_to(data_root).as_posix()
             except ValueError:
@@ -1275,7 +2195,7 @@ class ShotManagerService:
                     version=version_dir.name,
                     path=str(version_dir),
                     updated=updated,
-                    comment=", ".join(files),
+                    comment=str(metadata.get("comment") or ", ".join(files)),
                     latest=latest_by_base.get(base_dir) == version_dir.name,
                 )
             )

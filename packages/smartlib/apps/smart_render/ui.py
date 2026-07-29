@@ -656,7 +656,7 @@ class SmartRenderWindow(QtWidgets.QMainWindow):
                 continue
             if key == "take":
                 widget = self._take_spinbox(value)
-                widget.valueChanged.connect(lambda value, node_id=node.id: self._set_attr(node_id, "take", f"{int(value):02d}"))
+                widget.valueChanged.connect(lambda value, node_id=node.id: self._set_attr(node_id, "take", f"t{int(value):03d}"))
                 self.attr_layout.addWidget(self._row("Take", widget))
                 continue
             if key == "quality_preset":
@@ -1936,6 +1936,8 @@ def _take_number(value: Any) -> int:
     text = str(value or "").strip().lower()
     if text.startswith("take"):
         text = text[4:]
+    elif text.startswith("t"):
+        text = text[1:]
     try:
         return int(text)
     except ValueError:
@@ -1945,7 +1947,7 @@ def _take_number(value: Any) -> int:
 def _take_label(value: Any) -> str:
     number = _take_number(value)
     if number:
-        return f"{number:02d}"
+        return f"t{number:03d}"
     return str(value or "").strip()
 
 

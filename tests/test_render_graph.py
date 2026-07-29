@@ -179,10 +179,10 @@ def test_output_path_is_evaluated_from_output_node():
     assert evaluated["output_path"] == "D:/show/images/shot010_beauty"
 
 
-def test_output_take_is_normalized_to_two_digit_number():
+def test_output_take_is_normalized_to_t_prefixed_three_digit_number():
     attrs = normalized_attrs("output", {"take": "take003"})
 
-    assert attrs["take"] == "03"
+    assert attrs["take"] == "t003"
 
 
 def test_render_settings_frame_modes_resolve_scene_ranges():
@@ -254,8 +254,8 @@ def test_output_path_resolves_to_output_review_package(tmp_path):
     evaluated = _ApplyState(cmds=_ScenePathCmds(scene), graph=graph, project_config=project_config).evaluate_render_settings(output.id)
 
     assert evaluated["compression"] == "png"
-    assert evaluated["package_root"].endswith("shots/ep001/sq010/shot010/output/review/layout/CHA/v002/03")
-    assert evaluated["output_path"].endswith("images/shot010_layout_CHA_v002_03")
+    assert evaluated["package_root"].endswith("shots/ep001/sq010/shot010/output/review/layout/CHA/v002/t003")
+    assert evaluated["output_path"].endswith("images/shot010_layout_CHA_v002_t003")
 
 
 def test_playblast_package_paths_are_yaml_driven(tmp_path):
@@ -271,10 +271,10 @@ def test_playblast_package_paths_are_yaml_driven(tmp_path):
         layer="CHA",
     )
 
-    assert paths.root.as_posix().endswith("output/review/layout/CHA/v002/03")
-    assert paths.image_sequence.as_posix().endswith("images/shot010_layout_CHA_v002_03_####.png")
-    assert paths.image_prefix.as_posix().endswith("images/shot010_layout_CHA_v002_03")
-    assert paths.mov.as_posix().endswith("mov/shot010_layout_v002_03.mov")
+    assert paths.root.as_posix().endswith("output/review/layout/CHA/v002/t003")
+    assert paths.image_sequence.as_posix().endswith("images/shot010_layout_CHA_v002_t003_####.png")
+    assert paths.image_prefix.as_posix().endswith("images/shot010_layout_CHA_v002_t003")
+    assert paths.mov.as_posix().endswith("mov/shot010_layout_v002_t003.mov")
 
 
 def test_latest_take_is_layer_scoped(tmp_path):
@@ -282,8 +282,8 @@ def test_latest_take_is_layer_scoped(tmp_path):
     (root / "CHA" / "v001" / "06").mkdir(parents=True)
     (root / "BGA" / "v001" / "01").mkdir(parents=True)
 
-    assert latest_take_for_package(root / "CHA" / "v001" / "01", "01") == "06"
-    assert latest_take_for_package(root / "BGA" / "v001" / "01", "01") == "01"
+    assert latest_take_for_package(root / "CHA" / "v001" / "01", "01") == "t006"
+    assert latest_take_for_package(root / "BGA" / "v001" / "01", "01") == "t001"
 
 
 def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
@@ -306,29 +306,32 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
 
     assert len(published) == 1
     publish_root = Path(published[0])
-    assert publish_root.as_posix().endswith("publish/review/layout/CHA/v001/01")
+    assert publish_root.as_posix().endswith("publish/review/layout/CHA/v001/t001")
     assert (publish_root / "metadata" / "playblast.json").exists()
-    build_root = publish_root.parent.parent.parent / "review_build" / "v001" / "01"
-    assert build_root.as_posix().endswith("publish/review/layout/review_build/v001/01")
+    build_root = publish_root.parent.parent.parent / "review_build" / "v001" / "t001"
+    assert build_root.as_posix().endswith("publish/review/layout/review_build/v001/t001")
     assert (build_root / "slots.json").exists()
-    log = build_root / "ae" / "data" / "shot010_layout_build_v001_01.log"
+    log = build_root / "ae" / "data" / "shot010_layout_build_v001_t001.log"
     assert log.exists()
     assert "Waiting for After Effects launch." in log.read_text(encoding="utf-8")
     slots = read_json(build_root / "slots.json", {})
-    assert "CHA/v001/01/images/" in slots["slots"][0]["image_sequence"]
-    assert "CHA/v001/01/slate/" in slots["slots"][0]["slate_sequence"]
-    manifest = read_json(build_root / "shot010_layout_build_v001_01.json", {})
+    assert "CHA/v001/t001/images/" in slots["slots"][0]["image_sequence"]
+    assert "CHA/v001/t001/slate/" in slots["slots"][0]["slate_sequence"]
+    manifest = read_json(build_root / "shot010_layout_build_v001_t001.json", {})
     assert manifest["template_comp"] == "review_base.comp"
     assert manifest["stage"]["comp_name"] == "stage"
     assert manifest["layers"][0]["precomp"] == "CHA"
-    assert "CHA/v001/01/images/" in manifest["layers"][0]["image_sequence"]
+    assert "CHA/v001/t001/images/" in manifest["layers"][0]["image_sequence"]
     assert manifest["slate"]["layer"] == "Slate"
-    assert "CHA/v001/01/slate/" in manifest["slate"]["image_sequence"]
-    script = build_root / "ae" / "scripts" / "shot010_layout_build_v001_01.jsx"
+    assert "CHA/v001/t001/slate/" in manifest["slate"]["image_sequence"]
+    script = build_root / "ae" / "scripts" / "shot010_layout_build_v001_t001.jsx"
     assert script.exists()
     script_text = script.read_text(encoding="utf-8")
-    assert "shot010_layout_build_v001_01.json" in script_text
+    assert "shot010_layout_build_v001_t001.json" in script_text
     assert "addSlateToStage(stage, data.slate);" in script_text
+    assert "options.sequence = shouldImportAsSequence(row);" in script_text
+    assert 'options.sequence ? "sequence" : "still"' in script_text
+    assert "Number(row.duration_frames || 0) <= 1" in script_text
     assert "data.auto_save === true" in script_text
     assert "app.project.save(projectFile);" in script_text
     assert manifest["auto_save"] is False
@@ -354,13 +357,13 @@ def test_export_ae_slots_build_data_uses_common_review_build_root(tmp_path, monk
 
     assert len(manifests) == 1
     manifest_path = Path(manifests[0])
-    assert manifest_path.as_posix().endswith("output/review/layout/review_build/v001/01/shot010_layout_build_v001_01.json")
+    assert manifest_path.as_posix().endswith("output/review/layout/review_build/v001/t001/shot010_layout_build_v001_t001.json")
     manifest = read_json(manifest_path, {})
     assert [row["layer"] for row in manifest["layers"]] == ["CHA", "BGA"]
-    assert "CHA/v001/01/images/" in manifest["layers"][0]["image_sequence"]
-    assert "BGA/v001/06/images/" in manifest["layers"][1]["image_sequence"]
+    assert "CHA/v001/t001/images/" in manifest["layers"][0]["image_sequence"]
+    assert "BGA/v001/t006/images/" in manifest["layers"][1]["image_sequence"]
     assert ".." not in manifest["layers"][0]["first_frame_file"]
-    assert manifest["layers"][0]["first_frame_file"].endswith("CHA/v001/01/images/shot010_layout_CHA_v001_01_0100.png")
+    assert manifest["layers"][0]["first_frame_file"].endswith("CHA/v001/t001/images/shot010_layout_CHA_v001_t001_0100.png")
 
 
 def test_publish_ae_slots_uses_next_take_when_publish_exists(tmp_path, monkeypatch):
@@ -388,11 +391,11 @@ def test_publish_ae_slots_uses_next_take_when_publish_exists(tmp_path, monkeypat
 
     assert len(published) == 1
     publish_root = Path(published[0])
-    assert publish_root.as_posix().endswith("publish/review/layout/CHA/v001/07")
+    assert publish_root.as_posix().endswith("publish/review/layout/CHA/v001/t007")
     assert existing_log.read_text(encoding="utf-8") == "locked by another process"
     assert (publish_root / "metadata" / "playblast.json").exists()
-    build_root = publish_root.parents[2] / "review_build" / "v001" / "01"
-    assert (build_root / "shot010_layout_build_v001_01.json").exists()
+    build_root = publish_root.parents[2] / "review_build" / "v001" / "t001"
+    assert (build_root / "shot010_layout_build_v001_t001.json").exists()
 
 
 def test_build_ae_slots_launches_configured_after_effects(tmp_path, monkeypatch):
@@ -425,13 +428,13 @@ def test_build_ae_slots_launches_configured_after_effects(tmp_path, monkeypatch)
     assert calls[0][0][0] == str(fake_afterfx)
     assert calls[1][0][0] == str(fake_afterfx)
     assert calls[1][0][1] == "-r"
-    assert calls[1][0][2].endswith("ae\\scripts\\shot010_layout_build_v001_01.jsx") or calls[1][0][2].endswith("ae/scripts/shot010_layout_build_v001_01.jsx")
+    assert calls[1][0][2].endswith("ae\\scripts\\shot010_layout_build_v001_t001.jsx") or calls[1][0][2].endswith("ae/scripts/shot010_layout_build_v001_t001.jsx")
     assert calls[0][2]["SMART_PROJECT"] == project_config.project_name
     assert calls[0][2]["SMART_EPISODE"] == "ep001"
     assert calls[0][2]["SMART_SEQUENCE"] == "sq010"
     assert calls[0][2]["SMART_SHOT"] == "shot010"
     log = Path(results[0]["log"])
-    assert Path(results[0]["manifest"]).as_posix().endswith("output/review/layout/review_build/v001/01/shot010_layout_build_v001_01.json")
+    assert Path(results[0]["manifest"]).as_posix().endswith("output/review/layout/review_build/v001/t001/shot010_layout_build_v001_t001.json")
     assert log.exists()
     log_text = log.read_text(encoding="utf-8")
     assert "Opening After Effects" in log_text

@@ -31,24 +31,49 @@ def _repo_root():
 
 
 def _project_names(repo_root):
-    config_root = repo_root / "config"
-    if not config_root.exists():
-        return ["STKB"]
-    names = [
-        path.name
-        for path in sorted(config_root.iterdir())
-        if path.is_dir() and (path / "templates_base.yml").exists()
-    ]
+    names = []
+    for config_root in _project_config_roots(repo_root):
+        if not config_root.exists():
+            continue
+        for path in sorted(config_root.iterdir()):
+            if path.is_dir() and (path / "templates_base.yml").exists() and path.name not in names:
+                names.append(path.name)
     return names or ["STKB"]
 
 
 def _project_root(repo_root, project):
-    path = repo_root / "config" / project / "templates_base.yml"
-    text = _read_text(path)
-    match = re.search(r"(?m)^\s*project_root:\s*[\"']?([^\"'\r\n]+)", text)
-    if match:
-        return Path(match.group(1).strip())
+    for config_root in _project_config_roots(repo_root):
+        path = config_root / project / "templates_base.yml"
+        text = _read_text(path)
+        match = re.search(r"(?m)^\s*project_root:\s*[\"']?([^\"'\r\n]+)", text)
+        if match:
+            return Path(match.group(1).strip())
     return Path(os.environ.get("SMART_REVIEW_PROJECT_ROOT") or "")
+
+
+def _project_config_roots(repo_root):
+    candidates = []
+    for env_name in (
+        "SMART_REVIEW_PROJECT_CONFIG_ROOT",
+        "SMARTPIPELINE_STUDIO_CONFIG_DIR",
+    ):
+        value = os.environ.get(env_name)
+        if not value:
+            continue
+        path = Path(value)
+        candidates.extend([path / "config", path])
+    candidates.extend(
+        [
+            repo_root.parent / "smartprojects" / "config",
+            repo_root / "config",
+        ]
+    )
+    result = []
+    for path in candidates:
+        normalized = Path(path)
+        if normalized not in result:
+            result.append(normalized)
+    return result
 
 
 def _read_text(path):
@@ -297,6 +322,111 @@ def _sequence_shot_media(project_root, episode, sequence, shot, dept):
     return _media_from_sequence_review(review, shot) if review else []
 
 
+def _quick_check_media(project_root, episode, sequence, shot, dept):
+    shot_root = Path(project_root) / "shots" / episode / sequence / shot
+    preview_media = _latest_preview_render_media(shot_root, dept)
+    if preview_media:
+        return preview_media
+    packages = []
+
+    # Current Smart Playblast layout:
+    # publish/review/{dept}/{version}/{take}/image_sequence/{layer}/...
+    current_base = shot_root / "publish" / "review" / dept
+    for version_dir in current_base.glob("v*"):
+        if not version_dir.is_dir():
+            continue
+        for take_dir in version_dir.iterdir():
+            if take_dir.is_dir() and _take_number(take_dir.name) is not None:
+                image_root = take_dir / "image_sequence"
+                if image_root.exists():
+                    packages.append((_version_number(version_dir.name), _take_number(take_dir.name), image_root))
+
+    # Quick Check target layout:
+    # review/{dept}/{layer}/{version}/{take}/...
+    quick_base = shot_root / "review" / dept
+    for layer_dir in quick_base.iterdir() if quick_base.exists() else []:
+        if not layer_dir.is_dir():
+            continue
+        for version_dir in layer_dir.glob("v*"):
+            for take_dir in version_dir.iterdir() if version_dir.exists() else []:
+                take = _take_number(take_dir.name)
+                if take_dir.is_dir() and take is not None:
+                    packages.append((_version_number(version_dir.name), take, take_dir))
+
+    if not packages:
+        return []
+    latest_version = max(row[0] for row in packages)
+    latest_take = max(row[1] for row in packages if row[0] == latest_version)
+    roots = [row[2] for row in packages if row[0] == latest_version and row[1] == latest_take]
+    media = []
+    for root in roots:
+        layer_dirs = [path for path in root.iterdir() if path.is_dir()] if root.exists() else []
+        search_roots = layer_dirs or [root]
+        for search_root in search_roots:
+            frames = sorted(
+                path for path in search_root.iterdir()
+                if path.is_file() and path.suffix.lower() in (".jpg", ".jpeg", ".png")
+            )
+            if frames:
+                media.append(_rv_sequence_path(_sequence_pattern_from_first_file(frames[0])))
+    return _dedupe(media)
+
+
+def _latest_preview_render_media(shot_root, dept):
+    """Resolve the latest Smart Playblast take independently per layer group."""
+    groups_root = (
+        Path(shot_root)
+        / "publish"
+        / "preview_render"
+        / str(dept)
+        / "groups"
+    )
+    if not groups_root.exists():
+        return []
+    media = []
+    for group_dir in sorted(
+        (path for path in groups_root.iterdir() if path.is_dir()),
+        key=lambda path: path.name.lower(),
+    ):
+        versions = [
+            path
+            for path in group_dir.glob("v*")
+            if path.is_dir() and _version_number(path.name) > 0
+        ]
+        if not versions:
+            continue
+        version_dir = max(versions, key=lambda path: _version_number(path.name))
+        takes = [
+            path
+            for path in version_dir.iterdir()
+            if path.is_dir() and _take_number(path.name) is not None
+        ]
+        if not takes:
+            continue
+        take_dir = max(takes, key=lambda path: _take_number(path.name))
+        frames = sorted(
+            path
+            for path in take_dir.iterdir()
+            if path.is_file()
+            and path.suffix.lower() in (".jpg", ".jpeg", ".png")
+        )
+        if frames:
+            media.append(
+                _rv_sequence_path(_sequence_pattern_from_first_file(frames[0]))
+            )
+    return _dedupe(media)
+
+
+def _version_number(value):
+    match = re.match(r"^v(\d+)$", str(value or ""), re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _take_number(value):
+    match = re.match(r"^(?:t|take)?(\d+)$", str(value or ""), re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 def _latest_editorial_dir(project_root):
     base = Path(project_root) / "editorial" / "publish" / "cut"
     latest = _read_json(base / "latest.json")
@@ -448,7 +578,7 @@ class SmartReviewWidget(QtWidgets.QWidget):
         self._build_shot_tab()
 
         self.project_combo.currentTextChanged.connect(self.refresh_context)
-        self.refresh_btn.clicked.connect(self.refresh_context)
+        self.refresh_btn.clicked.connect(self.refresh_projects)
 
     def _build_asset_tab(self):
         layout = QtWidgets.QVBoxLayout(self.asset_tab)
@@ -543,6 +673,7 @@ class SmartReviewWidget(QtWidgets.QWidget):
         layout.addWidget(self.shot_list, 1)
         self.shot_mode_combo = _combo(
             [
+                "Quick Check",
                 "Sequence Playback",
                 "Dept Compare Grid",
                 "OTIO Replace",
@@ -613,9 +744,10 @@ class SmartReviewWidget(QtWidgets.QWidget):
         layout.addWidget(push)
 
     def refresh_projects(self):
+        current = self.project_combo.currentText()
         self.project_combo.clear()
         self.project_combo.addItems(_project_names(self.repo_root))
-        preferred = os.environ.get("SMART_REVIEW_PROJECT") or "STKB"
+        preferred = current or os.environ.get("SMART_REVIEW_PROJECT") or "STKB"
         index = self.project_combo.findText(preferred)
         if index >= 0:
             self.project_combo.setCurrentIndex(index)
@@ -710,7 +842,8 @@ class SmartReviewWidget(QtWidgets.QWidget):
         for dept in ("layout", "anim", "comp"):
             review = _latest_shot_review(self.project_root, episode, sequence, shot, dept)
             sequence_media = _sequence_shot_media(self.project_root, episode, sequence, shot, dept)
-            chunks.append("%s %s" % (dept, "ready" if review or sequence_media else "-"))
+            quick_media = _quick_check_media(self.project_root, episode, sequence, shot, dept)
+            chunks.append("%s %s" % (dept, "ready" if review or sequence_media or quick_media else "-"))
         return " | ".join(chunks)
 
     def _selected_shots(self):
@@ -762,6 +895,17 @@ class SmartReviewWidget(QtWidgets.QWidget):
         media = []
         dept = self.shot_dept_combo.currentText()
         for row in self._selected_shots():
+            if self.shot_mode_combo.currentText() == "Quick Check":
+                media.extend(
+                    _quick_check_media(
+                        self.project_root,
+                        row["episode"],
+                        row["sequence"],
+                        row["shot"],
+                        dept,
+                    )
+                )
+                continue
             sequence_media = _sequence_shot_media(
                 self.project_root,
                 row["episode"],

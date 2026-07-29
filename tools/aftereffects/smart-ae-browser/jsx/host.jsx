@@ -47,6 +47,15 @@ var SmartAEBrowser = SmartAEBrowser || {};
     return String(base || "").replace(/[\/\\]+$/, "") + "/" + String(child || "").replace(/^[\/\\]+/, "");
   }
 
+  function resolveManifestFile(data, manifestFile, value) {
+    var path = String(value || "");
+    var root = String(data.package_root || data.packageRoot || manifestFile.parent.fsName);
+    if (!path) {
+      return "";
+    }
+    return File(isAbsolutePath(path) ? path : joinPath(root, path)).fsName;
+  }
+
   function ensureFolder(folder) {
     if (!folder.exists) {
       ensureFolder(folder.parent);
@@ -140,6 +149,27 @@ var SmartAEBrowser = SmartAEBrowser || {};
     } catch (error) {
       return null;
     }
+  }
+
+  function patchReviewBuildScript(text) {
+    var oldImport = [
+      "var options = new ImportOptions(file);",
+      "        options.sequence = true;",
+      "        options.forceAlphabetical = true;",
+      "        var footage = app.project.importFile(options);"
+    ].join("\n");
+    var newImport = [
+      "var options = new ImportOptions(file);",
+      "        var importAsSequence = row && row.image_sequence && String(row.image_sequence).indexOf(\"####\") !== -1 && Number(row.duration_frames || 0) > 1 && Number(row.start_frame || 0) < Number(row.end_frame || 0);",
+      "        options.sequence = importAsSequence;",
+      "        options.forceAlphabetical = importAsSequence;",
+      "        log(\"Import mode for \" + row.layer + \": \" + (options.sequence ? \"sequence\" : \"still\"));",
+      "        var footage = app.project.importFile(options);"
+    ].join("\n");
+    if (String(text || "").indexOf("shouldImportAsSequence(row)") !== -1 || String(text || "").indexOf("var importAsSequence = row && row.image_sequence") !== -1) {
+      return text;
+    }
+    return String(text || "").split(oldImport).join(newImport);
   }
 
   function findFootage(mapping) {
@@ -383,6 +413,7 @@ var SmartAEBrowser = SmartAEBrowser || {};
     var root;
     var scriptPath;
     var scriptFile;
+    var scriptText;
 
     if (!manifestFile.exists) {
       return stringify({ error: "Build manifest was not found: " + manifestFile.fsName });
@@ -396,11 +427,94 @@ var SmartAEBrowser = SmartAEBrowser || {};
       if (!scriptFile.exists) {
         return stringify({ error: "Build script was not found: " + scriptFile.fsName });
       }
-      $.evalFile(scriptFile);
+      scriptText = patchReviewBuildScript(readFile(scriptFile));
+      eval(scriptText);
       return stringify({ ok: true, script: scriptFile.fsName });
     } catch (error) {
       return stringify({ error: error.message });
     }
+  };
+
+  SmartAEBrowser.buildPreviewRenderManifest = function (payloadJson) {
+    var payload = parseJson(payloadJson) || {};
+    var manifestFile = File(payload.path);
+    var data;
+    var templateFile;
+    var items;
+    var imported = 0;
+    var replaced = 0;
+    var errors = [];
+    var i;
+    var item;
+    var firstFrame;
+    var mapping;
+    var existing;
+    var options;
+    var footage;
+
+    if (!manifestFile.exists) {
+      return stringify({ error: "Preview Render manifest was not found: " + manifestFile.fsName });
+    }
+
+    try {
+      data = JSON.parse(readFile(manifestFile));
+      templateFile = File(String(data.template_project || ""));
+      if (templateFile.exists) {
+        app.open(templateFile);
+      } else if (!app.project) {
+        app.newProject();
+      }
+      items = data.items || [];
+      app.beginUndoGroup("Build Preview Render");
+      for (i = 0; i < items.length; i += 1) {
+        item = items[i] || {};
+        firstFrame = File(resolveManifestFile(data, manifestFile, item.first_frame_file || item.sourcePath || ""));
+        if (!firstFrame.exists) {
+          errors.push("Missing footage: " + (item.name || item.id || firstFrame.fsName));
+          continue;
+        }
+        mapping = {
+          name: item.name || item.layer || item.id || "",
+          sourcePath: item.sourcePath || firstFrame.fsName,
+          outputPath: firstFrame.fsName
+        };
+        existing = findFootage(mapping);
+        if (existing) {
+          if (existing.replaceWithSequence) {
+            existing.replaceWithSequence(firstFrame, false);
+          } else {
+            existing.replace(firstFrame);
+          }
+          existing.name = mapping.name || existing.name;
+          replaced += 1;
+          continue;
+        }
+        options = new ImportOptions(firstFrame);
+        if (options.canImportAs && options.canImportAs(ImportAsType.FOOTAGE)) {
+          options.importAs = ImportAsType.FOOTAGE;
+        }
+        options.sequence = true;
+        options.forceAlphabetical = false;
+        footage = app.project.importFile(options);
+        if (mapping.name) {
+          footage.name = mapping.name;
+        }
+        imported += 1;
+      }
+    } catch (error) {
+      return stringify({ error: error.message, imported: imported, replaced: replaced, errors: errors });
+    } finally {
+      try {
+        app.endUndoGroup();
+      } catch (ignore) {}
+    }
+    return stringify({
+      ok: errors.length === 0,
+      imported: imported,
+      replaced: replaced,
+      template: templateFile && templateFile.exists ? templateFile.fsName : "",
+      errors: errors
+    });
   };
 
   SmartAEBrowser.snapshotOutputs = function (pathsJson) {

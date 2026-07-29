@@ -15,6 +15,7 @@ def test_review_package_uses_output_publish_take_layout(tmp_path):
                 "members": ["hero"],
                 "order": 1,
                 "outputs": ["beauty"],
+                "playblast_preset": "layout_material",
                 "resolution": {"width": 1280, "height": 720},
             }
         }
@@ -22,10 +23,11 @@ def test_review_package_uses_output_publish_take_layout(tmp_path):
 
     plan = build_review_package_plan(shot_root, shot_data, cast_data, "layout", version=1, take=2)
 
-    assert plan.version_dir == shot_root / "publish" / "review" / "layout" / "v001" / "take002"
+    assert plan.version_dir == shot_root / "publish" / "review" / "layout" / "v001" / "t002"
     assert plan.review_json == plan.version_dir / "metadata" / "review.json"
-    assert plan.review_data["movie"] == "mov/shot010_layout_v001_take002.mov"
-    assert plan.review_data["layers"]["CHA"]["outputs"]["beauty"] == "image_sequence/CHA/shot010_layout_CHA_v001_take002_####.jpg"
+    assert plan.review_data["movie"] == "mov/shot010_layout_v001_t002.mov"
+    assert plan.review_data["layers"]["CHA"]["outputs"]["beauty"] == "image_sequence/CHA/shot010_layout_CHA_v001_t002_####.jpg"
+    assert plan.review_data["layers"]["CHA"]["playblast_preset"] == "layout_material"
 
 
 def test_review_package_writes_latest_to_review_department_root(tmp_path):

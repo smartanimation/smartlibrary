@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -461,3 +462,149 @@ def _maya_cmds() -> Any:
     except ImportError as exc:
         raise RuntimeError("Animation curve export is available inside Maya.") from exc
     return cmds
+
+
+def export_animation_geometry_cache(
+    *,
+    namespace: str,
+    output_dir: str | Path,
+    frame_range: tuple[int, int],
+) -> dict[str, Any]:
+    """Export evaluated rig geometry as USD point cache and Alembic."""
+
+    cmds = _maya_cmds()
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    roots = _cache_export_roots(cmds, namespace)
+    if not roots:
+        raise RuntimeError(
+            f"No exportable geometry was found in {namespace}:cache_geo_set. "
+            "The rig publish must provide this objectSet."
+        )
+
+    start, end = (int(frame_range[0]), int(frame_range[1]))
+    if end < start:
+        raise ValueError(f"Invalid animation cache frame range: {start}-{end}")
+
+    previous_selection = cmds.ls(selection=True, long=True) or []
+    try:
+        _load_cache_plugin(cmds, "mayaUsdPlugin")
+        _load_cache_plugin(cmds, "AbcExport")
+        cmds.select(roots, replace=True)
+        usd_path = output / "animation.usd"
+        abc_path = output / "animation.abc"
+        _export_cache_usd(cmds, usd_path, (start, end))
+        _export_cache_alembic(cmds, abc_path, roots, (start, end))
+        geometry = _cache_geometry_metadata(cmds, roots)
+        return {
+            "files": {"usd": usd_path.name, "abc": abc_path.name},
+            "source_set": f"{namespace}:cache_geo_set",
+            "source_nodes": roots,
+            "frame_range": [start, end],
+            "geometry": geometry,
+            "topology_signature": _cache_topology_signature(geometry),
+        }
+    finally:
+        try:
+            cmds.select(previous_selection, replace=True) if previous_selection else cmds.select(clear=True)
+        except Exception:
+            pass
+
+
+def _load_cache_plugin(cmds: Any, name: str) -> None:
+    if not cmds.pluginInfo(name, query=True, loaded=True):
+        cmds.loadPlugin(name, quiet=True)
+
+
+def _cache_export_roots(cmds: Any, namespace: str) -> list[str]:
+    set_name = f"{str(namespace or '').strip()}:cache_geo_set"
+    if not cmds.objExists(set_name):
+        return []
+    roots: list[str] = []
+    for member in cmds.sets(set_name, query=True) or []:
+        if not cmds.objExists(member):
+            continue
+        node_type = cmds.nodeType(member)
+        if node_type == "mesh":
+            roots.extend(cmds.listRelatives(member, parent=True, fullPath=True) or [])
+        elif node_type == "transform" and _cache_mesh_shapes(cmds, member):
+            roots.extend(cmds.ls(member, long=True) or [member])
+    ordered = sorted(set(roots), key=lambda value: value.count("|"))
+    return [
+        node
+        for index, node in enumerate(ordered)
+        if not any(node.startswith(f"{parent}|") for parent in ordered[:index])
+    ]
+
+
+def _cache_mesh_shapes(cmds: Any, root: str) -> list[str]:
+    candidates = cmds.listRelatives(root, shapes=True, fullPath=True, noIntermediate=True) or []
+    candidates += cmds.listRelatives(root, allDescendents=True, fullPath=True) or []
+    result = []
+    for node in candidates:
+        if not cmds.objExists(node) or cmds.nodeType(node) != "mesh":
+            continue
+        try:
+            if cmds.getAttr(f"{node}.intermediateObject"):
+                continue
+        except Exception:
+            pass
+        result.append(node)
+    return sorted(set(result))
+
+
+def _export_cache_usd(cmds: Any, path: Path, frame_range: tuple[int, int]) -> None:
+    cmds.mayaUSDExport(
+        file=str(path),
+        selection=True,
+        frameRange=frame_range,
+        frameStride=1.0,
+        mergeTransformAndShape=True,
+        stripNamespaces=False,
+        exportSkels="none",
+        exportSkin="none",
+        exportBlendShapes=False,
+        shadingMode="none",
+    )
+    if not path.exists():
+        raise RuntimeError(f"Maya USD export did not create a file: {path}")
+
+
+def _export_cache_alembic(
+    cmds: Any,
+    path: Path,
+    roots: list[str],
+    frame_range: tuple[int, int],
+) -> None:
+    root_flags = " ".join(f'-root "{root}"' for root in roots)
+    job = (
+        f"-frameRange {frame_range[0]} {frame_range[1]} "
+        "-uvWrite -writeColorSets -writeFaceSets -worldSpace "
+        f'-writeVisibility -dataFormat ogawa {root_flags} -file "{path.as_posix()}"'
+    )
+    cmds.AbcExport(jobArg=job)
+    if not path.exists():
+        raise RuntimeError(f"Alembic export did not create a file: {path}")
+
+
+def _cache_geometry_metadata(cmds: Any, roots: list[str]) -> list[dict[str, Any]]:
+    rows = []
+    for root in roots:
+        for shape in _cache_mesh_shapes(cmds, root):
+            rows.append(
+                {
+                    "name": shape.rsplit("|", 1)[-1],
+                    "path": shape,
+                    "vertex_count": int(cmds.polyEvaluate(shape, vertex=True) or 0),
+                    "face_count": int(cmds.polyEvaluate(shape, face=True) or 0),
+                }
+            )
+    return rows
+
+
+def _cache_topology_signature(geometry: list[dict[str, Any]]) -> str:
+    source = "\n".join(
+        f"{row['name']}:{row['vertex_count']}:{row['face_count']}"
+        for row in sorted(geometry, key=lambda item: item["path"])
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()

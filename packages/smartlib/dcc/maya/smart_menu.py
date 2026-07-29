@@ -60,11 +60,6 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_shot",
                     "enabled": True,
                 },
-                {
-                    "label": "Smart Playblast",
-                    "command": "smartlib.dcc.maya.smart_menu.show_smart_playblast",
-                    "enabled": True,
-                },
             ],
             "Modeling": [
                 {
@@ -74,6 +69,11 @@ DEFAULT_MENU_CONFIG = {
                 },
             ],
             "Render": [
+                {
+                    "label": "Smart Playblast",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_playblast",
+                    "enabled": True,
+                },
                 {
                     "label": "Smart Render",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_render",
@@ -328,12 +328,13 @@ def show_smart_playblast() -> None:
     _reload(
         "smartlib.dcc.maya.review_playblast",
         "smartlib.review.rv",
-        "smartlib.apps.smart_playblast.ui",
-        "smartlib.apps.smart_playblast",
     )
-    from smartlib.apps import smart_playblast
-
-    smart_playblast.show(config_dir=str(_config_dir()))
+    ui_module = importlib.import_module("smartlib.apps.smart_playblast.ui")
+    # Always reload the UI. Maya keeps Python modules resident after the
+    # window closes, so a version comparison can accidentally relaunch stale
+    # drag/drop code when only the tool window is restarted.
+    ui_module = importlib.reload(ui_module)
+    ui_module.show(config_dir=str(_config_dir()))
 
 
 def show_viewer() -> None:
@@ -379,6 +380,8 @@ def show_smart_sequence_builder() -> None:
 def show_smart_set_dress() -> None:
     ensure_runtime_paths()
     _reload(
+        "smartlib.setdress.service",
+        "smartlib.setdress",
         "smartlib.dcc.maya.set_dress",
         "smartlib.apps.set_dress.ui",
         "smartlib.apps.set_dress",

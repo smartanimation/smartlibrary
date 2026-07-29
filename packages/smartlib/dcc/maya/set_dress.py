@@ -147,6 +147,10 @@ def load_package(path: str | os.PathLike[str]) -> SetDressPackage:
 
 def suggested_path(scope: str, context: dict[str, str] | None = None) -> Path:
     context = context or {}
+    explicit_shot_root = str(context.get("shot_root") or "").strip()
+    package = _safe_name(context.get("package") or context.get("shot") or "main")
+    if scope == "shot" and explicit_shot_root:
+        return Path(explicit_shot_root) / "data" / "setdress" / f"{package}.setdress.json"
     root = Path(
         os.environ.get("SMART_SET_DRESS_ROOT")
         or os.environ.get("PROJECT_ROOT")
@@ -154,9 +158,10 @@ def suggested_path(scope: str, context: dict[str, str] | None = None) -> Path:
     )
     sequence = _safe_name(context.get("sequence") or "sequence")
     shot = _safe_name(context.get("shot") or Path(context.get("scene") or "untitled").stem)
+    episode = _safe_name(context.get("episode") or "episode")
     if scope == "sequence":
         return root / "data" / "setdress" / "sequence" / f"{sequence}.setdress.json"
-    return root / "data" / "setdress" / "shot" / sequence / f"{shot}.setdress.json"
+    return root / "shots" / episode / sequence / shot / "data" / "setdress" / f"{package}.setdress.json"
 
 
 def capture_scene(selection_only: bool = True, cmds=None) -> list[NodeState]:
@@ -222,11 +227,21 @@ def scene_context(cmds=None) -> dict[str, str]:
     scene = str(cmds.file(query=True, sceneName=True) or "")
     stem = Path(scene).stem
     tokens = [token for token in re.split(r"[_\-.]", stem) if token]
-    shot_index = next((i for i, token in enumerate(tokens) if re.fullmatch(r"(?:sh|shot)?\d{2,5}", token, re.I)), -1)
+    parts = list(Path(scene).parts)
+    lower_parts = [part.lower() for part in parts]
+    path_context = {}
+    if "shots" in lower_parts:
+        index = lower_parts.index("shots")
+        if len(parts) > index + 3:
+            path_context = {"episode": parts[index + 1], "sequence": parts[index + 2], "shot": parts[index + 3]}
+    episode_token = next((token for token in tokens if re.fullmatch(r"ep\d+", token, re.I)), "")
+    sequence_token = next((token for token in tokens if re.fullmatch(r"(?:sq|seq|s)\d+", token, re.I)), "")
+    shot_token = next((token for token in tokens if re.fullmatch(r"(?:c|sh|shot)\d+", token, re.I)), "")
     return {
         "scene": scene,
-        "sequence": tokens[shot_index - 1] if shot_index > 0 else (tokens[0] if tokens else "sequence"),
-        "shot": tokens[shot_index] if shot_index >= 0 else (stem or "untitled"),
+        "episode": path_context.get("episode") or episode_token,
+        "sequence": path_context.get("sequence") or sequence_token,
+        "shot": path_context.get("shot") or shot_token,
     }
 
 

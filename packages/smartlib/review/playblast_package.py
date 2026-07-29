@@ -138,11 +138,12 @@ def normalize_version(value: Any) -> str:
 def normalize_take(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
-        return "01"
+        return "t001"
     if text.lower().startswith("take"):
-        number = text[4:]
-        return f"{int(number):02d}" if number.isdigit() else text
-    return f"{int(text):02d}" if text.isdigit() else text
+        text = text[4:]
+    elif text.lower().startswith("t"):
+        text = text[1:]
+    return f"t{int(text):03d}" if text.isdigit() else text
 
 
 def latest_take_for_package(package_root: str | Path, current: Any = "") -> str:
@@ -173,6 +174,8 @@ def _take_number(value: Any) -> int:
     text = str(value or "").strip().lower()
     if text.startswith("take"):
         text = text[4:]
+    elif text.startswith("t"):
+        text = text[1:]
     try:
         return int(text)
     except ValueError:

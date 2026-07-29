@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 from collections import Counter
+from pathlib import Path
 
+from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.qt import parent_for_maya
 from smartlib.dcc.maya import set_dress
+from smartlib.setdress import SetDressPublishService
 
 
 def _qt_modules():
@@ -30,10 +34,24 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent_for_maya(QtWidgets, parent))
         self.package = set_dress.SetDressPackage(context=set_dress.scene_context())
+        self.publish_service = SetDressPublishService(ProjectConfig(_default_config_dir()))
+        try:
+            self.identity = self.publish_service.identity_from_context(self.package.context)
+        except ValueError:
+            self.identity = None
+        if self.identity and self.identity.shot:
+            self.package.context["shot_root"] = str(
+                self.publish_service.paths.shot_root(
+                    self.identity.episode, self.identity.sequence, self.identity.shot
+                )
+            )
         self.recorded = None
         self.recording_layer_id = ""
         self.path = None
         self._build_ui()
+        if self.identity is None:
+            self.publish_btn.setEnabled(False)
+            self.publish_btn.setToolTip("Open a shot scene whose episode and sequence can be resolved.")
         self.add_layer(prompt=False)
 
     def _build_ui(self):
@@ -78,8 +96,12 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         top.addWidget(self.search, 1)
         self.scope = QtWidgets.QComboBox()
         self.scope.addItems(["shot", "sequence"])
+        self.package_name = QtWidgets.QLineEdit("main")
+        self.package_name.setMaximumWidth(140)
         top.addWidget(QtWidgets.QLabel("Save scope"))
         top.addWidget(self.scope)
+        top.addWidget(QtWidgets.QLabel("Package"))
+        top.addWidget(self.package_name)
         right_layout.addLayout(top)
         self.table = QtWidgets.QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Node", "Attr", "Before", "After", "Delta", "State"])
@@ -97,6 +119,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.stop_btn = QtWidgets.QPushButton("■  Stop && Capture")
         self.stop_btn.setEnabled(False)
         self.save_btn = QtWidgets.QPushButton("Save Layers")
+        self.publish_btn = QtWidgets.QPushButton("Publish")
         self.load_btn = QtWidgets.QPushButton("Load")
         record_layout.addWidget(self.selection_only)
         record_layout.addStretch(1)
@@ -104,6 +127,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         record_layout.addWidget(self.stop_btn)
         record_layout.addWidget(self.load_btn)
         record_layout.addWidget(self.save_btn)
+        record_layout.addWidget(self.publish_btn)
         right_layout.addWidget(record_box)
         self.status = QtWidgets.QLabel("READY TO RECORD")
         layout.addWidget(self.status)
@@ -119,6 +143,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.record_btn.clicked.connect(self.start_recording)
         self.stop_btn.clicked.connect(self.stop_capture)
         self.save_btn.clicked.connect(self.save)
+        self.publish_btn.clicked.connect(self.publish)
         self.load_btn.clicked.connect(self.load)
         self.layer_list.currentItemChanged.connect(lambda *_: self.refresh_table())
         self.layer_list.itemChanged.connect(self._item_changed)
@@ -258,13 +283,70 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
 
     def save(self):
         scope = self.scope.currentText()
-        default = self.path or set_dress.suggested_path(scope, self.package.context)
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Set Dress Layers", str(default), "Set Dress (*.setdress.json);;JSON (*.json)")
-        if not path:
-            return
+        package_name = self.package_name.text().strip() or "main"
+        if self.identity:
+            self.package.context.update({
+                "episode": self.identity.episode,
+                "sequence": self.identity.sequence,
+                "shot": self.identity.shot,
+                "package": package_name,
+            })
+            path = str(
+                self.publish_service.data_path(
+                    self.identity, package_name, scope=scope
+                )
+            )
+        else:
+            default = self.path or set_dress.suggested_path(scope, self.package.context)
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                "Save Set Dress Layers",
+                str(default),
+                "Set Dress (*.setdress.json);;JSON (*.json)",
+            )
+            if not path:
+                return
         try:
             self.path = set_dress.save_package(self.package, path)
             self.status.setText(f"SAVED {self.path}")
+        except Exception as exc:
+            self._error(str(exc))
+
+    def publish(self):
+        if self.identity is None:
+            return self._error("Could not resolve the current shot identity.")
+        package_name = self.package_name.text().strip() or "main"
+        scope = self.scope.currentText()
+        try:
+            canonical_path = self.publish_service.data_path(
+                self.identity, package_name, scope=scope
+            )
+            self.package.context.update({
+                "episode": self.identity.episode,
+                "sequence": self.identity.sequence,
+                "shot": self.identity.shot,
+                "package": package_name,
+            })
+            self.path = set_dress.save_package(self.package, canonical_path)
+        except Exception as exc:
+            return self._error(str(exc))
+        comment, accepted = QtWidgets.QInputDialog.getText(
+            self, "Publish Set Dress", "Comment:"
+        )
+        if not accepted:
+            return
+        try:
+            published = self.publish_service.publish(
+                self.path,
+                self.identity,
+                package=package_name,
+                scope=scope,
+                comment=comment.strip(),
+            )
+            self.status.setText(f"PUBLISHED {published}")
+            QtWidgets.QMessageBox.information(
+                self, "Publish Set Dress", f"Published:\n{published}"
+            )
         except Exception as exc:
             self._error(str(exc))
 
@@ -275,6 +357,9 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         try:
             self.package = set_dress.load_package(path)
             self.path = path
+            self.package_name.setText(
+                self.package.context.get("package") or Path(path).name.split(".setdress.", 1)[0]
+            )
             self.refresh_layers()
             self._apply_stack()
         except Exception as exc:
@@ -303,6 +388,18 @@ def _warning_suffix(warnings):
         return ""
     counts = Counter(item.split(":", 1)[0] for item in warnings)
     return f" — {len(warnings)} warnings ({', '.join(counts)})"
+
+
+def _default_config_dir() -> Path:
+    value = os.environ.get("PROJECT_CONFIG_DIR")
+    if value:
+        return Path(value)
+    root = Path(
+        os.environ.get("SMARTPIPELINE_ROOT")
+        or os.environ.get("SMARTLIBRARY_ROOT")
+        or Path(__file__).resolve().parents[4]
+    )
+    return root / "config" / "STKB"
 
 
 def show():

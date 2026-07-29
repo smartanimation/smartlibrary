@@ -606,12 +606,26 @@ def _review_build_jsx(manifest_path: Path) -> str:
             return null;
         }}
         var options = new ImportOptions(file);
-        options.sequence = true;
-        options.forceAlphabetical = true;
+        options.sequence = shouldImportAsSequence(row);
+        options.forceAlphabetical = options.sequence;
+        log("Import mode for " + row.layer + ": " + (options.sequence ? "sequence" : "still"));
         var footage = app.project.importFile(options);
         footage.name = row.layer;
         try {{ footage.mainSource.conformFrameRate = row.fps; }} catch (err) {{}}
         return footage;
+    }}
+
+    function shouldImportAsSequence(row) {{
+        if (!row || !row.image_sequence || String(row.image_sequence).indexOf("####") === -1) {{
+            return false;
+        }}
+        if (Number(row.duration_frames || 0) <= 1) {{
+            return false;
+        }}
+        if (Number(row.start_frame || 0) >= Number(row.end_frame || 0)) {{
+            return false;
+        }}
+        return true;
     }}
 }}());
 """

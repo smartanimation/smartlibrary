@@ -2456,10 +2456,12 @@ def _normalize_label(value: Any, prefix: str, width: int) -> str:
 def _normalize_take_number(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
-        return "01"
+        return "t001"
     if text.lower().startswith("take"):
         text = text[4:]
-    return f"{int(text):02d}" if text.isdigit() else text
+    elif text.lower().startswith("t"):
+        text = text[1:]
+    return f"t{int(text):03d}" if text.isdigit() else text
 
 
 def _is_default_output_name(name: Any) -> bool:
