@@ -391,11 +391,10 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             )
             return
         rows = self._selected_rows()
-        checked_rows = [row for row, item in enumerate(self.items) if item.selected]
-        if len(rows) <= 1 and len(checked_rows) > 1:
-            rows = checked_rows
-        elif not rows and self.current_row >= 0:
+        if not rows and self.current_row >= 0:
             rows = [self.current_row]
+        if not rows:
+            return
         form_metadata = self._metadata_from_form()
         for row in rows:
             previous = self.items[row]
@@ -681,8 +680,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "apply_metadata_btn"):
             return
         rows = self._selected_rows()
-        checked_count = sum(1 for item in self.items if item.selected)
-        count = len(rows) if len(rows) > 1 else max(checked_count, len(rows))
+        count = len(rows)
         field_count = len(self._dirty_metadata_fields)
         prefix = f"Apply {field_count} Changed Field(s)" if field_count else "Apply Metadata"
         self.apply_metadata_btn.setText(
@@ -864,7 +862,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         target_type = item.target_type.lower()
         file_type = item.file_type.lower()
         subset = item.metadata.subset.lower()
-        if target_type == "editorial" and file_type == "wav":
+        if target_type == "shot" and (item.metadata.department == "audio" or file_type == "wav"):
             return "audio"
         if target_type == "editorial" and subset == "storyreel":
             return "storyreel"

@@ -11,6 +11,8 @@ from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json, write_json
 from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
 
+CAST_CONTEXTS = ("FAST", "WORK", "FINAL")
+
 
 @dataclass(frozen=True)
 class CastingAsset:
@@ -163,6 +165,87 @@ class SmartCastingService:
         selections = [row.cast_payload for row in assets]
         return self.shot_service.add_asset_selections_to_sequence_cast(episode, sequence, selections)
 
+    def sequence_cast_rows(self, episode: str, sequence: str) -> list[dict[str, Any]]:
+        cast_data = self.load_sequence_cast(episode, sequence)
+        rows = []
+        asset_rows = self.list_assets()
+        for cast_key, entry in sorted((cast_data.get("cast") or {}).items()):
+            row = {"cast_key": str(cast_key), **dict(entry)}
+            asset_row = self._asset_for_cast_entry(row, asset_rows)
+            if asset_row:
+                row.setdefault("category", asset_row.category)
+                row.setdefault("group", asset_row.group)
+                row.setdefault("thumbnail", asset_row.thumbnail)
+                row.setdefault("description", asset_row.description)
+            row["contexts"] = self.cast_context_statuses(row)
+            rows.append(row)
+        return rows
+
+    def cast_context_statuses(self, entry: dict[str, Any]) -> dict[str, str]:
+        asset_name = str(entry.get("asset") or "")
+        variant = str(entry.get("variant") or "default")
+        asset_publish = str(entry.get("asset_publish") or "approved")
+        asset_root = self.shot_service.find_asset_root(asset_name)
+        if not asset_root:
+            return {context: "Missing" for context in CAST_CONTEXTS}
+        variant_root = asset_root / variant
+        if not variant_root.exists():
+            return {context: "Missing" for context in CAST_CONTEXTS}
+        return {
+            context: self._context_status(variant_root, context, asset_publish)
+            for context in CAST_CONTEXTS
+        }
+
+    def _asset_for_cast_entry(
+        self,
+        entry: dict[str, Any],
+        asset_rows: list[CastingAsset] | None = None,
+    ) -> CastingAsset | None:
+        asset = str(entry.get("asset") or "")
+        variant = str(entry.get("variant") or "default")
+        rows = asset_rows if asset_rows is not None else self.list_assets()
+        return next((row for row in rows if row.asset == asset and row.variant == variant), None)
+
+    def _context_status(self, variant_root: Path, context: str, asset_publish: str) -> str:
+        context_root = variant_root / "publish" / "asset" / context.lower()
+        requested = str(asset_publish or "approved").strip().lower()
+        if not context_root.exists():
+            return "Missing"
+        if requested.startswith("v") and requested[1:].isdigit():
+            return "Ready" if _preferred_publish_file(context_root / requested) else self._wip_or_missing(context_root)
+        if requested in {"approved", "released", "stable"}:
+            versions = read_json(context_root / "versions.json", []) or []
+            for row in versions if isinstance(versions, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                status = str(row.get("status") or "").strip().lower()
+                if status != requested:
+                    continue
+                if _preferred_publish_file(context_root / str(row.get("version") or "")):
+                    return "Ready"
+            return self._wip_or_missing(context_root)
+        resolved = self.shot_service.asset_publish_resolver.resolve_context(
+            variant_root,
+            context,
+            version=requested or "latest",
+        )
+        return "Ready" if resolved else self._wip_or_missing(context_root)
+
+    @staticmethod
+    def _wip_or_missing(context_root: Path) -> str:
+        latest = read_json(context_root / "latest.json", {}) or {}
+        latest_path = context_root / str(latest.get("path") or "")
+        if latest_path.is_file():
+            return "WIP"
+        latest_version = str(latest.get("version") or "")
+        if latest_version and _preferred_publish_file(context_root / latest_version):
+            return "WIP"
+        versions = read_json(context_root / "versions.json", []) or []
+        for row in versions if isinstance(versions, list) else []:
+            if isinstance(row, dict) and _preferred_publish_file(context_root / str(row.get("version") or "")):
+                return "WIP"
+        return "Missing"
+
     def remove_sequence_cast(self, episode: str, sequence: str, cast_keys: list[str]) -> Path:
         cast_data = self.load_sequence_cast(episode, sequence)
         cast = dict(cast_data.get("cast") or {})
@@ -196,3 +279,14 @@ class SmartCastingService:
 
     def publish_shot_cast(self, identity: ShotIdentity, comment: str = "") -> Path:
         return self.shot_service.publish_shot_cast_from_sequence(identity, comment=comment)
+
+
+def _preferred_publish_file(version_dir: Path) -> Path | None:
+    if not version_dir.is_dir():
+        return None
+    files = [path for path in version_dir.iterdir() if path.is_file()]
+    for suffix in (".ma", ".mb", ".usd", ".usda", ".usdc", ".fbx", ".abc"):
+        matches = sorted(path for path in files if path.suffix.lower() == suffix)
+        if matches:
+            return matches[0]
+    return files[0] if files else None

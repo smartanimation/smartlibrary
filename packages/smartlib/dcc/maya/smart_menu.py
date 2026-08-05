@@ -60,6 +60,11 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_shot",
                     "enabled": True,
                 },
+                {
+                    "label": "Review Layer Manager",
+                    "command": "smartlib.dcc.maya.smart_menu.show_review_layer_manager",
+                    "enabled": True,
+                },
             ],
             "Modeling": [
                 {
@@ -367,18 +372,28 @@ def show_smart_sequence_builder() -> None:
     ensure_runtime_paths()
     _reload(
         "smartlib.dcc.maya.shot_builder",
-        "smartlib.apps.smart_sequence_builder.service",
-        "smartlib.apps.smart_sequence_builder.ui",
-        "smartlib.apps.smart_sequence_builder",
+        "smartlib.apps.review_build_manager.orchestrator",
+        "smartlib.apps.review_build_manager.service",
+        "smartlib.apps.review_build_manager.worker",
+        "smartlib.apps.review_build_manager.window",
+        "smartlib.apps.review_build_manager",
     )
-    from smartlib.apps import smart_sequence_builder
+    from smartlib.apps import review_build_manager
 
     config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
-    smart_sequence_builder.show(config_dir=config_dir)
+    review_build_manager.show(config_dir=config_dir, initial_scope="Sequence")
 
 
 def show_smart_set_dress() -> None:
     ensure_runtime_paths()
+    existing_ui = sys.modules.get("smartlib.apps.set_dress.ui")
+    existing_window = getattr(existing_ui, "_WINDOW", None) if existing_ui else None
+    if existing_window is not None:
+        try:
+            existing_window.close()
+            existing_window.deleteLater()
+        except RuntimeError:
+            pass
     _reload(
         "smartlib.setdress.service",
         "smartlib.setdress",

@@ -196,7 +196,13 @@ def test_removed_display_layer_keeps_exclusion_on_the_layer(tmp_path):
 
 def test_display_layer_row_settings_preserve_render_size(tmp_path):
     cmds = FakeCmds(tmp_path)
-    row = {"layer": "BGA", "width": 1920, "height": 1080, "take": 3}
+    row = {
+        "layer": "BGA",
+        "width": 1920,
+        "height": 1080,
+        "version": 2,
+        "take": 3,
+    }
 
     save_display_layer_row_settings("BGA", row, cmds)
 

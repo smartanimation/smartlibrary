@@ -1,18 +1,33 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import os
 import re
 import tempfile
 import uuid
+import zlib
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
 
 FORMAT = "smart-set-dress"
 VERSION = 1
+DEFAULT_HISTORY_LIMIT = 30
+SCENE_DATA_NODE = "smartSetDressData"
+SCENE_DATA_ATTRS = {
+    "format": ("smartSetDressFormat", "string"),
+    "version": ("smartSetDressVersion", "long"),
+    "payload": ("smartSetDressPayload", "string"),
+    "checksum": ("smartSetDressChecksum", "string"),
+    "external_path": ("smartSetDressExternalPath", "string"),
+    "updated_at": ("smartSetDressUpdatedAt", "string"),
+    "dirty": ("smartSetDressDirty", "bool"),
+}
 ATTRIBUTES = (
     "translateX", "translateY", "translateZ",
     "rotateX", "rotateY", "rotateZ",
@@ -49,6 +64,7 @@ class SetDressLayer:
 class SetDressPackage:
     layers: list[SetDressLayer] = field(default_factory=list)
     context: dict[str, str] = field(default_factory=dict)
+    base: list[NodeState] = field(default_factory=list)
     format: str = FORMAT
     version: int = VERSION
 
@@ -71,6 +87,7 @@ class SetDressPackage:
             ))
         return cls(
             layers=layers,
+            base=[NodeState(**item) for item in data.get("base") or []],
             context={str(k): str(v) for k, v in (data.get("context") or {}).items()},
             format=FORMAT,
             version=int(data.get("version") or VERSION),
@@ -100,6 +117,24 @@ def diff_states(
                     after=new.values[attribute],
                 ))
     return changes
+
+
+def remember_base(
+    base: Iterable[NodeState],
+    captured: Iterable[NodeState],
+) -> list[NodeState]:
+    """Keep the first captured value for every node attribute."""
+    result = {
+        item.node_id: NodeState(item.node_id, item.node, dict(item.values))
+        for item in base
+    }
+    for item in captured:
+        stored = result.setdefault(item.node_id, NodeState(item.node_id, item.node, {}))
+        if item.node:
+            stored.node = item.node
+        for attribute, value in item.values.items():
+            stored.values.setdefault(attribute, value)
+    return list(result.values())
 
 
 def composed_values(layers: Iterable[SetDressLayer]) -> dict[tuple[str, str], Change]:
@@ -143,6 +178,118 @@ def save_package(package: SetDressPackage, path: str | os.PathLike[str]) -> Path
 def load_package(path: str | os.PathLike[str]) -> SetDressPackage:
     with Path(path).open("r", encoding="utf-8") as stream:
         return SetDressPackage.from_dict(json.load(stream))
+
+
+def create_history_revision(
+    package: SetDressPackage,
+    working_path: str | os.PathLike[str],
+    *,
+    keep: int = DEFAULT_HISTORY_LIMIT,
+) -> Path:
+    working = Path(working_path)
+    package_name = working.name
+    if package_name.endswith(".setdress.json"):
+        package_name = package_name[: -len(".setdress.json")]
+    else:
+        package_name = working.stem
+    history_dir = working.parent / ".history" / _safe_name(package_name)
+    revisions = _history_revisions(history_dir)
+    next_number = max((number for number, _path in revisions), default=0) + 1
+    revision = save_package(
+        package,
+        history_dir / f"r{next_number:04d}.setdress.json",
+    )
+    if keep > 0:
+        revisions = _history_revisions(history_dir)
+        for _number, stale in revisions[:-keep]:
+            stale.unlink()
+    return revision
+
+
+def list_history_revisions(
+    working_path: str | os.PathLike[str],
+) -> list[Path]:
+    working = Path(working_path)
+    package_name = working.name
+    if package_name.endswith(".setdress.json"):
+        package_name = package_name[: -len(".setdress.json")]
+    else:
+        package_name = working.stem
+    history_dir = working.parent / ".history" / _safe_name(package_name)
+    return [path for _number, path in reversed(_history_revisions(history_dir))]
+
+
+def encode_scene_payload(package: SetDressPackage) -> tuple[str, str]:
+    raw = json.dumps(
+        package.to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    checksum = hashlib.sha256(raw).hexdigest()
+    return base64.b64encode(zlib.compress(raw, level=9)).decode("ascii"), checksum
+
+
+def decode_scene_payload(payload: str, checksum: str = "") -> SetDressPackage:
+    try:
+        raw = zlib.decompress(base64.b64decode(payload.encode("ascii")))
+    except Exception as exc:
+        raise ValueError("Embedded Set Dress payload is damaged.") from exc
+    actual = hashlib.sha256(raw).hexdigest()
+    if checksum and actual != checksum:
+        raise ValueError("Embedded Set Dress payload checksum does not match.")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("Embedded Set Dress payload is not valid JSON.") from exc
+    return SetDressPackage.from_dict(data)
+
+
+def embed_package_in_scene(
+    package: SetDressPackage,
+    *,
+    external_path: str | os.PathLike[str] = "",
+    dirty: bool = False,
+    cmds=None,
+) -> str:
+    cmds = cmds or _maya_cmds()
+    node = _ensure_scene_data_node(cmds)
+    payload, checksum = encode_scene_payload(package)
+    values = {
+        "format": FORMAT,
+        "version": VERSION,
+        "payload": payload,
+        "checksum": checksum,
+        "external_path": str(external_path),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "dirty": bool(dirty),
+    }
+    for key, value in values.items():
+        attr, attr_type = SCENE_DATA_ATTRS[key]
+        plug = f"{node}.{attr}"
+        if attr_type == "string":
+            cmds.setAttr(plug, str(value), type="string")
+        else:
+            cmds.setAttr(plug, value)
+    return node
+
+
+def load_package_from_scene(cmds=None) -> tuple[SetDressPackage | None, str]:
+    cmds = cmds or _maya_cmds()
+    node = _scene_data_node(cmds)
+    if not node:
+        return None, ""
+    payload = str(cmds.getAttr(f"{node}.{SCENE_DATA_ATTRS['payload'][0]}") or "")
+    if not payload:
+        return None, ""
+    checksum = str(cmds.getAttr(f"{node}.{SCENE_DATA_ATTRS['checksum'][0]}") or "")
+    external_path = str(
+        cmds.getAttr(f"{node}.{SCENE_DATA_ATTRS['external_path'][0]}") or ""
+    )
+    return decode_scene_payload(payload, checksum), external_path
+
+
+def scene_has_embedded_package(cmds=None) -> bool:
+    cmds = cmds or _maya_cmds()
+    node = _scene_data_node(cmds)
+    return bool(node and cmds.getAttr(f"{node}.{SCENE_DATA_ATTRS['payload'][0]}"))
 
 
 def suggested_path(scope: str, context: dict[str, str] | None = None) -> Path:
@@ -211,14 +358,32 @@ def apply_changes(changes: Iterable[Change], *, use_after: bool = True, cmds=Non
     return warnings
 
 
-def apply_stack(layers: Iterable[SetDressLayer], cmds=None) -> list[str]:
+def apply_stack(
+    layers: Iterable[SetDressLayer],
+    cmds=None,
+    *,
+    base: Iterable[NodeState] | None = None,
+) -> list[str]:
     layers = list(layers)
-    warnings = apply_changes(base_values(layers).values(), use_after=False, cmds=cmds)
+    warnings = restore_base(layers, cmds=cmds, base=base)
     warnings.extend(apply_changes(composed_values(layers).values(), use_after=True, cmds=cmds))
     return warnings
 
 
-def restore_base(layers: Iterable[SetDressLayer], cmds=None) -> list[str]:
+def restore_base(
+    layers: Iterable[SetDressLayer],
+    cmds=None,
+    *,
+    base: Iterable[NodeState] | None = None,
+) -> list[str]:
+    if base:
+        changes = (
+            Change(state.node_id, state.node, attribute, value, value)
+            for state in base
+            for attribute, value in state.values.items()
+        )
+        return apply_changes(changes, use_after=True, cmds=cmds)
+    # Version 1 packages did not store a dedicated base snapshot.
     return apply_changes(base_values(layers).values(), use_after=False, cmds=cmds)
 
 
@@ -255,6 +420,45 @@ def _capture_nodes(cmds, selection_only: bool) -> list[str]:
     return list(dict.fromkeys(str(node) for node in nodes))
 
 
+def _scene_data_node(cmds) -> str:
+    if cmds.objExists(SCENE_DATA_NODE):
+        try:
+            if cmds.nodeType(SCENE_DATA_NODE) == "network":
+                return SCENE_DATA_NODE
+        except Exception:
+            pass
+    nodes = cmds.ls(type="network") or []
+    for node in nodes:
+        if cmds.objExists(f"{node}.{SCENE_DATA_ATTRS['format'][0]}"):
+            try:
+                if cmds.getAttr(f"{node}.{SCENE_DATA_ATTRS['format'][0]}") == FORMAT:
+                    return str(node)
+            except Exception:
+                continue
+    return ""
+
+
+def _ensure_scene_data_node(cmds) -> str:
+    node = _scene_data_node(cmds)
+    if not node:
+        node = str(cmds.createNode("network", name=SCENE_DATA_NODE))
+    for attr, attr_type in SCENE_DATA_ATTRS.values():
+        if cmds.objExists(f"{node}.{attr}"):
+            continue
+        if attr_type == "string":
+            cmds.addAttr(node, longName=attr, dataType="string")
+        else:
+            cmds.addAttr(node, longName=attr, attributeType=attr_type)
+    for attr, value in (("isHistoricallyInteresting", 0), ("hiddenInOutliner", True)):
+        plug = f"{node}.{attr}"
+        try:
+            if cmds.objExists(plug):
+                cmds.setAttr(plug, value)
+        except Exception:
+            pass
+    return node
+
+
 def _node_id(cmds, node: str) -> str:
     try:
         values = cmds.ls(node, uuid=True) or []
@@ -288,6 +492,17 @@ def _different(left: Any, right: Any, tolerance: float) -> bool:
 
 def _safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value).strip()).strip("._") or "untitled"
+
+
+def _history_revisions(history_dir: Path) -> list[tuple[int, Path]]:
+    rows = []
+    if not history_dir.exists():
+        return rows
+    for path in history_dir.glob("r*.setdress.json"):
+        match = re.fullmatch(r"r(\d+)\.setdress\.json", path.name)
+        if match:
+            rows.append((int(match.group(1)), path))
+    return sorted(rows, key=lambda item: item[0])
 
 
 def _maya_cmds():

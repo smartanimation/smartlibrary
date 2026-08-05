@@ -198,6 +198,14 @@ var SmartAEBrowser = SmartAEBrowser || {};
       if (!isFootageItem(item)) {
         continue;
       }
+      if (
+        name
+        && item.parentFolder
+        && String(item.parentFolder.name || "").toLowerCase() === name
+        && footageMatchesTake(item, mapping)
+      ) {
+        return item;
+      }
       if (name && String(item.name || "").toLowerCase() === name && footageMatchesTake(item, mapping)) {
         return item;
       }
@@ -298,15 +306,28 @@ var SmartAEBrowser = SmartAEBrowser || {};
       }
     }
 
+    for (i = 0; i < requested.length; i += 1) {
+      for (j = 0; j < available.length; j += 1) {
+        if (normalizeTemplateName(available[j]) === normalizeTemplateName(requested[i])) {
+          target.applyTemplate(available[j]);
+          return available[j];
+        }
+      }
+    }
+
     throw new Error(label + " template not found: " + requested.join(", ") + ". Available: " + available.join(", "));
   }
 
   function applyRenderSettingsTemplate(renderQueueItem, preferredName, aliases) {
-    return applyNamedTemplate(renderQueueItem, preferredName || "Best Settings", aliases || [], availableRenderSettingsTemplates(renderQueueItem), "Render settings");
+    return applyNamedTemplate(renderQueueItem, preferredName || "Best Settings", aliases || ["Best Settings"], availableRenderSettingsTemplates(renderQueueItem), "Render settings");
   }
 
   function applyOutputModuleTemplate(outputModule, preferredName, aliases) {
     return applyNamedTemplate(outputModule, preferredName || "Apple ProRes 422 Proxy", aliases || [], availableOutputModuleTemplates(outputModule), "Output module");
+  }
+
+  function normalizeTemplateName(value) {
+    return String(value || "").replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "").toLowerCase();
   }
 
   function outputModuleFormat(outputModule) {
@@ -315,6 +336,323 @@ var SmartAEBrowser = SmartAEBrowser || {};
     } catch (error) {
       return "";
     }
+  }
+
+  function findFolder(name, parent) {
+    var item;
+    var i;
+    for (i = 1; app.project && i <= app.project.numItems; i += 1) {
+      item = app.project.item(i);
+      if (!(item instanceof FolderItem) || item.name !== name) {
+        continue;
+      }
+      if (!parent || item.parentFolder === parent) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  function ensureProjectFolder(name, parent) {
+    var folder = findFolder(name, parent || null);
+    if (!folder) {
+      folder = app.project.items.addFolder(name);
+    }
+    if (parent) {
+      try {
+        folder.parentFolder = parent;
+      } catch (error) {}
+    }
+    return folder;
+  }
+
+  function moveToFolder(item, folder) {
+    if (item && folder) {
+      try {
+        item.parentFolder = folder;
+      } catch (error) {}
+    }
+  }
+
+  function findComp(name) {
+    var item;
+    var i;
+    for (i = 1; app.project && i <= app.project.numItems; i += 1) {
+      item = app.project.item(i);
+      if (item instanceof CompItem && item.name === name) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  function ensureComp(name, width, height, duration, fps, folder) {
+    var comp = findComp(name);
+    if (!comp) {
+      comp = app.project.items.addComp(name, width, height, 1.0, duration, fps);
+    }
+    try {
+      comp.width = width;
+    } catch (error) {}
+    try {
+      comp.height = height;
+    } catch (error2) {}
+    comp.duration = duration;
+    comp.frameRate = fps;
+    moveToFolder(comp, folder);
+    return comp;
+  }
+
+  function clearComp(comp) {
+    try {
+      while (comp.numLayers > 0) {
+        comp.layer(1).remove();
+      }
+    } catch (error) {}
+  }
+
+  function addSourceLayer(comp, source, name) {
+    var layer = comp.layers.add(source);
+    layer.startTime = 0;
+    if (name) {
+      layer.name = name;
+    }
+    return layer;
+  }
+
+  function parseNumber(value, fallback) {
+    var number = Number(value);
+    return isNaN(number) ? fallback : number;
+  }
+
+  function frameRangeFrom(value, fallbackStart, fallbackEnd) {
+    if (value && value.length >= 2) {
+      return [parseNumber(value[0], fallbackStart), parseNumber(value[1], fallbackEnd)];
+    }
+    return [fallbackStart, fallbackEnd];
+  }
+
+  function readShotJson(data) {
+    var projectRoot = String(data.projectRoot || data.project_root || "");
+    var shotFile;
+    var rootParts;
+    var shotIndex;
+    var packageRoot;
+    if (projectRoot && data.episode && data.sequence && data.shot) {
+      shotFile = File(joinPath(projectRoot, "shots/" + data.episode + "/" + data.sequence + "/" + data.shot + "/shot.json"));
+    } else {
+      packageRoot = String(data.package_root || data.packageRoot || "");
+      rootParts = packageRoot.replace(/\\/g, "/").split("/");
+      shotIndex = rootParts.join("/").toLowerCase().indexOf("/publish/preview_render/");
+      if (shotIndex !== -1) {
+        shotFile = File(rootParts.join("/").slice(0, shotIndex) + "/shot.json");
+      }
+    }
+    if (!shotFile || !shotFile.exists) {
+      return {};
+    }
+    try {
+      return JSON.parse(readFile(shotFile));
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function readProjectResolution(data) {
+    var configDir = String(data.configDir || data.config_dir || "");
+    var file;
+    var text;
+    var match;
+    if (!configDir) {
+      return [];
+    }
+    file = File(joinPath(configDir, "templates_base.yml"));
+    if (!file.exists) {
+      return [];
+    }
+    try {
+      text = readFile(file);
+    } catch (error) {
+      return [];
+    }
+    match = text.match(/resolution\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]/i);
+    if (match) {
+      return [Number(match[1]), Number(match[2])];
+    }
+    match = text.match(/resolution\s*:\s*(?:\r?\n)\s*-\s*(\d+)\s*(?:\r?\n)\s*-\s*(\d+)/i);
+    return match ? [Number(match[1]), Number(match[2])] : [];
+  }
+
+  function buildTiming(data, items) {
+    var shot = readShotJson(data);
+    var editorial = shot.editorial || {};
+    var range = frameRangeFrom(editorial.frame_range || shot.frame_range, parseNumber(editorial.cut_in || shot.cut_in, 1), parseNumber(editorial.cut_out || shot.cut_out, 1));
+    var fps = parseNumber(editorial.fps || shot.fps || data.fps, 24);
+    var finalResolution = readProjectResolution(data);
+    var stageResolution = [];
+    var i;
+    if (!finalResolution.length && shot.resolution && shot.resolution.length >= 2) {
+      finalResolution = [Number(shot.resolution[0]), Number(shot.resolution[1])];
+    }
+    if (!finalResolution.length && data.resolution && data.resolution.length >= 2) {
+      finalResolution = [Number(data.resolution[0]), Number(data.resolution[1])];
+    }
+    for (i = 0; i < items.length && !stageResolution.length; i += 1) {
+      if (items[i].resolution && items[i].resolution.length >= 2) {
+        stageResolution = [Number(items[i].resolution[0]), Number(items[i].resolution[1])];
+      }
+    }
+    if (!finalResolution.length) {
+      finalResolution = stageResolution.length ? stageResolution : [1920, 1080];
+    }
+    if (!stageResolution.length) {
+      stageResolution = finalResolution;
+    }
+    return {
+      start: range[0],
+      end: range[1],
+      frames: Math.max(1, range[1] - range[0] + 1),
+      duration: Math.max(1, range[1] - range[0] + 1) / fps,
+      fps: fps,
+      finalWidth: finalResolution[0],
+      finalHeight: finalResolution[1],
+      stageWidth: stageResolution[0],
+      stageHeight: stageResolution[1]
+    };
+  }
+
+  function previewRenderBuildItems(data, manifestFile) {
+    var rawItems = data.items || [];
+    var groups = data.layers || data.groups || {};
+    var order = data.layer_order || data.group_order || [];
+    var byName = {};
+    var result = [];
+    var names = [];
+    var item;
+    var group;
+    var name;
+    var i;
+    for (i = 0; i < rawItems.length; i += 1) {
+      item = rawItems[i] || {};
+      name = String(item.layer || item.name || item.id || "");
+      if (name) {
+        byName[name] = item;
+      }
+    }
+    for (name in groups) {
+      if (groups.hasOwnProperty(name) && !byName[name]) {
+        byName[name] = { layer: name, name: name };
+      }
+    }
+    names = order.length ? order : [];
+    for (name in byName) {
+      if (byName.hasOwnProperty(name) && names.join("|").indexOf(name) === -1) {
+        names.push(name);
+      }
+    }
+    for (i = 0; i < names.length; i += 1) {
+      name = String(names[i]);
+      item = byName[name] || {};
+      group = groups[name] || {};
+      result.push({
+        layer: name,
+        first_frame_file: item.first_frame_file || group.first_file || item.sourcePath || "",
+        image_sequence: item.outputPath || group.pattern || "",
+        file_count: parseNumber(item.file_count || group.file_count, 0),
+        start_frame: parseNumber((item.frame_range || group.frame_range || [])[0], parseNumber(data.start_frame, 1)),
+        end_frame: parseNumber((item.frame_range || group.frame_range || [])[1], parseNumber(data.end_frame, 1)),
+        duration_frames: parseNumber(item.duration_frames || group.duration_frames, 0),
+        resolution: item.resolution || group.resolution || [],
+        order: parseNumber(group.order || item.order, i * 10),
+        firstFramePath: resolveManifestFile(data, manifestFile, item.first_frame_file || group.first_file || item.sourcePath || "")
+      });
+    }
+    return result.sort(function (a, b) {
+      return a.order - b.order;
+    });
+  }
+
+  function shouldImportAsSequence(row) {
+    if (!row || String(row.image_sequence || "").indexOf("####") === -1) {
+      return false;
+    }
+    if (row.file_count && Number(row.file_count) <= 1) {
+      return false;
+    }
+    if (row.file_count && Number(row.file_count) > 1) {
+      return true;
+    }
+    if (Number(row.duration_frames || 0) <= 1) {
+      return false;
+    }
+    return Number(row.start_frame || 0) < Number(row.end_frame || 0);
+  }
+
+  function padFrame(value, width) {
+    var digits = String(Math.max(0, parseNumber(value, 0)));
+    while (digits.length < width) {
+      digits = "0" + digits;
+    }
+    return digits;
+  }
+
+  function sequenceFootageName(row, file, importAsSequence) {
+    var source = String(row.image_sequence || "");
+    var name;
+    var match;
+    if (!importAsSequence) {
+      return basename(file.fsName);
+    }
+    if (!source) {
+      source = file.fsName;
+    }
+    name = basename(source);
+    match = name.match(/(#+)(\.[^.]*)$/);
+    if (match) {
+      return name.replace(match[1] + match[2], "[" + padFrame(row.start_frame, match[1].length) + "-" + padFrame(row.end_frame, match[1].length) + "]" + match[2]);
+    }
+    match = name.match(/(\d+)(\.[^.]*)$/);
+    if (match) {
+      return name.replace(match[1] + match[2], "[" + padFrame(row.start_frame, match[1].length) + "-" + padFrame(row.end_frame, match[1].length) + "]" + match[2]);
+    }
+    return name;
+  }
+
+  function findFootageByPath(path) {
+    var normalized = normalizePath(path);
+    var item;
+    var i;
+    for (i = 1; app.project && i <= app.project.numItems; i += 1) {
+      item = app.project.item(i);
+      if (isFootageItem(item) && normalizePath(getFootagePath(item)) === normalized) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  function importPreviewFootage(row, folder) {
+    var file = File(row.firstFramePath);
+    var options;
+    var footage;
+    var importAsSequence;
+    if (!file.exists) {
+      return null;
+    }
+    importAsSequence = shouldImportAsSequence(row);
+    footage = findFootageByPath(file.fsName);
+    if (!footage) {
+      options = new ImportOptions(file);
+      if (options.canImportAs && options.canImportAs(ImportAsType.FOOTAGE)) {
+        options.importAs = ImportAsType.FOOTAGE;
+      }
+      options.sequence = importAsSequence;
+      options.forceAlphabetical = importAsSequence;
+      footage = app.project.importFile(options);
+    }
+    footage.name = sequenceFootageName(row, file, importAsSequence);
+    moveToFolder(footage, folder);
+    return footage;
   }
 
   SmartAEBrowser.openManifestDialog = function () {
@@ -442,15 +780,20 @@ var SmartAEBrowser = SmartAEBrowser || {};
     var templateFile;
     var items;
     var imported = 0;
-    var replaced = 0;
+    var precomps = 0;
     var errors = [];
-    var i;
+    var folders;
+    var timing;
+    var stage;
+    var camera;
+    var finalComp;
     var item;
-    var firstFrame;
-    var mapping;
-    var existing;
-    var options;
     var footage;
+    var precomp;
+    var stageLayer;
+    var layerWidth;
+    var layerHeight;
+    var i;
 
     if (!manifestFile.exists) {
       return stringify({ error: "Preview Render manifest was not found: " + manifestFile.fsName });
@@ -464,45 +807,61 @@ var SmartAEBrowser = SmartAEBrowser || {};
       } else if (!app.project) {
         app.newProject();
       }
-      items = data.items || [];
+      items = previewRenderBuildItems(data, manifestFile);
+      timing = buildTiming(data, items);
+      folders = {
+        render: ensureProjectFolder("00_render"),
+        comp: ensureProjectFolder("10_comp"),
+        precomp: ensureProjectFolder("20_precomp"),
+        footage: ensureProjectFolder("30_footage")
+      };
+      folders.dept = ensureProjectFolder(String(data.department || "anim"), folders.footage);
+      folders.layers = ensureProjectFolder("layers", folders.dept);
+
       app.beginUndoGroup("Build Preview Render");
-      for (i = 0; i < items.length; i += 1) {
+      finalComp = ensureComp("final", timing.finalWidth, timing.finalHeight, timing.duration, timing.fps, folders.render);
+      camera = ensureComp("camera", timing.finalWidth, timing.finalHeight, timing.duration, timing.fps, folders.comp);
+      stage = ensureComp("stage", timing.stageWidth, timing.stageHeight, timing.duration, timing.fps, folders.comp);
+      try {
+        finalComp.displayStartFrame = timing.start;
+        camera.displayStartFrame = timing.start;
+        stage.displayStartFrame = timing.start;
+      } catch (displayError) {}
+      clearComp(finalComp);
+      clearComp(camera);
+      clearComp(stage);
+
+      // AE inserts added layers at index 1, so add bottom-to-top to preserve manifest order.
+      for (i = items.length - 1; i >= 0; i -= 1) {
         item = items[i] || {};
-        firstFrame = File(resolveManifestFile(data, manifestFile, item.first_frame_file || item.sourcePath || ""));
-        if (!firstFrame.exists) {
-          errors.push("Missing footage: " + (item.name || item.id || firstFrame.fsName));
+        if (!item.firstFramePath || !File(item.firstFramePath).exists) {
+          errors.push("Missing footage: " + (item.layer || item.firstFramePath));
           continue;
         }
-        mapping = {
-          name: item.name || item.layer || item.id || "",
-          sourcePath: item.sourcePath || firstFrame.fsName,
-          outputPath: firstFrame.fsName
-        };
-        existing = findFootage(mapping);
-        if (existing) {
-          if (existing.replaceWithSequence) {
-            existing.replaceWithSequence(firstFrame, false);
-          } else {
-            existing.replace(firstFrame);
-          }
-          existing.name = mapping.name || existing.name;
-          replaced += 1;
+        footage = importPreviewFootage(item, ensureProjectFolder(item.layer || "layer", folders.layers));
+        if (!footage) {
+          errors.push("Could not import footage: " + (item.layer || item.firstFramePath));
           continue;
-        }
-        options = new ImportOptions(firstFrame);
-        if (options.canImportAs && options.canImportAs(ImportAsType.FOOTAGE)) {
-          options.importAs = ImportAsType.FOOTAGE;
-        }
-        options.sequence = true;
-        options.forceAlphabetical = false;
-        footage = app.project.importFile(options);
-        if (mapping.name) {
-          footage.name = mapping.name;
         }
         imported += 1;
+        layerWidth = item.resolution && item.resolution.length >= 2 ? Number(item.resolution[0]) : timing.stageWidth;
+        layerHeight = item.resolution && item.resolution.length >= 2 ? Number(item.resolution[1]) : timing.stageHeight;
+        precomp = ensureComp(item.layer, layerWidth, layerHeight, timing.duration, timing.fps, folders.precomp);
+        clearComp(precomp);
+        addSourceLayer(precomp, footage, "");
+        stageLayer = addSourceLayer(stage, precomp, item.layer);
+        precomps += 1;
       }
+
+      addSourceLayer(camera, stage, "stage");
+      addSourceLayer(finalComp, camera, "camera");
+      try {
+        finalComp.openInViewer();
+        app.project.activeItem = finalComp;
+        app.activate();
+      } catch (activateError) {}
     } catch (error) {
-      return stringify({ error: error.message, imported: imported, replaced: replaced, errors: errors });
+      return stringify({ error: error.message, imported: imported, precomps: precomps, errors: errors });
     } finally {
       try {
         app.endUndoGroup();
@@ -511,7 +870,7 @@ var SmartAEBrowser = SmartAEBrowser || {};
     return stringify({
       ok: errors.length === 0,
       imported: imported,
-      replaced: replaced,
+      precomps: precomps,
       template: templateFile && templateFile.exists ? templateFile.fsName : "",
       errors: errors
     });
@@ -601,6 +960,7 @@ var SmartAEBrowser = SmartAEBrowser || {};
     var audioWarning;
     var format;
     var warnings = [];
+    var renderStarted = false;
     var i;
 
     for (i = 0; i < fallbackNames.length; i += 1) {
@@ -640,6 +1000,7 @@ var SmartAEBrowser = SmartAEBrowser || {};
       module.file = file;
       format = outputModuleFormat(module);
       app.endUndoGroup();
+      renderStarted = true;
       app.project.renderQueue.render();
       return stringify({
         ok: true,
@@ -652,6 +1013,11 @@ var SmartAEBrowser = SmartAEBrowser || {};
         warning: warnings.join("; ")
       });
     } catch (error) {
+      if (!renderStarted && item) {
+        try {
+          item.remove();
+        } catch (removeError) {}
+      }
       try {
         app.endUndoGroup();
       } catch (endError) {}

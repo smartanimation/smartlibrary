@@ -29,9 +29,10 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
     data: dict[str, Any] = {}
     stack: list[tuple[int, Any]] = [(-1, data)]
 
-    with path.open("r", encoding="utf-8") as stream:
-        for raw_line in stream:
-            line = raw_line.split("#", 1)[0].rstrip()
+    with path.open("r", encoding="utf-8-sig") as stream:
+        raw_lines = stream.readlines()
+        for line_index, raw_line in enumerate(raw_lines):
+            line = _strip_yaml_comment(raw_line).rstrip()
             if not line.strip():
                 continue
 
@@ -58,11 +59,45 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
                 parent[key] = _parse_scalar(value)
                 continue
 
-            next_container: Any = [] if key.endswith("_depts") else {}
+            next_is_list = False
+            for following_line in raw_lines[line_index + 1 :]:
+                following = _strip_yaml_comment(following_line).rstrip()
+                if not following.strip():
+                    continue
+                following_indent = len(following) - len(following.lstrip(" "))
+                next_is_list = (
+                    following_indent > indent
+                    and following.strip().startswith("- ")
+                )
+                break
+            next_container: Any = [] if key.endswith("_depts") or next_is_list else {}
             parent[key] = next_container
             stack.append((indent, next_container))
 
     return data
+
+
+def _strip_yaml_comment(line: str) -> str:
+    """Strip YAML comments without treating hashes inside quotes as comments."""
+
+    quote = ""
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote == '"':
+            escaped = True
+            continue
+        if char in {"'", '"'}:
+            if not quote:
+                quote = char
+            elif quote == char:
+                quote = ""
+            continue
+        if char == "#" and not quote:
+            return line[:index]
+    return line
 
 
 def _parse_scalar(value: str) -> Any:

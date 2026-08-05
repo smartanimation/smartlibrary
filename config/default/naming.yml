@@ -31,3 +31,8 @@ smart_ingest:
 
 smart_playblast:
   filename: "{project}*{episode}*{sequence}*{shot}*{dept}*{preview}*v{version}*t{take}*####.{ext}"
+
+smart_aftereffects:
+  task: compTemp
+  aep_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"
+  output_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"

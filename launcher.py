@@ -985,8 +985,6 @@ class SmartLauncher(QtWidgets.QMainWindow):
         tools_menu = menubar.addMenu("SmartTools")
         asset_action = tools_menu.addAction("Asset Manager", lambda: self.launch_smart_tool("asset_manager"))
         asset_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirIcon))
-        editorial_action = tools_menu.addAction("Editorial Intake", lambda: self.launch_smart_tool("editorial_intake"))
-        editorial_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
         ingest_action = tools_menu.addAction("Smart Ingest", lambda: self.launch_smart_tool("smart_ingest"))
         ingest_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DriveHDIcon))
         casting_action = tools_menu.addAction("Smart Casting", lambda: self.launch_smart_tool("smart_casting"))

@@ -32,6 +32,30 @@ When **Selected hierarchy** is disabled, all scene transforms are inspected.
 Layer files are saved as `*.setdress.json`. Node UUIDs are stored alongside DAG
 paths so renames and reparenting can usually be resolved.
 
+Layer edits are automatically synchronized after capture, rename, reorder,
+mute, delete, scope changes, and package-name changes. Two recovery copies are
+maintained:
+
+- The working JSON under `data/setdress`
+- A compressed, checksummed payload on the scene's `smartSetDressData` network node
+
+The manager restores the embedded copy when the Maya scene is reopened. A
+before-save scene callback also forces synchronization. No attributes are added
+to referenced set assets or transform nodes.
+
+`Stop & Capture` and an explicit `Save Layers` also create lightweight working
+revisions:
+
+```text
+<shot_root>/data/setdress/.history/<package>/r####.setdress.json
+```
+
+The newest 30 revisions are retained by default. Routine autosaves update only
+the working JSON, so mute and reorder operations do not create excessive
+history. Use **History** to restore a revision; the current state is checkpointed
+before restoration. Set `SMART_SET_DRESS_HISTORY_LIMIT` to change the retained
+count.
+
 The default working-data locations are:
 
 - Shot: `<shot_root>/data/setdress/<package>.setdress.json`

@@ -17,7 +17,7 @@ def _qt():
 QtCore, QtWidgets = _qt()
 _WINDOW = None
 WINDOW_OBJECT_NAME = "SmartPlayblastWindow"
-UI_VERSION = 19
+UI_VERSION = 26
 TOOL_VERSION = "1.0.0"
 ALL_LAYER_LABEL = "ALL"
 
@@ -131,7 +131,7 @@ class _ReorderTable(QtWidgets.QTableWidget):
 
 
 class SmartPlayblastWindow(QtWidgets.QDialog):
-    COLUMNS = ("Use", "Camera", "Display Layer", "Frame Range", "Render Size", "Version", "Take")
+    COLUMNS = ("Use", "Camera", "Review Layer", "Frame Range", "Render Size", "Version", "Take")
 
     def __init__(self, config_dir=None, parent=None):
         super().__init__(parent)
@@ -170,28 +170,47 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         if anim_index >= 0:
             self.department.setCurrentIndex(anim_index)
         self.shot_combo = QtWidgets.QComboBox()
-        context.addWidget(QtWidgets.QLabel("PROJ"))
-        context.addWidget(QtWidgets.QLabel(self.project_config.project_name))
-        context.addWidget(QtWidgets.QLabel("DEPT"))
-        context.addWidget(self.department)
-        context.addWidget(QtWidgets.QLabel("SHOT"))
-        context.addWidget(self.shot_combo, 1)
+        # Keep the combo boxes as internal context stores for compatibility
+        # with the existing scene-settings code, but do not expose context
+        # switching from a shot-scoped tool.
+        self.department.setVisible(False)
+        self.shot_combo.setVisible(False)
+        self.context_label = QtWidgets.QLabel()
+        self.context_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+        )
+        context.addWidget(self.context_label, 1)
         root.addLayout(context)
 
         toolbar = QtWidgets.QHBoxLayout()
         self.refresh_button = QtWidgets.QPushButton("")
-        self.refresh_button.setToolTip("Refresh Display Layers")
+        self.refresh_button.setToolTip("Refresh Review Layers")
         self.refresh_button.setFixedWidth(34)
+        self.option_button = QtWidgets.QPushButton("Option")
+        option_menu = QtWidgets.QMenu(self.option_button)
+        self.generate_review_layers_action = option_menu.addAction(
+            "Review Layersから生成"
+        )
+        self.generate_sequencer_action = option_menu.addAction(
+            "Camera Sequencerから生成"
+        )
+        self.option_button.setMenu(option_menu)
         self.add_button = QtWidgets.QPushButton("Add")
-        self.add_all_button = QtWidgets.QPushButton("Add ALL")
-        self.all_button = QtWidgets.QPushButton("All")
-        self.none_button = QtWidgets.QPushButton("None")
-        self.delete_button = QtWidgets.QPushButton("Remove Row")
+        self.all_button = QtWidgets.QPushButton("Select All")
+        self.none_button = QtWidgets.QPushButton("Clear Selection")
+        self.invert_button = QtWidgets.QPushButton("Invert Selection")
+        self.match_latest_button = QtWidgets.QPushButton("Match Latest Outputs")
+        self.match_latest_button.setToolTip(
+            "Set every row to its latest output Version and Take"
+        )
+        self.delete_button = QtWidgets.QPushButton("Remove")
         toolbar.addWidget(self.refresh_button)
+        toolbar.addWidget(self.option_button)
         toolbar.addWidget(self.add_button)
-        toolbar.addWidget(self.add_all_button)
         toolbar.addWidget(self.all_button)
         toolbar.addWidget(self.none_button)
+        toolbar.addWidget(self.invert_button)
+        toolbar.addWidget(self.match_latest_button)
         toolbar.addStretch(1)
         toolbar.addWidget(self.delete_button)
         root.addLayout(toolbar)
@@ -258,7 +277,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         )
         form.addRow("Camera", self.camera_combo)
         form.addRow("Playblast Preset", preset_row)
-        form.addRow("Display Layer", layer_row)
+        form.addRow("Review Layer", layer_row)
         form.addRow("Frame Range", self.range_combo)
         form.addRow("Start / End", range_row)
         form.addRow("Width / Height", size_row)
@@ -275,10 +294,17 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         playblast_font.setPointSize(max(16, playblast_font.pointSize() + 6))
         playblast_font.setBold(True)
         self.playblast_button.setFont(playblast_font)
+        publish_actions = QtWidgets.QHBoxLayout()
+        self.publish_preview_button = QtWidgets.QPushButton(
+            "Publish Preview Render"
+        )
+        self.publish_preview_button.setEnabled(False)
+        publish_actions.addWidget(self.publish_preview_button)
         root.addWidget(QtWidgets.QLabel("Output"))
         root.addWidget(self.filename_label)
         self.status = QtWidgets.QLabel("")
         root.addWidget(self.status)
+        root.addLayout(publish_actions)
         root.addWidget(self.playblast_button)
 
         self._apply_button_icons()
@@ -287,9 +313,18 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self.department.currentTextChanged.connect(self._context_changed)
         self.refresh_button.clicked.connect(self.refresh_scene)
         self.add_button.clicked.connect(self.add_layer_row)
-        self.add_all_button.clicked.connect(self.add_all_row)
         self.all_button.clicked.connect(lambda: self._check_all(True))
         self.none_button.clicked.connect(lambda: self._check_all(False))
+        self.invert_button.clicked.connect(self._invert_selection)
+        self.generate_review_layers_action.triggered.connect(
+            self.generate_from_review_layers
+        )
+        self.generate_sequencer_action.triggered.connect(
+            self.generate_from_camera_sequencer
+        )
+        self.match_latest_button.clicked.connect(
+            lambda *_: self.match_latest_outputs()
+        )
         self.delete_button.clicked.connect(self._remove_row)
         self.table.currentCellChanged.connect(lambda *_: self._load_properties())
         self.camera_combo.currentTextChanged.connect(lambda *_: self._apply_properties())
@@ -302,6 +337,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self.output_override.editingFinished.connect(self._apply_properties)
         self.solo_button.clicked.connect(self.preview_solo)
         self.playblast_button.clicked.connect(self.playblast)
+        self.publish_preview_button.clicked.connect(self.publish_preview_render)
         self.table.itemChanged.connect(lambda *_: self._save_scene_settings())
         self.table.rowsReordered.connect(self._rows_reordered)
         self.table.customContextMenuRequested.connect(self._show_table_context_menu)
@@ -312,13 +348,40 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         for identity in self.service.list_shots():
             self.shot_combo.addItem(identity.code, identity)
         self.shot_combo.blockSignals(False)
-        if self.shot_combo.count():
+        scene_identity = None
+        try:
+            import maya.cmds as cmds
+
+            scene_identity = self.service.shot_identity_from_path(
+                cmds.file(query=True, sceneName=True) or ""
+            )
+        except Exception:
+            pass
+        if scene_identity:
+            index = self.shot_combo.findText(scene_identity.code)
+            if index >= 0:
+                self.shot_combo.setCurrentIndex(index)
+                self.identity = self.shot_combo.currentData()
+        elif self.shot_combo.count():
             self.identity = self.shot_combo.currentData()
+        self._update_context_label()
+
+    def _update_context_label(self):
+        shot = self.identity.code if self.identity else "Unknown Shot"
+        department = self.department.currentText() or "anim"
+        self.context_label.setText(
+            f"{self.project_config.project_name}  /  {shot}  /  {department}"
+        )
+        self.context_label.setToolTip(
+            "Current Maya scene context (read only)"
+        )
 
     def _shot_changed(self):
         if self._loading:
             return
         self.identity = self.shot_combo.currentData()
+        self._update_context_label()
+        self.refresh_scene()
         self._apply_suggested_version_take()
         self._update_output_preview()
         self._save_scene_settings()
@@ -326,87 +389,132 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
     def _context_changed(self):
         if self._loading:
             return
+        self._update_context_label()
+        self.refresh_scene()
         self._apply_suggested_version_take()
         self._update_output_preview()
         self._save_scene_settings()
 
     def refresh_scene(self):
-        from smartlib.dcc.maya.review_playblast import (
-            display_layer_order,
-            display_layers,
-            is_display_layer_excluded,
-            load_display_layer_row_settings,
-        )
         import maya.cmds as cmds
 
         current = {self._text(row, 2): self._row(row) for row in range(self.table.rowCount())}
-        layers = display_layers(cmds)
+        layers = (
+            self.service.review_layers(
+                self.identity,
+                self.department.currentText() or "anim",
+            )
+            if self.identity
+            else {}
+        )
         cameras = _scene_cameras(cmds)
         self.camera_combo.clear()
         self.camera_combo.addItems(cameras)
         self.layer_combo.clear()
-        self.layer_combo.addItem(ALL_LAYER_LABEL)
-        self.layer_combo.addItems(layers)
+        ordered_layers = sorted(
+            layers,
+            key=lambda name: int((layers.get(name) or {}).get("order", 0)),
+        )
+        try:
+            from smartlib.dcc.maya.review_playblast import load_scene_playblast_settings
+
+            saved = load_scene_playblast_settings(cmds)
+            saved_order = [
+                str(name)
+                for name in (saved.get("layer_order") or [])
+                if str(name) in layers
+            ]
+            if (
+                saved_order
+                and str(saved.get("shot") or "") == self.identity.code
+                and str(saved.get("department") or "")
+                == (self.department.currentText() or "anim")
+            ):
+                order_index = {
+                    name: index for index, name in enumerate(saved_order)
+                }
+                original_index = {
+                    name: index for index, name in enumerate(ordered_layers)
+                }
+                ordered_layers.sort(
+                    key=lambda name: order_index.get(
+                        name, len(order_index) + original_index[name]
+                    )
+                )
+        except Exception:
+            pass
+        self.layer_combo.addItems(ordered_layers)
         self.table.setRowCount(0)
         start = int(cmds.playbackOptions(query=True, minTime=True))
         end = int(cmds.playbackOptions(query=True, maxTime=True))
         version, take = self._suggested_version_take()
+        latest_outputs = self._latest_preview_outputs()
         active_camera = _active_camera(cmds) or (cameras[0] if cameras else "")
-        ordered_layers = list(layers)
-        original_positions = {
-            layer: index for index, layer in enumerate(ordered_layers)
-        }
-        ordered_layers.sort(
-            key=lambda layer: (
-                display_layer_order(layer, cmds) is None,
-                display_layer_order(layer, cmds)
-                if display_layer_order(layer, cmds) is not None
-                else original_positions[layer],
-            )
-        )
-        if ALL_LAYER_LABEL in current:
-            ordered_layers.insert(0, ALL_LAYER_LABEL)
-        for layer in ordered_layers:
-            if layer == ALL_LAYER_LABEL:
-                previous = current.get(layer) or {}
-                self._append_row(
-                    enabled=previous.get("enabled", True),
-                    camera=_dag_leaf(previous.get("camera", active_camera)),
-                    layer=layer,
-                    start=previous.get("start", start),
-                    end=previous.get("end", end),
-                    width=previous.get("width", 1280),
-                    height=previous.get("height", 720),
-                    version=previous.get("version", version),
-                    take=previous.get("take", take),
-                    mode=previous.get("mode", "Animation"),
-                    preset=previous.get("preset", self.preset_combo.itemData(0) or ""),
-                    output_override=previous.get("output_override", ""),
+        for layer_name in ordered_layers:
+            contract = layers.get(layer_name) or {}
+            try:
+                from smartlib.dcc.maya.review_playblast import (
+                    load_display_layer_row_settings,
                 )
-                continue
-            if layer in self._excluded_layers or is_display_layer_excluded(layer, cmds):
-                self._excluded_layers.add(layer)
-                continue
-            previous = current.get(layer) or load_display_layer_row_settings(layer, cmds)
+
+                stored_row = load_display_layer_row_settings(layer_name, cmds)
+            except Exception:
+                stored_row = {}
+            previous = current.get(layer_name) or stored_row or {}
+            latest_output = latest_outputs.get(layer_name) or {}
+            latest_version = str(latest_output.get("version") or "")
+            latest_take = str(latest_output.get("take") or "")
+            output_version = (
+                int(latest_version[1:])
+                if re.fullmatch(r"v\d+", latest_version)
+                else version
+            )
+            output_take = (
+                int(latest_take[1:])
+                if re.fullmatch(r"t\d+", latest_take)
+                else take
+            )
+            frame_range = contract.get("export_frame_range") or contract.get("frame_range")
+            if not isinstance(frame_range, (list, tuple)) or len(frame_range) < 2:
+                frame_range = (start, end)
+            resolution = contract.get("resolution") or {}
+            if isinstance(resolution, dict):
+                width = int(resolution.get("width") or 1280)
+                height = int(resolution.get("height") or 720)
+            elif isinstance(resolution, (list, tuple)) and len(resolution) >= 2:
+                width, height = int(resolution[0]), int(resolution[1])
+            else:
+                width, height = 1280, 720
+            camera = str((contract.get("camera") or {}).get("name") or active_camera)
+            member_count = len(contract.get("members") or []) + len(contract.get("objects") or [])
             self._append_row(
-                enabled=previous.get("enabled", True),
-                camera=_dag_leaf(previous.get("camera", active_camera)),
-                layer=layer,
-                start=previous.get("start", start),
-                end=previous.get("end", end),
-                width=previous.get("width", 1280),
-                height=previous.get("height", 720),
-                version=previous.get("version", version),
-                take=previous.get("take", take),
+                enabled=bool(member_count) and previous.get("enabled", True),
+                camera=_dag_leaf(previous.get("camera", camera)),
+                layer=layer_name,
+                start=previous.get("start", frame_range[0]),
+                end=previous.get("end", frame_range[1]),
+                width=previous.get("width", width),
+                height=previous.get("height", height),
+                version=previous.get("version", output_version),
+                take=previous.get("take", output_take),
                 mode=previous.get("mode", "Animation"),
-                preset=previous.get("preset", self.preset_combo.itemData(0) or ""),
+                preset=previous.get(
+                    "preset",
+                    contract.get("playblast_preset") or self.preset_combo.itemData(0) or "",
+                ),
                 output_override=previous.get("output_override", ""),
             )
+            use_item = self.table.item(self.table.rowCount() - 1, 0)
+            use_item.setData(QtCore.Qt.UserRole + 1, member_count)
+            use_item.setToolTip(f"{member_count} member(s)")
+            if not member_count:
+                use_item.setFlags(use_item.flags() & ~QtCore.Qt.ItemIsEnabled)
         if self.table.rowCount():
             self.table.setCurrentCell(0, 1)
         self.table.resizeColumnsToContents()
-        self.status.setText(f"{len(layers)} display layer(s) referenced from the Maya scene")
+        self.status.setText(f"{len(layers)} Review Layer(s) loaded from review_spec.json")
         self._update_output_preview()
+        self._refresh_publish_availability()
         self._save_scene_settings()
 
     def add_layer_row(self):
@@ -444,6 +552,76 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self._save_scene_settings()
         self.status.setText(f"Added: {layer}")
 
+    def generate_from_review_layers(self):
+        self.refresh_scene()
+        self.status.setText(
+            f"Generated {self.table.rowCount()} row(s) from Review Layers"
+        )
+
+    def generate_from_camera_sequencer(self):
+        from smartlib.dcc.maya.smart_shot import list_sequencer_shots
+
+        shots = list_sequencer_shots()
+        if not shots:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Smart Playblast",
+                "Camera Sequencer shot was not found.",
+            )
+            return
+        resolution = list(
+            (self.project_config.base.get("anchors") or {}).get("resolution")
+            or [1280, 720]
+        )
+        width = int(resolution[0]) if len(resolution) > 0 else 1280
+        height = int(resolution[1]) if len(resolution) > 1 else 720
+        latest_outputs = self._latest_preview_outputs()
+        default_version, default_take = self._suggested_version_take()
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(0)
+            for shot in shots:
+                latest = latest_outputs.get(shot.shot) or {}
+                version_label = str(latest.get("version") or "")
+                take_label = str(latest.get("take") or "")
+                version = (
+                    int(version_label[1:])
+                    if re.fullmatch(r"v\d+", version_label)
+                    else default_version
+                )
+                take = (
+                    int(take_label[1:])
+                    if re.fullmatch(r"t\d+", take_label)
+                    else default_take
+                )
+                self._append_row(
+                    enabled=True,
+                    camera=_dag_leaf(shot.camera),
+                    layer=shot.shot,
+                    display_layer=ALL_LAYER_LABEL,
+                    source_type="camera_sequencer",
+                    start=shot.start,
+                    end=shot.end,
+                    width=width,
+                    height=height,
+                    version=version,
+                    take=take,
+                    mode="Custom",
+                    preset=self.preset_combo.itemData(0) or "",
+                )
+        finally:
+            self.table.blockSignals(False)
+        if self.table.rowCount():
+            self.table.setCurrentCell(0, 1)
+        self._layer_order = [
+            self._text(row, 2) for row in range(self.table.rowCount())
+        ]
+        self._load_properties()
+        self._save_scene_settings()
+        self.status.setText(
+            f"Generated {len(shots)} row(s) from Camera Sequencer"
+        )
+
     def add_all_row(self):
         for row in range(self.table.rowCount()):
             if self._text(row, 2) == ALL_LAYER_LABEL:
@@ -478,34 +656,8 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self._layer_order = [
             self._text(row, 2) for row in range(self.table.rowCount())
         ]
-        import maya.cmds as cmds
-        from smartlib.dcc.maya.review_playblast import set_display_layer_order
-
-        for order, layer in enumerate(self._layer_order):
-            if layer != ALL_LAYER_LABEL:
-                set_display_layer_order(layer, order, cmds)
         self._save_scene_settings()
-        try:
-            from smartlib.dcc.maya.review_playblast import load_scene_playblast_settings
-
-            expected = [
-                self._text(row, 2) for row in range(self.table.rowCount())
-            ]
-            saved = load_scene_playblast_settings(cmds)
-            actual = [
-                str(layer)
-                for layer in (saved.get("layer_order") or [])
-            ]
-            if actual != expected:
-                raise RuntimeError(
-                    f"order mismatch: table={expected}, saved={actual}"
-                )
-            self.status.setText(
-                "Layer order saved in scene "
-                "(save the Maya scene to keep it after reopening Maya)"
-            )
-        except Exception as exc:
-            self.status.setText(f"Layer order save verification failed: {exc}")
+        self.status.setText("Smart Playblast row order saved in the Maya scene")
 
     def _show_table_context_menu(self, point):
         row = self.table.rowAt(point.y())
@@ -524,6 +676,13 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.style().standardIcon(QtWidgets.QStyle.SP_ArrowUp),
             "Version UP",
         )
+        match_latest_action = menu.addAction(
+            self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload),
+            "Match Latest Output",
+        )
+        match_latest_action.setEnabled(
+            row >= 0 and bool(self._latest_output_for_row(row))
+        )
         open_action.setEnabled(bool(self._last_output_dir))
         selected = menu.exec_(self.table.viewport().mapToGlobal(point))
         if selected == open_action:
@@ -532,6 +691,63 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.new_take()
         elif selected == version_up_action:
             self.version_up()
+        elif selected == match_latest_action:
+            self.match_latest_outputs(row)
+
+    def _latest_preview_outputs(self):
+        if not self.identity:
+            return {}
+        return self.service.latest_preview_render_outputs(
+            self.identity,
+            department=self.department.currentText() or "anim",
+        )
+
+    def _latest_output_for_row(self, row):
+        if row < 0 or row >= self.table.rowCount():
+            return {}
+        return self._latest_preview_outputs().get(self._text(row, 2), {})
+
+    def _refresh_publish_availability(self):
+        outputs = self._latest_preview_outputs()
+        self.publish_preview_button.setEnabled(bool(outputs))
+        return outputs
+
+    def match_latest_outputs(self, row=None):
+        outputs = self._latest_preview_outputs()
+        target_rows = (
+            [row]
+            if (
+                isinstance(row, int)
+                and not isinstance(row, bool)
+                and 0 <= row < self.table.rowCount()
+            )
+            else list(range(self.table.rowCount()))
+        )
+        matched = 0
+        matched_labels = []
+        self.table.blockSignals(True)
+        try:
+            for table_row in target_rows:
+                layer_name = self._text(table_row, 2)
+                latest = outputs.get(layer_name)
+                if not latest:
+                    continue
+                version = int(str(latest["version"])[1:])
+                take = int(str(latest["take"])[1:])
+                self.table.item(table_row, 5).setText(str(version))
+                self.table.item(table_row, 6).setText(str(take))
+                matched += 1
+                matched_labels.append(
+                    f"{layer_name} v{version:03d}/t{take:03d}"
+                )
+        finally:
+            self.table.blockSignals(False)
+        if self.table.currentRow() >= 0:
+            self._load_properties()
+        self._save_scene_settings()
+        self._refresh_publish_availability()
+        details = ", ".join(matched_labels) if matched_labels else "none found"
+        self.status.setText(f"Latest Preview Render: {details}")
 
     def new_take(self):
         row = self.table.currentRow()
@@ -571,13 +787,16 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         style = self.style()
         icon_map = (
             (self.refresh_button, QtWidgets.QStyle.SP_BrowserReload),
+            (self.option_button, QtWidgets.QStyle.SP_FileDialogDetailedView),
             (self.add_button, QtWidgets.QStyle.SP_FileDialogNewFolder),
-            (self.add_all_button, QtWidgets.QStyle.SP_FileDialogNewFolder),
             (self.all_button, QtWidgets.QStyle.SP_DialogApplyButton),
             (self.none_button, QtWidgets.QStyle.SP_DialogCancelButton),
+            (self.invert_button, QtWidgets.QStyle.SP_BrowserReload),
+            (self.match_latest_button, QtWidgets.QStyle.SP_BrowserReload),
             (self.delete_button, QtWidgets.QStyle.SP_TrashIcon),
             (self.preset_preview_button, QtWidgets.QStyle.SP_BrowserReload),
             (self.solo_button, QtWidgets.QStyle.SP_ComputerIcon),
+            (self.publish_preview_button, QtWidgets.QStyle.SP_DialogApplyButton),
             (self.playblast_button, QtWidgets.QStyle.SP_MediaPlay),
         )
         for button, standard_pixmap in icon_map:
@@ -615,7 +834,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.table.item(row, 5).setText(str(version))
             self.table.item(row, 6).setText(str(take))
 
-    def _append_row(self, *, enabled, camera, layer, start, end, width, height, version, take, mode, preset="", output_override=""):
+    def _append_row(self, *, enabled, camera, layer, start, end, width, height, version, take, mode, preset="", output_override="", display_layer="", source_type="review_layers"):
         row = self.table.rowCount()
         self.table.insertRow(row)
         use = QtWidgets.QTableWidgetItem()
@@ -631,6 +850,8 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             "start": int(start), "end": int(end), "width": int(width), "height": int(height),
             "mode": mode, "preset": str(preset or ""),
             "output_override": str(output_override or ""),
+            "display_layer": str(display_layer or layer),
+            "source_type": str(source_type or "review_layers"),
         })
 
     def _row(self, row):
@@ -640,6 +861,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             "enabled": item.checkState() == QtCore.Qt.Checked,
             "camera": self._text(row, 1),
             "layer": self._text(row, 2),
+            "display_layer": str(data.get("display_layer") or self._text(row, 2)),
             "version": int(self._text(row, 5) or 1),
             "take": int(self._text(row, 6) or 1),
         })
@@ -653,7 +875,10 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         data = self._row(row)
         _select_text(self.camera_combo, data["camera"])
         _select_data(self.preset_combo, data.get("preset", ""))
-        _select_text(self.layer_combo, data["layer"])
+        _select_text(self.layer_combo, data.get("display_layer") or data["layer"])
+        self.layer_combo.setEnabled(
+            data.get("source_type") != "camera_sequencer"
+        )
         _select_text(self.range_combo, data.get("mode", "Animation"))
         self.start_spin.setValue(data["start"])
         self.end_spin.setValue(data["end"])
@@ -674,16 +899,22 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         row = self.table.currentRow()
         if row < 0:
             return
-        data = {
+        data = dict(self.table.item(row, 0).data(QtCore.Qt.UserRole) or {})
+        data.update({
             "start": self.start_spin.value(), "end": self.end_spin.value(),
             "width": self.width_spin.value(), "height": self.height_spin.value(),
             "mode": self.range_combo.currentText(),
             "preset": self.preset_combo.currentData() or "",
             "output_override": self.output_override.text().strip(),
-        }
+        })
         self.table.item(row, 0).setData(QtCore.Qt.UserRole, data)
+        layer_value = (
+            self._text(row, 2)
+            if data.get("source_type") == "camera_sequencer"
+            else self.layer_combo.currentText()
+        )
         values = (
-            self.camera_combo.currentText(), self.layer_combo.currentText(),
+            self.camera_combo.currentText(), layer_value,
             f"{data['start']}–{data['end']}", f"{data['width']}×{data['height']}",
             self.version_spin.value(), self.take_spin.value(),
         )
@@ -710,10 +941,12 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
     def preview_solo(self):
         import maya.cmds as cmds
         from smartlib.dcc.maya.review_playblast import display_layers
+        self._sync_review_display_layers()
         target = self.layer_combo.currentText()
+        target_node = target
         for layer in display_layers(cmds):
             if cmds.objExists(f"{layer}.visibility"):
-                cmds.setAttr(f"{layer}.visibility", layer == target)
+                cmds.setAttr(f"{layer}.visibility", layer == target_node)
         self.status.setText(f"SOLO preview: {target}")
 
     def preview_preset(self):
@@ -731,11 +964,23 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             return
         rows = [self._row(row) for row in range(self.table.rowCount()) if self._row(row)["enabled"]]
         if not rows:
-            QtWidgets.QMessageBox.warning(self, "Smart Playblast", "Enable at least one display layer.")
+            QtWidgets.QMessageBox.warning(self, "Smart Playblast", "Enable at least one Review Layer.")
             return
         try:
             import maya.cmds as cmds
             from smartlib.dcc.maya.review_playblast import export_preview_render_groups
+
+            created = self._sync_review_display_layers()
+            rows = [
+                row
+                for row in rows
+                if (
+                    str(row.get("display_layer") or "") == ALL_LAYER_LABEL
+                    or int(created.get(str(row.get("display_layer") or ""), 0)) > 0
+                )
+            ]
+            if not rows:
+                raise RuntimeError("Enabled Review Layers contain no resolvable members.")
 
             # At this stage Smart Playblast only emits the image sequence.
             # Package publishing, movie encoding, AE setup and RV launch are
@@ -743,6 +988,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.status.setText("Playblast running…")
             QtWidgets.QApplication.processEvents()
             settings = self._scene_settings()
+            settings["rows"] = rows
             plan = self.service.plan_preview_render_publish(
                 self.identity,
                 settings,
@@ -762,20 +1008,144 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                 self.activateWindow()
             output_dirs = [Path(group["output_dir"]) for group in plan.get("groups") or []]
             summary = ", ".join(f"{name}: {data['file_count']}" for name, data in exported.items())
-            self.status.setText(f"Image sequence exported — {summary}")
+            self.service.record_preview_render_outputs(
+                plan,
+                exported,
+                source_scene=cmds.file(query=True, sceneName=True) or "",
+            )
+            self.status.setText(f"Preview Render output recorded: {summary}")
             self._last_results = exported
             self._last_preview_render_plan = plan
             self._last_output_dir = str(output_dirs[-1])
+            self.publish_preview_button.setEnabled(True)
             self._save_scene_settings()
             output_text = "\n".join(str(path) for path in output_dirs)
             QtWidgets.QMessageBox.information(
                 self,
                 "Smart Playblast",
-                f"Image sequence exported:\n{output_text}\n{summary}",
+                f"Image sequence exported:\n{output_text}\n\n{summary}",
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Smart Playblast Failed", str(exc))
             self.status.setText(str(exc))
+
+    def _review_layers_from_table(self):
+        existing = self.service.review_layers(
+            self.identity,
+            self.department.currentText() or "anim",
+        )
+        layers = {}
+        has_review_layer_rows = False
+        for order in range(self.table.rowCount()):
+            row = self._row(order)
+            if row.get("source_type") == "camera_sequencer":
+                continue
+            has_review_layer_rows = True
+            name = str(row.get("layer") or "")
+            if not name or name == ALL_LAYER_LABEL:
+                continue
+            layer = dict(existing.get(name) or {})
+            camera = dict(layer.get("camera") or {})
+            camera.update(
+                {
+                    "publish_type": "camera",
+                    "version": "latest",
+                    "name": row["camera"],
+                }
+            )
+            ae = dict(layer.get("ae") or {})
+            ae.setdefault("comp_name", name)
+            ae.setdefault("template_slot", name)
+            ae.setdefault("blend_mode", "normal")
+            layer.update(
+                {
+                    "order": order * 10,
+                    "camera": camera,
+                    "frame_range": row["mode"],
+                    "export_frame_range": [row["start"], row["end"]],
+                    "resolution": {
+                        "width": row["width"],
+                        "height": row["height"],
+                        "scale": 1.0,
+                    },
+                    "playblast_preset": row.get("preset", ""),
+                    "output_override": row.get("output_override", ""),
+                    "ae": ae,
+                }
+            )
+            layers[name] = layer
+        return layers if has_review_layer_rows else existing
+
+    def save_review_spec(self):
+        if not self.identity:
+            return None
+        try:
+            path = self.service.write_review_layers(
+                self.identity,
+                self._review_layers_from_table(),
+                department=self.department.currentText() or "anim",
+                comment="Saved from Smart Playblast",
+            )
+            self._layer_order = [
+                self._text(row, 2) for row in range(self.table.rowCount())
+            ]
+            self._save_scene_settings()
+            self.status.setText(f"Review Spec saved: {path}")
+            return path
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "Save Review Spec Failed", str(exc)
+            )
+            self.status.setText(str(exc))
+            return None
+
+    def publish_preview_render(self):
+        if not self.identity:
+            return
+        if not self._latest_preview_outputs():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Publish Preview Render",
+                "No valid Preview Render output was found. "
+                "Run Playblast Image Sequence first.",
+            )
+            return
+        if not self.save_review_spec():
+            return
+        try:
+            path = self.service.publish_preview_render_outputs(
+                self.identity,
+                department=self.department.currentText() or "anim",
+                comment="Published from Smart Playblast",
+                groups=[
+                    self._row(row)["layer"]
+                    for row in range(self.table.rowCount())
+                    if self._row(row)["enabled"]
+                ],
+            )
+            self.status.setText(f"Preview Render Manifest published: {path}")
+            QtWidgets.QMessageBox.information(
+                self,
+                "Preview Render Published",
+                f"Manifest:\n{path}",
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "Publish Preview Render Failed", str(exc)
+            )
+            self.status.setText(str(exc))
+
+    def _sync_review_display_layers(self):
+        from smartlib.dcc.maya.shot_builder import create_review_display_layers
+
+        if not self.identity:
+            return {}
+        contract = self.service.load_cast(self.identity)
+        contract["review_layers"] = self.service.review_layers(
+            self.identity,
+            self.department.currentText() or "anim",
+        )
+        return create_review_display_layers(contract)
 
     def open_output_folder(self):
         folder = self._selected_output_dir()
@@ -918,7 +1288,9 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             "shot": self.shot_combo.currentText(),
             "department": self.department.currentText(),
             "rows": [self._row(row) for row in range(self.table.rowCount())],
-            "layer_order": list(self._layer_order or current_order),
+            # Always serialize the live table.  A cached order can be stale
+            # after refresh/restore and would undo the user's latest drag.
+            "layer_order": current_order,
             "last_output_dir": self._last_output_dir,
             "last_results": self._last_results,
             "last_preview_render_plan": self._last_preview_render_plan,
@@ -952,6 +1324,32 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             return
         if not settings:
             return
+        scene_identity = None
+        try:
+            scene_identity = self.service.shot_identity_from_path(
+                cmds.file(query=True, sceneName=True) or ""
+            )
+        except Exception:
+            pass
+        saved_shot = str(settings.get("shot") or "")
+        if (
+            scene_identity
+            and saved_shot
+            and saved_shot != scene_identity.code
+        ):
+            # A scene copied from another shot carries its network node and
+            # fileInfo. Never let that copied metadata switch this tool back
+            # to the source shot.
+            self.identity = scene_identity
+            shot_index = self.shot_combo.findText(scene_identity.code)
+            if shot_index >= 0:
+                self.shot_combo.setCurrentIndex(shot_index)
+            self._update_context_label()
+            self._save_scene_settings()
+            self.status.setText(
+                f"Ignored copied Smart Playblast settings from {saved_shot}"
+            )
+            return
         self._loading = True
         self.shot_combo.blockSignals(True)
         self.department.blockSignals(True)
@@ -961,6 +1359,10 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.shot_combo.setCurrentIndex(shot_index)
             self.identity = self.shot_combo.currentData()
         _select_text(self.department, str(settings.get("department") or ""))
+        self._update_context_label()
+        # The window is initially populated before the saved shot context is
+        # known. Rebuild now so rows come from the correct Review Spec.
+        self.refresh_scene()
         raw_saved_rows = [
             row for row in (settings.get("rows") or []) if isinstance(row, dict)
         ]
@@ -989,7 +1391,9 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             for row in raw_saved_rows
             if str(row.get("layer") or "").strip()
         }
-        saved_rows_are_valid = bool(saved_rows)
+        # review_spec.json is authoritative for row existence. Scene settings
+        # only restore per-row output choices.
+        saved_rows_are_valid = False
         if ALL_LAYER_LABEL in saved_rows and all(
             self._text(row, 2) != ALL_LAYER_LABEL for row in range(self.table.rowCount())
         ):
@@ -1009,9 +1413,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                 output_override=str(data.get("output_override") or ""),
             )
         if "excluded_layers" in settings:
-            self._excluded_layers = {
-                str(layer) for layer in (settings.get("excluded_layers") or []) if str(layer)
-            }
+            self._excluded_layers = set()
         else:
             # Migrate scene settings written before excluded_layers existed:
             # layers absent from the saved table were removed by the user.
@@ -1052,6 +1454,8 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                 "mode": str(data.get("mode") or "Animation"),
                 "preset": str(data.get("preset") or ""),
                 "output_override": str(data.get("output_override") or ""),
+                "display_layer": str(data.get("display_layer") or layer),
+                "source_type": str(data.get("source_type") or "review_layers"),
             }
             self.table.item(table_row, 0).setData(QtCore.Qt.UserRole, payload)
             self.table.item(table_row, 3).setText(f"{payload['start']}–{payload['end']}")
@@ -1059,20 +1463,15 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         # Rebuild from the serialized row list instead of trying to transform
         # the scene's default DisplayLayer order. The saved list is the
         # authoritative AE/playblast order.
-        if raw_saved_rows:
-            available_layers = {
-                self._text(row, 2) for row in range(self.table.rowCount())
-            }
-            available_layers.add(ALL_LAYER_LABEL)
+        if any(
+            str(row.get("source_type") or "") == "camera_sequencer"
+            for row in raw_saved_rows
+        ):
             self.table.clearContents()
             self.table.setRowCount(0)
             for data in raw_saved_rows:
                 layer = str(data.get("layer") or "")
-                if (
-                    not layer
-                    or layer in self._excluded_layers
-                    or layer not in available_layers
-                ):
+                if not layer or layer in self._excluded_layers:
                     continue
                 self._append_row(
                     enabled=bool(data.get("enabled", True)),
@@ -1087,6 +1486,8 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                     mode=str(data.get("mode") or "Animation"),
                     preset=str(data.get("preset") or ""),
                     output_override=str(data.get("output_override") or ""),
+                    display_layer=str(data.get("display_layer") or layer),
+                    source_type=str(data.get("source_type") or "review_layers"),
                 )
         desired_order = [
             str(row.get("layer") or "")
@@ -1106,6 +1507,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self._last_output_dir = str(settings.get("last_output_dir") or "")
         self._last_results = dict(settings.get("last_results") or {})
         self._last_preview_render_plan = dict(settings.get("last_preview_render_plan") or {})
+        self._refresh_publish_availability()
         self.shot_combo.blockSignals(False)
         self.department.blockSignals(False)
         self.table.blockSignals(False)
@@ -1124,6 +1526,20 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         state = QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked
         for row in range(self.table.rowCount()):
             self.table.item(row, 0).setCheckState(state)
+        self._save_scene_settings()
+
+    def _invert_selection(self):
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                item.setCheckState(
+                    QtCore.Qt.Unchecked
+                    if item.checkState() == QtCore.Qt.Checked
+                    else QtCore.Qt.Checked
+                )
+        finally:
+            self.table.blockSignals(False)
         self._save_scene_settings()
 
     def _remove_row(self):

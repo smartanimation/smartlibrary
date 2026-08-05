@@ -49,6 +49,34 @@ def ae_template_candidates(
     for name in (f"review_{department}.aep", "review_custom.aep"):
         candidates.append(shot_template_root / name)
 
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR")
+    if config_dir:
+        template_config = load_config(Path(config_dir) / "templates_base.yml")
+        review_templates = (
+            (
+                (template_config.get("template_files") or {}).get(
+                    "after_effects"
+                )
+                or {}
+            ).get("review")
+            or {}
+        )
+        configured_values = [
+            (review_templates.get("departments") or {}).get(
+                str(department).lower()
+            ),
+            review_templates.get("base"),
+        ]
+        for value in configured_values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            text = (
+                text.replace("{project_root}", str(project_root))
+                .replace("{pipeline_root}", str(pipeline_root))
+            )
+            candidates.append(Path(os.path.expandvars(text)))
+
     project_template_root = project_root / "settings" / "templates" / "ae" / "review"
     for name in (f"review_{department}.aep", "review_base.aep"):
         candidates.append(project_template_root / name)
@@ -135,7 +163,7 @@ def prepare_review_ae_build(
         template_project_path=template_project_path,
         template_used_json_path=template_used_json_path,
     )
-    stage_data = _stage_data(slots, stage)
+    stage_data = _stage_data(slots, stage, shot_root=shot_root, project_config=project_config)
     launch_context = _normalize_ae_context(project_config, shot_root, slots, context)
     manifest_path = Path(manifest_path) if manifest_path else publish_root / "ae" / "data" / "review_build.json"
     log_path = Path(log_path) if log_path else publish_root / "ae" / "data" / "build_review.log"
@@ -155,6 +183,7 @@ def prepare_review_ae_build(
         "episode": launch_context.get("episode", ""),
         "sequence": launch_context.get("sequence", ""),
         "shot": launch_context.get("shot", ""),
+        "department": department,
         "log": _relative_to(publish_root, log_path),
         "stage": stage_data,
         "layers": [_ae_layer_row(publish_root, row, stage_data) for row in slots],
@@ -331,15 +360,36 @@ def _schedule_after_effects_script(executable: str, script: Path, publish_root: 
         run_script()
 
 
-def _stage_data(slots: list[dict[str, Any]], override: dict[str, Any] | None = None) -> dict[str, Any]:
+def _stage_data(
+    slots: list[dict[str, Any]],
+    override: dict[str, Any] | None = None,
+    *,
+    shot_root: str | Path | None = None,
+    project_config: ProjectConfig | None = None,
+) -> dict[str, Any]:
     override = override or {}
     first = slots[0] if slots else {}
-    frame_range = list(override.get("frame_range") or first.get("frame_range") or [1, 1])
+    shot_data = read_json(Path(shot_root) / "shot.json", {}) if shot_root else {}
+    editorial = shot_data.get("editorial") or {}
+    frame_range = list(
+        override.get("frame_range")
+        or editorial.get("frame_range")
+        or shot_data.get("frame_range")
+        or first.get("frame_range")
+        or [editorial.get("cut_in") or shot_data.get("cut_in") or 1, editorial.get("cut_out") or shot_data.get("cut_out") or 1]
+    )
     if len(frame_range) < 2:
         frame_range = [frame_range[0] if frame_range else 1, frame_range[0] if frame_range else 1]
     width = int(override.get("width") or first.get("width") or 1920)
     height = int(override.get("height") or first.get("height") or 1080)
-    fps = float(override.get("fps") or first.get("fps") or 24)
+    fps = float(override.get("fps") or editorial.get("fps") or shot_data.get("fps") or first.get("fps") or 24)
+    final_resolution = []
+    if project_config is not None:
+        final_resolution = list(((project_config.base.get("anchors") or {}).get("resolution") or []))
+    if len(final_resolution) < 2:
+        final_resolution = list(shot_data.get("resolution") or [])
+    final_width = int(final_resolution[0]) if len(final_resolution) >= 2 else width
+    final_height = int(final_resolution[1]) if len(final_resolution) >= 2 else height
     start = int(frame_range[0])
     end = int(frame_range[1])
     return {
@@ -347,6 +397,8 @@ def _stage_data(slots: list[dict[str, Any]], override: dict[str, Any] | None = N
         "template_comp": str(override.get("template_comp") or "review_base.comp"),
         "width": width,
         "height": height,
+        "final_width": final_width,
+        "final_height": final_height,
         "fps": fps,
         "start_frame": start,
         "end_frame": end,
@@ -483,17 +535,25 @@ def _review_build_jsx(manifest_path: Path) -> str:
             log("Creating new project.");
             app.newProject();
         }}
-        var stage = ensureStageComp(data.stage);
+        var folders = ensureBuildFolders(data.department || "anim");
+        var finalComp = ensureComp("final", data.stage.final_width, data.stage.final_height, data.stage.duration_seconds, data.stage.fps, folders.render);
+        var camera = ensureComp("camera", data.stage.final_width, data.stage.final_height, data.stage.duration_seconds, data.stage.fps, folders.comp);
+        var stage = ensureStageComp(data.stage, folders.comp);
         try {{
             stage.displayStartFrame = data.stage.start_frame;
+            camera.displayStartFrame = data.stage.start_frame;
+            finalComp.displayStartFrame = data.stage.start_frame;
         }} catch (err) {{
             log("displayStartFrame skipped: " + err.toString());
         }}
+        clearComp(finalComp);
+        clearComp(camera);
         clearComp(stage);
-        for (var i = 0; i < data.layers.length; i++) {{
+        // AE inserts added layers at index 1, so add bottom-to-top to preserve manifest order.
+        for (var i = data.layers.length - 1; i >= 0; i--) {{
             var row = data.layers[i];
             log("Importing layer: " + row.layer + " from " + row.first_frame_file);
-            var footage = importSequence(row);
+            var footage = importSequence(row, ensureProjectFolder(row.layer || "layer", folders.layers));
             if (!footage) {{
                 log("Skipped missing layer: " + row.layer);
                 continue;
@@ -502,7 +562,7 @@ def _review_build_jsx(manifest_path: Path) -> str:
             if (precompName === stage.name) {{
                 precompName = precompName + "_precomp";
             }}
-            var precomp = ensureComp(precompName, data.stage.width, data.stage.height, data.stage.duration_seconds, data.stage.fps);
+            var precomp = ensureComp(precompName, row.width || data.stage.width, row.height || data.stage.height, data.stage.duration_seconds, data.stage.fps, folders.precomp);
             clearComp(precomp);
             var sourceLayer = precomp.layers.add(footage);
             sourceLayer.startTime = 0;
@@ -510,7 +570,13 @@ def _review_build_jsx(manifest_path: Path) -> str:
             stageLayer.name = row.layer;
             stageLayer.startTime = 0;
         }}
-        addSlateToStage(stage, data.slate);
+        addSlateToStage(stage, data.slate, folders.layers);
+        var cameraLayer = camera.layers.add(stage);
+        cameraLayer.name = "stage";
+        cameraLayer.startTime = 0;
+        var finalLayer = finalComp.layers.add(camera);
+        finalLayer.name = "camera";
+        finalLayer.startTime = 0;
         if (data.auto_save === true) {{
             log("Saving project: " + projectFile.fsName);
             app.project.save(projectFile);
@@ -518,8 +584,8 @@ def _review_build_jsx(manifest_path: Path) -> str:
             log("Auto save disabled; project left open for inspection.");
         }}
         try {{
-            stage.openInViewer();
-            app.project.activeItem = stage;
+            finalComp.openInViewer();
+            app.project.activeItem = finalComp;
             app.activate();
         }} catch (err) {{
             log("Activate skipped: " + err.toString());
@@ -535,19 +601,22 @@ def _review_build_jsx(manifest_path: Path) -> str:
         }}
     }}
 
-    function ensureComp(name, width, height, duration, fps) {{
+    function ensureComp(name, width, height, duration, fps, folder) {{
         var comp = findComp(name);
         if (comp) {{
             try {{ comp.width = width; }} catch (err) {{}}
             try {{ comp.height = height; }} catch (err) {{}}
             comp.duration = duration;
             comp.frameRate = fps;
+            moveToFolder(comp, folder);
             return comp;
         }}
-        return app.project.items.addComp(name, width, height, 1.0, duration, fps);
+        comp = app.project.items.addComp(name, width, height, 1.0, duration, fps);
+        moveToFolder(comp, folder);
+        return comp;
     }}
 
-    function ensureStageComp(stageData) {{
+    function ensureStageComp(stageData, folder) {{
         var comp = findComp(stageData.comp_name);
         if (!comp) {{
             comp = findComp(stageData.template_comp) || findComp("review_base");
@@ -558,9 +627,12 @@ def _review_build_jsx(manifest_path: Path) -> str:
             try {{ comp.height = stageData.height; }} catch (err) {{}}
             comp.duration = stageData.duration_seconds;
             comp.frameRate = stageData.fps;
+            moveToFolder(comp, folder);
             return comp;
         }}
-        return app.project.items.addComp(stageData.comp_name, stageData.width, stageData.height, 1.0, stageData.duration_seconds, stageData.fps);
+        comp = app.project.items.addComp(stageData.comp_name, stageData.width, stageData.height, 1.0, stageData.duration_seconds, stageData.fps);
+        moveToFolder(comp, folder);
+        return comp;
     }}
 
     function findComp(name) {{
@@ -583,13 +655,55 @@ def _review_build_jsx(manifest_path: Path) -> str:
         }}
     }}
 
-    function addSlateToStage(stage, slateRow) {{
+    function ensureBuildFolders(department) {{
+        var render = ensureProjectFolder("00_render", null);
+        var comp = ensureProjectFolder("10_comp", null);
+        var precomp = ensureProjectFolder("20_precomp", null);
+        var footage = ensureProjectFolder("30_footage", null);
+        var dept = ensureProjectFolder(department || "anim", footage);
+        var layers = ensureProjectFolder("layers", dept);
+        return {{
+            render: render,
+            comp: comp,
+            precomp: precomp,
+            footage: footage,
+            dept: dept,
+            layers: layers
+        }};
+    }}
+
+    function ensureProjectFolder(name, parent) {{
+        var folder = findFolder(name, parent);
+        if (!folder) {{
+            folder = app.project.items.addFolder(name);
+        }}
+        moveToFolder(folder, parent);
+        return folder;
+    }}
+
+    function findFolder(name, parent) {{
+        for (var i = 1; i <= app.project.numItems; i++) {{
+            var item = app.project.item(i);
+            if (item instanceof FolderItem && item.name === name && (!parent || item.parentFolder === parent)) {{
+                return item;
+            }}
+        }}
+        return null;
+    }}
+
+    function moveToFolder(item, folder) {{
+        if (item && folder) {{
+            try {{ item.parentFolder = folder; }} catch (err) {{}}
+        }}
+    }}
+
+    function addSlateToStage(stage, slateRow, footageFolder) {{
         if (!slateRow || !slateRow.first_frame_file) {{
             log("Slate sequence is not configured.");
             return;
         }}
         log("Importing slate: " + slateRow.first_frame_file);
-        var footage = importSequence(slateRow);
+        var footage = importSequence(slateRow, footageFolder);
         if (!footage) {{
             log("Skipped missing slate.");
             return;
@@ -599,7 +713,7 @@ def _review_build_jsx(manifest_path: Path) -> str:
         slateLayer.startTime = 0;
     }}
 
-    function importSequence(row) {{
+    function importSequence(row, footageFolder) {{
         var file = new File(row.first_frame_file);
         if (!file.exists) {{
             log("First frame file not found: " + file.fsName);
@@ -610,9 +724,44 @@ def _review_build_jsx(manifest_path: Path) -> str:
         options.forceAlphabetical = options.sequence;
         log("Import mode for " + row.layer + ": " + (options.sequence ? "sequence" : "still"));
         var footage = app.project.importFile(options);
-        footage.name = row.layer;
+        footage.name = sequenceFootageName(row, file, options.sequence);
+        moveToFolder(footage, footageFolder);
         try {{ footage.mainSource.conformFrameRate = row.fps; }} catch (err) {{}}
         return footage;
+    }}
+
+    function sequenceFootageName(row, file, importAsSequence) {{
+        var source = String(row.image_sequence || "");
+        var name;
+        var match;
+        if (!importAsSequence) {{
+            return basename(file.fsName);
+        }}
+        if (!source) {{
+            source = file.fsName;
+        }}
+        name = basename(source);
+        match = name.match(/(#+)(\\.[^.]*)$/);
+        if (match) {{
+            return name.replace(match[1] + match[2], "[" + padFrame(row.start_frame, match[1].length) + "-" + padFrame(row.end_frame, match[1].length) + "]" + match[2]);
+        }}
+        match = name.match(/(\\d+)(\\.[^.]*)$/);
+        if (match) {{
+            return name.replace(match[1] + match[2], "[" + padFrame(row.start_frame, match[1].length) + "-" + padFrame(row.end_frame, match[1].length) + "]" + match[2]);
+        }}
+        return name;
+    }}
+
+    function basename(path) {{
+        return String(path || "").replace(/\\\\/g, "/").split("/").pop();
+    }}
+
+    function padFrame(value, width) {{
+        var digits = String(Math.max(0, Number(value) || 0));
+        while (digits.length < width) {{
+            digits = "0" + digits;
+        }}
+        return digits;
     }}
 
     function shouldImportAsSequence(row) {{

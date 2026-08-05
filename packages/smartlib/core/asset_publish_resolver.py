@@ -87,6 +87,30 @@ class AssetPublishResolver:
                 return path
         return None
 
+    def resolve_context(
+        self,
+        variant_root: str | Path,
+        context: str,
+        *,
+        version: str = "approved",
+        formats: tuple[str, ...] = ("ma", "mb"),
+    ) -> Path | None:
+        """Resolve an explicitly selected packed-asset context."""
+
+        context = str(context or "work").strip().lower()
+        version = str(version or "approved").strip().lower()
+        normalized_formats = tuple(
+            str(value).strip().lower().lstrip(".")
+            for value in formats
+            if str(value).strip()
+        ) or ("ma", "mb")
+        publish_root = Path(variant_root) / "publish" / "asset"
+        return self._resolve_context(
+            publish_root / context,
+            version,
+            normalized_formats,
+        )
+
     def _resolve_context(self, context_root: Path, version: str, formats: tuple[str, ...]) -> Path | None:
         if not context_root.exists():
             return None

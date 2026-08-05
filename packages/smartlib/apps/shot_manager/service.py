@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from copy import deepcopy
 from datetime import datetime
@@ -20,13 +21,14 @@ from smartlib.core.versioning import format_version, next_version, parse_version
 
 
 DEFAULT_SHOT_DEPARTMENTS = ["layout", "anim", "fx", "lighting", "comp"]
-DEFAULT_REVIEW_LAYERS = {
+LEGACY_DEFAULT_REVIEW_LAYERS = {
     "CHA": {"members": [], "order": 20},
     "CHB": {"members": [], "order": 10},
     "BGA": {"members": [], "order": 0},
     "FX": {"members": [], "order": 30},
     "ENV": {"members": [], "order": -10},
 }
+DEFAULT_REVIEW_LAYERS: dict[str, dict[str, Any]] = {}
 ROLE_ALIASES = {
     "BG": "BGA",
     "BACKGROUND": "BGA",
@@ -149,6 +151,7 @@ class ShotWorkFile:
     take: int = 0
     comment: str = ""
     thumbnail: str = ""
+    task: str = "main"
 
 
 @dataclass(frozen=True)
@@ -174,7 +177,7 @@ class LayoutPublishStatusItem:
 class AnimInputBuildResult:
     shot: str
     cast_publish: Path
-    placements_publish: Path
+    placements_publish: Path | None
     anim_input: Path
 
 
@@ -228,6 +231,18 @@ class ShotManagerService:
         departments = self.project_config.base.get("shot_depts") or []
         return list(departments) if departments else list(DEFAULT_SHOT_DEPARTMENTS)
 
+    def shot_tasks(self, department: str) -> list[str]:
+        configured = self.project_config.base.get("shot_tasks") or {}
+        tasks = configured.get(str(department)) if isinstance(configured, dict) else None
+        if not isinstance(tasks, list):
+            return ["main"]
+        normalized = []
+        for task in tasks:
+            value = _normalize_work_option(task)
+            if value not in normalized:
+                normalized.append(value)
+        return normalized or ["main"]
+
     @property
     def project_fps(self) -> int:
         fps = (self.project_config.base.get("anchors") or {}).get("fps", 24)
@@ -247,7 +262,7 @@ class ShotManagerService:
         if not shots_root.exists():
             return []
         shots: dict[tuple[str, str, str], ShotIdentity] = {}
-        for shot_json in shots_root.glob("*/*/*/shot.json"):
+        for shot_json in shots_root.glob("**/shot.json"):
             shot_root = shot_json.parent
             data = read_json(shot_json, {}) or {}
             episode = str(data.get("episode") or "").strip()
@@ -272,6 +287,25 @@ class ShotManagerService:
             shots.values(),
             key=lambda item: (item.episode.lower(), item.sequence.lower(), item.shot.lower()),
         )
+
+    def shot_identity_from_path(
+        self,
+        path: str | Path,
+    ) -> ShotIdentity | None:
+        """Resolve the owning shot from a scene/work path."""
+        if not path:
+            return None
+        candidate = os.path.normcase(os.path.abspath(str(path)))
+        matches: list[tuple[int, ShotIdentity]] = []
+        for identity in self.list_shots():
+            root = os.path.normcase(os.path.abspath(str(self.shot_root(identity))))
+            try:
+                common = os.path.commonpath([candidate, root])
+            except ValueError:
+                continue
+            if common == root:
+                matches.append((len(root), identity))
+        return max(matches, default=(0, None), key=lambda item: item[0])[1]
 
     def list_sequences(self) -> list[SequenceIdentity]:
         sequences: dict[tuple[str, str], SequenceIdentity] = {}
@@ -330,6 +364,25 @@ class ShotManagerService:
         department: str,
         option: str | None = None,
         tool_name: str = "maya",
+        task: str = "main",
+    ) -> Path:
+        work_dir = self.paths.shot_work_dir(
+            identity.episode,
+            identity.sequence,
+            identity.shot,
+            department,
+            _normalize_tool_name(tool_name),
+        ) / _normalize_work_option(task)
+        if option:
+            return work_dir / _normalize_work_option(option)
+        return work_dir
+
+    def pre_task_shot_work_dir(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        option: str | None = None,
+        tool_name: str = "maya",
     ) -> Path:
         work_dir = self.paths.shot_work_dir(
             identity.episode,
@@ -338,9 +391,7 @@ class ShotManagerService:
             department,
             _normalize_tool_name(tool_name),
         )
-        if option:
-            return work_dir / _normalize_work_option(option)
-        return work_dir
+        return work_dir / _normalize_work_option(option) if option else work_dir
 
     def legacy_shot_work_dir(self, identity: ShotIdentity, department: str, option: str | None = None) -> Path:
         work_dir = self.paths.legacy_shot_work_dir(identity.episode, identity.sequence, identity.shot, department)
@@ -366,30 +417,65 @@ class ShotManagerService:
             return work_dir / _normalize_work_option(option)
         return work_dir
 
-    def list_shot_work_options(self, identity: ShotIdentity, department: str, tool_name: str = "maya") -> list[str]:
+    def list_shot_work_options(
+        self,
+        identity: ShotIdentity,
+        department: str,
+        tool_name: str = "maya",
+        task: str = "main",
+    ) -> list[str]:
         work_dirs = [
-            self.shot_work_dir(identity, department, tool_name=tool_name),
-            self.legacy_shot_tool_work_dir(identity, department, tool_name=tool_name),
-            self.legacy_shot_work_dir(identity, department),
+            self.shot_work_dir(identity, department, tool_name=tool_name, task=task),
         ]
+        if task == self.shot_tasks(department)[0]:
+            work_dirs.extend(
+                [
+                    self.pre_task_shot_work_dir(identity, department, tool_name=tool_name),
+                    self.legacy_shot_tool_work_dir(identity, department, tool_name=tool_name),
+                    self.legacy_shot_work_dir(identity, department),
+                ]
+            )
         options = {"main"}
+        task_names = set(self.shot_tasks(department))
         for work_dir in work_dirs:
             if not work_dir.exists():
                 continue
             options.update(
                 path.name
                 for path in work_dir.iterdir()
-                if path.is_dir() and not path.name.startswith(".")
+                if path.is_dir()
+                and not path.name.startswith(".")
+                and (
+                    work_dir != self.pre_task_shot_work_dir(
+                        identity,
+                        department,
+                        tool_name=tool_name,
+                    )
+                    or path.name not in task_names
+                )
             )
         return sorted(options, key=lambda item: (item != "main", item.lower()))
 
-    def create_shot_work_option(self, identity: ShotIdentity, option: str) -> list[Path]:
+    def create_shot_work_option(
+        self,
+        identity: ShotIdentity,
+        option: str,
+        department: str | None = None,
+        task: str = "main",
+    ) -> list[Path]:
         option_name = _normalize_work_option(option)
         if option_name == "all":
             raise ValueError("'all' is reserved for the work option filter.")
         paths = []
-        for department in self.shot_departments:
-            path = self.shot_work_dir(identity, department, option_name, tool_name="maya")
+        departments = [department] if department else self.shot_departments
+        for department_name in departments:
+            path = self.shot_work_dir(
+                identity,
+                department_name,
+                option_name,
+                tool_name="maya",
+                task=task,
+            )
             path.mkdir(parents=True, exist_ok=True)
             paths.append(path)
         return paths
@@ -403,11 +489,18 @@ class ShotManagerService:
         option: str = "main",
         tool_name: str = "maya",
         ext: str = "ma",
+        task: str = "main",
     ) -> Path:
         version_label = f"v{version:03d}"
         take_label = f"{take:02d}"
         filename = f"{identity.shot}_{department}_{version_label}_{take_label}.{ext.lstrip('.')}"
-        return self.shot_work_dir(identity, department, option, tool_name=tool_name) / filename
+        return self.shot_work_dir(
+            identity,
+            department,
+            option,
+            tool_name=tool_name,
+            task=task,
+        ) / filename
 
     def sequence_work_dir(self, identity: SequenceIdentity, department: str, tool_name: str = "maya") -> Path:
         return self.paths.sequence_work_dir(identity.episode, identity.sequence, department, _normalize_tool_name(tool_name))
@@ -478,6 +571,7 @@ class ShotManagerService:
         option: str = "main",
         tool_name: str = "maya",
         ext: str = "ma",
+        task: str = "main",
     ) -> Path:
         parsed = parse_shot_work_file(Path(current_path).name) if current_path else None
         if parsed and parsed.get("shot") != identity.shot:
@@ -489,11 +583,11 @@ class ShotManagerService:
             if next_version:
                 take = 1
             else:
-                take = self.next_shot_work_take(identity, department, version, ext, option=option, tool_name=tool_name)
+                take = self.next_shot_work_take(identity, department, version, ext, option=option, tool_name=tool_name, task=task)
         else:
             version = 1
-            take = self.next_shot_work_take(identity, department, version, ext, option=option, tool_name=tool_name)
-        return self.shot_work_file_path(identity, department, version, take, option, tool_name, ext)
+            take = self.next_shot_work_take(identity, department, version, ext, option=option, tool_name=tool_name, task=task)
+        return self.shot_work_file_path(identity, department, version, take, option, tool_name, ext, task)
 
     def next_shot_work_take(
         self,
@@ -503,9 +597,10 @@ class ShotManagerService:
         ext: str = "ma",
         option: str = "main",
         tool_name: str = "maya",
+        task: str = "main",
     ) -> int:
         max_take = 0
-        for work_dir in self._shot_work_option_dirs(identity, department, option, tool_name=tool_name):
+        for work_dir in self._shot_work_option_dirs(identity, department, option, tool_name=tool_name, task=task):
             for path in work_dir.iterdir() if work_dir.exists() else []:
                 parsed = parse_shot_work_file(path.name)
                 if not parsed:
@@ -520,13 +615,14 @@ class ShotManagerService:
         department: str | None = None,
         option: str | None = None,
         tool_name: str = "maya",
+        task: str = "main",
     ) -> list[ShotWorkFile]:
         departments = [department] if department else self.shot_departments
         files: list[ShotWorkFile] = []
         for dept in departments:
-            options = self.list_shot_work_options(identity, dept, tool_name=tool_name) if not option or option == "all" else [_normalize_work_option(option)]
+            options = self.list_shot_work_options(identity, dept, tool_name=tool_name, task=task) if not option or option == "all" else [_normalize_work_option(option)]
             for option_name in options:
-                for work_dir in self._shot_work_option_dirs(identity, dept, option_name, tool_name=tool_name):
+                for work_dir in self._shot_work_option_dirs(identity, dept, option_name, tool_name=tool_name, task=task):
                     if not work_dir.exists():
                         continue
                     for path in work_dir.iterdir():
@@ -548,9 +644,10 @@ class ShotManagerService:
                                 take=int(parsed.get("take") or 0),
                                 comment=comment,
                                 thumbnail=thumbnail,
+                                task=str(metadata.get("task") or task),
                             )
                         )
-        return sorted(files, key=lambda item: (item.department, item.option, item.version, item.take, item.file.lower()), reverse=True)
+        return sorted(files, key=lambda item: (item.department, item.task, item.option, item.version, item.take, item.file.lower()), reverse=True)
 
     def list_sequence_work_files(
         self,
@@ -566,7 +663,9 @@ class ShotManagerService:
                 work_dir = self.sequence_work_dir(identity, dept, tool)
                 if not work_dir.exists():
                     continue
-                for path in work_dir.iterdir():
+                work_dirs = [work_dir]
+                work_dirs.extend(path for path in work_dir.iterdir() if path.is_dir())
+                for path in (item for directory in work_dirs for item in directory.iterdir()):
                     if not path.is_file() or path.suffix.lower() not in {".ma", ".mb", ".hip", ".hiplc", ".hipnc"}:
                         continue
                     parsed = parse_shot_work_file(path.name) or {}
@@ -587,21 +686,112 @@ class ShotManagerService:
                     )
         return sorted(files, key=lambda item: (item.department, item.option, item.version, item.take, item.file.lower()), reverse=True)
 
+    def list_sequence_construct_build_scenes(
+        self,
+        identity: SequenceIdentity,
+        *,
+        department: str = "",
+        task: str = "",
+    ) -> list[dict[str, Any]]:
+        """List generated sequence scenes that passed through scene-build validation."""
+
+        root = self.paths.sequence_workspace_root(identity.episode, identity.sequence) / "output" / "scene_build"
+        if not root.is_dir():
+            return []
+        records = []
+        department_filter = _normalize_work_option(department) if department else ""
+        task_filter = _normalize_work_option(task) if task else ""
+        for manifest_path in root.glob("*/*/v*/build_manifest.json"):
+            manifest = read_json(manifest_path, {}) or {}
+            build_department = _normalize_work_option(
+                str(manifest.get("department") or manifest_path.parents[2].name)
+            )
+            build_task = _normalize_work_option(
+                str(manifest.get("task") or manifest_path.parents[1].name)
+            )
+            if department_filter and build_department != department_filter:
+                continue
+            if task_filter and build_task != task_filter:
+                continue
+            scene = Path(str(manifest.get("scene") or ""))
+            if not scene.is_file():
+                continue
+            validation_path = manifest_path.with_name("validation.json")
+            validation = read_json(validation_path, {}) or {}
+            records.append(
+                {
+                    "mode": "build",
+                    "path": str(scene),
+                    "manifest": str(manifest_path),
+                    "validation": str(validation_path),
+                    "validation_state": str(validation.get("status") or "missing").lower(),
+                    "department": build_department,
+                    "task": build_task,
+                    "version": scene.parent.name,
+                    "updated": datetime.fromtimestamp(scene.stat().st_mtime).isoformat(timespec="seconds"),
+                    "sequence": True,
+                }
+            )
+        return sorted(
+            records,
+            key=lambda item: (
+                int(str(item.get("version") or "v000")[1:])
+                if str(item.get("version") or "")[1:].isdigit()
+                else -1,
+                str(item.get("updated") or ""),
+            ),
+            reverse=True,
+        )
+
     def _shot_work_option_dirs(
         self,
         identity: ShotIdentity,
         department: str,
         option: str,
         tool_name: str = "maya",
+        task: str = "main",
     ) -> list[Path]:
         option_name = _normalize_work_option(option)
-        directories = [self.shot_work_dir(identity, department, option_name, tool_name=tool_name)]
+        directories = [
+            self.shot_work_dir(
+                identity,
+                department,
+                option_name,
+                tool_name=tool_name,
+                task=task,
+            )
+        ]
+        include_legacy = task == self.shot_tasks(department)[0]
         if option_name == "main":
-            directories.append(self.shot_work_dir(identity, department, tool_name=tool_name))
+            directories.append(
+                self.shot_work_dir(
+                    identity,
+                    department,
+                    tool_name=tool_name,
+                    task=task,
+                )
+            )
+        if include_legacy and option_name == "main":
+            directories.append(
+                self.pre_task_shot_work_dir(
+                    identity,
+                    department,
+                    tool_name=tool_name,
+                )
+            )
             directories.append(self.legacy_shot_tool_work_dir(identity, department, tool_name=tool_name))
             directories.append(self.legacy_shot_work_dir(identity, department))
-        directories.append(self.legacy_shot_tool_work_dir(identity, department, option_name, tool_name=tool_name))
-        directories.append(self.legacy_shot_work_dir(identity, department, option_name))
+        if include_legacy:
+            directories.append(
+                self.pre_task_shot_work_dir(
+                    identity,
+                    department,
+                    option_name,
+                    tool_name=tool_name,
+                )
+            )
+            directories.append(self.legacy_shot_tool_work_dir(identity, department, option_name, tool_name=tool_name))
+            directories.append(self.legacy_shot_work_dir(identity, department, option_name))
         seen = set()
         unique = []
         for directory in directories:
@@ -617,6 +807,7 @@ class ShotManagerService:
         identity: ShotIdentity,
         department: str,
         option: str = "main",
+        task: str = "main",
         scene_info: dict[str, Any] | None = None,
         comment: str = "",
         thumbnail: str = "",
@@ -632,6 +823,7 @@ class ShotManagerService:
             "shot": identity.shot,
             "department": department,
             "tool": "maya",
+            "task": _normalize_work_option(task),
             "option": _normalize_work_option(option),
             "version": parsed.get("version"),
             "take": parsed.get("take"),
@@ -644,6 +836,65 @@ class ShotManagerService:
         if construct:
             data["construct"] = construct
         return write_json(sidecar_path(work_path), data)
+
+    def list_construct_build_scenes(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "",
+        task: str = "",
+    ) -> list[dict[str, Any]]:
+        """List generated, validated Construct scenes without promoting them to Work."""
+
+        root = self.shot_root(identity) / "output" / "scene_build"
+        if not root.is_dir():
+            return []
+        records = []
+        department_filter = _normalize_work_option(department) if department else ""
+        task_filter = _normalize_work_option(task) if task else ""
+        for manifest_path in root.glob("*/*/v*/build_manifest.json"):
+            manifest = read_json(manifest_path, {}) or {}
+            build_department = _normalize_work_option(
+                str(manifest.get("department") or manifest_path.parents[2].name)
+            )
+            build_task = _normalize_work_option(
+                str(manifest.get("task") or manifest_path.parents[1].name)
+            )
+            if department_filter and build_department != department_filter:
+                continue
+            if task_filter and build_task != task_filter:
+                continue
+            scene = Path(str(manifest.get("scene") or ""))
+            if not scene.is_file():
+                continue
+            validation_path = manifest_path.with_name("validation.json")
+            validation = read_json(validation_path, {}) or {}
+            state = str(validation.get("status") or "missing").lower()
+            records.append(
+                {
+                    "mode": "build",
+                    "path": str(scene),
+                    "manifest": str(manifest_path),
+                    "validation": str(validation_path),
+                    "validation_state": state,
+                    "department": build_department,
+                    "task": build_task,
+                    "version": scene.parent.name,
+                    "updated": datetime.fromtimestamp(scene.stat().st_mtime).isoformat(
+                        timespec="seconds"
+                    ),
+                }
+            )
+        return sorted(
+            records,
+            key=lambda item: (
+                int(str(item.get("version") or "v000")[1:])
+                if str(item.get("version") or "")[1:].isdigit()
+                else -1,
+                str(item.get("updated") or ""),
+            ),
+            reverse=True,
+        )
 
     def write_sequence_work_metadata(
         self,
@@ -736,7 +987,7 @@ class ShotManagerService:
         *,
         department: str = "",
     ) -> dict[str, Any]:
-        """Resolve immutable group versions/takes and the next package version."""
+        """Resolve the next non-published Preview Render output."""
         rows = [
             dict(row)
             for row in (settings.get("rows") or [])
@@ -747,9 +998,7 @@ class ShotManagerService:
         clean_department = _clean_publish_token(
             department or str(settings.get("department") or "default")
         )
-        base_dir = self.shot_root(identity) / "publish" / "preview_render" / clean_department
-        packages_dir = base_dir / "packages"
-        package_version = self._next_publish_version(packages_dir)
+        base_dir = self.shot_root(identity) / "output" / "preview_render" / clean_department
         groups = []
         used_groups: set[str] = set()
         filename_template = str(
@@ -777,7 +1026,7 @@ class ShotManagerService:
             used_groups.add(clean_group)
             requested_version = max(1, int(row.get("version") or 1))
             version_label = format_version(requested_version)
-            version_dir = base_dir / "groups" / clean_group / version_label
+            version_dir = base_dir / "layers" / clean_group / version_label
             requested_take = max(1, int(row.get("take") or 1))
             take_number = requested_take
             while (version_dir / f"t{take_number:03d}").exists():
@@ -803,7 +1052,7 @@ class ShotManagerService:
             groups.append(
                 {
                     "group": clean_group,
-                    "source_layer": layer_name,
+                    "source_layer": str(row.get("display_layer") or layer_name),
                     "order": order,
                     "version": version_label,
                     "take": take_label,
@@ -821,11 +1070,148 @@ class ShotManagerService:
             "sequence": identity.sequence,
             "shot": identity.shot,
             "base_dir": str(base_dir),
-            "packages_dir": str(packages_dir),
-            "package_version": package_version,
             "department": clean_department,
             "groups": groups,
         }
+
+    def record_preview_render_outputs(
+        self,
+        plan: dict[str, Any],
+        results: dict[str, dict[str, Any]],
+        *,
+        source_scene: str = "",
+    ) -> list[Path]:
+        """Record generated output takes without creating a publish manifest."""
+        written = []
+        for group in plan.get("groups") or []:
+            group_name = str(group.get("group") or "")
+            result = results.get(group_name)
+            if not result:
+                continue
+            first_file = Path(str(result.get("first_file") or ""))
+            last_file = Path(str(result.get("last_file") or ""))
+            file_count = int(result.get("file_count") or 0)
+            if file_count <= 0 or not first_file.is_file():
+                raise RuntimeError(f"Preview Render output validation failed: {group_name}")
+            version_label = str(group.get("version") or "")
+            take_label = str(group.get("take") or "")
+            output_dir = Path(str(group.get("output_dir") or ""))
+            pattern_name = str(group.get("pattern") or "")
+            output_data = {
+                "schema": "preview_render_group_output/v1",
+                "group": group_name,
+                "version": version_label,
+                "take": take_label,
+                "pattern": pattern_name,
+                "camera": str(group.get("camera") or ""),
+                "frame_range": list(group.get("frame_range") or []),
+                "resolution": list(group.get("resolution") or []),
+                "order": int(group.get("order", 0)),
+                "file_count": file_count,
+                "first_file": first_file.name,
+                "last_file": last_file.name if last_file.is_file() else "",
+                "members": list(result.get("members") or []),
+                "source_scene": self._relative_to_project(Path(source_scene))
+                if source_scene
+                else "",
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            written.append(write_json(output_dir / "output.json", output_data))
+            group_base = output_dir.parent.parent
+            write_json(
+                group_base / "latest.json",
+                {
+                    "version": version_label,
+                    "take": take_label,
+                    "path": f"{version_label}/{take_label}/output.json",
+                },
+            )
+            versions_path = group_base / "versions.json"
+            versions = read_json(versions_path, []) or []
+            if not isinstance(versions, list):
+                versions = []
+            updated = []
+            found = False
+            for item in versions:
+                if not isinstance(item, dict):
+                    continue
+                item = dict(item)
+                if item.get("version") == version_label:
+                    takes = list(item.get("takes") or [])
+                    if take_label not in takes:
+                        takes.append(take_label)
+                    item.update(
+                        {
+                            "status": "latest",
+                            "latest_take": take_label,
+                            "takes": takes,
+                        }
+                    )
+                    found = True
+                elif item.get("status") == "latest":
+                    item["status"] = "available"
+                updated.append(item)
+            if not found:
+                updated.append(
+                    {
+                        "version": version_label,
+                        "status": "latest",
+                        "latest_take": take_label,
+                        "takes": [take_label],
+                    }
+                )
+            write_json(versions_path, updated)
+        if not written:
+            raise RuntimeError("Preview Render produced no recordable outputs.")
+        return written
+
+    def latest_preview_render_outputs(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+    ) -> dict[str, dict[str, Any]]:
+        """Return validated latest non-published output metadata by layer."""
+        layers_root = (
+            self.shot_root(identity)
+            / "output"
+            / "preview_render"
+            / _clean_publish_token(department or "anim")
+            / "layers"
+        )
+        if not layers_root.is_dir():
+            legacy_root = layers_root.parent / "groups"
+            layers_root = legacy_root if legacy_root.is_dir() else layers_root
+        outputs: dict[str, dict[str, Any]] = {}
+        if not layers_root.is_dir():
+            return outputs
+        for layer_dir in layers_root.iterdir():
+            if not layer_dir.is_dir():
+                continue
+            latest = read_json(layer_dir / "latest.json", {}) or {}
+            output_path = layer_dir / str(latest.get("path") or "")
+            output = read_json(output_path, {}) or {}
+            if not output_path.is_file() or not isinstance(output, dict):
+                continue
+            version = str(output.get("version") or latest.get("version") or "")
+            take = str(output.get("take") or latest.get("take") or "")
+            if not re.fullmatch(r"v\d+", version) or not re.fullmatch(r"t\d+", take):
+                continue
+            pattern = str(output.get("pattern") or "")
+            extension = Path(pattern).suffix.lower() or ".png"
+            if not any(
+                path.is_file() and path.suffix.lower() == extension
+                for path in output_path.parent.iterdir()
+            ):
+                continue
+            outputs[layer_dir.name] = {
+                **output,
+                "version": version,
+                "take": take,
+                "output_json": str(output_path),
+                "output_dir": str(output_path.parent),
+            }
+        return outputs
 
     def finalize_preview_render_publish(
         self,
@@ -859,7 +1245,7 @@ class ShotManagerService:
                 raise RuntimeError(f"Preview Render output validation failed: {group_name}")
             version_label = str(group.get("version") or "")
             take_label = str(group.get("take") or "")
-            group_base = base_dir / "groups" / group_name
+            group_base = base_dir / "layers" / group_name
             pattern_path = Path(str(group.get("output_dir") or "")) / str(group.get("pattern") or "")
             write_json(
                 Path(str(group.get("output_dir") or "")) / "output.json",
@@ -950,20 +1336,38 @@ class ShotManagerService:
             (candidate.as_posix() for candidate in template_candidates if candidate.is_file()),
             "",
         )
+        review_spec, review_spec_path = self.resolved_review_spec(
+            identity,
+            department=department,
+        )
         manifest = {
             "schema": "preview_render_manifest/v1",
             "publish_type": "preview_render",
             "name": f"{identity.shot}_{department}_{package_version}",
             "project": self.project_config.project_name,
+            "projectRoot": self.project_config.project_root.as_posix() if self.project_config.project_root else "",
+            "configDir": self.project_config.config_dir.as_posix(),
             "episode": identity.episode,
             "sequence": identity.sequence,
             "shot": identity.shot,
             "department": department,
             "version": package_version,
             "package_root": package_dir.as_posix(),
+            "resolution": list((self.project_config.base.get("anchors") or {}).get("resolution") or []),
             "template_project": template_project,
             "source_scene": source_scene_value,
+            "review_spec": {
+                "version": str(review_spec.get("version") or ""),
+                "path": self._relative_path(package_dir, review_spec_path),
+            },
+            "layers": manifest_groups,
             "groups": manifest_groups,
+            "layer_order": [
+                name
+                for name, _data in sorted(
+                    manifest_groups.items(), key=lambda item: int(item[1].get("order", 0))
+                )
+            ],
             "group_order": [
                 name
                 for name, _data in sorted(
@@ -1014,6 +1418,153 @@ class ShotManagerService:
         self._update_versions(packages_dir / "versions.json", package_version)
         return manifest_path
 
+    def publish_preview_render_outputs(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+        comment: str = "",
+        groups: list[str] | None = None,
+    ) -> Path:
+        """Promote the latest output take for each Review Layer to publish."""
+        clean_department = _clean_publish_token(department or "anim")
+        output_base = (
+            self.shot_root(identity)
+            / "output"
+            / "preview_render"
+            / clean_department
+        )
+        output_layers = output_base / "layers"
+        if not output_layers.is_dir():
+            output_layers = output_base / "groups"
+        if not output_layers.is_dir():
+            raise RuntimeError(
+                f"Preview Render output was not found: {output_base / 'layers'}"
+            )
+        publish_base = (
+            self.shot_root(identity)
+            / "publish"
+            / "preview_render"
+            / clean_department
+        )
+        packages_dir = publish_base / "packages"
+        package_version = self._next_publish_version(packages_dir)
+        plan_groups = []
+        results = {}
+        review_layers = self.review_layers(identity, clean_department)
+        review_order = {
+            str(name): int((data or {}).get("order", index * 10))
+            for index, (name, data) in enumerate(review_layers.items())
+        }
+        requested_groups = {
+            _clean_publish_token(name) for name in (groups or []) if name
+        }
+        group_dirs = sorted(
+            (
+                path
+                for path in output_layers.iterdir()
+                if path.is_dir()
+                and (not requested_groups or path.name in requested_groups)
+            ),
+            key=lambda path: (
+                review_order.get(path.name, 1_000_000),
+                path.name.lower(),
+            ),
+        )
+        for order, group_dir in enumerate(group_dirs):
+            latest = read_json(group_dir / "latest.json", {}) or {}
+            output_json = group_dir / str(latest.get("path") or "")
+            output_data = read_json(output_json, {}) or {}
+            if not output_json.is_file() or not output_data:
+                continue
+            version_label = str(output_data.get("version") or latest.get("version") or "")
+            take_label = str(output_data.get("take") or latest.get("take") or "")
+            source_dir = output_json.parent
+            pattern = str(output_data.get("pattern") or "")
+            extension = Path(pattern).suffix.lower() or ".png"
+            source_files = sorted(
+                path
+                for path in source_dir.iterdir()
+                if path.is_file() and path.suffix.lower() == extension
+            )
+            if not source_files:
+                raise RuntimeError(
+                    f"Preview Render footage was not found: {source_dir}"
+                )
+            publish_dir = (
+                publish_base
+                / "layers"
+                / group_dir.name
+                / version_label
+                / take_label
+            )
+            publish_dir.mkdir(parents=True, exist_ok=True)
+            published_files = []
+            for source in source_files:
+                destination = publish_dir / source.name
+                if destination.exists():
+                    if destination.stat().st_size != source.stat().st_size:
+                        raise RuntimeError(
+                            f"Immutable Preview Render already differs: {destination}"
+                        )
+                else:
+                    shutil.copy2(source, destination)
+                published_files.append(destination)
+            source_scene = str(output_data.get("source_scene") or "")
+            plan_groups.append(
+                {
+                    "group": group_dir.name,
+                    "source_layer": group_dir.name,
+                    "order": review_order.get(
+                        group_dir.name,
+                        int(output_data.get("order", order * 10)),
+                    ),
+                    "version": version_label,
+                    "take": take_label,
+                    "output_dir": str(publish_dir),
+                    "pattern": pattern,
+                    "camera": str(output_data.get("camera") or ""),
+                    "frame_range": list(output_data.get("frame_range") or []),
+                    "resolution": list(output_data.get("resolution") or []),
+                }
+            )
+            results[group_dir.name] = {
+                "file_count": len(published_files),
+                "first_file": str(published_files[0]),
+                "last_file": str(published_files[-1]),
+                "members": list(output_data.get("members") or []),
+                "source_first_file": str(source_files[0]),
+                "source_scene": source_scene,
+            }
+        if not plan_groups:
+            raise RuntimeError("No Preview Render output is ready to publish.")
+        plan = {
+            "schema": "preview_render_publish_plan/v1",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "base_dir": str(publish_base),
+            "packages_dir": str(packages_dir),
+            "package_version": package_version,
+            "department": clean_department,
+            "groups": plan_groups,
+        }
+        source_scene = next(
+            (
+                str(result.get("source_scene") or "")
+                for result in results.values()
+                if result.get("source_scene")
+            ),
+            "",
+        )
+        return self.finalize_preview_render_publish(
+            identity,
+            plan,
+            results,
+            source_scene=source_scene,
+            comment=comment,
+        )
+
     def list_preview_render_versions(
         self,
         identity: ShotIdentity,
@@ -1056,6 +1607,51 @@ class ShotManagerService:
                 )
         return sorted(rows, key=lambda row: (row.name, parse_version(row.version)), reverse=True)
 
+    def list_review_spec_versions(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "",
+    ) -> list[ShotDataVersion]:
+        data_root = self.shot_root(identity) / "data" / "review_spec"
+        rows: list[ShotDataVersion] = []
+        if not data_root.exists():
+            return rows
+        clean_department = _clean_publish_token(department) if department else ""
+        department_dirs = (
+            [data_root / clean_department]
+            if clean_department
+            else [path for path in data_root.iterdir() if path.is_dir()]
+        )
+        for department_dir in department_dirs:
+            latest = read_json(department_dir / "latest.json", {}) or {}
+            latest_version = str(latest.get("version") or "")
+            for version_dir in department_dir.glob("v*") if department_dir.exists() else []:
+                if not version_dir.is_dir() or not version_dir.name[1:].isdigit():
+                    continue
+                spec_path = version_dir / "review_spec.json"
+                if not spec_path.is_file():
+                    continue
+                metadata = read_json(version_dir / "data.json", {}) or {}
+                updated = datetime.fromtimestamp(spec_path.stat().st_mtime).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+                rows.append(
+                    ShotDataVersion(
+                        name=f"review_spec/{department_dir.name}",
+                        version=version_dir.name,
+                        path=str(spec_path),
+                        updated=updated,
+                        comment=str(metadata.get("comment") or ""),
+                        latest=version_dir.name == latest_version,
+                    )
+                )
+        return sorted(
+            rows,
+            key=lambda row: (row.name, parse_version(row.version) or 0),
+            reverse=True,
+        )
+
     @staticmethod
     def _relative_path(root: Path, path: Path) -> str:
         try:
@@ -1066,8 +1662,28 @@ class ShotManagerService:
     def validate_cast(self, identity: ShotIdentity) -> list[ValidationIssue]:
         return validate_cast_data(self.load_cast(identity))
 
-    def build_preview(self, identity: ShotIdentity, department: str = "default") -> list[BuildPreviewItem]:
-        return self._build_preview_from_cast(self.load_cast(identity), department=department)
+    def build_preview(
+        self,
+        identity: ShotIdentity,
+        department: str = "default",
+        *,
+        cast_contexts: dict[str, str] | None = None,
+        exclude_cast: list[str] | None = None,
+    ) -> list[BuildPreviewItem]:
+        cast_data = self.load_cast(identity)
+        excluded = {str(value) for value in (exclude_cast or [])}
+        if excluded and isinstance(cast_data.get("cast"), dict):
+            cast_data = deepcopy(cast_data)
+            cast_data["cast"] = {
+                key: value
+                for key, value in cast_data["cast"].items()
+                if str(key) not in excluded
+            }
+        return self._build_preview_from_cast(
+            cast_data,
+            department=department,
+            cast_contexts=cast_contexts,
+        )
 
     def build_sequence_preview(self, identity: SequenceIdentity) -> list[BuildPreviewItem]:
         return self._build_preview_from_cast(
@@ -1082,6 +1698,105 @@ class ShotManagerService:
         path = base_dir / str(latest.get("path") or "")
         return path if path.exists() else None
 
+    def latest_sequence_stage_input(
+        self,
+        identity: SequenceIdentity,
+        department: str = "layout",
+    ) -> Path | None:
+        base_dir = (
+            self.sequence_workspace_root(identity.episode, identity.sequence)
+            / "publish"
+            / "stage_input"
+            / _normalize_work_option(department)
+        )
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        path = base_dir / str(latest.get("path") or "")
+        return path if path.is_file() else None
+
+    def build_sequence_stage_input(
+        self,
+        identity: SequenceIdentity,
+        *,
+        department: str = "layout",
+        comment: str = "",
+        overrides: dict[str, Any] | None = None,
+    ) -> Path:
+        sequence_data = self.load_sequence(identity)
+        cast_data = self.load_sequence_cast(identity.episode, identity.sequence)
+        if not sequence_data:
+            raise RuntimeError(f"Sequence metadata was not found for {identity.code}.")
+        if not (cast_data.get("cast") or {}):
+            raise RuntimeError(f"Sequence cast is empty for {identity.code}.")
+        override_data = deepcopy(overrides or {})
+        use_placements = override_data.get("use_placements") is not False
+        sequence_root = self.sequence_workspace_root(identity.episode, identity.sequence)
+        placements = ""
+        if use_placements:
+            placements_root = sequence_root / "publish" / "layout" / "placements"
+            latest = read_json(placements_root / "latest.json", {}) or {}
+            placements_path = placements_root / str(latest.get("path") or "")
+            if not placements_path.is_file():
+                raise RuntimeError(
+                    f"Sequence placements were not found: {placements_root}"
+                )
+            placements = self._relative_to_project(placements_path)
+        cast_publish = self.publish_sequence_cast(
+            identity.episode,
+            identity.sequence,
+            comment=comment,
+        )
+        department = _normalize_work_option(department)
+        base_dir = sequence_root / "publish" / "stage_input" / department
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=True)
+        editorial = sequence_data.get("editorial") or {}
+        data = {
+            "package_type": "sequence_input",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "department": department,
+            "version": version_label,
+            "fps": editorial.get("fps") or self.project_fps,
+            "cut_range": [
+                editorial.get("cut_in"),
+                editorial.get("cut_out"),
+            ],
+            "cast": self._relative_to_project(cast_publish),
+            "placements": placements,
+            "placement_usage": "apply" if placements else "disabled",
+            "editorial": self._relative_to_project(
+                self.paths.project_root
+                / "editorial"
+                / "publish"
+                / identity.episode
+                / identity.sequence
+                / "latest.json"
+            ),
+            "context": str(override_data.get("context") or "WORK"),
+            "comment": comment,
+            "overrides": override_data,
+        }
+        input_path = write_json(version_dir / "sequence_input.json", data)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "publish_type": "stage_input",
+                "subset": department,
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "version": version_label,
+                "files": {"sequence_input": "sequence_input.json"},
+                "comment": comment,
+            },
+        )
+        write_json(
+            base_dir / "latest.json",
+            {"version": version_label, "path": f"{version_label}/sequence_input.json"},
+        )
+        self._update_versions(base_dir / "versions.json", version_label)
+        return input_path
+
     def build_preview_from_anim_input(self, identity: ShotIdentity) -> list[BuildPreviewItem]:
         anim_input = self.latest_anim_input(identity)
         if not anim_input:
@@ -1093,7 +1808,25 @@ class ShotManagerService:
             cast_data = self.load_cast(identity)
         if not (cast_data.get("cast") or {}):
             cast_data = self.load_sequence_cast(identity.episode, identity.sequence)
-        return self._build_preview_from_cast(cast_data, department="anim")
+        excluded = {
+            str(value)
+            for value in (data.get("exclude_cast") or [])
+            if str(value).strip()
+        }
+        overrides = data.get("overrides") or {}
+        cast_contexts = overrides.get("cast_contexts") or data.get("cast_contexts") or {}
+        if excluded and isinstance(cast_data.get("cast"), dict):
+            cast_data = deepcopy(cast_data)
+            cast_data["cast"] = {
+                key: value
+                for key, value in cast_data["cast"].items()
+                if str(key) not in excluded
+            }
+        return self._build_preview_from_cast(
+            cast_data,
+            department="anim",
+            cast_contexts=cast_contexts,
+        )
 
     def construct_path(self, identity: ShotIdentity) -> Path:
         return self.shot_root(identity) / "construct.json"
@@ -1606,6 +2339,7 @@ class ShotManagerService:
         variant: str = "default",
         namespace: str = "",
         source_workfile: str | Path = "",
+        curve_data_path: str | Path = "",
         comment: str = "",
         version: str,
     ) -> Path:
@@ -1637,6 +2371,13 @@ class ShotManagerService:
         }
         if source_workfile:
             cache_data["source_workfile"] = self._relative_to_project(Path(source_workfile))
+        curve_path = Path(curve_data_path) if curve_data_path else self.latest_animation_curve_path(
+            identity,
+            target=clean_target,
+        )
+        curve_dependency = self._animation_curve_dependency(curve_path)
+        if curve_dependency:
+            cache_data["curve_dependency"] = curve_dependency
         cache_path = write_json(version_dir / "cache.json", cache_data)
         write_json(
             version_dir / "publish.json",
@@ -1651,6 +2392,7 @@ class ShotManagerService:
                     "variant": variant or "default",
                     "namespace": namespace or clean_target,
                 },
+                "curve_dependency": curve_dependency,
                 "topology_signature": cache_data["topology_signature"],
                 "source_workfile": cache_data.get("source_workfile", ""),
                 "comment": comment,
@@ -1660,33 +2402,47 @@ class ShotManagerService:
         self._update_versions(base_dir / "versions.json", version)
         return cache_path
 
+    def _animation_curve_dependency(self, curve_path: Path | None) -> dict[str, str]:
+        if not curve_path or not curve_path.is_file():
+            return {}
+        curve_data = read_json(curve_path, {}) or {}
+        return {
+            "version": str(curve_data.get("version") or curve_path.parent.name),
+            "path": self._relative_to_project(curve_path),
+        }
+
     def list_animation_cache_versions(
         self,
         identity: ShotIdentity,
         *,
         target: str = "main",
     ) -> list[ShotDataVersion]:
-        clean_target = _clean_publish_token(target or "main")
-        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / "cache"
-        latest = read_json(base_dir / "latest.json", {}) or {}
-        latest_version = str(latest.get("version") or "")
+        animation_root = self.shot_root(identity) / "publish" / "animation"
+        if target:
+            base_dirs = [animation_root / _clean_publish_token(target) / "cache"]
+        else:
+            base_dirs = sorted(animation_root.glob("*/cache"))
         rows = []
-        for version_dir in base_dir.glob("v*"):
-            cache_path = version_dir / "cache.json"
-            if not version_dir.is_dir() or not cache_path.exists():
-                continue
-            metadata = read_json(version_dir / "publish.json", {}) or {}
-            updated = datetime.fromtimestamp(cache_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-            rows.append(
-                ShotDataVersion(
-                    name=f"publish/animation/{clean_target}/cache",
-                    version=version_dir.name,
-                    path=str(cache_path),
-                    updated=updated,
-                    comment=str(metadata.get("comment") or ""),
-                    latest=version_dir.name == latest_version,
+        for base_dir in base_dirs:
+            clean_target = base_dir.parent.name
+            latest = read_json(base_dir / "latest.json", {}) or {}
+            latest_version = str(latest.get("version") or "")
+            for version_dir in base_dir.glob("v*"):
+                cache_path = version_dir / "cache.json"
+                if not version_dir.is_dir() or not cache_path.exists():
+                    continue
+                metadata = read_json(version_dir / "publish.json", {}) or {}
+                updated = datetime.fromtimestamp(cache_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                rows.append(
+                    ShotDataVersion(
+                        name=f"publish/animation/{clean_target}/cache",
+                        version=version_dir.name,
+                        path=str(cache_path),
+                        updated=updated,
+                        comment=str(metadata.get("comment") or ""),
+                        latest=version_dir.name == latest_version,
+                    )
                 )
-            )
         return sorted(rows, key=lambda row: parse_version(row.version) or 0, reverse=True)
 
     def build_animation_package_snapshot(
@@ -1739,6 +2495,7 @@ class ShotManagerService:
                 "cache_metadata": self._relative_to_project(cache_path),
                 "files": fixed_files,
                 "topology_signature": str(cache.get("topology_signature") or ""),
+                "curve_dependency": dict(cache.get("curve_dependency") or {}),
             }
         if not resolved:
             raise RuntimeError(
@@ -1782,6 +2539,10 @@ class ShotManagerService:
                 "preferred_format": preferred,
                 "cast_versions": {
                     cast_key: data["cache_version"]
+                    for cast_key, data in resolved.items()
+                },
+                "curve_data_versions": {
+                    cast_key: data["curve_dependency"].get("version", "")
                     for cast_key, data in resolved.items()
                 },
                 "missing_casts": [item["cast_key"] for item in missing],
@@ -1835,6 +2596,10 @@ class ShotManagerService:
             raise RuntimeError(f"Unsupported Animation Package: {manifest_path}")
 
         package_version = str(manifest.get("version") or manifest_path.parent.name)
+        _review_spec, review_spec_path = self.resolved_review_spec(
+            identity,
+            department="anim",
+        )
         camera_paths = self._latest_review_camera_paths(identity)
         set_dress_paths = [
             row.path
@@ -1849,6 +2614,7 @@ class ShotManagerService:
             "shot": identity.shot,
             "package_version": package_version,
             "animation_manifest": str(manifest_path),
+            "review_spec": str(review_spec_path),
             "preferred_format": str(manifest.get("preferred_format") or "abc"),
             "frame_range": list(manifest.get("frame_range") or self.shot_frame_range(identity)),
             "camera_paths": camera_paths,
@@ -1910,6 +2676,27 @@ class ShotManagerService:
     def list_shot_data_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
         return self._list_data_versions(self.shot_root(identity) / "data")
 
+    def list_set_dress_data(
+        self,
+        identity: ShotIdentity,
+    ) -> list[ShotDataVersion]:
+        root = self.shot_root(identity) / "data" / "setdress"
+        rows = []
+        for path in root.glob("*.setdress.json") if root.is_dir() else []:
+            rows.append(
+                ShotDataVersion(
+                    name=f"set_dress_data/{path.name.removesuffix('.setdress.json')}",
+                    version="WORK",
+                    path=str(path),
+                    updated=datetime.fromtimestamp(path.stat().st_mtime).strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                    comment="editable work data",
+                    latest=True,
+                )
+            )
+        return sorted(rows, key=lambda row: row.name.lower())
+
     def list_set_dress_publish_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
         from smartlib.setdress import SetDressIdentity, SetDressPublishService
 
@@ -1928,6 +2715,39 @@ class ShotManagerService:
             )
             for row in rows
         ]
+
+    def list_placement_publish_versions(
+        self,
+        identity: ShotIdentity,
+    ) -> list[ShotDataVersion]:
+        base_dir = self.shot_root(identity) / "publish" / "layout" / "placements"
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        latest_version = str(latest.get("version") or "")
+        rows = []
+        for version_dir in base_dir.glob("v*") if base_dir.is_dir() else []:
+            if not version_dir.is_dir() or parse_version(version_dir.name) is None:
+                continue
+            path = version_dir / "placements.json"
+            if not path.is_file():
+                continue
+            metadata = read_json(version_dir / "publish.json", {}) or {}
+            rows.append(
+                ShotDataVersion(
+                    name="placements/main",
+                    version=version_dir.name,
+                    path=str(path),
+                    updated=datetime.fromtimestamp(path.stat().st_mtime).strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                    comment=str(metadata.get("comment") or ""),
+                    latest=version_dir.name == latest_version,
+                )
+            )
+        return sorted(
+            rows,
+            key=lambda row: parse_version(row.version) or 0,
+            reverse=True,
+        )
 
     def list_sequence_set_dress_publish_versions(
         self, identity: SequenceIdentity
@@ -2277,24 +3097,35 @@ class ShotManagerService:
         identity: ShotIdentity,
         comment: str = "",
         sequence_data: dict[str, Any] | None = None,
+        overrides: dict[str, Any] | None = None,
     ) -> AnimInputBuildResult:
         statuses = self.shot_anim_input_status(identity)
         blocking = [item for item in statuses if item.state == "MISSING" and item.name != "layout_overlay"]
+        if str((overrides or {}).get("camera") or "").strip():
+            blocking = [item for item in blocking if item.name != "camera"]
+        use_placements = (overrides or {}).get("use_placements") is not False
+        if not use_placements:
+            blocking = [item for item in blocking if item.name != "placements"]
         if blocking:
             names = ", ".join(item.name for item in blocking)
             raise RuntimeError(f"Anim input package is blocked by missing shot publish data: {names}")
         shot_data = self.load_shot(identity)
         sequence_data = sequence_data or self.load_sequence(SequenceIdentity(identity.episode, identity.sequence))
         cast_publish = self.publish_shot_cast_from_sequence(identity, comment=comment)
-        placements_publish = self.publish_shot_placements_from_sequence(identity, comment=comment)
-        self.publish_shot_layout_overlay(
-            identity,
-            cast_publish=cast_publish,
-            placements_publish=placements_publish,
-            shot_data=shot_data,
-            sequence_data=sequence_data,
-            comment=comment,
+        placements_publish = (
+            self.publish_shot_placements_from_sequence(identity, comment=comment)
+            if use_placements
+            else None
         )
+        if placements_publish and (overrides or {}).get("layout_overlay") is not False:
+            self.publish_shot_layout_overlay(
+                identity,
+                cast_publish=cast_publish,
+                placements_publish=placements_publish,
+                shot_data=shot_data,
+                sequence_data=sequence_data,
+                comment=comment,
+            )
         anim_input = self.publish_shot_anim_input(
             identity,
             cast_publish=cast_publish,
@@ -2302,6 +3133,7 @@ class ShotManagerService:
             shot_data=shot_data,
             sequence_data=sequence_data,
             comment=comment,
+            overrides=overrides,
         )
         return AnimInputBuildResult(
             shot=identity.shot,
@@ -2411,7 +3243,7 @@ class ShotManagerService:
         identity: ShotIdentity,
         *,
         cast_publish: Path,
-        placements_publish: Path,
+        placements_publish: Path | None,
         shot_data: dict[str, Any],
         sequence_data: dict[str, Any],
         comment: str = "",
@@ -2624,6 +3456,7 @@ class ShotManagerService:
         shot_data: dict[str, Any],
         sequence_data: dict[str, Any],
         comment: str = "",
+        overrides: dict[str, Any] | None = None,
     ) -> Path:
         base_dir = self.shot_root(identity) / "publish" / "anim_input" / "main"
         version_label = self._next_publish_version(base_dir)
@@ -2649,13 +3482,33 @@ class ShotManagerService:
             "cut_range": self._anim_cut_range_in_work(work_range, cut_in, cut_out, handles),
             "handles": handles,
             "cast": self._relative_to_project(cast_publish),
-            "placements": self._relative_to_project(placements_publish),
+            "placements": self._relative_to_project(placements_publish) if placements_publish else "",
+            "placement_usage": "apply" if placements_publish else "disabled",
             "camera": self._relative_to_project(camera_publish) if camera_publish else "",
             "layout_overlay": self._relative_to_project(layout_overlay) if layout_overlay else "",
             "layout_overlay_usage": "reference_only",
             "editorial": self._relative_to_project(self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence / "latest.json"),
             "comment": comment,
         }
+        override_data = deepcopy(overrides or {})
+        if override_data:
+            context = str(override_data.get("context") or "").strip()
+            camera = str(override_data.get("camera") or "").strip()
+            if context:
+                anim_input["context"] = context
+            if camera:
+                anim_input["camera"] = camera
+            if override_data.get("layout_overlay") is False:
+                anim_input["layout_overlay"] = ""
+                anim_input["layout_overlay_usage"] = "disabled"
+            excluded_cast = [
+                str(value)
+                for value in (override_data.get("exclude_cast") or [])
+                if str(value).strip()
+            ]
+            if excluded_cast:
+                anim_input["exclude_cast"] = excluded_cast
+            anim_input["overrides"] = override_data
         anim_input_path = write_json(version_dir / "anim_input.json", anim_input)
         write_json(
             version_dir / "publish.json",
@@ -2938,6 +3791,7 @@ class ShotManagerService:
         *,
         consumer: str = "shot",
         department: str = "default",
+        cast_contexts: dict[str, str] | None = None,
     ) -> list[BuildPreviewItem]:
         cast = cast_data.get("cast") or {}
         review_layers = cast_data.get("review_layers") or {}
@@ -2947,6 +3801,11 @@ class ShotManagerService:
                 member_to_layer[member] = layer_name
 
         items: list[BuildPreviewItem] = []
+        context_overrides = {
+            str(key): str(value).strip().lower()
+            for key, value in (cast_contexts or {}).items()
+            if str(value).strip()
+        }
         for cast_key, entry in sorted(cast.items()):
             asset_name = str(entry.get("asset") or "")
             variant = str(entry.get("variant") or "default")
@@ -2989,13 +3848,21 @@ class ShotManagerService:
                 )
                 continue
 
-            publish_path = self.resolve_asset_context_work_publish(
-                variant_root,
-                asset_publish,
-                consumer=consumer,
-                department=department,
-            )
-            if not publish_path:
+            explicit_context = context_overrides.get(str(cast_key), "")
+            if explicit_context:
+                publish_path = self.asset_publish_resolver.resolve_context(
+                    variant_root,
+                    explicit_context,
+                    version=asset_publish,
+                )
+            else:
+                publish_path = self.resolve_asset_context_work_publish(
+                    variant_root,
+                    asset_publish,
+                    consumer=consumer,
+                    department=department,
+                )
+            if not publish_path and not explicit_context:
                 publish_path = self.resolve_asset_publish(variant_root, asset_publish)
             status = "resolved" if publish_path else ("missing" if required else "optional missing")
             items.append(
@@ -3221,43 +4088,239 @@ class ShotManagerService:
         path = self.shot_root(identity) / "cast.json"
         if path.exists():
             return path
-        return write_json(path, {"cast": {}, "review_layers": DEFAULT_REVIEW_LAYERS})
+        return write_json(path, {"cast": {}})
 
     def load_cast(self, identity: ShotIdentity) -> dict[str, Any]:
-        return read_json(self.shot_root(identity) / "cast.json", {"cast": {}, "review_layers": {}})
+        return read_json(self.shot_root(identity) / "cast.json", {"cast": {}})
 
     def write_cast(self, identity: ShotIdentity, cast_data: dict[str, Any]) -> Path:
-        issues = validate_cast_data(cast_data)
+        clean_data = dict(cast_data)
+        legacy_layers = clean_data.pop("review_layers", None)
+        issues = validate_cast_data(clean_data)
         errors = [issue for issue in issues if issue.severity == "error"]
         if errors:
             messages = ", ".join(issue.message for issue in errors)
             raise ValueError(f"Invalid cast data: {messages}")
-        return write_json(self.shot_root(identity) / "cast.json", cast_data)
+        path = write_json(self.shot_root(identity) / "cast.json", clean_data)
+        if legacy_layers is not None:
+            self.write_review_layers(identity, legacy_layers)
+        return path
+
+    def review_spec_data_root(
+        self,
+        identity: ShotIdentity,
+        department: str = "anim",
+    ) -> Path:
+        return (
+            self.shot_root(identity)
+            / "data"
+            / "review_spec"
+            / _clean_publish_token(department or "anim")
+        )
+
+    def review_spec_path(
+        self,
+        identity: ShotIdentity,
+        department: str = "anim",
+    ) -> Path:
+        base_dir = self.review_spec_data_root(identity, department)
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        latest_path = base_dir / str(latest.get("path") or "")
+        if latest_path.is_file():
+            return latest_path
+        return self.shot_root(identity) / "review_spec.json"
+
+    def load_review_spec(
+        self,
+        identity: ShotIdentity,
+        department: str = "anim",
+    ) -> dict[str, Any]:
+        path = self.review_spec_path(identity, department)
+        if path.is_file():
+            return read_json(path, {}) or {}
+        legacy = self.load_cast(identity).get("review_layers") or {}
+        layers = _defaulted_review_layers(legacy)
+        legacy_manifest = self._latest_legacy_preview_render_manifest(identity)
+        for layer_name, group in (legacy_manifest.get("groups") or {}).items():
+            layer = layers.setdefault(str(layer_name), {"members": []})
+            if group.get("order") is not None:
+                layer["order"] = int(group["order"])
+            camera_name = str(group.get("camera") or "").strip()
+            if camera_name:
+                camera = dict(layer.get("camera") or {})
+                camera.update({"publish_type": "camera", "version": "latest", "name": camera_name})
+                layer["camera"] = camera
+            frame_range = group.get("frame_range")
+            if isinstance(frame_range, (list, tuple)) and len(frame_range) >= 2:
+                layer["frame_range"] = [int(frame_range[0]), int(frame_range[1])]
+            resolution = group.get("resolution")
+            if isinstance(resolution, (list, tuple)) and len(resolution) >= 2:
+                layer["resolution"] = {
+                    "width": int(resolution[0]),
+                    "height": int(resolution[1]),
+                    "scale": 1.0,
+                }
+        return self._review_spec_data(identity, layers)
+
+    def _latest_legacy_preview_render_manifest(
+        self,
+        identity: ShotIdentity,
+    ) -> dict[str, Any]:
+        root = self.shot_root(identity) / "publish" / "preview_render"
+        candidates: list[Path] = []
+        if root.exists():
+            for latest_path in root.glob("*/packages/latest.json"):
+                latest = read_json(latest_path, {}) or {}
+                path = latest_path.parent / str(latest.get("path") or "")
+                if path.is_file():
+                    candidates.append(path)
+        if not candidates:
+            return {}
+        path = max(candidates, key=lambda item: item.stat().st_mtime)
+        return read_json(path, {}) or {}
+
+    def write_review_spec(
+        self,
+        identity: ShotIdentity,
+        spec: dict[str, Any],
+        *,
+        department: str = "anim",
+        comment: str = "",
+    ) -> Path:
+        layers = _defaulted_review_layers(spec.get("layers"))
+        payload = self._review_spec_data(identity, layers)
+        payload.update(
+            {
+                key: value
+                for key, value in spec.items()
+                if key not in {"schema", "episode", "sequence", "shot", "layers"}
+            }
+        )
+        payload["layers"] = layers
+        clean_department = _clean_publish_token(department or "anim")
+        base_dir = self.review_spec_data_root(identity, clean_department)
+        version_label = self._next_publish_version(base_dir)
+        version_dir = base_dir / version_label
+        version_dir.mkdir(parents=True, exist_ok=False)
+        payload["department"] = clean_department
+        payload["version"] = version_label
+        payload["comment"] = comment
+        payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        path = write_json(version_dir / "review_spec.json", payload)
+        write_json(
+            version_dir / "data.json",
+            {
+                "data_type": "review_spec",
+                "department": clean_department,
+                "version": version_label,
+                "files": {"review_spec": "review_spec.json"},
+                "comment": comment,
+            },
+        )
+        write_json(
+            base_dir / "latest.json",
+            {"version": version_label, "path": f"{version_label}/review_spec.json"},
+        )
+        self._update_versions(base_dir / "versions.json", version_label)
+        return path
+
+    def publish_review_spec(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+        comment: str = "",
+        source_scene: str = "",
+    ) -> Path:
+        spec = self.load_review_spec(identity, department)
+        return self.write_review_spec(
+            identity,
+            spec,
+            department=department,
+            comment=comment,
+        )
+
+    def latest_review_spec_path(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+    ) -> Path | None:
+        base_dir = self.review_spec_data_root(identity, department)
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        path = base_dir / str(latest.get("path") or "")
+        return path if path.is_file() else None
+
+    def resolved_review_spec(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+    ) -> tuple[dict[str, Any], Path]:
+        path = self.latest_review_spec_path(identity, department=department)
+        if path:
+            return read_json(path, {}) or {}, path
+        draft = self.review_spec_path(identity, department)
+        return self.load_review_spec(identity, department), draft
+
+    @staticmethod
+    def _review_spec_data(
+        identity: ShotIdentity,
+        layers: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "schema": "smartpipeline.review_spec.v1",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "layers": _defaulted_review_layers(layers),
+        }
 
     def sequence_cast_path(self, episode: str, sequence: str) -> Path:
         return self.sequence_workspace_root(episode, sequence) / "cast.json"
 
     def load_sequence_cast(self, episode: str, sequence: str) -> dict[str, Any]:
-        return read_json(self.sequence_cast_path(episode, sequence), {"cast": {}, "review_layers": DEFAULT_REVIEW_LAYERS})
+        return read_json(self.sequence_cast_path(episode, sequence), {"cast": {}})
 
     def write_sequence_cast(self, episode: str, sequence: str, cast_data: dict[str, Any]) -> Path:
         root = self.sequence_workspace_root(episode, sequence)
         root.mkdir(parents=True, exist_ok=True)
         return write_json(
             root / "cast.json",
-            {
-                "cast": cast_data.get("cast") or {},
-                "review_layers": _defaulted_review_layers(cast_data.get("review_layers")),
-            },
+            {"cast": cast_data.get("cast") or {}},
         )
 
-    def review_layers(self, identity: ShotIdentity) -> dict[str, dict[str, Any]]:
-        return _defaulted_review_layers(self.load_cast(identity).get("review_layers"))
+    def review_layers(
+        self,
+        identity: ShotIdentity,
+        department: str = "anim",
+    ) -> dict[str, dict[str, Any]]:
+        return _defaulted_review_layers(
+            self.load_review_spec(identity, department).get("layers")
+        )
 
-    def write_review_layers(self, identity: ShotIdentity, review_layers: dict[str, Any]) -> Path:
-        cast_data = self.load_cast(identity)
-        cast_data["review_layers"] = _defaulted_review_layers(review_layers)
-        return self.write_cast(identity, cast_data)
+    def write_review_layers(
+        self,
+        identity: ShotIdentity,
+        review_layers: dict[str, Any],
+        *,
+        department: str = "anim",
+        comment: str = "",
+    ) -> Path:
+        spec = self.load_review_spec(identity, department)
+        spec["layers"] = _defaulted_review_layers(review_layers)
+        path = self.write_review_spec(
+            identity,
+            spec,
+            department=department,
+            comment=comment,
+        )
+        cast_path = self.shot_root(identity) / "cast.json"
+        cast_data = read_json(cast_path, {}) or {}
+        if "review_layers" in cast_data:
+            cast_data.pop("review_layers", None)
+            write_json(cast_path, cast_data)
+        return path
 
     def review_layer_rows(self, identity: ShotIdentity) -> list[dict[str, Any]]:
         rows = []
@@ -3448,9 +4511,6 @@ class ShotManagerService:
         existing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         cast: dict[str, Any] = {}
-        review_layers: dict[str, dict[str, Any]] = _defaulted_review_layers((existing or {}).get("review_layers"))
-        for layer in review_layers.values():
-            layer["members"] = []
         for row in rows:
             cast_key = str(row.get("cast_key") or row.get("Cast Key") or "").strip()
             if not cast_key:
@@ -3466,9 +4526,7 @@ class ShotManagerService:
                 required=_parse_bool(row.get("required", row.get("Required", True))),
             )
             cast[cast_key] = asdict(entry)
-            layer = review_layers.setdefault(role, {"members": [], "order": len(review_layers) * 10})
-            layer["members"].append(cast_key)
-        return {"cast": cast, "review_layers": review_layers or deepcopy(DEFAULT_REVIEW_LAYERS)}
+        return {"cast": cast}
 
     def selected_asset_for_cast(self, existing_cast: dict[str, Any] | None = None) -> dict[str, Any]:
         selected = read_selected_asset(self.project_config)
@@ -3532,7 +4590,6 @@ class ShotManagerService:
     ) -> tuple[Path, list[dict[str, Any]]]:
         cast_data = self.load_sequence_cast(episode, sequence)
         cast = dict(cast_data.get("cast") or {})
-        review_layers = _defaulted_review_layers(cast_data.get("review_layers"))
         added_rows: list[dict[str, Any]] = []
         for selected in selections:
             row = self.asset_selection_cast_row(selected, existing_cast=cast)
@@ -3547,43 +4604,25 @@ class ShotManagerService:
                 "required": row["required"],
                 "note": row["note"],
             }
-            layer = review_layers.setdefault(row["role"], {"members": [], "order": len(review_layers) * 10})
-            members = list(layer.get("members") or [])
-            if row["cast_key"] not in members:
-                members.append(row["cast_key"])
-            layer["members"] = members
             added_rows.append(row)
         if not added_rows:
             raise ValueError("No valid asset selections were provided.")
-        return self.write_sequence_cast(episode, sequence, {"cast": cast, "review_layers": review_layers}), added_rows
+        return self.write_sequence_cast(episode, sequence, {"cast": cast}), added_rows
 
 
 def validate_cast_data(cast_data: dict[str, Any]) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     cast = cast_data.get("cast") or {}
-    review_layers = _defaulted_review_layers(cast_data.get("review_layers"))
     namespaces: dict[str, str] = {}
 
     for cast_key, entry in cast.items():
         namespace = str(entry.get("namespace") or "")
-        role = _normalize_role(entry.get("role") or "")
         asset_publish = str(entry.get("asset_publish") or "")
         if namespace in namespaces:
             issues.append(ValidationIssue("namespace_duplicate", f"namespace is duplicated: {namespace}", "error"))
         namespaces[namespace] = cast_key
-        if role and role not in review_layers:
-            issues.append(ValidationIssue("missing_review_layer", f"role has no review layer: {role}", "error"))
         if asset_publish not in VALID_ASSET_PUBLISH and not _is_version_label(asset_publish):
             issues.append(ValidationIssue("invalid_asset_publish", f"asset_publish is invalid: {asset_publish}", "error"))
-
-    for layer_name, layer in review_layers.items():
-        for member in layer.get("members", []):
-            if member not in cast:
-                issues.append(ValidationIssue("missing_cast_member", f"{layer_name} member is missing from cast: {member}", "error"))
-        resolution = layer.get("resolution") or {}
-        for key in ("width", "height"):
-            if key in resolution and int(resolution.get(key) or 0) <= 0:
-                issues.append(ValidationIssue("invalid_resolution", f"{layer_name}.{key} must be positive", "error"))
 
     return issues
 
@@ -3630,17 +4669,22 @@ def parse_shot_work_file(filename: str) -> dict[str, Any] | None:
 
 
 def _defaulted_review_layers(review_layers: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-    merged = deepcopy(DEFAULT_REVIEW_LAYERS)
+    merged = {}
     for name, layer in (review_layers or {}).items():
         normalized_name = _normalize_role(name)
         incoming = dict(layer or {})
-        if normalized_name in merged:
-            existing_members = list(merged[normalized_name].get("members") or [])
-            incoming_members = list(incoming.get("members") or [])
-            incoming["members"] = existing_members + [member for member in incoming_members if member not in existing_members]
+        legacy = LEGACY_DEFAULT_REVIEW_LAYERS.get(normalized_name)
+        if (
+            legacy
+            and not incoming.get("members")
+            and not incoming.get("objects")
+            and set(incoming).issubset({"members", "order"})
+            and int(incoming.get("order", legacy["order"])) == int(legacy["order"])
+        ):
+            continue
         merged[normalized_name] = incoming
         merged[normalized_name].setdefault("members", [])
-        merged[normalized_name].setdefault("order", DEFAULT_REVIEW_LAYERS.get(normalized_name, {}).get("order", len(merged) * 10))
+        merged[normalized_name].setdefault("order", len(merged) * 10)
     return merged
 
 

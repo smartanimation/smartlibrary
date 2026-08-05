@@ -44,6 +44,7 @@ def stage_sequence_layout_from_preview(
     sequence_data: dict,
     *,
     project_root: str | Path | None = None,
+    shot_names: Iterable[str] | None = None,
 ) -> list[str]:
     """Open a layout template, reference sequence cast, and build Maya Sequencer shots."""
 
@@ -59,7 +60,13 @@ def stage_sequence_layout_from_preview(
         cmds.file(new=True, force=True)
     _apply_scene_policy(cmds, sequence_data)
     referenced = build_shot_from_preview(preview_items, sequence_data)
-    referenced.extend(build_layout_sequence_all(sequence_data, project_root=project_root))
+    referenced.extend(
+        build_layout_sequence_all(
+            sequence_data,
+            project_root=project_root,
+            shot_names=shot_names,
+        )
+    )
     return referenced
 
 
@@ -243,7 +250,9 @@ def build_animation_review_scene(
 
         for raw_path in plan.get("set_dress_paths") or []:
             package = set_dress.load_package(raw_path)
-            set_dress_warnings.extend(set_dress.apply_stack(package.layers))
+            set_dress_warnings.extend(
+                set_dress.apply_stack(package.layers, base=package.base)
+            )
 
     frame_range = plan.get("frame_range") or []
     if len(frame_range) >= 2:
@@ -283,6 +292,33 @@ def resolve_shot_work_template(
 ) -> Path | None:
     dept_filename = f"{department}_base.ma"
     filenames = (dept_filename, "shot_base.ma")
+    configured_candidates = []
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR")
+    if config_dir:
+        template_config = load_config(Path(config_dir) / "templates_base.yml")
+        shot_templates = (
+            ((template_config.get("template_files") or {}).get("maya") or {}).get("shot")
+            or {}
+        )
+        configured_values = [
+            (shot_templates.get("departments") or {}).get(str(department).lower()),
+            shot_templates.get("base"),
+        ]
+        resolved_project_root = str(Path(project_root)) if project_root else ""
+        resolved_pipeline_root = str(
+            Path(pipeline_root) if pipeline_root else Path(__file__).resolve().parents[4]
+        )
+        for value in configured_values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            text = text.replace("{project_root}", resolved_project_root)
+            text = text.replace("{pipeline_root}", resolved_pipeline_root)
+            configured_candidates.append(Path(os.path.expandvars(text)))
+    for candidate in configured_candidates:
+        if candidate.is_file():
+            return candidate
+
     roots = []
     if project_root:
         roots.append(Path(project_root) / "settings" / "templates" / "maya" / "shot")
@@ -327,6 +363,7 @@ def build_layout_sequence_all(
     shot_data: dict,
     *,
     project_root: str | Path | None = None,
+    shot_names: Iterable[str] | None = None,
 ) -> list[str]:
     try:
         import maya.cmds as cmds
@@ -350,6 +387,18 @@ def build_layout_sequence_all(
         )
 
     shots = _sequence_shot_rows(root, episode, sequence)
+    selected_shots = {
+        str(shot).strip() for shot in (shot_names or []) if str(shot).strip()
+    }
+    if selected_shots:
+        shots = [row for row in shots if str(row.get("shot") or "") in selected_shots]
+        resolved_shots = {str(row.get("shot") or "") for row in shots}
+        missing_shots = sorted(selected_shots - resolved_shots)
+        if missing_shots:
+            raise RuntimeError(
+                "Selected shots were not found in the sequence: "
+                + ", ".join(missing_shots)
+            )
     storyreel_root = _latest_storyreel_root(root, episode, sequence)
     shots_grp = _ensure_group(cmds, "shots_grp")
     referenced = []
@@ -463,6 +512,58 @@ def open_work_scene(path: str | Path, shot_data: dict | None = None) -> None:
 
     cmds.file(str(scene_path), open=True, force=True)
     _apply_shot_timing(cmds, shot_data or {})
+    _repair_sequence_camera_namespaces(cmds, shot_data or {})
+
+
+def _repair_sequence_camera_namespaces(cmds, sequence_data: dict) -> dict[str, str]:
+    """Restore the shot-code namespace contract after Maya file-open callbacks."""
+
+    shots = sequence_data.get("shots") or []
+    if not isinstance(shots, list):
+        return {}
+    repaired = {}
+    for row in shots:
+        if not isinstance(row, dict):
+            continue
+        shot_name = _clean_namespace(str(row.get("shot") or ""))
+        if not shot_name:
+            continue
+        reference_node = f"{shot_name}RN"
+        if not cmds.objExists(reference_node):
+            continue
+        try:
+            current = str(cmds.referenceQuery(reference_node, namespace=True) or "").strip(":")
+        except Exception:
+            continue
+        if current == shot_name:
+            continue
+        try:
+            if cmds.namespace(exists=shot_name):
+                members = cmds.namespaceInfo(
+                    shot_name,
+                    listOnlyDependencyNodes=True,
+                    dagPath=True,
+                ) or []
+                if not members:
+                    cmds.namespace(removeNamespace=shot_name)
+            referenced_file = str(
+                cmds.referenceQuery(reference_node, filename=True) or ""
+            )
+            if not referenced_file:
+                raise RuntimeError(f"Reference path was not found for {reference_node}")
+            cmds.file(referenced_file, edit=True, namespace=shot_name)
+            resolved = str(cmds.referenceQuery(reference_node, namespace=True) or "").strip(":")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not restore camera namespace '{shot_name}' on {reference_node}: {exc}"
+            ) from exc
+        if resolved != shot_name:
+            raise RuntimeError(
+                f"Camera namespace repair failed for {reference_node}. "
+                f"Expected '{shot_name}', got '{resolved or 'none'}'."
+            )
+        repaired[shot_name] = current
+    return repaired
 
 
 def create_review_display_layers(cast_data: dict) -> dict[str, int]:
@@ -474,8 +575,11 @@ def create_review_display_layers(cast_data: dict) -> dict[str, int]:
     cast = cast_data.get("cast") or {}
     review_layers = cast_data.get("review_layers") or {}
     created = {}
+    for legacy_layer_node in cmds.ls(type="displayLayer") or []:
+        if str(legacy_layer_node).startswith("review_"):
+            cmds.delete(legacy_layer_node)
     for layer_name, layer in review_layers.items():
-        layer_node = f"review_{layer_name}"
+        layer_node = str(layer_name)
         if cmds.objExists(layer_node):
             cmds.delete(layer_node)
         cmds.createDisplayLayer(name=layer_node, empty=True)
@@ -488,11 +592,31 @@ def create_review_display_layers(cast_data: dict) -> dict[str, int]:
                 str(entry.get("asset") or ""),
             ]
             members.extend(_nodes_for_cast_entry(cmds, candidates))
+        members.extend(_nodes_for_review_objects(cmds, layer.get("objects") or []))
         members = _unique_nodes(members)
         if members:
             cmds.editDisplayLayerMembers(layer_node, members, noRecurse=True)
         created[layer_node] = len(members)
     return created
+
+
+def _nodes_for_review_objects(cmds, objects) -> list[str]:
+    nodes = []
+    for entry in objects:
+        if isinstance(entry, str):
+            path = entry
+            uuid = ""
+        elif isinstance(entry, dict):
+            path = str(entry.get("dag_path") or "")
+            uuid = str(entry.get("maya_uuid") or "")
+        else:
+            continue
+        matches = (cmds.ls(uuid, long=True) or []) if uuid else []
+        if matches:
+            nodes.extend(matches)
+        elif path and cmds.objExists(path):
+            nodes.extend(cmds.ls(path, long=True) or [path])
+    return nodes
 
 
 def _nodes_for_cast_entry(cmds, candidates: list[str]) -> list[str]:
@@ -583,7 +707,13 @@ def _reference_file(cmds, path: Path, namespace: str) -> str:
             actual_namespace = ""
         try:
             if actual_namespace != namespace:
-                cmds.file(referenced_file, edit=True, namespace=namespace)
+                # The same camera-rig file is referenced once per shot. Editing by
+                # file path is ambiguous in that case and Maya may rename the first
+                # matching reference instead of the newly-created one.
+                unique_reference_path = str(
+                    cmds.referenceQuery(reference_node, filename=True) or referenced_file
+                )
+                cmds.file(unique_reference_path, edit=True, namespace=namespace)
         except Exception as exc:
             raise RuntimeError(
                 f"Could not assign namespace '{namespace}' to reference "
@@ -620,10 +750,32 @@ def _is_sequence_all_layout(shot_data: dict, department: str) -> bool:
 
 
 def _resolve_camera_rig(project_root: Path) -> Path | None:
+    configured = ""
+    config_dir = os.environ.get("PROJECT_CONFIG_DIR")
+    if config_dir:
+        template_config = load_config(Path(config_dir) / "templates_base.yml")
+        configured = str(
+            ((template_config.get("template_files") or {}).get("maya") or {}).get(
+                "camera_rig"
+            )
+            or ""
+        ).strip()
     candidates = [
+        Path(
+            os.path.expandvars(
+                configured
+                .replace("{project_root}", str(project_root))
+                .replace(
+                    "{pipeline_root}",
+                    str(Path(__file__).resolve().parents[4]),
+                )
+            )
+        )
+        if configured
+        else None,
         project_root / "library" / "layout" / "camerarig" / "camerarig.ma",
     ]
-    return next((path for path in candidates if path.exists()), None)
+    return next((path for path in candidates if path and path.exists()), None)
 
 
 def _asset_metadata_from_publish(publish_path: Path) -> dict:

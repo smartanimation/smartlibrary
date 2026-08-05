@@ -96,7 +96,20 @@ class SmartSequenceBuilderService:
         identity = SequenceIdentity(episode, sequence)
         sequence_data = self.shots.load_sequence(identity)
         recipe_data = self.recipes().get(recipe, {})
-        inputs = self._resolve_inputs(identity, sequence_data, virtual_camera_take, enabled or {})
+        recipe_inputs = {
+            str(value) for value in (recipe_data.get("inputs") or []) if str(value)
+        }
+        enabled_map = (
+            {key: key in recipe_inputs for key in (
+                "editorial", "mocap", "virtual_camera", "cast", "storyreel", "audio"
+            )}
+            if recipe_inputs
+            else {}
+        )
+        enabled_map.update(enabled or {})
+        inputs = self._resolve_inputs(
+            identity, sequence_data, virtual_camera_take, enabled_map
+        )
         selected_take = virtual_camera_take or self._active_take(inputs)
         frame_start, frame_end = self._frame_range(sequence_data)
         fps = self._fps(sequence_data)
@@ -330,3 +343,8 @@ class SmartSequenceBuilderService:
         data = asdict(item)
         data["children"] = [cls._input_dict(child) for child in item.children]
         return data
+
+    @classmethod
+    def input_payload(cls, item: ResolvedInput) -> dict[str, Any]:
+        """Serialize one resolved input for a queued build manifest."""
+        return cls._input_dict(item)

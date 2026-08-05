@@ -27,6 +27,16 @@ def _qt_modules():
 
 QtCore, QtGui, QtWidgets = _qt_modules()
 
+try:
+    _USER_ROLE = int(QtCore.Qt.UserRole)
+except TypeError:
+    _USER_ROLE = int(QtCore.Qt.UserRole.value)
+
+TREE_KIND_ROLE = _USER_ROLE + 1
+TREE_MEMBER_ROLE = _USER_ROLE + 2
+TREE_KIND_LOCATOR = "locator"
+TREE_KIND_ASSET = "asset"
+
 
 class PlacementTreeWidget(QtWidgets.QTreeWidget):
     def __init__(self, owner, parent=None):
@@ -115,6 +125,7 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         self.placement_tree.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked | QtWidgets.QAbstractItemView.EditKeyPressed)
         self.placement_tree.setAlternatingRowColors(True)
         self.placement_tree.setIndentation(14)
+        self.placement_tree.setIconSize(QtCore.QSize(64, 36))
         self.placement_tree.header().setStretchLastSection(True)
         self.placement_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.placement_tree.setMinimumHeight(260)
@@ -190,9 +201,9 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         left.addWidget(self.asset_list, 1)
 
         action_row = QtWidgets.QHBoxLayout()
-        self.add_asset_cast_btn = QtWidgets.QPushButton("Add To Cast")
+        self.add_asset_cast_btn = QtWidgets.QPushButton("Edit in Smart Casting")
         self.reference_asset_btn = QtWidgets.QPushButton("Reference")
-        self.add_reference_asset_btn = QtWidgets.QPushButton("Add + Reference")
+        self.add_reference_asset_btn = QtWidgets.QPushButton("Reference Selected")
         self.add_reference_asset_btn.setStyleSheet("QPushButton { background-color:#2d5d86; color:white; font-weight:bold; }")
         action_row.addStretch(1)
         action_row.addWidget(self.add_asset_cast_btn)
@@ -305,16 +316,19 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
             self.asset_detail.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
 
     def add_selected_assets_to_cast(self) -> None:
-        from smartlib.dcc.maya import placement
-
         assets = self._selected_assets()
         if not assets:
             self.status_label.setText("Select assets.")
             return
         try:
-            path, rows = placement.add_assets_to_context_cast(self.project_config, assets)
-            self.status_label.setText(f"Added {len(rows)} asset(s) to cast: {path.name}")
-            self.refresh()
+            from smartlib.apps.smart_casting.ui import show
+
+            show(
+                config_dir=self.project_config.config_dir,
+                parent=self,
+                asset_names=[asset.asset for asset in assets],
+            )
+            self.status_label.setText("Opened Smart Casting. Cast changes are managed there.")
         except Exception as exc:
             self.status_label.setText(str(exc))
             QtWidgets.QMessageBox.critical(self, "Add To Cast Failed", str(exc))
@@ -342,8 +356,8 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
             self.status_label.setText("Select assets.")
             return
         try:
-            path, rows, referenced = placement.add_and_reference_assets_to_context_cast(self.project_config, assets)
-            self.status_label.setText(f"Added {len(rows)} to cast and referenced {len(referenced)} asset(s): {path.name}")
+            referenced = placement.reference_assets_to_scene(self.project_config, assets)
+            self.status_label.setText(f"Referenced {len(referenced)} asset(s). Use Smart Casting to edit cast.")
             self.refresh()
         except Exception as exc:
             self.status_label.setText(str(exc))
@@ -504,12 +518,15 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         self._populating_tree = True
         try:
             self.placement_tree.clear()
-            by_node = {row.node: row for row in locators}
+            member_by_name = {member.name: member for member in self.cast_members}
             items = {}
             for row in locators:
                 item = QtWidgets.QTreeWidgetItem([row.name, row.category, row.group])
                 item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled | QtCore.Qt.ItemIsDropEnabled)
                 item.setData(0, QtCore.Qt.UserRole, row.node)
+                item.setData(0, TREE_KIND_ROLE, TREE_KIND_LOCATOR)
+                if row.member:
+                    item.setData(0, TREE_MEMBER_ROLE, row.member)
                 items[row.node] = item
             for row in locators:
                 item = items[row.node]
@@ -518,9 +535,61 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
                     parent_item.addChild(item)
                 else:
                     self.placement_tree.addTopLevelItem(item)
+                if row.member:
+                    member = member_by_name.get(row.member)
+                    if member:
+                        item.addChild(self._asset_tree_item(member))
             self.placement_tree.expandAll()
         finally:
             self._populating_tree = False
+
+    def _asset_tree_item(self, member) -> QtWidgets.QTreeWidgetItem:
+        asset = self._asset_for_member(member)
+        label = member.asset or member.name
+        if member.name and member.name != label:
+            label = f"{label}  ({member.name})"
+        variant = getattr(member, "variant", "default") or "default"
+        path_text = "/".join(part for part in (member.category, member.group, variant if variant != "default" else "") if part)
+        item = QtWidgets.QTreeWidgetItem([label, member.category, member.group])
+        item.setData(0, QtCore.Qt.UserRole, "")
+        item.setData(0, TREE_KIND_ROLE, TREE_KIND_ASSET)
+        item.setData(0, TREE_MEMBER_ROLE, member.name)
+        item.setSizeHint(0, QtCore.QSize(220, 42))
+        item.setToolTip(
+            0,
+            asset_tooltip(
+                asset=member.asset,
+                category=member.category,
+                group=member.group,
+                variant=variant,
+                status=getattr(asset, "status", ""),
+                description=getattr(asset, "description", ""),
+                extra={"cast": member.name, "namespace": member.namespace, "path": path_text},
+            ),
+        )
+        item.setIcon(0, asset_icon(QtCore, QtGui, thumbnail=getattr(asset, "thumbnail", ""), label=member.asset, width=64, height=36))
+        flags = item.flags()
+        flags &= ~QtCore.Qt.ItemIsEditable
+        flags &= ~QtCore.Qt.ItemIsDragEnabled
+        flags &= ~QtCore.Qt.ItemIsDropEnabled
+        item.setFlags(flags)
+        return item
+
+    def _asset_for_member(self, member) -> CastingAsset | None:
+        asset_name = str(getattr(member, "asset", "") or "")
+        variant = str(getattr(member, "variant", "default") or "default")
+        category = str(getattr(member, "category", "") or "")
+        group = str(getattr(member, "group", "") or "")
+        matches = [
+            row
+            for row in self.asset_rows
+            if row.asset == asset_name
+            and (not category or row.category == category)
+            and (not group or row.group == group)
+        ]
+        if not matches:
+            return None
+        return next((row for row in matches if row.variant == variant), matches[0])
 
     def _selected_cast_member(self):
         rows = self.cast_table.selectionModel().selectedRows() if self.cast_table.selectionModel() else []

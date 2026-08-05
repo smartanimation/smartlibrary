@@ -10,13 +10,20 @@
       fallback_names: "render_final,anim_final"
     },
     render_queue: {
-      render_settings_template: "Best Settings",
-      render_settings_template_aliases: "最高設定,最良設定",
+      render_settings_template: "最良設定",
+      render_settings_template_aliases: "Best Settings",
       output_module_template: "Apple ProRes 422 Proxy",
       output_module_template_aliases: "Apple ProRes 422 Prox,ProRes 422 Proxy,QuickTime Apple ProRes 422 Proxy",
       audio_output: true,
       quality: "best",
-      output_path: "{shot_root}/output/review/{dept}/{version}/{take}/mov/{episode}_{sequence}_{shot}_{dept}_{version}_{take}.mov"
+      output_path: "{shot_root}/output/review/{dept}/{version_label}/{take_label}/mov/{output_filename}"
+    }
+  };
+  var DEFAULT_NAMING_CONFIG = {
+    smart_aftereffects: {
+      task: "compTemp",
+      aep_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}",
+      output_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"
     }
   };
 
@@ -66,9 +73,12 @@
     }
 
     try {
+      var defaultNamingPath = path.join(configRoot, "default", "naming.yml");
+      var defaultNaming = fs.existsSync(defaultNamingPath) ? parseSimpleYaml(fs.readFileSync(defaultNamingPath, "utf8")) : {};
       fs.readdirSync(configRoot, { withFileTypes: true }).forEach(function (entry) {
         var templatePath;
         var aeRenderPath;
+        var namingPath;
         var data;
         var anchors;
         if (!entry.isDirectory() || entry.name === "default") {
@@ -76,6 +86,7 @@
         }
         templatePath = path.join(configRoot, entry.name, "templates_base.yml");
         aeRenderPath = path.join(configRoot, entry.name, "ae_render.yml");
+        namingPath = path.join(configRoot, entry.name, "naming.yml");
         if (!fs.existsSync(templatePath)) {
           return;
         }
@@ -87,6 +98,7 @@
           root: String(anchors.project_root || ""),
           configDir: path.join(configRoot, entry.name).replace(/\\/g, "/"),
           aeRender: fs.existsSync(aeRenderPath) ? parseSimpleYaml(fs.readFileSync(aeRenderPath, "utf8")) : {},
+          naming: mergeObjects(defaultNaming, fs.existsSync(namingPath) ? parseSimpleYaml(fs.readFileSync(namingPath, "utf8")) : {}),
           shots: loadShotContexts(String(anchors.project_root || ""), String(anchors.project_name || entry.name))
         });
       });
@@ -854,24 +866,39 @@
   function normalizeItems(manifest) {
     var manifestContext = getContext(manifest);
     var rawItems = collectManifestItems(manifest);
+    var latestManifest = latestPreviewRenderManifest(manifest);
+    var latestItems = {};
+    if (latestManifest) {
+      collectManifestItems(latestManifest).forEach(function (latestItem, latestIndex) {
+        var latestId = latestItem.id || latestItem.output_id || latestItem.layer || latestItem.name || "item-" + latestIndex;
+        latestItems[String(latestId)] = latestItem;
+      });
+    }
     return rawItems.map(function (item, index) {
       var itemContext = getContext(item, manifestContext);
+      var itemId = item.id || item.output_id || item.layer || item.name || "item-" + index;
+      var latestItem = latestItems[String(itemId)] || item;
       var outputPath = resolveManifestPath(manifest, item.outputPath || item.output || item.path || item.latestPath || item.image_sequence || item.first_frame_file || "");
       var sourcePath = resolveManifestPath(manifest, item.sourcePath || item.currentPath || item.aePath || item.footagePath || "");
+      var publishedOutputPath = resolveManifestPath(latestManifest || manifest, latestItem.outputPath || latestItem.output || latestItem.path || latestItem.latestPath || latestItem.image_sequence || latestItem.first_frame_file || "");
+      var publishedFirstFrame = resolveManifestPath(latestManifest || manifest, latestItem.first_frame_file || "");
       var versionInfo = extractVersionTake(sourcePath || manifest.path || outputPath);
-      var latestInfo = extractVersionTake(outputPath || sourcePath);
+      var latestInfo = extractVersionTake(publishedOutputPath || outputPath || sourcePath);
       var version = item.version || versionInfo.version || manifest.version || "";
-      var latestVersion = item.latestVersion || item.outputVersion || latestInfo.version || version;
-      var take = item.take || versionInfo.take || latestInfo.take || "";
-      var latestTake = item.latestTake || item.outputTake || latestAvailableTake(outputPath || manifest.path) || latestInfo.take || take;
-      var latestOutputPath = latestTake && take && latestTake !== take ? replaceTakeInPath(outputPath, latestTake) : outputPath;
-      var latestFirstFrame = latestTake && take && latestTake !== take ? replaceTakeInPath(resolveManifestPath(manifest, item.first_frame_file || ""), latestTake) : resolveManifestPath(manifest, item.first_frame_file || "");
-      var checkPath = resolveManifestPath(manifest, item.checkPath || "") || latestFirstFrame || latestOutputPath || outputPath;
+      var latestVersion = latestItem.version || latestItem.latestVersion || latestItem.outputVersion || latestInfo.version || version;
+      var take = item.take || versionInfo.take || "";
+      var latestTake = latestItem.take || latestItem.latestTake || latestItem.outputTake || latestAvailableTake(publishedOutputPath || outputPath || manifest.path) || latestInfo.take || take;
+      var latestOutputPath = publishedOutputPath || outputPath;
+      var latestFirstFrame = publishedFirstFrame || resolveManifestPath(manifest, item.first_frame_file || "");
+      var checkPath = latestFirstFrame || latestOutputPath || resolveManifestPath(manifest, item.checkPath || "") || outputPath;
       var currentLabel = versionTakeLabel(version, take);
       var latestLabel = versionTakeLabel(latestVersion, latestTake);
-      var status = item.status || inferStatus(currentLabel, latestLabel, outputPath);
+      var inferredStatus = inferStatus(currentLabel, latestLabel, latestOutputPath);
+      var status = inferredStatus === "replace"
+        ? inferredStatus
+        : (item.status || inferredStatus);
       return {
-        id: item.id || item.output_id || item.layer || item.name || "item-" + index,
+        id: itemId,
         name: item.name || item.layer || item.output || basename(outputPath) || basename(sourcePath) || "item-" + (index + 1),
         sourcePath: sourcePath,
         outputPath: latestOutputPath,
@@ -895,8 +922,65 @@
     });
   }
 
+  function latestPreviewRenderManifest(manifest) {
+    var context;
+    var department;
+    var candidates;
+    if (!manifest || manifest.schema !== "preview_render_manifest/v1") {
+      return null;
+    }
+    context = getContext(manifest);
+    department = String(manifest.department || "").toLowerCase();
+    candidates = state.manifests.filter(function (candidate) {
+      var candidateContext;
+      if (candidate.schema !== "preview_render_manifest/v1") {
+        return false;
+      }
+      candidateContext = getContext(candidate);
+      return candidateContext.project === context.project
+        && candidateContext.episode === context.episode
+        && candidateContext.sequence === context.sequence
+        && candidateContext.shot === context.shot
+        && String(candidate.department || "").toLowerCase() === department;
+    });
+    candidates.sort(function (a, b) {
+      var aVersion = Number(String(a.version || "").replace(/\D/g, "")) || 0;
+      var bVersion = Number(String(b.version || "").replace(/\D/g, "")) || 0;
+      return bVersion - aVersion || manifestSortTime(b) - manifestSortTime(a);
+    });
+    return candidates[0] || manifest;
+  }
+
   function collectManifestItems(manifest) {
     var items = [];
+    var byKey = {};
+    var result = [];
+
+    function mergeItem(candidate) {
+      var key;
+      var existing;
+      if (!candidate) {
+        return;
+      }
+      normalizeManifestItemFields(candidate);
+      key = manifestItemKey(candidate);
+      if (!key) {
+        result.push(candidate);
+        return;
+      }
+      existing = byKey[key];
+      if (!existing) {
+        byKey[key] = candidate;
+        result.push(candidate);
+        return;
+      }
+      Object.keys(candidate).forEach(function (field) {
+        if (existing[field] === undefined || existing[field] === null || existing[field] === "") {
+          existing[field] = candidate[field];
+        }
+      });
+    }
+
     ["items", "outputs", "assets", "renders"].forEach(function (key) {
       items = items.concat(asArray(manifest[key] || []));
     });
@@ -906,7 +990,32 @@
     if (manifest.slate && (manifest.slate.image_sequence || manifest.slate.first_frame_file)) {
       items.push(Object.assign({ id: "slate", name: "slate", layer: "slate", status: "ready" }, manifest.slate));
     }
-    return items;
+    items.forEach(mergeItem);
+    return result;
+  }
+
+  function normalizeManifestItemFields(item) {
+    if (!item.layer && (item.name || item.id || item.output_id)) {
+      item.layer = item.name || item.id || item.output_id;
+    }
+    if (!item.first_frame_file && item.first_file) {
+      item.first_frame_file = item.first_file;
+    }
+    if (!item.image_sequence && item.pattern) {
+      item.image_sequence = item.pattern;
+    }
+  }
+
+  function manifestItemKey(item) {
+    var layer = item.layer || item.name || item.id || item.output_id || "";
+    var path = item.outputPath || item.output || item.path || item.latestPath || item.image_sequence || item.first_frame_file || "";
+    if (layer) {
+      return "layer:" + String(layer).toLowerCase();
+    }
+    if (path) {
+      return "path:" + cleanFilePath(path).toLowerCase();
+    }
+    return "";
   }
 
   function resolveManifestPath(manifest, value) {
@@ -1125,29 +1234,15 @@
       state.filters.shot
     ].join("|");
     var rows = {};
-    var manifest = getSelectedManifest();
-    var roots = selectedShotRoots();
     var now = Date.now();
 
     if (state.aepFilesCacheKey === key && now - state.aepFilesCacheAt < 15000) {
       return state.aepFiles;
     }
 
-    if (manifest) {
-      addManifestAepRows(rows, manifest);
-    }
-
     collectWorkAepRoots().forEach(function (root) {
       scanAepFiles(root, "Work").forEach(function (row) {
         rows[row.path] = row;
-      });
-    });
-
-    roots.forEach(function (root) {
-      scanAepFiles(joinPath(root, "output/review/" + currentDepartment()), "Output").forEach(function (row) {
-        if (!rows[row.path]) {
-          rows[row.path] = row;
-        }
       });
     });
 
@@ -1165,31 +1260,6 @@
     state.aepFiles = [];
     state.aepFilesCacheKey = "";
     state.aepFilesCacheAt = 0;
-  }
-
-  function addManifestAepRows(rows, manifest) {
-    var packageRoot = manifest.package_root || manifest.packageRoot || manifest.publishRoot || "";
-    var candidates = [
-      manifest.template_project,
-      manifest.templateProject,
-      manifest.ae_project,
-      manifest.aeProject
-    ];
-    if (manifest.ae && typeof manifest.ae === "object") {
-      candidates.push(manifest.ae.project);
-    }
-    candidates.forEach(function (candidate) {
-      var path = resolveManifestPath(manifest, candidate || "");
-      if (path && /\.aep$/i.test(path)) {
-        rows[path] = inspectAepFile(path, "Manifest");
-      }
-    });
-    if (packageRoot) {
-      scanAepFiles(joinPath(packageRoot, "ae"), "Output").forEach(function (row) {
-        row.source = row.source || "Output";
-        rows[row.path] = row;
-      });
-    }
   }
 
   function collectWorkAepRoots() {
@@ -1251,6 +1321,11 @@
       shotRoot: shot.shotRoot,
       department: department,
       root: workAepRoot(shot.shotRoot, department),
+      project: state.filters.project || selectedProjectName(),
+      episode: tokens.episode,
+      sequence: tokens.sequence,
+      shot: tokens.shot,
+      task: afterEffectsTask(),
       prefix: tokens.episode + "_" + tokens.sequence + "_" + tokens.shot + "_" + department
     };
   }
@@ -1329,12 +1404,12 @@
   function aepVersionLabel(path) {
     var normalized = String(path || "").replace(/\\/g, "/");
     var parts = normalized.split("/");
-    var fileMatch = basename(path).match(/_v(\d{3,5})_(\d{2,5})\.aep$/i);
+    var fileMatch = basename(path).match(/_v(\d{3,5})_(?:t|take)?(\d{2,5})\.aep$/i);
     var version = "";
     var take = "";
     var department = "";
     if (fileMatch) {
-      return "v" + fileMatch[1] + "/" + fileMatch[2];
+      return "v" + fileMatch[1] + "/t" + String(Number(fileMatch[2])).padStart(3, "0");
     }
     parts.forEach(function (part, index) {
       if (/^v\d+/i.test(part)) {
@@ -1583,19 +1658,23 @@
       shot: tokens.shot || state.filters.shot,
       shot_root: shot.shotRoot || "",
       dept: currentDepartment(),
-      version: versionTake.version || "v001",
-      take: shortTake(versionTake.take || "t001")
+      task: afterEffectsTask(),
+      version: versionNumberLabel(versionTake.version || "v001"),
+      take: takeNumberLabel(versionTake.take || "t001"),
+      version_label: versionLabel(versionTake.version || "v001"),
+      take_label: takeLabel(versionTake.take || "t001")
     };
+    values.output_filename = afterEffectsFilename("output", values, "mov");
     return {
       compName: String(finalComp.name || "final"),
       fallbackNames: splitCsv(finalComp.fallback_names || ""),
-      renderSettingsTemplate: String(queue.render_settings_template || "Best Settings"),
+      renderSettingsTemplate: String(queue.render_settings_template || "最良設定"),
       renderSettingsTemplateAliases: splitCsv(queue.render_settings_template_aliases || ""),
       outputModuleTemplate: String(queue.output_module_template || "Apple ProRes 422 Proxy"),
       outputModuleTemplateAliases: splitCsv(queue.output_module_template_aliases || ""),
       audioOutput: queue.audio_output !== false && String(queue.audio_output).toLowerCase() !== "false",
       quality: String(queue.quality || "best"),
-      outputPath: values.shot_root ? formatTemplate(String(queue.output_path || DEFAULT_AE_RENDER_CONFIG.render_queue.output_path), values) : "",
+      outputPath: values.shot_root ? afterEffectsOutputPath(String(queue.output_path || DEFAULT_AE_RENDER_CONFIG.render_queue.output_path), values) : "",
       values: values
     };
   }
@@ -1671,6 +1750,74 @@
     return String(template || "").replace(/\{([^}]+)\}/g, function (match, key) {
       return values[key] !== undefined ? values[key] : match;
     });
+  }
+
+  function currentAeNamingConfig() {
+    var project = selectedProject();
+    return mergeObjects(DEFAULT_NAMING_CONFIG, project ? project.naming || {} : {});
+  }
+
+  function afterEffectsTask() {
+    var naming = currentAeNamingConfig().smart_aftereffects || {};
+    return String(naming.task || currentDepartment() || "compTemp");
+  }
+
+  function afterEffectsFilename(kind, values, ext) {
+    var naming = currentAeNamingConfig().smart_aftereffects || {};
+    var key = kind === "aep" ? "aep_filename" : "output_filename";
+    var template = String(naming[key] || DEFAULT_NAMING_CONFIG.smart_aftereffects[key]);
+    var data = Object.assign({}, values, {
+      project: values.project || selectedProjectName(),
+      task: values.task || afterEffectsTask(),
+      ext: ext || ""
+    });
+    return sanitizeFilename(formatTemplate(template, data).replace(/\*/g, "_"));
+  }
+
+  function afterEffectsOutputPath(template, values) {
+    var outputPath = formatTemplate(template, values);
+    if (String(template || "").indexOf("{output_filename}") !== -1) {
+      return outputPath;
+    }
+    return replacePathBasename(outputPath, values.output_filename || afterEffectsFilename("output", values, "mov"));
+  }
+
+  function selectedProjectName() {
+    var project = selectedProject();
+    return state.filters.project || (project ? project.name || project.id : "");
+  }
+
+  function versionLabel(value) {
+    var number = versionNumberLabel(value);
+    return "v" + number;
+  }
+
+  function takeLabel(value) {
+    var number = takeNumberLabel(value);
+    return "t" + number;
+  }
+
+  function versionNumberLabel(value) {
+    var match = String(value || "").match(/v?0*(\d+)/i);
+    return String(match ? Number(match[1]) : 1).padStart(3, "0");
+  }
+
+  function takeNumberLabel(value) {
+    var match = String(value || "").match(/(?:t|take)?0*(\d+)/i);
+    return String(match ? Number(match[1]) : 1).padStart(3, "0");
+  }
+
+  function sanitizeFilename(value) {
+    return String(value || "").replace(/[\\/:?"<>|]/g, "_");
+  }
+
+  function replacePathBasename(path, filename) {
+    var normalized = String(path || "").replace(/\\/g, "/");
+    var index = normalized.lastIndexOf("/");
+    if (index === -1) {
+      return filename;
+    }
+    return normalized.slice(0, index + 1) + filename;
   }
 
   function setStatusCell(element, status) {
@@ -1788,6 +1935,7 @@
       episode: data.episode || data.ep || context.episode || "",
       sequence: data.sequence || data.seq || context.sequence || "",
       shot: data.shot || data.sh || context.shot || "",
+      department: data.department || data.dept || context.department || "",
       path: path || data.path || name,
       package_root: data.package_root || data.packageRoot || context.publishRoot || "",
       publishRoot: data.publishRoot || context.publishRoot || "",
@@ -1904,19 +2052,93 @@
 
   function handlePublishButton() {
     var context = currentWorkContext();
-    var latest;
-    var baseVersion;
-    var nextVersion;
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    var source = state.selectedAepPath;
+    var publishRoot;
+    var versions;
+    var version;
+    var versionLabel;
+    var versionDir;
+    var destination;
+    var publishedAt;
+    var selectedManifest = getSelectedManifest();
     if (!context) {
       setStatus("Select a shot before publishing");
       return;
     }
-    latest = latestWorkAepVersionTake(context);
-    baseVersion = latest.version || currentContextVersion() || 1;
-    nextVersion = baseVersion + 1;
-    state.nextSaveVersions[workContextKey(context)] = nextVersion;
+    if (!fs || !pathModule) {
+      setStatus("Publish failed: Node file system is unavailable");
+      return;
+    }
+    if (!source || !fs.existsSync(source)) {
+      setStatus("Select and Save an AEP before publishing");
+      return;
+    }
+    publishRoot = joinPath(context.shotRoot, "publish/review_project/" + context.department);
+    try {
+      fs.mkdirSync(publishRoot, { recursive: true });
+      versions = fs.readdirSync(publishRoot, { withFileTypes: true })
+        .filter(function (entry) { return entry.isDirectory() && /^v\d{3,5}$/i.test(entry.name); })
+        .map(function (entry) { return Number(entry.name.slice(1)); });
+      version = versions.length ? Math.max.apply(Math, versions) + 1 : 1;
+      versionLabel = "v" + String(version).padStart(3, "0");
+      versionDir = joinPath(publishRoot, versionLabel);
+      fs.mkdirSync(versionDir, { recursive: false });
+      destination = joinPath(versionDir, "review_project.aep");
+      fs.copyFileSync(source, destination);
+      publishedAt = new Date().toISOString();
+      fs.writeFileSync(
+        joinPath(versionDir, "publish.json"),
+        JSON.stringify({
+          publish_type: "review_project",
+          department: context.department,
+          version: versionLabel,
+          files: { aep: "review_project.aep" },
+          source_workfile: source,
+          render_manifest: selectedManifest ? {
+            path: selectedManifest.path || "",
+            version: selectedManifest.version || ""
+          } : {},
+          published_at: publishedAt
+        }, null, 2),
+        "utf8"
+      );
+      fs.writeFileSync(
+        joinPath(publishRoot, "latest.json"),
+        JSON.stringify({
+          version: versionLabel,
+          path: versionLabel + "/review_project.aep"
+        }, null, 2),
+        "utf8"
+      );
+      fs.writeFileSync(
+        joinPath(publishRoot, "versions.json"),
+        JSON.stringify(
+          versions.concat([version]).sort(function (a, b) { return a - b; }).map(function (value) {
+            return {
+              version: "v" + String(value).padStart(3, "0"),
+              status: value === version ? "latest" : "published"
+            };
+          }),
+          null,
+          2
+        ),
+        "utf8"
+      );
+    } catch (error) {
+      setStatus("Publish failed: " + error.message);
+      return;
+    }
+    state.nextSaveVersions[workContextKey(context)] = Math.max(
+      latestWorkAepVersionTake(context).version + 1,
+      currentContextVersion() + 1,
+      1
+    );
+    clearAepCache();
     persistState();
-    setStatus("Published " + context.prefix + " v" + String(baseVersion).padStart(3, "0") + ". Next Save: " + context.prefix + "_v" + String(nextVersion).padStart(3, "0") + "_01.aep");
+    renderRows();
+    setStatus("Published AEP: " + destination);
   }
 
   function nextWorkSavePath() {
@@ -1940,7 +2162,18 @@
       persistState();
     }
     return {
-      path: joinPath(context.root, context.prefix + "_v" + String(version).padStart(3, "0") + "_" + String(take).padStart(2, "0") + ".aep"),
+      path: joinPath(context.root, afterEffectsFilename("aep", {
+        project: context.project,
+        episode: context.episode,
+        sequence: context.sequence,
+        shot: context.shot,
+        dept: context.department,
+        task: context.task,
+        version: String(version).padStart(3, "0"),
+        take: String(take).padStart(3, "0"),
+        version_label: "v" + String(version).padStart(3, "0"),
+        take_label: "t" + String(take).padStart(3, "0")
+      }, "aep")),
       version: version,
       take: take
     };
@@ -1963,7 +2196,7 @@
         if (!entry.isFile() || !/\.aep$/i.test(entry.name)) {
           return;
         }
-        match = entry.name.match(/_v(\d{3,5})_(\d{2,5})\.aep$/i);
+        match = entry.name.match(/_v(\d{3,5})_(?:t|take)?(\d{2,5})\.aep$/i);
         if (!match) {
           return;
         }

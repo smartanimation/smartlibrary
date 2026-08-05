@@ -7,6 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from smartlib.apps.editorial_intake.service import SmartEditorialIntakeService
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.dcc.resolve.export_timeline_csv import (
     create_cutting_markers_from_timeline,
@@ -39,7 +40,7 @@ class ResolveTimelineExportWindow:
 
         self.root = tk.Tk()
         self.root.title("Smart Editorial Export")
-        self.root.geometry("340x560")
+        self.root.geometry("360x650")
         self.root.resizable(True, True)
         self._build_menu()
 
@@ -51,6 +52,9 @@ class ResolveTimelineExportWindow:
         self.track_var = tk.IntVar(value=1)
         self.cut_start_var = tk.IntVar(value=1001)
         self.shot_naming_profile_var = tk.StringVar(value="")
+        self.create_folders_var = tk.BooleanVar(value=True)
+        self.storyreel_var = tk.BooleanVar(value=True)
+        self.dry_run_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="")
         self.media_vars = {
             "Video Codec": tk.StringVar(value="-"),
@@ -80,9 +84,13 @@ class ResolveTimelineExportWindow:
 
         movie_row = ttk.Frame(frame)
         movie_row.pack(fill=tk.X, pady=(10, 4))
-        ttk.Button(movie_row, text="MOV", command=self.pick_manifest_movie).pack(side=tk.LEFT)
-        self.movie_label_var = tk.StringVar(value="No MOV selected")
-        ttk.Label(movie_row, textvariable=self.movie_label_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        ttk.Label(movie_row, text="Ingest Offline").pack(side=tk.LEFT)
+        self.movie_label_var = tk.StringVar(value="Not found")
+        ttk.Label(
+            movie_row,
+            textvariable=self.movie_label_var,
+            wraplength=250,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
         media = ttk.LabelFrame(frame, text="media info", padding=8)
         media.pack(fill=tk.X, pady=(4, 8))
@@ -98,12 +106,32 @@ class ResolveTimelineExportWindow:
         self._labeled_spin(options, "cut_start_frame", self.cut_start_var, 3, 0, 999999)
         self._labeled_combo(options, "shot_naming", self.shot_naming_profile_var, 4, "shot_naming_combo", self._shot_naming_changed)
 
+        ttk.Checkbutton(
+            frame,
+            text="Create Folder Structure",
+            variable=self.create_folders_var,
+        ).pack(anchor=tk.W, pady=(2, 0))
+        ttk.Checkbutton(
+            frame,
+            text="Generate Storyreel / Thumbnail",
+            variable=self.storyreel_var,
+        ).pack(anchor=tk.W)
+
         buttons = ttk.Frame(frame)
         buttons.pack(fill=tk.X, pady=(2, 8))
         ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
         ttk.Button(buttons, text="New Version", command=self.new_version).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(buttons, text="Save", command=self.save).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         ttk.Button(buttons, text="Open Folder", command=self.open_output_folder).pack(side=tk.LEFT, padx=(8, 0))
+
+        intake = ttk.Frame(frame)
+        intake.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(intake, text="Export & Intake", command=self.export_and_intake).pack(
+            side=tk.LEFT,
+            fill=tk.X,
+            expand=True,
+        )
+        ttk.Checkbutton(intake, text="Preflight only", variable=self.dry_run_var).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(frame, textvariable=self.status_var, wraplength=300).pack(fill=tk.X)
         self._refresh_episode_sequence()
@@ -171,12 +199,12 @@ class ResolveTimelineExportWindow:
         except Exception as exc:
             self.status_var.set(str(exc))
 
-    def save(self) -> None:
+    def save(self) -> Path | None:
         episode = self.episode_var.get().strip()
         sequence = self.sequence_var.get().strip()
         if not episode or not sequence:
             messagebox.showwarning("Export Timeline CSV", "episode and sequence are required.")
-            return
+            return None
         try:
             manifest_data = self._manifest_data()
             path = export_marker_events_to_work(
@@ -195,8 +223,64 @@ class ResolveTimelineExportWindow:
             self.current_work_dir = path.parent
             self.version_var.set(path.parent.name)
             self._refresh_versions(keep_current=True)
+            return path
         except Exception as exc:
             messagebox.showerror("Export Timeline CSV Failed", str(exc))
+            return None
+
+    def export_and_intake(self) -> None:
+        """Export marker events, preflight them, then run Intake using offline media."""
+        episode = self.episode_var.get().strip()
+        sequence = self.sequence_var.get().strip()
+        if not episode or not sequence:
+            messagebox.showwarning("Export & Intake", "episode and sequence are required.")
+            return
+
+        movie = self._resolved_offline_movie(episode, sequence)
+        if movie:
+            self._set_manifest_movie(movie)
+        if self.storyreel_var.get() and movie is None:
+            messagebox.showerror(
+                "Export & Intake",
+                f"No Intake offline movie was found for {episode}/{sequence}.",
+            )
+            return
+
+        csv_path = self.save()
+        if csv_path is None:
+            return
+        try:
+            service = SmartEditorialIntakeService(self.project_config)
+            result = service.run(
+                episode,
+                sequence,
+                csv_path.parent.name,
+                csv_path=csv_path,
+                mov_path=movie,
+                comment="Resolve marker export",
+                create_folder_structure=self.create_folders_var.get(),
+                generate_storyreel=self.storyreel_var.get(),
+                dry_run=self.dry_run_var.get(),
+            )
+        except Exception as exc:
+            messagebox.showerror("Export & Intake Preflight Failed", str(exc))
+            self.status_var.set(f"Preflight failed: {exc}")
+            return
+
+        self.current_work_dir = csv_path.parent
+        summary = "\n".join(result.report)
+        self.status_var.set(
+            "Preflight OK (dry-run)" if self.dry_run_var.get() else "Export & Intake finished"
+        )
+        messagebox.showinfo("Export & Intake", summary)
+
+    def _resolved_offline_movie(self, episode: str, sequence: str) -> Path | None:
+        if self.selected_movie_path and self.selected_movie_path.is_file():
+            return self.selected_movie_path
+        latest = latest_ingested_offline_movie(self.project_config, episode, sequence)
+        if latest and latest.is_file():
+            return latest
+        return None
 
     def open_output_folder(self) -> None:
         folder = self.current_work_dir
@@ -366,10 +450,17 @@ class ResolveTimelineExportWindow:
 
     def _set_manifest_movie(self, movie: Path) -> None:
         self.selected_movie_path = movie
-        self.movie_label_var.set(movie.name)
+        self.movie_label_var.set(movie.as_posix())
 
     def _manifest_data(self) -> dict[str, object]:
         data = resolve_project_manifest_data(self.resolve_app)
+        data["resolve_export_options"] = {
+            "handle_head": self.handle_head_var.get(),
+            "handle_tail": self.handle_tail_var.get(),
+            "track_index": self.track_var.get(),
+            "cut_start_frame": self.cut_start_var.get(),
+            "shot_naming_profile": self.shot_naming_profile_var.get().strip(),
+        }
         if self.selected_movie_path:
             data.update(
                 {
@@ -502,21 +593,55 @@ class ResolveTimelineExportWindow:
     def _load_manifest_movie(self) -> None:
         manifest_path = self.current_work_dir / "manifest.json" if self.current_work_dir else None
         if not manifest_path or not manifest_path.exists():
-            self.selected_movie_path = None
-            self.movie_label_var.set("No MOV selected")
+            self._load_ingested_offline()
             return
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             return
+        self._restore_export_options(data)
         movie_path = str(data.get("movie_path") or "").strip()
         movie = str(data.get("movie") or "").strip()
         if movie_path:
-            self.selected_movie_path = Path(movie_path)
-            self.movie_label_var.set(Path(movie_path).name)
+            movie_path_value = Path(movie_path)
+            if movie_path_value.is_file():
+                self._set_manifest_movie(movie_path_value)
+            else:
+                self._load_ingested_offline()
         elif movie:
-            self.selected_movie_path = None
-            self.movie_label_var.set(movie)
+            self._load_ingested_offline()
+        else:
+            self._load_ingested_offline()
+
+    def _restore_export_options(self, manifest: dict[str, object]) -> None:
+        options = manifest.get("resolve_export_options")
+        if not isinstance(options, dict):
+            return
+        integer_options = (
+            ("handle_head", self.handle_head_var, 0, 999),
+            ("handle_tail", self.handle_tail_var, 0, 999),
+            ("track_index", self.track_var, 1, 99),
+            ("cut_start_frame", self.cut_start_var, 0, 999999),
+        )
+        for key, variable, minimum, maximum in integer_options:
+            try:
+                value = int(options[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            variable.set(max(minimum, min(maximum, value)))
+        profile = str(options.get("shot_naming_profile") or "").strip()
+        if profile:
+            self.shot_naming_profile_var.set(profile)
+
+    def _load_ingested_offline(self) -> None:
+        episode = self.episode_var.get().strip()
+        sequence = self.sequence_var.get().strip()
+        movie = latest_ingested_offline_movie(self.project_config, episode, sequence)
+        if movie and movie.is_file():
+            self._set_manifest_movie(movie)
+            return
+        self.selected_movie_path = None
+        self.movie_label_var.set("Not found")
 
     def new_episode(self) -> None:
         value = simpledialog.askstring(

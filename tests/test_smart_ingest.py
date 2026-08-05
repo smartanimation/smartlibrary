@@ -158,6 +158,45 @@ def test_client_editorial_delivery_is_split_by_role_and_indexed(tmp_path: Path) 
     }
 
 
+def test_audio_is_ingested_as_shot_data(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "client" / "20260722_01" / "ep02_s027_sh020_dialog.wav"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"wav")
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    item = service.plan_file(source)
+
+    assert item.status == "Ready"
+    assert item.action == "copy"
+    assert item.target_type == "Shot"
+    assert item.metadata.department == "audio"
+    assert item.metadata.subset == "dialog"
+    assert item.metadata.episode == "ep02"
+    assert item.metadata.sequence == "s027"
+    assert item.metadata.shot == "sh020"
+    assert item.target_path is not None
+    assert "shots/ep02/s027/sh020/data/audio/dialog/v001/ep02_s027_sh020_dialog.wav" in item.target_path.as_posix()
+
+
+def test_audio_without_shot_waits_for_metadata(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "client" / "20260722_01" / "ep02_s027_dialog.wav"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"wav")
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    item = service.plan_file(source)
+
+    assert item.status == "Needs Metadata"
+    assert item.target_type == "Shot"
+    assert item.metadata.department == "audio"
+    assert item.metadata.subset == "dialog"
+    assert item.reason == "shot and department are required"
+
+
 def test_editorial_cut_movies_keep_unique_suffixes(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
@@ -344,6 +383,33 @@ def test_sequence_data_types_are_loaded_from_default_config(tmp_path: Path) -> N
     service = SmartIngestService(ProjectConfig(tmp_path / "config"))
 
     assert service.sequence_data_types() == ["virtual_camera", "mocap"]
+
+
+def test_manual_mocap_sequence_metadata_becomes_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "client" / "20260722_01" / "ELCD_ep02_s027_DLI.fbx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"fbx")
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+
+    item = service.plan_file(
+        source,
+        IngestMetadata(
+            target_type="Sequence",
+            project="TEST",
+            department="mocap",
+            subset="DLI",
+            format="fbx",
+            episode="ep02",
+            sequence="s027",
+        ),
+    )
+
+    assert item.status == "Ready"
+    assert item.action == "copy"
+    assert item.target_path is not None
+    assert "sequences/ep02/s027/data/mocap/fbx/DLI/v001/ELCD_ep02_s027_DLI.fbx" in item.target_path.as_posix()
 
 
 def test_virtual_camera_fbx_and_mov_share_take_version_package(tmp_path: Path) -> None:

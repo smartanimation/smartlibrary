@@ -60,11 +60,11 @@ class SmartGateGuideLocator(omui.MPxLocatorNode):
     )
 
     TEXT_ATTRS = (
-        ("topLeftText", "tlt", "topLeftText"),
-        ("topCenterText", "tct", "topCenterText"),
-        ("topRightText", "trt", "{date}"),
+        ("topLeftText", "tlt", "{date}"),
+        ("topCenterText", "tct", "{scene}"),
+        ("topRightText", "trt", ""),
         ("bottomLeftText", "blt", "{camera} Lens:{focal_length} mm"),
-        ("bottomCenterText", "bct", "bottomCenterText"),
+        ("bottomCenterText", "bct", ""),
         ("bottomRightText", "brt", "{counter}{animTime}"),
     )
 

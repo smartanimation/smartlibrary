@@ -81,6 +81,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.context_configs = {}
         self.context_active_versions = {}
         self.asset_subset_catalog = {}
+        self.template_file_settings = {}
         self._context_loading = False
         self._current_context_key = None
         self._current_context_version = None
@@ -113,9 +114,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         self.soft_tab = self.setup_software_tab()
         self.anchors_table = self.create_table_page("Anchors", ["Key", "Value"])
-        self.shot_depts_list = self.create_list_page("Shot Depts")
+        self.shot_depts_list = self.create_shot_departments_page()
         self.asset_depts_list = self.create_list_page("Asset Depts")
-        self.template_table = self.create_table_page("Templates", ["Key", "Path Value"])
+        self.template_table = self.create_table_page(
+            "Folder Structure",
+            ["Key", "Path Value"],
+        )
+        self.template_files_tab = self.setup_template_files_tab()
         self.naming_tab = self.setup_naming_tab()
         self.context_tab = self.setup_context_tab()
         self.resolvers_tab = self.setup_resolvers_tab()
@@ -124,10 +129,14 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs.addTab(self.anchors_table["widget"], "Anchors")
         self.tabs.addTab(self.shot_depts_list["widget"], "Shot Depts")
         self.tabs.addTab(self.asset_depts_list["widget"], "Asset Depts")
-        self.tabs.addTab(self.template_table["widget"], "Templates")
+        self.tabs.addTab(self.template_table["widget"], "Folder Structure")
+        self.tabs.addTab(self.template_files_tab, "Templates")
         self.tabs.addTab(self.naming_tab, "Naming")
         self.tabs.addTab(self.context_tab, "Contexts")
         self.tabs.addTab(self.resolvers_tab, "Resolvers")
+        self.tabs.currentChanged.connect(self._refresh_template_files_table)
+        self.name_input.textChanged.connect(self._refresh_template_files_table)
+        self.path_input.textChanged.connect(self._refresh_template_files_table)
         main_layout.addWidget(self.tabs)
 
         command_layout = QtWidgets.QHBoxLayout()
@@ -142,6 +151,302 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         command_layout.addWidget(self.revert_btn)
         command_layout.addWidget(self.save_btn)
         main_layout.addLayout(command_layout)
+
+    def setup_template_files_tab(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        self.template_files_table = QtWidgets.QTableWidget(0, 4)
+        self.template_files_table.setHorizontalHeaderLabels(
+            ["Template", "Project File", "Fallback", "Status"]
+        )
+        self.template_files_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectRows
+        )
+        self.template_files_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SingleSelection
+        )
+        self.template_files_table.verticalHeader().setVisible(False)
+        header = self.template_files_table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        layout.addWidget(self.template_files_table, 1)
+
+        buttons = QtWidgets.QHBoxLayout()
+        browse = QtWidgets.QPushButton("Browse Project Template")
+        clear = QtWidgets.QPushButton("Clear Project Template")
+        refresh = QtWidgets.QPushButton("Refresh")
+        browse.clicked.connect(self._browse_project_template)
+        clear.clicked.connect(self._clear_project_template)
+        refresh.clicked.connect(self._refresh_template_files_table)
+        buttons.addWidget(browse)
+        buttons.addWidget(clear)
+        buttons.addStretch()
+        buttons.addWidget(refresh)
+        layout.addLayout(buttons)
+        return page
+
+    def _template_project_root(self):
+        base = self.path_input.text().strip()
+        project = self.name_input.text().strip()
+        if not base or not project:
+            return ""
+        return os.path.normpath(os.path.join(base, project)).replace("\\", "/")
+
+    def _template_rows(self):
+        departments = []
+        department_list = self.shot_depts_list["list"]
+        for index in range(department_list.count()):
+            value = department_list.item(index).text().strip().lower()
+            if value and value not in departments:
+                departments.append(value)
+        rows = [
+            (
+                "maya.asset.model",
+                "Maya Asset / Model Base",
+                "settings/templates/maya/asset/model_base.ma",
+                "templates/maya/asset/model_base.ma",
+            ),
+            (
+                "maya.asset.rig",
+                "Maya Asset / Rig Base",
+                "settings/templates/maya/asset/rig_base.ma",
+                "templates/maya/asset/rig_base.ma",
+            ),
+            (
+                "maya.asset.look",
+                "Maya Asset / Look Base",
+                "settings/templates/maya/asset/look_base.ma",
+                "templates/maya/asset/look_base.ma",
+            ),
+            (
+                "maya.shot.base",
+                "Maya Shot / Base",
+                "settings/templates/maya/shot/shot_base.ma",
+                "templates/maya/shot/shot_base.ma",
+            ),
+        ]
+        rows.extend(
+            (
+                f"maya.shot.departments.{department}",
+                f"Maya Shot / {department.title()}",
+                f"settings/templates/maya/shot/{department}_base.ma",
+                f"templates/maya/shot/{department}_base.ma",
+            )
+            for department in departments
+        )
+        rows.extend(
+            [
+                (
+                    "maya.camera_rig",
+                    "Maya Layout / Camera Rig",
+                    "library/layout/camerarig/camerarig.ma",
+                    "templates/maya/shot/camerarig.ma",
+                ),
+                (
+                    "after_effects.review.base",
+                    "After Effects / Review Base",
+                    "settings/templates/ae/review/review_base.aep",
+                    "templates/ae/review/review_base.aep",
+                ),
+            ]
+        )
+        rows.extend(
+            (
+                f"after_effects.review.departments.{department}",
+                f"After Effects / Review {department.title()}",
+                f"settings/templates/ae/review/review_{department}.aep",
+                f"templates/ae/review/review_{department}.aep",
+            )
+            for department in departments
+        )
+        rows.extend(
+            [
+                (
+                    "usd.look.base",
+                    "USD Look / Base",
+                    "settings/templates/usd/look/look_base.usda",
+                    "templates/usd/look/look_base.usda",
+                ),
+                (
+                    "usd.look.geometry",
+                    "USD Look / Geometry",
+                    "settings/templates/usd/look/look_geo.usda",
+                    "templates/usd/look/look_geo.usda",
+                ),
+                (
+                    "usd.look.material",
+                    "USD Look / Material",
+                    "settings/templates/usd/look/look_material.usda",
+                    "templates/usd/look/look_material.usda",
+                ),
+                (
+                    "usd.look.light",
+                    "USD Look / Light",
+                    "settings/templates/usd/look/look_light.usda",
+                    "templates/usd/look/look_light.usda",
+                ),
+                (
+                    "usd.light.rig_base",
+                    "USD Light / Rig Base",
+                    "settings/templates/usd/light/light_rig_base.usda",
+                    "templates/usd/light/light_rig_base.usda",
+                ),
+            ]
+        )
+        return rows
+
+    def _template_setting(self, key):
+        value = self.template_file_settings
+        for token in str(key).split("."):
+            if not isinstance(value, dict):
+                return ""
+            value = value.get(token)
+        return str(value or "")
+
+    def _set_template_setting(self, key, value):
+        tokens = str(key).split(".")
+        target = self.template_file_settings
+        for token in tokens[:-1]:
+            target = target.setdefault(token, {})
+        target[tokens[-1]] = value
+
+    @staticmethod
+    def _resolved_template_path(value, project_root):
+        text = str(value or "")
+        text = text.replace("{project_root}", project_root)
+        text = text.replace("{pipeline_root}", PIPELINE_ROOT.replace("\\", "/"))
+        return os.path.expandvars(text).replace("\\", "/")
+
+    def _refresh_template_files_table(self, *_args):
+        if not hasattr(self, "template_files_table"):
+            return
+        current_key = ""
+        current_row = self.template_files_table.currentRow()
+        if current_row >= 0:
+            current_item = self.template_files_table.item(current_row, 0)
+            current_key = str(
+                current_item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+            ) if current_item else ""
+        project_root = self._template_project_root()
+        table = self.template_files_table
+        table.blockSignals(True)
+        table.setRowCount(0)
+        selected_row = -1
+        for key, label, project_relative, fallback_relative in self._template_rows():
+            row = table.rowCount()
+            table.insertRow(row)
+            label_item = QtWidgets.QTableWidgetItem(label)
+            label_item.setData(QtCore.Qt.ItemDataRole.UserRole, key)
+            label_item.setFlags(label_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            table.setItem(row, 0, label_item)
+
+            configured = self._template_setting(key)
+            expected = (
+                f"{project_root}/{project_relative}"
+                if project_root else ""
+            )
+            project_value = configured or expected
+            table.setItem(row, 1, QtWidgets.QTableWidgetItem(project_value))
+
+            fallback = os.path.join(
+                PIPELINE_ROOT, fallback_relative
+            ).replace("\\", "/")
+            if (
+                key.startswith("maya.shot.departments.")
+                and not os.path.isfile(fallback)
+            ):
+                fallback = os.path.join(
+                    PIPELINE_ROOT, "templates", "maya", "shot", "shot_base.ma"
+                ).replace("\\", "/")
+            if (
+                key.startswith("after_effects.review.departments.")
+                and not os.path.isfile(fallback)
+            ):
+                fallback = os.path.join(
+                    PIPELINE_ROOT, "templates", "ae", "review", "review_base.aep"
+                ).replace("\\", "/")
+            fallback_item = QtWidgets.QTableWidgetItem(fallback)
+            fallback_item.setFlags(
+                fallback_item.flags() & ~QtCore.Qt.ItemIsEditable
+            )
+            table.setItem(row, 2, fallback_item)
+
+            resolved_project = self._resolved_template_path(
+                project_value, project_root
+            )
+            if resolved_project and os.path.isfile(resolved_project):
+                status, color = "PROJECT", "#80bd72"
+            elif os.path.isfile(fallback):
+                status, color = "FALLBACK", "#f2ae30"
+            else:
+                status, color = "MISSING", "#ef665d"
+            status_item = QtWidgets.QTableWidgetItem(status)
+            status_item.setFlags(
+                status_item.flags() & ~QtCore.Qt.ItemIsEditable
+            )
+            status_item.setForeground(QtGui.QColor(color))
+            table.setItem(row, 3, status_item)
+            if key == current_key:
+                selected_row = row
+        table.blockSignals(False)
+        if selected_row >= 0:
+            table.selectRow(selected_row)
+
+    def _browse_project_template(self):
+        row = self.template_files_table.currentRow()
+        if row < 0:
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select Maya Template",
+            self._template_project_root(),
+            "Maya Scene (*.ma *.mb)",
+        )
+        if not path:
+            return
+        key = self.template_files_table.item(row, 0).data(
+            QtCore.Qt.ItemDataRole.UserRole
+        )
+        self._set_template_setting(str(key), path.replace("\\", "/"))
+        self._refresh_template_files_table()
+
+    def _clear_project_template(self):
+        row = self.template_files_table.currentRow()
+        if row < 0:
+            return
+        key = str(
+            self.template_files_table.item(row, 0).data(
+                QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        self._set_template_setting(key, "")
+        self._refresh_template_files_table()
+
+    def _template_files_from_ui(self):
+        result = copy.deepcopy(self.template_file_settings)
+        project_root = self._template_project_root()
+        for row in range(self.template_files_table.rowCount()):
+            key_item = self.template_files_table.item(row, 0)
+            path_item = self.template_files_table.item(row, 1)
+            if not key_item:
+                continue
+            key = str(key_item.data(QtCore.Qt.ItemDataRole.UserRole) or "")
+            value = path_item.text().strip() if path_item else ""
+            row_definition = next(
+                (definition for definition in self._template_rows() if definition[0] == key),
+                None,
+            )
+            expected = (
+                f"{project_root}/{row_definition[2]}"
+                if project_root and row_definition else ""
+            )
+            self._set_template_setting(
+                key,
+                "" if value == expected else value,
+            )
+        return copy.deepcopy(self.template_file_settings)
 
     def setup_naming_tab(self):
         page = QtWidgets.QWidget()
@@ -1121,8 +1426,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             'anchors': {'project_name': name, 'project_root': f"{base}/{name}".replace("\\", "/")},
             'enabled_softwares': [],
             'shot_depts': [self.shot_depts_list["list"].item(i).text() for i in range(self.shot_depts_list["list"].count())],
+            'shot_tasks': self._shot_tasks_from_ui(),
             'asset_depts': [self.asset_depts_list["list"].item(i).text() for i in range(self.asset_depts_list["list"].count())],
-            'templates': {}
+            'templates': {},
+            'template_files': self._template_files_from_ui(),
         }
         google_sheets = dict(existing_config.get('google_sheets') or {})
         for prefix, value in google_inputs.items():
@@ -1361,6 +1668,103 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         bl.addWidget(add); bl.addWidget(rem); l.addLayout(bl)
         return {"widget": w, "list": lw}
 
+    def create_shot_departments_page(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+
+        department_widget = QtWidgets.QWidget()
+        department_layout = QtWidgets.QVBoxLayout(department_widget)
+        department_layout.setContentsMargins(0, 0, 0, 0)
+        department_layout.addWidget(QtWidgets.QLabel("Departments"))
+        department_list = QtWidgets.QListWidget()
+        department_list.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked)
+        department_layout.addWidget(department_list, 1)
+        department_buttons = QtWidgets.QHBoxLayout()
+        add_department = QtWidgets.QPushButton("+")
+        remove_department = QtWidgets.QPushButton("-")
+        department_buttons.addWidget(add_department)
+        department_buttons.addWidget(remove_department)
+        department_layout.addLayout(department_buttons)
+
+        task_widget = QtWidgets.QWidget()
+        task_layout = QtWidgets.QVBoxLayout(task_widget)
+        task_layout.setContentsMargins(0, 0, 0, 0)
+        task_layout.addWidget(QtWidgets.QLabel("Tasks for selected department"))
+        task_list = QtWidgets.QListWidget()
+        task_list.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked)
+        task_layout.addWidget(task_list, 1)
+        task_buttons = QtWidgets.QHBoxLayout()
+        add_task = QtWidgets.QPushButton("+")
+        remove_task = QtWidgets.QPushButton("-")
+        task_buttons.addWidget(add_task)
+        task_buttons.addWidget(remove_task)
+        task_layout.addLayout(task_buttons)
+
+        layout.addWidget(department_widget, 1)
+        layout.addWidget(task_widget, 1)
+
+        add_department.clicked.connect(
+            lambda: self._add_editable_list_item(department_list, "new_department", ["main"])
+        )
+        remove_department.clicked.connect(
+            lambda: department_list.takeItem(department_list.currentRow())
+        )
+        add_task.clicked.connect(lambda: self._add_editable_list_item(task_list, "new_task"))
+        remove_task.clicked.connect(lambda: task_list.takeItem(task_list.currentRow()))
+        department_list.currentItemChanged.connect(self._on_shot_department_editor_changed)
+        return {"widget": widget, "list": department_list, "tasks": task_list}
+
+    def _add_editable_list_item(self, list_widget, text, data=None):
+        item = QtWidgets.QListWidgetItem(text)
+        item.setFlags(
+            item.flags()
+            | QtCore.Qt.ItemFlag.ItemIsEditable
+            | QtCore.Qt.ItemFlag.ItemIsEnabled
+            | QtCore.Qt.ItemFlag.ItemIsSelectable
+        )
+        if data is not None:
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, list(data))
+        list_widget.addItem(item)
+        list_widget.setCurrentItem(item)
+        list_widget.editItem(item)
+        return item
+
+    def _on_shot_department_editor_changed(self, current, previous):
+        task_list = self.shot_depts_list["tasks"]
+        if previous is not None:
+            previous.setData(
+                QtCore.Qt.ItemDataRole.UserRole,
+                [task_list.item(index).text().strip() for index in range(task_list.count()) if task_list.item(index).text().strip()],
+            )
+        task_list.clear()
+        if current is None:
+            return
+        tasks = current.data(QtCore.Qt.ItemDataRole.UserRole) or ["main"]
+        for task in tasks:
+            self._add_editable_list_item(task_list, str(task))
+
+    def _shot_tasks_from_ui(self):
+        department_list = self.shot_depts_list["list"]
+        current = department_list.currentItem()
+        if current is not None:
+            current.setData(
+                QtCore.Qt.ItemDataRole.UserRole,
+                [
+                    self.shot_depts_list["tasks"].item(index).text().strip()
+                    for index in range(self.shot_depts_list["tasks"].count())
+                    if self.shot_depts_list["tasks"].item(index).text().strip()
+                ],
+            )
+        result = {}
+        for index in range(department_list.count()):
+            item = department_list.item(index)
+            department = item.text().strip()
+            if not department:
+                continue
+            tasks = [str(task).strip() for task in (item.data(QtCore.Qt.ItemDataRole.UserRole) or ["main"]) if str(task).strip()]
+            result[department] = tasks or ["main"]
+        return result
+
     def browse_path(self):
         res = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Directory")
         if res: self.path_input.setText(res.replace("\\", "/"))
@@ -1407,6 +1811,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             else: self.env_tree.takeTopLevelItem(self.env_tree.indexOfTopLevelItem(i))
 
     def _apply_data_to_ui(self, data):
+        self.template_file_settings = copy.deepcopy(
+            data.get("template_files") or {}
+        )
         tab = self.anchors_table["table"]; tab.setRowCount(0)
         for k, v in data.get('anchors', {}).items():
             if k in ["project_name", "project_root"]: continue
@@ -1432,15 +1839,29 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 1,
                 QtWidgets.QTableWidgetItem(google_sheet_url(google_sheets, prefix)),
             )
-        for key, obj in [('shot_depts', self.shot_depts_list), ('asset_depts', self.asset_depts_list)]:
-            obj["list"].clear()
-            for t in data.get(key, []):
-                li = QtWidgets.QListWidgetItem(str(t)); li.setFlags(li.flags() | QtCore.Qt.ItemFlag.ItemIsEditable | QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
-                obj["list"].addItem(li)
+        self.shot_depts_list["list"].clear()
+        self.shot_depts_list["tasks"].clear()
+        default_shot_tasks = (
+            load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")).get("shot_tasks")
+            or {}
+        )
+        shot_tasks = merge_dicts(default_shot_tasks, data.get("shot_tasks") or {})
+        for department in data.get("shot_depts", []):
+            self._add_editable_list_item(
+                self.shot_depts_list["list"],
+                str(department),
+                shot_tasks.get(str(department)) or ["main"],
+            )
+        if self.shot_depts_list["list"].count():
+            self.shot_depts_list["list"].setCurrentRow(0)
+        self.asset_depts_list["list"].clear()
+        for department in data.get("asset_depts", []):
+            self._add_editable_list_item(self.asset_depts_list["list"], str(department))
         tab = self.template_table["table"]; tab.setRowCount(0)
         for k, v in data.get('templates', {}).items():
             r = tab.rowCount(); tab.insertRow(r)
             tab.setItem(r, 0, QtWidgets.QTableWidgetItem(k)); tab.setItem(r, 1, QtWidgets.QTableWidgetItem(v))
+        self._refresh_template_files_table()
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)

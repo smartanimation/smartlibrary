@@ -23,6 +23,7 @@ class CastMember:
     asset: str
     category: str = ""
     group: str = ""
+    variant: str = "default"
     role: str = ""
     namespace: str = ""
 
@@ -64,6 +65,7 @@ def list_cast_members(project_config: ProjectConfig) -> list[CastMember]:
                 asset=asset_name,
                 category=str(asset_info.get("category") or entry.get("category") or ""),
                 group=str(asset_info.get("group") or entry.get("group") or ""),
+                variant=str(entry.get("variant") or "default") or "default",
                 role=str(entry.get("role") or ""),
                 namespace=str(entry.get("namespace") or cast_key),
             )
@@ -451,6 +453,7 @@ def _cast_member_by_name(project_root: Path, member_name: str) -> CastMember:
         asset=asset_name,
         category=str(asset_info.get("category") or entry.get("category") or ""),
         group=str(asset_info.get("group") or entry.get("group") or ""),
+        variant=str(entry.get("variant") or "default") or "default",
         role=str(entry.get("role") or ""),
         namespace=str(entry.get("namespace") or member_name),
     )

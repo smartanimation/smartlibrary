@@ -159,6 +159,16 @@ class SmartEditorialIntakeService:
             return SmartIntakeResult(None, None, 0, preview.report)
 
         report = list(preview.report)
+        errors = self._preflight_errors(
+            preview,
+            episode=episode,
+            sequence=sequence,
+            require_movie=generate_storyreel,
+        )
+        if errors:
+            report.extend(f"preflight - ERROR: {message}" for message in errors)
+            raise ValueError("Editorial preflight failed:\n- " + "\n- ".join(errors))
+        report.append("preflight - OK")
         if dry_run:
             report.append("dry-run - no files written")
             report.append("intake - READY")
@@ -195,6 +205,42 @@ class SmartEditorialIntakeService:
             else:
                 report.append("storyreel - SKIP: offline.mov missing")
         return SmartIntakeResult(result, storyreel_publish_dir, storyreel_shots, report)
+
+    def _preflight_errors(
+        self,
+        preview: IntakePreview,
+        *,
+        episode: str,
+        sequence: str,
+        require_movie: bool,
+    ) -> list[str]:
+        """Validate inputs before Intake creates sequence or shot folders.
+
+        Marker overlaps and gaps are intentionally valid so marker In/Out can
+        control how transitions and empty timeline ranges are assigned.
+        """
+        source = preview.source
+        if source is None:
+            return ["editorial source could not be resolved"]
+        try:
+            events = self.intake_service.read_events_csv(source.csv_path)
+        except Exception as exc:
+            return [str(exc)]
+        errors: list[str] = []
+        for event in events:
+            if event.duration <= 0:
+                errors.append(f"{event.shot}: marker duration must be greater than zero")
+            if event.episode != episode or event.sequence != sequence:
+                errors.append(
+                    f"{event.shot}: marker identity {event.episode}/{event.sequence} "
+                    f"does not match {episode}/{sequence}"
+                )
+        if require_movie:
+            if source.mov_path is None:
+                errors.append("offline movie is required for Storyreel generation")
+            elif not source.mov_path.is_file():
+                errors.append(f"offline movie was not found: {source.mov_path}")
+        return errors
 
     def _resolve_work_version_dir(self, episode: str, sequence: str, version: str) -> Path:
         root = self.editorial_work_root / episode / sequence

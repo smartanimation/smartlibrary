@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sys
+import ast
+from copy import deepcopy
 from pathlib import Path
 
 
@@ -34,11 +36,15 @@ def _default_config_dir() -> Path:
     env_path = os.environ.get("PROJECT_CONFIG_DIR")
     if env_path:
         return Path(env_path)
-    root = Path(os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get("SMARTLIBRARY_ROOT") or Path(__file__).resolve().parents[1])
+    root = Path(
+        os.environ.get("SMARTPIPELINE_ROOT")
+        or os.environ.get("SMARTLIBRARY_ROOT")
+        or Path(__file__).resolve().parents[1]
+    )
     return root / "config" / "STKB"
 
 
-def _service(config_dir: str | os.PathLike[str] | None = None):
+def _service(config_dir=None):
     _ensure_smartlib_on_path()
     from smartlib.apps.shot_manager import ShotIdentity, ShotManagerService
     from smartlib.core.config_loader import ProjectConfig
@@ -56,470 +62,589 @@ def _is_maya_session() -> bool:
 
 
 class ReviewLayerWindow(QtWidgets.QDialog):
-    COLUMNS = [
-        "Layer",
-        "Members",
-        "Camera",
-        "Camera Version",
-        "Width",
-        "Height",
-        "Order",
-        "threeDLayer",
-        "FrameRange",
-        "Take",
-        "Outputs",
-        "AE Slot",
-    ]
+    MEMBER_COLUMNS = ("Type", "Member", "Asset / Object", "Variant", "Role", "Namespace", "Status")
+    CAST_COLUMNS = ("Member", "Asset", "Variant", "Role", "Namespace", "Assigned Layer")
 
-    def __init__(
-        self,
-        identity=None,
-        config_dir: str | os.PathLike[str] | None = None,
-        department: str | None = None,
-        parent=None,
-    ):
+    def __init__(self, identity=None, config_dir=None, department=None, parent=None):
         super().__init__(parent)
         self.service, self.identity_cls = _service(config_dir)
+        self.is_maya_session = _is_maya_session()
         self.identity = identity
         self.fixed_identity = identity is not None
-        self.initial_department = department
-        self.is_maya_session = _is_maya_session()
-        self.setWindowTitle("Review Layer Manager")
-        self.resize(780, 560)
-        self._build_ui()
         if self.identity is None:
-            self._populate_shot_combo()
+            self.identity = self._working_shot_identity()
+        self.department = str(department or "anim").strip() or "anim"
+        self._layers: dict[str, dict] = {}
+        self._cast: dict[str, dict] = {}
+        self.setWindowTitle(f"Review Layer Manager - {self.service.project_config.project_name}")
+        self.resize(1120, 680)
+        self._build_ui()
+        if not self.fixed_identity:
+            self._populate_shots()
         else:
-            self._set_identity_fields(self.identity)
+            self._set_context_label()
         self.refresh()
 
     def _build_ui(self) -> None:
-        root_layout = QtWidgets.QVBoxLayout(self)
-        root_layout.setContentsMargins(6, 6, 6, 6)
-        root_layout.setSpacing(4)
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
-        shot_layout = QtWidgets.QHBoxLayout()
-        shot_layout.setSpacing(4)
+        header = QtWidgets.QHBoxLayout()
+        self.context_label = QtWidgets.QLabel("No shot selected")
+        self.context_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         self.shot_combo = QtWidgets.QComboBox()
-        self.department_combo = QtWidgets.QComboBox()
-        self.department_combo.addItems(self.service.shot_departments)
-        default_dept_index = self.department_combo.findText(self.initial_department or "anim")
-        if default_dept_index >= 0:
-            self.department_combo.setCurrentIndex(default_dept_index)
-        self.episode_edit = QtWidgets.QLineEdit()
-        self.sequence_edit = QtWidgets.QLineEdit()
-        self.shot_edit = QtWidgets.QLineEdit()
-        for widget in (self.episode_edit, self.sequence_edit, self.shot_edit):
-            widget.setReadOnly(True)
-        shot_layout.addWidget(QtWidgets.QLabel("PROJ"))
-        shot_layout.addWidget(QtWidgets.QLabel(self.service.project_config.project_name))
-        shot_layout.addWidget(QtWidgets.QLabel("EP"))
-        shot_layout.addWidget(self.episode_edit)
-        shot_layout.addWidget(QtWidgets.QLabel("SEQ"))
-        shot_layout.addWidget(self.sequence_edit)
-        shot_layout.addWidget(QtWidgets.QLabel("SHOT"))
-        shot_layout.addWidget(self.shot_edit)
-        shot_layout.addWidget(QtWidgets.QLabel("DEPT"))
-        shot_layout.addWidget(self.department_combo)
-        shot_layout.addWidget(self.shot_combo, 1)
-        root_layout.addLayout(shot_layout)
-
-        button_layout = QtWidgets.QHBoxLayout()
-        button_layout.setSpacing(4)
-        self.add_btn = QtWidgets.QPushButton("Add")
-        self.duplicate_btn = QtWidgets.QPushButton("Duplicate")
-        self.delete_btn = QtWidgets.QPushButton("Delete")
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
-        button_layout.addWidget(self.add_btn)
-        button_layout.addWidget(self.duplicate_btn)
-        button_layout.addWidget(self.delete_btn)
-        button_layout.addStretch(1)
-        button_layout.addWidget(self.refresh_btn)
-        root_layout.addLayout(button_layout)
+        self.sync_btn = QtWidgets.QPushButton("Sync Maya Layers")
+        header.addWidget(self.context_label)
+        header.addWidget(self.shot_combo, 1)
+        header.addWidget(self.refresh_btn)
+        header.addWidget(self.sync_btn)
+        root.addLayout(header)
 
-        self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.verticalHeader().setVisible(True)
-        self.table.verticalHeader().setSectionsMovable(True)
-        self.table.verticalHeader().setDragEnabled(True)
-        self.table.verticalHeader().setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
-        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.table.setDragDropMode(QtWidgets.QAbstractItemView.NoDragDrop)
-        root_layout.addWidget(self.table, 1)
+        body = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        body.setChildrenCollapsible(False)
+        body.addWidget(self._build_layers_panel())
+        body.addWidget(self._build_members_panel())
+        body.addWidget(self._build_cast_panel())
+        body.setStretchFactor(0, 1)
+        body.setStretchFactor(1, 3)
+        body.setStretchFactor(2, 2)
+        root.addWidget(body, 1)
 
-        form_group = QtWidgets.QGroupBox("Properties")
-        form = QtWidgets.QFormLayout(form_group)
-        form.setContentsMargins(6, 6, 6, 6)
-        form.setSpacing(4)
-        self.layer_edit = QtWidgets.QLineEdit()
-        self.members_edit = QtWidgets.QLineEdit()
-        self.camera_edit = QtWidgets.QLineEdit()
-        self.camera_version_edit = QtWidgets.QLineEdit("latest")
-        self.width_spin = QtWidgets.QSpinBox()
-        self.width_spin.setRange(1, 16384)
-        self.width_spin.setValue(960)
-        self.height_spin = QtWidgets.QSpinBox()
-        self.height_spin.setRange(1, 16384)
-        self.height_spin.setValue(540)
-        self.order_spin = QtWidgets.QSpinBox()
-        self.order_spin.setRange(-999, 999)
-        self.three_d_check = QtWidgets.QCheckBox("ON")
-        self.frame_range_combo = QtWidgets.QComboBox()
-        self.frame_range_combo.addItems(["Animation", "Editorial", "Custom"])
-        self.take_spin = QtWidgets.QSpinBox()
-        self.take_spin.setRange(1, 999)
-        self.take_spin.setValue(1)
-        self.outputs_edit = QtWidgets.QLineEdit()
-        self.outputs_edit.setPlaceholderText("beauty, wireframe")
-        self.ae_slot_edit = QtWidgets.QLineEdit()
-        form.addRow("Layer", self.layer_edit)
-        form.addRow("Members", self.members_edit)
-        form.addRow("Camera", self.camera_edit)
-        form.addRow("Camera Version", self.camera_version_edit)
-        form.addRow("Width", self.width_spin)
-        form.addRow("Height", self.height_spin)
-        form.addRow("Order", self.order_spin)
-        form.addRow("threeD Layer", self.three_d_check)
-        form.addRow("Frame Range", self.frame_range_combo)
-        form.addRow("Take", self.take_spin)
-        form.addRow("Outputs", self.outputs_edit)
-        form.addRow("AE Slot", self.ae_slot_edit)
-        root_layout.addWidget(form_group)
-
-        action_layout = QtWidgets.QHBoxLayout()
-        self.save_btn = QtWidgets.QPushButton("Save Contract")
-        self.create_layers_btn = QtWidgets.QPushButton("Create Review Layers")
-        self.export_playblast_btn = QtWidgets.QPushButton("Export Playblast")
-        if not self.is_maya_session:
-            self.create_layers_btn.setEnabled(False)
-            self.create_layers_btn.setToolTip("Available inside Maya.")
-            self.export_playblast_btn.setEnabled(False)
-            self.export_playblast_btn.setToolTip("Available inside Maya.")
-        action_layout.addWidget(self.save_btn)
-        action_layout.addWidget(self.create_layers_btn)
-        action_layout.addWidget(self.export_playblast_btn)
-        root_layout.addLayout(action_layout)
-
+        footer = QtWidgets.QHBoxLayout()
         self.status_label = QtWidgets.QLabel("")
-        root_layout.addWidget(self.status_label)
+        self.save_btn = QtWidgets.QPushButton("Save")
+        self.create_layers_btn = QtWidgets.QPushButton("Create / Sync Display Layers")
+        self.close_btn = QtWidgets.QPushButton("Close")
+        self.save_btn.setStyleSheet("background-color: #2868a8;")
+        self.create_layers_btn.setStyleSheet("background-color: #3f7d32;")
+        footer.addWidget(self.status_label, 1)
+        footer.addWidget(self.save_btn)
+        footer.addWidget(self.create_layers_btn)
+        footer.addWidget(self.close_btn)
+        root.addLayout(footer)
 
-        self.shot_combo.currentIndexChanged.connect(self._on_shot_combo_changed)
-        self.add_btn.clicked.connect(self.add_layer)
-        self.duplicate_btn.clicked.connect(self.duplicate_layer)
-        self.delete_btn.clicked.connect(self.delete_layer)
+        if not self.is_maya_session:
+            self.sync_btn.setEnabled(False)
+            self.create_layers_btn.setEnabled(False)
+            self.add_object_btn.setEnabled(False)
+            self.select_maya_btn.setEnabled(False)
+
+        self.shot_combo.currentIndexChanged.connect(self._shot_changed)
         self.refresh_btn.clicked.connect(self.refresh)
+        self.sync_btn.clicked.connect(self.create_review_layers)
+        self.layer_list.currentItemChanged.connect(lambda *_: self._refresh_member_views())
+        self.layer_list.model().rowsMoved.connect(lambda *_: self._refresh_layer_counts())
+        self.add_layer_btn.clicked.connect(self.add_layer)
+        self.duplicate_layer_btn.clicked.connect(self.duplicate_layer)
+        self.delete_layer_btn.clicked.connect(self.delete_layer)
+        self.add_cast_btn.clicked.connect(self.add_cast)
+        self.add_object_btn.clicked.connect(self.add_selected_objects)
+        self.remove_member_btn.clicked.connect(self.remove_members)
+        self.select_maya_btn.clicked.connect(self.select_members_in_maya)
+        self.cast_search.textChanged.connect(self._populate_available_cast)
         self.save_btn.clicked.connect(self.save)
         self.create_layers_btn.clicked.connect(self.create_review_layers)
-        self.export_playblast_btn.clicked.connect(self.export_playblast)
-        self.table.currentCellChanged.connect(lambda *_args: self._load_selected_row_to_form())
-        for widget in (
-            self.layer_edit,
-            self.members_edit,
-            self.camera_edit,
-            self.camera_version_edit,
-            self.outputs_edit,
-            self.ae_slot_edit,
-        ):
-            widget.editingFinished.connect(self._apply_form_to_selected_row)
-        for widget in (self.width_spin, self.height_spin, self.order_spin, self.take_spin):
-            widget.valueChanged.connect(lambda _value: self._apply_form_to_selected_row())
-        self.three_d_check.stateChanged.connect(lambda _state: self._apply_form_to_selected_row())
-        self.frame_range_combo.currentTextChanged.connect(lambda _text: self._apply_form_to_selected_row())
+        self.close_btn.clicked.connect(self.close)
 
-    def _populate_shot_combo(self) -> None:
+    def _build_layers_panel(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QtWidgets.QLabel("Review Layers"))
+        self.layer_list = QtWidgets.QListWidget()
+        self.layer_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.layer_list.setDefaultDropAction(QtCore.Qt.MoveAction)
+        layout.addWidget(self.layer_list, 1)
+        actions = QtWidgets.QHBoxLayout()
+        self.add_layer_btn = QtWidgets.QPushButton("+")
+        self.duplicate_layer_btn = QtWidgets.QPushButton("Duplicate")
+        self.delete_layer_btn = QtWidgets.QPushButton("Delete")
+        actions.addWidget(self.add_layer_btn)
+        actions.addWidget(self.duplicate_layer_btn)
+        actions.addWidget(self.delete_layer_btn)
+        layout.addLayout(actions)
+        return widget
+
+    def _build_members_panel(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QtWidgets.QLabel("Layer Members"))
+        actions = QtWidgets.QHBoxLayout()
+        self.add_cast_btn = QtWidgets.QPushButton("Add Cast")
+        self.add_object_btn = QtWidgets.QPushButton("Add Selected Objects")
+        self.remove_member_btn = QtWidgets.QPushButton("Remove")
+        self.select_maya_btn = QtWidgets.QPushButton("Select in Maya")
+        for button in (
+            self.add_cast_btn,
+            self.add_object_btn,
+            self.remove_member_btn,
+            self.select_maya_btn,
+        ):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        self.member_table = QtWidgets.QTableWidget(0, len(self.MEMBER_COLUMNS))
+        self.member_table.setHorizontalHeaderLabels(self.MEMBER_COLUMNS)
+        self.member_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.member_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.member_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.member_table.setShowGrid(False)
+        self.member_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.member_table, 1)
+        return widget
+
+    def _build_cast_panel(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QtWidgets.QLabel("Available Cast"))
+        self.cast_search = QtWidgets.QLineEdit()
+        self.cast_search.setPlaceholderText("Search cast")
+        layout.addWidget(self.cast_search)
+        self.cast_table = QtWidgets.QTableWidget(0, len(self.CAST_COLUMNS))
+        self.cast_table.setHorizontalHeaderLabels(self.CAST_COLUMNS)
+        self.cast_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.cast_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.cast_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.cast_table.setShowGrid(False)
+        self.cast_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.cast_table, 1)
+        self.info_label = QtWidgets.QLabel("")
+        self.info_label.setMinimumHeight(90)
+        self.info_label.setAlignment(QtCore.Qt.AlignTop)
+        layout.addWidget(self.info_label)
+        return widget
+
+    def _populate_shots(self) -> None:
+        preferred = self.identity
         self.shot_combo.blockSignals(True)
         self.shot_combo.clear()
+        preferred_index = -1
         for identity in self.service.list_shots():
             self.shot_combo.addItem(identity.code, identity)
+            if identity == preferred:
+                preferred_index = self.shot_combo.count() - 1
+        if preferred_index >= 0:
+            self.shot_combo.setCurrentIndex(preferred_index)
         self.shot_combo.blockSignals(False)
         if self.shot_combo.count():
-            self.identity = self.shot_combo.itemData(0)
-            self._set_identity_fields(self.identity)
+            self.identity = self.shot_combo.currentData()
+        self.shot_combo.setVisible(not self.fixed_identity)
+        self._set_context_label()
 
-    def _on_shot_combo_changed(self) -> None:
+    def _working_shot_identity(self):
+        if self.is_maya_session:
+            try:
+                import maya.cmds as cmds
+
+                scene_path = str(cmds.file(query=True, sceneName=True) or "")
+                identity = self.service.shot_identity_from_path(scene_path)
+                if identity is not None:
+                    return identity
+            except Exception:
+                pass
+
+        try:
+            _ensure_smartlib_on_path()
+            from smartlib.core.tokens import TokenContext
+
+            tokens = TokenContext.from_environment()
+            if tokens.episode and tokens.sequence and tokens.shot:
+                candidate = self.identity_cls(
+                    tokens.episode,
+                    tokens.sequence,
+                    tokens.shot,
+                )
+                if candidate in self.service.list_shots():
+                    return candidate
+        except Exception:
+            pass
+        return None
+
+    def _shot_changed(self) -> None:
         identity = self.shot_combo.currentData()
         if identity:
             self.identity = identity
-            self._set_identity_fields(identity)
+            self._set_context_label()
             self.refresh()
 
-    def _set_identity_fields(self, identity) -> None:
-        self.episode_edit.setText(identity.episode)
-        self.sequence_edit.setText(identity.sequence)
-        self.shot_edit.setText(identity.shot)
-        self.shot_combo.setVisible(not self.fixed_identity)
+    def _set_context_label(self) -> None:
+        if self.identity:
+            self.context_label.setText(
+                f"{self.identity.episode} / {self.identity.sequence} / {self.identity.shot}"
+            )
 
     def refresh(self) -> None:
         if not self.identity:
-            self.table.setRowCount(0)
             return
-        self.table.setRowCount(0)
-        for row_data in self.service.review_layer_rows(self.identity):
-            self._append_row(row_data)
-        if self.table.rowCount():
-            self.table.setCurrentCell(0, 0)
-        self.table.resizeColumnsToContents()
-        self.status_label.setText(f"{self.table.rowCount()} review layers")
+        self._cast = dict((self.service.load_cast(self.identity).get("cast") or {}))
+        self._layers = deepcopy(
+            self.service.review_layers(self.identity, self.department)
+        )
+        repaired = self._normalize_cast_members()
+        if repaired:
+            self.service.write_review_layers(
+                self.identity,
+                self._layers,
+                department=self.department,
+            )
+        self._populate_layers()
+        self._refresh_member_views()
+        self.status_label.setText(f"{len(self._layers)} Review Layers")
+
+    def _populate_layers(self, selected="") -> None:
+        current = selected or self.current_layer_name()
+        self.layer_list.clear()
+        for name, layer in sorted(
+            self._layers.items(), key=lambda item: int((item[1] or {}).get("order", 0))
+        ):
+            item = QtWidgets.QListWidgetItem()
+            item.setData(QtCore.Qt.UserRole, name)
+            self.layer_list.addItem(item)
+            self._set_layer_item_text(item)
+            if name == current:
+                self.layer_list.setCurrentItem(item)
+        if self.layer_list.count() and self.layer_list.currentRow() < 0:
+            self.layer_list.setCurrentRow(0)
+
+    def _set_layer_item_text(self, item) -> None:
+        name = str(item.data(QtCore.Qt.UserRole) or "")
+        layer = self._layers.get(name) or {}
+        count = len(layer.get("members") or []) + len(layer.get("objects") or [])
+        item.setText(f"{name}    {count}")
+
+    def current_layer_name(self) -> str:
+        item = self.layer_list.currentItem()
+        return str(item.data(QtCore.Qt.UserRole) or "") if item else ""
 
     def add_layer(self) -> None:
-        name = self._unique_layer_name("NEW")
-        self._append_row(
-            {
-                "layer": name,
-                "members": "",
-                "camera": "",
-                "camera_publish": "latest",
-                "width": 960,
-                "height": 540,
-                "order": 0,
-                "three_d_layer": False,
-                "frame_range": "Animation",
-                "take": 1,
-                "outputs": self._default_outputs_for_layer(name),
-                "ae_slot": name,
-            }
-        )
-        self.table.setCurrentCell(self.table.rowCount() - 1, 0)
+        name, accepted = QtWidgets.QInputDialog.getText(self, "Add Review Layer", "Layer name")
+        name = str(name).strip().upper()
+        if not accepted or not name:
+            return
+        if name in self._layers:
+            QtWidgets.QMessageBox.warning(self, "Add Review Layer", f"Layer already exists: {name}")
+            return
+        self._layers[name] = {"members": [], "objects": [], "order": len(self._layers) * 10}
+        self._populate_layers(name)
 
     def duplicate_layer(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
+        source = self.current_layer_name()
+        if not source:
             return
-        data = self._row_data(row)
-        data["layer"] = self._unique_layer_name(f"{data['layer']}_COPY")
-        self._append_row(data)
-        self.table.setCurrentCell(self.table.rowCount() - 1, 0)
+        name = f"{source}_COPY"
+        index = 2
+        while name in self._layers:
+            name = f"{source}_COPY{index}"
+            index += 1
+        layer = deepcopy(self._layers[source])
+        layer["members"] = []
+        layer["objects"] = []
+        self._layers[name] = layer
+        self._populate_layers(name)
 
     def delete_layer(self) -> None:
-        row = self.table.currentRow()
-        if row >= 0:
-            self.table.removeRow(row)
+        name = self.current_layer_name()
+        if name:
+            self._layers.pop(name, None)
+            self._populate_layers()
+            self._refresh_member_views()
+
+    def _cast_assignment(self, cast_key: str) -> str:
+        for layer_name, layer in self._layers.items():
+            if cast_key in (layer.get("members") or []):
+                return layer_name
+        return ""
+
+    def add_cast(self) -> None:
+        target = self.current_layer_name()
+        if not target:
+            return
+        selected = sorted({index.row() for index in self.cast_table.selectionModel().selectedRows()})
+        for row in selected:
+            item = self.cast_table.item(row, 0)
+            payload = item.data(QtCore.Qt.UserRole) if item else {}
+            cast_key = (
+                str(payload.get("cast_key") or "")
+                if isinstance(payload, dict)
+                else str(payload or "")
+            )
+            if not cast_key:
+                continue
+            assigned = self._cast_assignment(cast_key)
+            if assigned and assigned != target:
+                answer = QtWidgets.QMessageBox.question(
+                    self,
+                    "Duplicate Assignment",
+                    f"{cast_key} is already assigned to {assigned}.\nMove to {target}?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+                    QtWidgets.QMessageBox.Cancel,
+                )
+                if answer != QtWidgets.QMessageBox.Yes:
+                    continue
+                self._layers[assigned]["members"] = [
+                    value for value in self._layers[assigned].get("members", []) if value != cast_key
+                ]
+            members = self._layers[target].setdefault("members", [])
+            if cast_key not in members:
+                members.append(cast_key)
+        self._refresh_member_views()
+        self._refresh_layer_counts()
+
+    def _normalize_cast_members(self) -> bool:
+        """Repair member payloads written by the first focused UI version."""
+        changed = False
+        for layer in self._layers.values():
+            original = list(layer.get("members") or [])
+            normalized = []
+            for value in original:
+                cast_key = ""
+                if isinstance(value, dict):
+                    cast_key = str(value.get("cast_key") or value.get("key") or "")
+                elif isinstance(value, str):
+                    cast_key = value
+                    if value.startswith("{") and "cast_key" in value:
+                        try:
+                            payload = ast.literal_eval(value)
+                        except (SyntaxError, ValueError):
+                            payload = {}
+                        if isinstance(payload, dict):
+                            cast_key = str(payload.get("cast_key") or value)
+                if cast_key and cast_key not in normalized:
+                    normalized.append(cast_key)
+            layer["members"] = normalized
+            changed = changed or normalized != original
+        return changed
+
+    def add_selected_objects(self) -> None:
+        if not self.is_maya_session:
+            return
+        import maya.cmds as cmds
+
+        target = self.current_layer_name()
+        selected = cmds.ls(selection=True, long=True) or []
+        if not target or not selected:
+            self.status_label.setText("Select Maya objects first")
+            return
+        objects = self._layers[target].setdefault("objects", [])
+        existing = {
+            str(item.get("maya_uuid") or item.get("dag_path") or "")
+            for item in objects
+            if isinstance(item, dict)
+        }
+        for node in selected:
+            uuids = cmds.ls(node, uuid=True) or []
+            uuid = str(uuids[0]) if uuids else ""
+            key = uuid or str(node)
+            if key in existing:
+                continue
+            objects.append(
+                {
+                    "name": str(node).rsplit("|", 1)[-1],
+                    "maya_uuid": uuid,
+                    "dag_path": str(node),
+                }
+            )
+            existing.add(key)
+        self._refresh_member_views()
+        self._refresh_layer_counts()
+
+    def remove_members(self) -> None:
+        layer_name = self.current_layer_name()
+        if not layer_name:
+            return
+        rows = sorted(
+            {index.row() for index in self.member_table.selectionModel().selectedRows()},
+            reverse=True,
+        )
+        for row in rows:
+            item = self.member_table.item(row, 0)
+            payload = dict(item.data(QtCore.Qt.UserRole) or {}) if item else {}
+            if payload.get("type") == "cast":
+                key = str(payload.get("key") or "")
+                self._layers[layer_name]["members"] = [
+                    value for value in self._layers[layer_name].get("members", []) if value != key
+                ]
+            else:
+                key = str(payload.get("key") or "")
+                self._layers[layer_name]["objects"] = [
+                    value
+                    for value in self._layers[layer_name].get("objects", [])
+                    if str(value.get("maya_uuid") or value.get("dag_path") or "") != key
+                ]
+        self._refresh_member_views()
+        self._refresh_layer_counts()
+
+    def select_members_in_maya(self) -> None:
+        if not self.is_maya_session:
+            return
+        import maya.cmds as cmds
+
+        nodes = []
+        for index in self.member_table.selectionModel().selectedRows():
+            item = self.member_table.item(index.row(), 0)
+            payload = dict(item.data(QtCore.Qt.UserRole) or {}) if item else {}
+            if payload.get("type") == "object":
+                uuid = str(payload.get("uuid") or "")
+                matches = cmds.ls(uuid, long=True) if uuid else []
+                path = str(payload.get("path") or "")
+                nodes.extend(matches or ([path] if path and cmds.objExists(path) else []))
+            else:
+                entry = self._cast.get(str(payload.get("key") or "")) or {}
+                namespace = str(entry.get("namespace") or "").strip(":")
+                nodes.extend(cmds.ls(f"{namespace}:*", long=True) or [])
+        if nodes:
+            cmds.select(list(dict.fromkeys(nodes)), replace=True)
+
+    def _refresh_member_views(self) -> None:
+        self._populate_members()
+        self._populate_available_cast()
+        layer_name = self.current_layer_name()
+        layer = self._layers.get(layer_name) or {}
+        count = len(layer.get("members") or []) + len(layer.get("objects") or [])
+        self.info_label.setText(
+            f"Selected Layer: {layer_name}\n"
+            f"Display Layer: {layer_name}\n"
+            f"Member Count: {count}\n"
+            "Cast Unique: Yes"
+        )
+
+    def _populate_members(self) -> None:
+        self.member_table.setRowCount(0)
+        layer = self._layers.get(self.current_layer_name()) or {}
+        for cast_key in layer.get("members") or []:
+            entry = self._cast.get(cast_key) or {}
+            values = (
+                "Cast",
+                cast_key,
+                entry.get("asset", ""),
+                entry.get("variant", ""),
+                entry.get("role", ""),
+                entry.get("namespace", ""),
+                "In Sync" if entry else "Missing",
+            )
+            self._append_table_row(
+                self.member_table,
+                values,
+                {"type": "cast", "key": cast_key},
+            )
+        for obj in layer.get("objects") or []:
+            path = str(obj.get("dag_path") or "")
+            exists = False
+            if self.is_maya_session:
+                import maya.cmds as cmds
+
+                exists = bool(cmds.objExists(path) or (obj.get("maya_uuid") and cmds.ls(obj["maya_uuid"])))
+            values = (
+                "Object",
+                obj.get("name", ""),
+                path,
+                "-",
+                "Scene Object",
+                "-",
+                "In Sync" if exists else "Missing",
+            )
+            self._append_table_row(
+                self.member_table,
+                values,
+                {
+                    "type": "object",
+                    "key": str(obj.get("maya_uuid") or path),
+                    "uuid": str(obj.get("maya_uuid") or ""),
+                    "path": path,
+                },
+            )
+        self.member_table.resizeColumnsToContents()
+
+    def _populate_available_cast(self) -> None:
+        query = self.cast_search.text().strip().lower()
+        self.cast_table.setRowCount(0)
+        for cast_key, entry in sorted(self._cast.items(), key=lambda item: item[0].lower()):
+            haystack = " ".join(
+                str(value) for value in (cast_key, entry.get("asset"), entry.get("variant"), entry.get("role"))
+            ).lower()
+            if query and query not in haystack:
+                continue
+            assigned = self._cast_assignment(cast_key)
+            values = (
+                cast_key,
+                entry.get("asset", ""),
+                entry.get("variant", ""),
+                entry.get("role", ""),
+                entry.get("namespace", ""),
+                assigned or "-",
+            )
+            row = self._append_table_row(
+                self.cast_table,
+                values,
+                {"cast_key": cast_key},
+            )
+            if assigned:
+                for column in range(self.cast_table.columnCount()):
+                    self.cast_table.item(row, column).setForeground(QtCore.Qt.gray)
+        self.cast_table.resizeColumnsToContents()
+
+    @staticmethod
+    def _append_table_row(table, values, payload) -> int:
+        row = table.rowCount()
+        table.insertRow(row)
+        for column, value in enumerate(values):
+            item = QtWidgets.QTableWidgetItem(str(value))
+            if column == 0:
+                item.setData(QtCore.Qt.UserRole, payload)
+            table.setItem(row, column, item)
+        return row
+
+    def _refresh_layer_counts(self) -> None:
+        for index in range(self.layer_list.count()):
+            self._set_layer_item_text(self.layer_list.item(index))
 
     def save(self) -> None:
         if not self.identity:
             return
         try:
-            self._normalize_order_from_rows()
-            self.service.write_review_layers(self.identity, self._review_layers_from_table())
-            self.status_label.setText("Saved review layer contract")
+            ordered = {}
+            for index in range(self.layer_list.count()):
+                name = str(self.layer_list.item(index).data(QtCore.Qt.UserRole) or "")
+                layer = deepcopy(self._layers.get(name) or {})
+                layer["order"] = index * 10
+                ordered[name] = layer
+            self._layers = ordered
+            path = self.service.write_review_layers(
+                self.identity,
+                self._layers,
+                department=self.department,
+            )
+            self.status_label.setText(f"Saved Review Spec: {path.parent.name}")
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Save Contract Failed", str(exc))
+            QtWidgets.QMessageBox.critical(self, "Save Failed", str(exc))
 
     def create_review_layers(self) -> None:
-        if not self.identity:
-            return
-        if not self.is_maya_session:
-            QtWidgets.QMessageBox.information(self, "Create Review Layers", "Create Review Layers is available inside Maya.")
+        if not self.is_maya_session or not self.identity:
             return
         try:
             self.save()
-            _ensure_smartlib_on_path()
             from smartlib.dcc.maya.shot_builder import create_review_display_layers
 
-            result = create_review_display_layers(self.service.load_cast(self.identity))
-            summary = ", ".join(f"{name}: {count}" for name, count in sorted(result.items()))
-            self.status_label.setText(f"Created review layers: {summary}")
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Create Review Layers Failed", str(exc))
-
-    def export_playblast(self) -> None:
-        if not self.identity:
-            return
-        if not self.is_maya_session:
-            QtWidgets.QMessageBox.information(self, "Export Playblast", "Export Playblast is available inside Maya.")
-            return
-        try:
-            self.save()
-            import maya.cmds as cmds
-            from smartlib.dcc.maya.review_playblast import export_beauty_sequences
-
-            department = self.department_combo.currentText().strip() or "anim"
-            source_workfile = cmds.file(query=True, sceneName=True) or ""
-            plan = self.service.plan_review_playblast_take(
+            contract = self.service.load_cast(self.identity)
+            contract["review_layers"] = self.service.review_layers(
                 self.identity,
-                department,
-                source_workfile=source_workfile,
-                comment="beauty playblast",
-                write=True,
+                self.department,
             )
-            exported = export_beauty_sequences(plan)
-            if exported:
-                summary = ", ".join(f"{layer}: {data.get('file_count', 0)}" for layer, data in sorted(exported.items()))
-            else:
-                summary = "No layers exported. Check Members in Review Layer Manager."
-            self.status_label.setText(f"Exported playblast: {plan.version_dir} | {summary}")
-            QtWidgets.QMessageBox.information(self, "Export Playblast", f"{plan.version_dir}\n{summary}")
+            result = create_review_display_layers(contract)
+            summary = ", ".join(f"{name}: {count}" for name, count in sorted(result.items()))
+            self.status_label.setText(f"Synced Maya Display Layers: {summary}")
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Export Playblast Failed", str(exc))
-
-    def _append_row(self, data: dict) -> None:
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        values = [
-            data.get("layer", ""),
-            data.get("members", ""),
-            data.get("camera", ""),
-            data.get("camera_publish", ""),
-            data.get("width", ""),
-            data.get("height", ""),
-            data.get("order", ""),
-            "true" if data.get("three_d_layer") else "false",
-            data.get("frame_range", "Animation"),
-            data.get("take", 1),
-            data.get("outputs", ""),
-            data.get("ae_slot", ""),
-        ]
-        for column, value in enumerate(values):
-            self.table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
-
-    def _load_selected_row_to_form(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
-            return
-        data = self._row_data(row)
-        self.layer_edit.setText(data["layer"])
-        self.members_edit.setText(data["members"])
-        self.camera_edit.setText(data["camera"])
-        self.camera_version_edit.setText(data["camera_publish"])
-        self.width_spin.setValue(_int_or(data["width"], 960))
-        self.height_spin.setValue(_int_or(data["height"], 540))
-        self.order_spin.setValue(_int_or(data["order"], 0))
-        self.three_d_check.setChecked(_bool_text(data["three_d_layer"]))
-        index = self.frame_range_combo.findText(data["frame_range"])
-        self.frame_range_combo.setCurrentIndex(index if index >= 0 else 0)
-        self.take_spin.setValue(_int_or(data["take"], 1))
-        self.outputs_edit.setText(data["outputs"])
-        self.ae_slot_edit.setText(data["ae_slot"])
-
-    def _apply_form_to_selected_row(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
-            return
-        values = [
-            self.layer_edit.text().strip(),
-            self.members_edit.text().strip(),
-            self.camera_edit.text().strip(),
-            self.camera_version_edit.text().strip() or "latest",
-            str(self.width_spin.value()),
-            str(self.height_spin.value()),
-            str(self.order_spin.value()),
-            "true" if self.three_d_check.isChecked() else "false",
-            self.frame_range_combo.currentText(),
-            str(self.take_spin.value()),
-            self.outputs_edit.text().strip(),
-            self.ae_slot_edit.text().strip(),
-        ]
-        for column, value in enumerate(values):
-            item = self.table.item(row, column)
-            if item is None:
-                item = QtWidgets.QTableWidgetItem()
-                self.table.setItem(row, column, item)
-            item.setText(value)
-
-    def _review_layers_from_table(self) -> dict:
-        review_layers = {}
-        for row in self._visual_rows():
-            data = self._row_data(row)
-            layer = data["layer"].strip().upper()
-            if not layer:
-                continue
-            members = [item.strip() for item in data["members"].split(",") if item.strip()]
-            review_layers[layer] = {
-                "members": members,
-                "order": _int_or(data["order"], 0),
-                "three_d_layer": _bool_text(data["three_d_layer"]),
-                "frame_range": data["frame_range"] or "Animation",
-                "take": _int_or(data["take"], 1),
-                "outputs": _csv_values(data["outputs"]) or _csv_values(self._default_outputs_for_layer(layer)),
-                "camera": {
-                    "publish_type": "camera",
-                    "version": data["camera_publish"] or "latest",
-                    "name": data["camera"],
-                },
-                "resolution": {
-                    "width": _int_or(data["width"], 960),
-                    "height": _int_or(data["height"], 540),
-                    "scale": 1.0,
-                },
-                "ae": {
-                    "comp_name": data["ae_slot"] or layer,
-                    "template_slot": data["ae_slot"] or layer,
-                    "blend_mode": "normal",
-                },
-            }
-        return review_layers
-
-    def _normalize_order_from_rows(self) -> None:
-        for visual_index, row in enumerate(self._visual_rows()):
-            item = self.table.item(row, 6)
-            if item is None:
-                item = QtWidgets.QTableWidgetItem()
-                self.table.setItem(row, 6, item)
-            item.setText(str(visual_index * 10))
-
-    def _visual_rows(self) -> list[int]:
-        header = self.table.verticalHeader()
-        return [header.logicalIndex(visual_row) for visual_row in range(self.table.rowCount())]
-
-    def _row_data(self, row: int) -> dict:
-        return {
-            "layer": self._table_text(row, 0),
-            "members": self._table_text(row, 1),
-            "camera": self._table_text(row, 2),
-            "camera_publish": self._table_text(row, 3),
-            "width": self._table_text(row, 4),
-            "height": self._table_text(row, 5),
-            "order": self._table_text(row, 6),
-            "three_d_layer": self._table_text(row, 7),
-            "frame_range": self._table_text(row, 8),
-            "take": self._table_text(row, 9),
-            "outputs": self._table_text(row, 10),
-            "ae_slot": self._table_text(row, 11),
-        }
-
-    def _table_text(self, row: int, column: int) -> str:
-        item = self.table.item(row, column)
-        return item.text().strip() if item else ""
-
-    def _unique_layer_name(self, base: str) -> str:
-        existing = {self._table_text(row, 0).upper() for row in range(self.table.rowCount())}
-        candidate = base.upper()
-        if candidate not in existing:
-            return candidate
-        index = 1
-        while f"{candidate}_{index:02d}" in existing:
-            index += 1
-        return f"{candidate}_{index:02d}"
-
-    @staticmethod
-    def _default_outputs_for_layer(layer: str) -> str:
-        layer = str(layer).upper()
-        if layer in {"CHA", "CHB"}:
-            return "beauty, wireframe"
-        return "beauty"
-
-
-def _int_or(value, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _bool_text(value) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _csv_values(value: str) -> list[str]:
-    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+            QtWidgets.QMessageBox.critical(self, "Sync Display Layers Failed", str(exc))
 
 
 _WINDOW = None
 
 
-def show(identity=None, config_dir: str | os.PathLike[str] | None = None, department: str | None = None, parent=None):
+def show(identity=None, config_dir=None, department=None, parent=None):
     global _WINDOW
     try:
         _WINDOW.close()

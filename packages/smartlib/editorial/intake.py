@@ -136,6 +136,12 @@ class EditorialIntakeService:
 
     def intake(self, request: EditorialIntakeRequest) -> EditorialIntakeResult:
         events = self.read_events_csv(request.csv_path)
+        # Validate external inputs before creating any production directories.
+        if any(event.duration <= 0 for event in events):
+            invalid = ", ".join(event.shot for event in events if event.duration <= 0)
+            raise ValueError(f"Editorial events have invalid marker duration: {invalid}")
+        if request.offline_mov and not request.offline_mov.is_file():
+            raise FileNotFoundError(f"Offline movie was not found: {request.offline_mov}")
         work_dir = request.work_dir or self._detect_editorial_work_dir(request.csv_path) or self._next_work_dir()
         work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -144,8 +150,6 @@ class EditorialIntakeService:
             shutil.copy2(request.csv_path, work_csv)
         work_mov = None
         if request.offline_mov:
-            if not request.offline_mov.exists():
-                raise FileNotFoundError(f"Offline movie was not found: {request.offline_mov}")
             work_mov = work_dir / request.offline_mov.name
             if request.copy_to_work and request.offline_mov.resolve() != work_mov.resolve():
                 shutil.copy2(request.offline_mov, work_mov)

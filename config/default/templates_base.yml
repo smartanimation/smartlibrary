@@ -12,6 +12,21 @@ shot_depts:
   - light
   - comp
 
+shot_tasks:
+  layout:
+    - rough_layout
+    - final_camera
+  anim:
+    - body
+    - facial
+    - shot_sculpt
+  fx:
+    - main
+  light:
+    - main
+  comp:
+    - main
+
 # Asset用の部署リスト
 asset_depts:
   - model

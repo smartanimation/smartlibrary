@@ -264,8 +264,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.shot_tree.setIndentation(10)
         self.shot_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.shot_tree.setStyleSheet("QTreeWidget::item { height: 24px; }")
-        self.add_assets_to_cast_btn = QtWidgets.QPushButton("Add Selected to Cast")
-        self.add_assets_to_cast_btn.setToolTip("Add the selected assets to each selected shot cast.")
+        self.add_assets_to_cast_btn = QtWidgets.QPushButton("Edit in Smart Casting")
+        self.add_assets_to_cast_btn.setToolTip("Open Smart Casting with the selected target and assets. No cast data is written here.")
         shot_filter_layout.addWidget(self.shot_tree, 1)
         shot_filter_layout.addWidget(self.add_assets_to_cast_btn)
         self.browser_filter_tabs.addTab(shot_filter_panel, "Shots")
@@ -2060,7 +2060,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         menu.addSeparator()
         reference_latest_rig = menu.addAction("Reference Latest Rig")
         reference_latest_rig.setEnabled(asset is not None)
-        send_to_shot_cast = menu.addAction("Send to Shot Cast")
+        send_to_shot_cast = menu.addAction("Edit Cast in Smart Casting")
         send_to_shot_cast.setEnabled(asset is not None)
         menu.addSeparator()
         create_folders = menu.addAction("Create Asset Folders")
@@ -2173,24 +2173,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _send_selected_asset_to_shot_cast(self, asset: Asset | None) -> None:
         if not asset:
             return
-        try:
-            _ensure_smartlib_on_path()
-            from smartlib.core.config_loader import ProjectConfig
-            from smartlib.core.selection_context import write_selected_asset
-
-            metadata = self.manager.load_asset_metadata(asset)
-            payload = {
-                "asset": asset.name,
-                "category": asset.category,
-                "group": asset.group,
-                "variant": self._current_asset_variant(),
-                "asset_type": metadata.get("asset_type") or metadata.get("type") or asset.category,
-                "root": str(asset.root),
-            }
-            path = write_selected_asset(ProjectConfig(self.manager.config_dir), payload)
-            self.status_label.setText(f"Sent to Shot Cast: {asset.name} ({path})")
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Send to Shot Cast Failed", str(exc))
+        self._open_smart_casting(asset_names=[asset.name])
 
     def _add_selected_assets_to_shot_cast(self) -> None:
         targets = self._selected_cast_targets()
@@ -2201,40 +2184,38 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not assets:
             QtWidgets.QMessageBox.information(self, "Add to Cast", "Select one or more assets first.")
             return
+        target = targets[0]
+        identity = target.get("identity")
+        self._open_smart_casting(
+            episode=target.get("episode") or getattr(identity, "episode", ""),
+            sequence=target.get("sequence") or getattr(identity, "sequence", ""),
+            shot=getattr(identity, "shot", ""),
+            asset_names=[asset.name for asset in assets],
+        )
+
+    def _open_smart_casting(
+        self,
+        *,
+        episode: str = "",
+        sequence: str = "",
+        shot: str = "",
+        asset_names: list[str] | None = None,
+    ) -> None:
         try:
-            selections = []
-            for asset in assets:
-                metadata = self.manager.load_asset_metadata(asset)
-                selections.append(
-                    {
-                        "asset": asset.name,
-                        "category": asset.category,
-                        "group": asset.group,
-                        "variant": metadata.get("default_variant") or "default",
-                        "asset_type": metadata.get("asset_type") or metadata.get("type") or asset.category,
-                        "root": str(asset.root),
-                    }
-                )
-            service = _shot_service(self.manager.config_dir)
-            added_count = 0
-            changed_targets = []
-            for target in targets:
-                if target.get("kind") == "sequence":
-                    _cast_path, rows = service.add_asset_selections_to_sequence_cast(
-                        target["episode"],
-                        target["sequence"],
-                        selections,
-                    )
-                    changed_targets.append(f"{target['episode']}/{target['sequence']}")
-                else:
-                    identity = target["identity"]
-                    _cast_path, rows = service.add_asset_selections_to_cast(identity, selections)
-                    changed_targets.append(identity.code)
-                added_count += len(rows)
-            target_label = ", ".join(changed_targets)
-            self.status_label.setText(f"Added {added_count} cast entries to: {target_label}")
+            _ensure_smartlib_on_path()
+            from smartlib.apps.smart_casting.ui import show
+
+            show(
+                config_dir=self.manager.config_dir,
+                parent=self,
+                episode=episode,
+                sequence=sequence,
+                shot=shot,
+                asset_names=asset_names,
+            )
+            self.status_label.setText("Opened Smart Casting. Cast changes are managed there.")
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Add to Cast Failed", str(exc))
+            QtWidgets.QMessageBox.critical(self, "Open Smart Casting Failed", str(exc))
 
     def _create_asset(self) -> None:
         dialog = AssetRequestDialog(self, title="Create Asset")
@@ -3666,6 +3647,29 @@ def fallback_staging_dependency_candidates(
 
 def resolve_asset_work_template(manager: AssetManager, department: str) -> Path | None:
     filename = f"{department}_base.ma"
+    configured = str(
+        (
+            (
+                (getattr(manager, "base_config", {}).get("template_files") or {}).get(
+                    "maya"
+                )
+                or {}
+            ).get("asset")
+            or {}
+        ).get(str(department).lower())
+        or ""
+    ).strip()
+    if configured:
+        pipeline_root = Path(__file__).resolve().parents[1]
+        configured_path = Path(
+            os.path.expandvars(
+                configured
+                .replace("{project_root}", str(manager.project_root))
+                .replace("{pipeline_root}", str(pipeline_root))
+            )
+        )
+        if configured_path.is_file():
+            return configured_path
     project_template = manager.project_root / "settings" / "templates" / "maya" / "asset" / filename
     if project_template.exists():
         return project_template

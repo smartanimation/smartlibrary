@@ -40,7 +40,7 @@ SUPPORTED_EXTENSIONS = {
     ".pdf",
     ".png",
 }
-EDITORIAL_EXTENSIONS = {".aaf", ".edl", ".mov", ".mp4", ".otio", ".wav", ".xml"}
+EDITORIAL_EXTENSIONS = {".aaf", ".edl", ".mov", ".mp4", ".otio", ".xml"}
 ASSET_EXTENSIONS = {".abc", ".fbx", ".ma", ".mb", ".tga", ".tif", ".tiff", ".usd", ".usda", ".usdc"}
 SHOT_EXTENSIONS = {".abc", ".fbx", ".mov", ".mp4", ".usd", ".usda", ".usdc", ".wav"}
 SEQUENCE_EXTENSIONS = SHOT_EXTENSIONS | {".edl", ".otio", ".xml"}
@@ -438,6 +438,18 @@ class SmartIngestService:
                 sequence=_normalize_sequence_code(virtual_camera.group("sequence")),
                 delivery_date=delivery_text,
             )
+        if source.suffix.lower() == ".wav":
+            return IngestMetadata(
+                target_type="Shot",
+                project=self.project_name,
+                department="audio",
+                subset=self._infer_audio_subset(source),
+                format=extension,
+                episode=episode,
+                sequence=sequence,
+                shot=shot or self._shot_token(source.stem),
+                delivery_date=delivery_text,
+            )
 
         is_editorial_delivery = bool(
             parts
@@ -567,7 +579,24 @@ class SmartIngestService:
                 return None, "extension is not shot data"
             if not metadata.shot or not metadata.department:
                 return None, "shot and department are required"
-            version = self._next_version(
+            if metadata.department == "audio" or extension == ".wav":
+                shot_data_root = (
+                    self.project_root
+                    / "shots"
+                    / metadata.episode
+                    / metadata.sequence
+                    / metadata.shot
+                    / "data"
+                    / "audio"
+                    / (metadata.subset or "dialog")
+                )
+                version = self._next_version(shot_data_root)
+                return (
+                    shot_data_root
+                    / version
+                    / source.name
+                ), "shot audio data copy"
+            shot_data_root = (
                 self.project_root
                 / "shots"
                 / metadata.episode
@@ -578,16 +607,9 @@ class SmartIngestService:
                 / metadata.format
                 / metadata.subset
             )
+            version = self._next_version(shot_data_root)
             return (
-                self.project_root
-                / "shots"
-                / metadata.episode
-                / metadata.sequence
-                / metadata.shot
-                / "data"
-                / metadata.department
-                / metadata.format
-                / metadata.subset
+                shot_data_root
                 / version
                 / source.name
             ), "shot data copy"
@@ -1015,16 +1037,24 @@ class SmartIngestService:
         extension = source.suffix.lower()
         if extension in {".mov", ".mp4"}:
             return "offline"
-        if extension == ".wav":
-            return "audio"
         if extension in {".edl", ".xml", ".otio"}:
             return "cut"
         return "main"
 
+    def _infer_audio_subset(self, source: Path) -> str:
+        tokens = {token.lower() for token in re.split(r"[_\-. ]+", source.stem) if token}
+        if tokens & {"mx", "music", "bgm"}:
+            return "music"
+        if tokens & {"sfx", "fx"}:
+            return "sfx"
+        if tokens & {"amb", "ambience", "ambient"}:
+            return "ambience"
+        return "dialog"
+
     def _editorial_role(self, source: Path, episode: str, sequence: str) -> tuple[str, str]:
         extension = source.suffix.lower().lstrip(".")
         edit_extensions = self._editorial_role_extensions("edit_source", {"aaf", "edl", "xml", "otio"})
-        sequence_extensions = self._editorial_role_extensions("offline", {"mov", "mp4", "wav"})
+        sequence_extensions = self._editorial_role_extensions("offline", {"mov", "mp4"})
         shot_extensions = self._editorial_role_extensions("shot_media", {"mov", "mp4"})
         if extension in edit_extensions:
             return "edit_source", ""

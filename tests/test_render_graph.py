@@ -320,6 +320,8 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
     manifest = read_json(build_root / "shot010_layout_build_v001_t001.json", {})
     assert manifest["template_comp"] == "review_base.comp"
     assert manifest["stage"]["comp_name"] == "stage"
+    assert manifest["stage"]["final_width"] == 1920
+    assert manifest["stage"]["final_height"] == 1080
     assert manifest["layers"][0]["precomp"] == "CHA"
     assert "CHA/v001/t001/images/" in manifest["layers"][0]["image_sequence"]
     assert manifest["slate"]["layer"] == "Slate"
@@ -328,7 +330,17 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
     assert script.exists()
     script_text = script.read_text(encoding="utf-8")
     assert "shot010_layout_build_v001_t001.json" in script_text
-    assert "addSlateToStage(stage, data.slate);" in script_text
+    assert "addSlateToStage(stage, data.slate, folders.layers);" in script_text
+    assert 'ensureProjectFolder("30_footage", null)' in script_text
+    assert 'ensureProjectFolder("20_precomp", null)' in script_text
+    assert 'ensureComp("final", data.stage.final_width, data.stage.final_height' in script_text
+    assert 'ensureComp("camera", data.stage.final_width, data.stage.final_height' in script_text
+    assert 'importSequence(row, ensureProjectFolder(row.layer || "layer", folders.layers));' in script_text
+    assert "for (var i = data.layers.length - 1; i >= 0; i--)" in script_text
+    assert "moveToFolder(footage, footageFolder);" in script_text
+    assert "footage.name = sequenceFootageName(row, file, options.sequence);" in script_text
+    assert 'padFrame(row.start_frame, match[1].length) + "-" + padFrame(row.end_frame, match[1].length)' in script_text
+    assert "footage.name = row.layer;" not in script_text
     assert "options.sequence = shouldImportAsSequence(row);" in script_text
     assert 'options.sequence ? "sequence" : "still"' in script_text
     assert "Number(row.duration_frames || 0) <= 1" in script_text

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from smartlib.apps.smart_sequence_builder.service import SmartSequenceBuilderService
+from smartlib.apps.review_build_manager.service import ReviewBuildManagerService
+from smartlib.apps.shot_manager import SequenceIdentity
 from smartlib.core.config_loader import ProjectConfig
 
 
@@ -87,3 +89,69 @@ def test_plan_blocks_missing_required_mocap(tmp_path: Path) -> None:
     required = next(item for item in plan.validation if item.key == "required")
     assert required.state == "ERROR"
     assert "Motion Capture" in required.detail
+
+
+def test_build_manager_sequence_plan_uses_recipe_validation(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config = _config(tmp_path / "config", project_root)
+    service = ReviewBuildManagerService(config)
+    sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
+    _json(
+        sequence_root / "sequence.json",
+        {
+            "episode": "ep02",
+            "sequence": "s027",
+            "shots": [{"shot": "sh010", "cut_in": 1001, "cut_out": 1010}],
+        },
+    )
+    _json(sequence_root / "cast.json", {"cast": {"hero": {"namespace": "hero"}}})
+
+    plan = service.sequence_build_plan(
+        SequenceIdentity("ep02", "s027"),
+        overrides={"use_placements": False},
+    )
+
+    assert not plan.buildable
+    assert any(row.code == "SEQUENCE_REQUIRED" for row in plan.validations)
+
+
+def test_build_manager_allocates_next_sequence_construct_version(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    service = ReviewBuildManagerService(_config(tmp_path / "config", project_root))
+    identity = SequenceIdentity("ep02", "s027")
+    output_root = (
+        service.shots.sequence_workspace_root("ep02", "s027")
+        / "output"
+        / "scene_build"
+        / "layout"
+        / "main"
+    )
+    (output_root / "v001").mkdir(parents=True)
+    (output_root / "v003").mkdir()
+
+    assert service.next_sequence_construct_version(identity, "layout", "main") == "v004"
+
+
+def test_recipe_inputs_define_default_enabled_components(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config = _config(tmp_path / "config", project_root)
+    config.config_dir.joinpath("sequence_builder.yml").write_text(
+        "recipes:\n  Editorial Only:\n    version: v002\n    inputs:\n      - editorial\n      - cast\n",
+        encoding="utf-8",
+    )
+    sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
+    _json(
+        sequence_root / "sequence.json",
+        {"episode": "ep02", "sequence": "s027", "shots": []},
+    )
+    _json(sequence_root / "cast.json", {"cast": {"hero": {"namespace": "hero"}}})
+
+    plan = SmartSequenceBuilderService(config).plan(
+        "ep02", "s027", "Editorial Only"
+    )
+
+    enabled = {item.key: item.enabled for item in plan.inputs}
+    assert enabled["editorial"]
+    assert enabled["cast"]
+    assert not enabled["mocap"]
+    assert plan.can_build
