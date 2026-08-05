@@ -26,6 +26,11 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_shot_manager",
                     "enabled": True,
                 },
+                {
+                    "label": "Smart Preflight",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_preflight",
+                    "enabled": True,
+                },
             ],
             "Sets": [
                 {
@@ -61,8 +66,8 @@ DEFAULT_MENU_CONFIG = {
                     "enabled": True,
                 },
                 {
-                    "label": "Review Layer Manager",
-                    "command": "smartlib.dcc.maya.smart_menu.show_review_layer_manager",
+                    "label": "SmartGateGuide",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_gate_guide",
                     "enabled": True,
                 },
             ],
@@ -75,6 +80,11 @@ DEFAULT_MENU_CONFIG = {
             ],
             "Render": [
                 {
+                    "label": "Review Layer Manager",
+                    "command": "smartlib.dcc.maya.smart_menu.show_review_layer_manager",
+                    "enabled": True,
+                },
+                {
                     "label": "Smart Playblast",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_playblast",
                     "enabled": True,
@@ -86,11 +96,6 @@ DEFAULT_MENU_CONFIG = {
                 },
             ],
             "Animation": [
-                {
-                    "label": "SmartGateGuide",
-                    "command": "smartlib.dcc.maya.smart_menu.show_smart_gate_guide",
-                    "enabled": True,
-                },
                 {
                     "label": "Smart CarSystem",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_car_system",
@@ -312,6 +317,18 @@ def show_shot_manager() -> None:
 
     config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
     shot_manager_ui.show(config_dir)
+
+
+def show_smart_preflight() -> None:
+    ensure_runtime_paths()
+    _unload_module_tree(
+        "smartlib.preflight",
+        "smartlib.apps.smart_preflight",
+        "smartlib.dcc.maya.preflight",
+    )
+    from smartlib.dcc.maya.preflight import show_smart_preflight as show
+
+    show()
 
 
 def show_review_layer_manager() -> None:

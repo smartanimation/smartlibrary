@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from .models import CheckResult, PreflightContext, Severity
+
+
+def scene_saved(adapter, _context: PreflightContext) -> CheckResult:
+    path = adapter.scene_path()
+    if not path:
+        return _result(Severity.ERROR, "The Maya scene has not been saved.")
+    return _result(Severity.PASS, Path(path).name)
+
+
+def scene_unmodified(adapter, _context: PreflightContext) -> CheckResult:
+    if adapter.scene_modified():
+        return _result(Severity.WARNING, "The scene has unsaved changes.")
+    return _result(Severity.PASS, "The scene is saved.")
+
+
+def missing_references(adapter, _context: PreflightContext) -> CheckResult:
+    missing = tuple(adapter.missing_references())
+    if missing:
+        return _result(Severity.ERROR, f"{len(missing)} references are missing.", missing)
+    return _result(Severity.PASS, "All references are available.")
+
+
+def unknown_nodes(adapter, _context: PreflightContext) -> CheckResult:
+    nodes = tuple(adapter.unknown_nodes())
+    if nodes:
+        return _result(Severity.WARNING, f"{len(nodes)} unknown nodes were found.", nodes)
+    return _result(Severity.PASS, "No unknown nodes were found.")
+
+
+def non_manifold_geometry(adapter, _context: PreflightContext) -> CheckResult:
+    nodes = tuple(adapter.non_manifold_meshes())
+    if nodes:
+        return _result(Severity.ERROR, "Non-manifold edges were found.", nodes)
+    return _result(Severity.PASS, "No non-manifold geometry was found.")
+
+
+def asset_root(adapter, _context: PreflightContext) -> CheckResult:
+    roots = tuple(adapter.asset_roots())
+    if len(roots) != 1:
+        return _result(Severity.ERROR, "Exactly one asset root is required.", roots)
+    return _result(Severity.PASS, roots[0], roots)
+
+
+def renderable_camera(adapter, _context: PreflightContext) -> CheckResult:
+    cameras = tuple(adapter.renderable_cameras())
+    if not cameras:
+        return _result(Severity.ERROR, "No publish camera is renderable.")
+    if len(cameras) > 1:
+        return _result(Severity.WARNING, "Multiple renderable cameras were found.", cameras)
+    return _result(Severity.PASS, cameras[0], cameras)
+
+
+def frame_range(adapter, context: PreflightContext) -> CheckResult:
+    current = tuple(int(value) for value in adapter.frame_range())
+    expected = tuple(int(value) for value in context.metadata.get("frame_range", ()))
+    if len(expected) == 2 and current != expected:
+        return _result(
+            Severity.ERROR,
+            f"Scene range {current[0]}-{current[1]} does not match {expected[0]}-{expected[1]}.",
+        )
+    return _result(Severity.PASS, f"Frames {current[0]}-{current[1]}")
+
+
+def animation_curves(adapter, _context: PreflightContext) -> CheckResult:
+    count = int(adapter.animation_curve_count())
+    if count <= 0:
+        return _result(Severity.WARNING, "No animation curves were found.")
+    return _result(Severity.PASS, f"{count} animation curves")
+
+
+def cast_assets_exist(adapter, context: PreflightContext) -> CheckResult:
+    issues = tuple(adapter.missing_cast(context))
+    if issues:
+        return _result(
+            Severity.WARNING,
+            f"{len(issues)} Cast assets are not loaded. This is allowed for partial work.",
+            issues,
+        )
+    count = len(context.metadata.get("cast") or {})
+    return _result(Severity.PASS, f"{count} Cast assets are present.")
+
+
+def cast_versions(adapter, context: PreflightContext) -> CheckResult:
+    issues = tuple(adapter.cast_version_issues(context))
+    if issues:
+        return _result(Severity.ERROR, "Cast publish versions do not match.", issues)
+    return _result(Severity.PASS, "Cast publish versions match the Cast specification.")
+
+
+def namespace_duplicates(adapter, context: PreflightContext) -> CheckResult:
+    duplicates = tuple(adapter.duplicate_namespaces(context))
+    if duplicates:
+        return _result(Severity.ERROR, "Duplicate Cast namespaces were found.", duplicates)
+    return _result(Severity.PASS, "Cast namespaces are unique.")
+
+
+def resolution(adapter, context: PreflightContext) -> CheckResult:
+    current = tuple(int(value) for value in adapter.resolution())
+    expected = tuple(int(value) for value in context.metadata.get("resolution", ()))
+    if len(expected) == 2 and current != expected:
+        return _result(
+            Severity.ERROR,
+            f"Resolution {current[0]} x {current[1]} does not match {expected[0]} x {expected[1]}.",
+        )
+    return _result(Severity.PASS, f"{current[0]} x {current[1]}")
+
+
+def camera_film_fit(adapter, _context: PreflightContext) -> CheckResult:
+    invalid = tuple(adapter.non_horizontal_cameras())
+    if invalid:
+        return _result(Severity.ERROR, "Fit Resolution Gate must be Horizontal.", invalid)
+    return _result(Severity.PASS, "Renderable camera Film Fit is Horizontal.")
+
+
+def all_rig_set(adapter, _context: PreflightContext) -> CheckResult:
+    return _required_set(adapter, "allRigSet")
+
+
+def cache_geo_set(adapter, _context: PreflightContext) -> CheckResult:
+    return _required_set(adapter, "cache_geo_set")
+
+
+def _required_set(adapter, name: str) -> CheckResult:
+    if not adapter.object_set_exists(name):
+        return _result(Severity.ERROR, f"Required objectSet was not found: {name}")
+    members = tuple(adapter.object_set_members(name))
+    if not members:
+        return _result(Severity.ERROR, f"Required objectSet is empty: {name}")
+    return _result(Severity.PASS, f"{name}: {len(members)} members", members)
+
+
+def _result(
+    severity: Severity,
+    message: str,
+    nodes: tuple[str, ...] = (),
+) -> CheckResult:
+    return CheckResult("", "", severity, message, nodes)

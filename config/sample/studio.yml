@@ -3,7 +3,7 @@ anchors:
   smartpipeline_tools: P:/dev/smarttools
 
 runtime:
-  python: "{smartpipeline_tools}/python/Scripts/python.exe"
+  python: "{smartpipeline_tools}/python/python.exe"
 
 tools:
   ffmpeg:

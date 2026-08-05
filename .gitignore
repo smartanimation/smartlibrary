@@ -13,10 +13,18 @@ tests
 !packages/smartlib/setdress/*.py
 !packages/smartlib/apps/review_build_manager/
 !packages/smartlib/apps/review_build_manager/*.py
+!packages/smartlib/apps/launcher/ui/
+!packages/smartlib/apps/launcher/ui/*.ui
+!packages/smartlib/preflight/
+!packages/smartlib/preflight/*.py
+!packages/smartlib/apps/smart_preflight/
+!packages/smartlib/apps/smart_preflight/*.py
+!packages/smartlib/dcc/maya/preflight.py
 !bat/run_review_build_manager.bat
 !tests/
 tests/*
 !tests/test_set_dress_publish.py
+!tests/test_smart_preflight.py
 
 tools/ffmpeg/*
 !tools/ffmpeg/README.md
