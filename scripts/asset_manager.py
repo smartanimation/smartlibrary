@@ -846,13 +846,15 @@ class AssetManager:
         subset: str | None = None,
         version: int | str = 1,
         ext: str = "ma",
+        use_current_extension: bool = True,
     ) -> Path:
         parsed = self.parse_work_file(current_path) if current_path else None
         if parsed:
             department = parsed["department"]
             variant = parsed["variant"]
             version = parsed["version"]
-            ext = parsed["ext"]
+            if use_current_extension:
+                ext = parsed["ext"]
             search_dir = Path(current_path).parent
         else:
             search_dir = self.work_file_path(

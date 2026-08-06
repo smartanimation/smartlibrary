@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+from smartlib.apps.review_build_manager.service import ReviewBuildManagerService
 from smartlib.apps.shot_manager import ShotIdentity, ShotManagerService
 from smartlib.core.config_loader import ProjectConfig
 
@@ -115,7 +117,7 @@ def test_write_construct_normalizes_fx_cache(tmp_path: Path) -> None:
     assert "abc/usd/usda/usdc" in data["components"][0]["note"]
 
 
-def test_ensure_stage_construct_registers_anim_input_components(tmp_path: Path) -> None:
+def test_ensure_stage_construct_keeps_only_selectable_anim_input_components(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     write_config(config_dir, project_root)
@@ -153,4 +155,177 @@ def test_ensure_stage_construct_registers_anim_input_components(tmp_path: Path) 
     data = json.loads(construct_path.read_text(encoding="utf-8"))
     component_types = {component["component_type"] for component in data["components"]}
 
-    assert {"animation", "camera", "cast", "placement", "layout_overlay"}.issubset(component_types)
+    assert component_types == {"placement", "layout_overlay"}
+
+
+def test_resolved_construct_overlays_saved_choices_and_context() -> None:
+    service = object.__new__(ShotManagerService)
+    captured = {}
+    service.load_construct = lambda _identity: {
+        "components": [
+            {
+                "component_type": "rig",
+                "name": "hero",
+                "enabled": False,
+                "mode": "reference",
+                "source": {"context": "FAST"},
+            },
+            {
+                "component_type": "fx",
+                "name": "smoke",
+                "enabled": True,
+                "path": "smoke.abc",
+                "source": {"kind": "custom"},
+            },
+        ]
+    }
+
+    def generated(_identity, *, cast_contexts=None, exclude_cast=None):
+        captured["contexts"] = dict(cast_contexts or {})
+        return {
+            "components": [
+                {
+                    "component_type": "rig",
+                    "name": "hero",
+                    "enabled": True,
+                    "mode": "reference",
+                    "path": "hero.ma",
+                    "source": {"asset": "Hero"},
+                }
+            ]
+        }
+
+    service.construct_from_stage_inputs = generated
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    result = service.resolved_construct(identity)
+
+    assert captured["contexts"] == {"hero": "FAST"}
+    assert result["components"][0]["enabled"] is False
+    assert result["components"][0]["source"]["context"] == "FAST"
+    assert result["components"][1]["name"] == "smoke"
+
+
+def test_build_manager_contents_use_construct_components() -> None:
+    manager = object.__new__(ReviewBuildManagerService)
+    manager.shots = SimpleNamespace(
+        resolved_construct=lambda *_args, **_kwargs: {
+            "components": [
+                {
+                    "component_type": "camera",
+                    "name": "shot_camera",
+                    "version": "v003",
+                    "path": "",
+                    "enabled": True,
+                    "required": True,
+                    "source": {"field": "camera"},
+                },
+                {
+                    "component_type": "rig",
+                    "name": "hero",
+                    "version": "v012",
+                    "path": "",
+                    "enabled": False,
+                    "required": True,
+                    "source": {"asset": "Hero", "role": "CHA"},
+                },
+            ]
+        },
+        find_asset_root=lambda _asset: None,
+    )
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    rows = manager.build_contents(identity)
+
+    assert [row["type"] for row in rows] == ["camera", "rig"]
+    assert rows[0]["component"]["source"]["field"] == "camera"
+    assert rows[0]["context"] == ""
+    assert rows[1]["context"] == "WORK"
+    assert rows[1]["state"] == "EXCLUDED"
+
+
+def test_construct_discovers_publishes_without_anim_input(tmp_path: Path) -> None:
+    service = object.__new__(ShotManagerService)
+    camera = tmp_path / "publish" / "camera" / "cam_main" / "main" / "v003" / "camera.json"
+    set_dress = tmp_path / "publish" / "setdress" / "main" / "v002" / "main.setdress.json"
+    preview = tmp_path / "publish" / "preview_render" / "anim" / "packages" / "v004" / "render_manifest.json"
+    animation = tmp_path / "publish" / "animation" / "package" / "main" / "v005" / "animation_manifest.json"
+    for path in (camera, set_dress, preview, animation):
+        write_json(path, {"ok": True})
+    service.latest_anim_input = lambda _identity: None
+    service._latest_review_camera_paths = lambda _identity: [str(camera)]
+    service.list_set_dress_publish_versions = lambda _identity: [
+        SimpleNamespace(name="set_dress/main", version="v002", path=str(set_dress), latest=True)
+    ]
+    service.list_preview_render_versions = lambda _identity: [
+        SimpleNamespace(name="preview_render/anim", version="v004", path=str(preview), latest=True)
+    ]
+    service.latest_animation_package_path = lambda _identity: animation
+    service.load_cast = lambda _identity: {"cast": {}}
+    service.load_sequence_cast = lambda *_args: {"cast": {}}
+    service.build_preview = lambda *_args, **_kwargs: []
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    result = service.construct_from_stage_inputs(identity)
+
+    assert {row["component_type"] for row in result["components"]} == {
+        "camera", "set_dress"
+    }
+
+
+def test_latest_shot_camera_falls_back_to_direct_publish(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    project_root = tmp_path / "project"
+    write_config(config_dir, project_root)
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep001", "sq010", "sh0010")
+    camera_root = (
+        service.shot_root(identity)
+        / "publish"
+        / "camera"
+        / "cam_CHA_baked"
+        / "main"
+    )
+    camera_path = camera_root / "v003" / "camera.json"
+    write_json(camera_path, {})
+    write_json(
+        camera_root / "latest.json",
+        {"version": "v003", "path": "v003/camera.json"},
+    )
+
+    assert service._latest_shot_camera_publish(identity) == camera_path
+    camera_status = next(
+        item for item in service.shot_anim_input_status(identity)
+        if item.name == "camera"
+    )
+    assert camera_status.state == "READY"
+
+
+def test_camera_native_publish_files_are_registered(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    project_root = tmp_path / "project"
+    write_config(config_dir, project_root)
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep001", "sq010", "sh0010")
+    snapshot = service.publish_shot_scene_snapshot(
+        identity,
+        {"schema": "maya_camera/v1", "camera": "cam_main"},
+        data_type="camera",
+        target="cam_main",
+    )
+
+    service.register_shot_scene_publish_files(
+        snapshot,
+        {"ma": "cam_main.ma", "fbx": "cam_main.fbx"},
+    )
+
+    camera_data = json.loads(snapshot.read_text(encoding="utf-8"))
+    publish_data = json.loads(
+        snapshot.with_name("publish.json").read_text(encoding="utf-8")
+    )
+    assert camera_data["files"] == {
+        "ma": "cam_main.ma",
+        "fbx": "cam_main.fbx",
+    }
+    assert publish_data["files"]["camera"] == "camera.json"
+    assert publish_data["files"]["ma"] == "cam_main.ma"

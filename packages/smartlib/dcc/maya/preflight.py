@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import glob
 from pathlib import Path
 
 from smartlib.preflight import PreflightContext
@@ -19,6 +20,19 @@ class MayaPreflightAdapter:
 
     def scene_modified(self) -> bool:
         return bool(self.cmds.file(query=True, modified=True))
+
+    def maya_version(self) -> str:
+        try:
+            installed = str(self.cmds.about(installedVersion=True) or "").strip()
+            if installed:
+                match = re.search(r"\d{4}(?:\.\d+)?", installed)
+                return match.group(0) if match else installed
+        except (RuntimeError, TypeError):
+            pass
+        return str(self.cmds.about(version=True))
+
+    def linear_unit(self) -> str:
+        return str(self.cmds.currentUnit(query=True, linear=True))
 
     def missing_references(self) -> list[str]:
         missing = []
@@ -42,12 +56,140 @@ class MayaPreflightAdapter:
                 meshes.append(str(shape))
         return meshes
 
+    def non_default_cameras(self) -> list[str]:
+        cameras = []
+        for shape in self.cmds.ls(type="camera", long=True) or []:
+            parents = self.cmds.listRelatives(shape, parent=True, fullPath=True) or []
+            transform = str(parents[0]) if parents else str(shape)
+            if not self._is_default_camera(transform):
+                cameras.append(transform)
+        return sorted(set(cameras), key=str.casefold)
+
+    def nonempty_display_layers(self) -> list[str]:
+        issues = []
+        for layer in self.cmds.ls(type="displayLayer") or []:
+            if str(layer).split(":")[-1] in {"defaultLayer", "defaultDisplayLayer"}:
+                continue
+            members = self.cmds.editDisplayLayerMembers(layer, query=True, fullNames=True) or []
+            issues.extend(f"{layer}: {member}" for member in members)
+        return issues
+
+    def hidden_models(self) -> list[str]:
+        hidden = []
+        for shape in self.cmds.ls(type="mesh", long=True, noIntermediate=True) or []:
+            if self._node_hidden(str(shape)):
+                hidden.append(str(shape))
+        return sorted(set(hidden), key=str.casefold)
+
+    def _node_hidden(self, node: str) -> bool:
+        current = node
+        while current:
+            for attribute in ("visibility", "lodVisibility"):
+                plug = f"{current}.{attribute}"
+                if self.cmds.objExists(plug):
+                    try:
+                        if not bool(self.cmds.getAttr(plug)):
+                            return True
+                    except RuntimeError:
+                        pass
+            override = f"{current}.overrideEnabled"
+            override_visibility = f"{current}.overrideVisibility"
+            if self.cmds.objExists(override) and self.cmds.objExists(override_visibility):
+                try:
+                    if self.cmds.getAttr(override) and not self.cmds.getAttr(override_visibility):
+                        return True
+                except RuntimeError:
+                    pass
+            parents = self.cmds.listRelatives(current, parent=True, fullPath=True) or []
+            current = str(parents[0]) if parents else ""
+        return False
+
+    def asset_lights(self) -> list[str]:
+        return sorted({str(node) for node in self.cmds.ls(lights=True, long=True) or []}, key=str.casefold)
+
+    def meshes_without_uvs(self) -> list[str]:
+        missing = []
+        for shape in self.cmds.ls(type="mesh", long=True, noIntermediate=True) or []:
+            try:
+                count = int(self.cmds.polyEvaluate(shape, uvcoord=True) or 0)
+            except (RuntimeError, TypeError, ValueError):
+                count = 0
+            if count <= 0:
+                missing.append(str(shape))
+        return sorted(set(missing), key=str.casefold)
+
+    def texture_records(self) -> list[dict[str, str]]:
+        rows = []
+        for node in self.cmds.ls(type="file") or []:
+            try:
+                path = str(self.cmds.getAttr(f"{node}.fileTextureName") or "").strip()
+            except RuntimeError:
+                path = ""
+            if path and not Path(os.path.expandvars(path)).is_absolute():
+                try:
+                    path = str(self.cmds.workspace(expandName=path) or path)
+                except RuntimeError:
+                    pass
+            rows.append({"node": str(node), "path": path})
+        return rows
+
+    def missing_texture_nodes(self) -> list[str]:
+        return [row["node"] for row in self.texture_records() if not _texture_path_exists(row["path"])]
+
+    def local_texture_nodes(self) -> list[str]:
+        markers = ("/users/", "/documents and settings/", "/desktop/", "/downloads/", "/appdata/local/temp/")
+        result = []
+        for row in self.texture_records():
+            normalized = os.path.expandvars(row["path"]).replace("\\", "/").casefold()
+            if any(marker in normalized for marker in markers):
+                result.append(row["node"])
+        return result
+
+    def outside_project_texture_nodes(self, project_root: str) -> list[str]:
+        if not project_root:
+            return []
+        root = Path(os.path.expandvars(project_root)).resolve()
+        result = []
+        for row in self.texture_records():
+            expanded = os.path.expandvars(row["path"])
+            if not expanded or not Path(expanded).is_absolute():
+                continue
+            candidate = Path(expanded.replace("<UDIM>", "1001")).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                result.append(row["node"])
+        return result
+
+    def invalid_node_names(self, forbidden) -> list[str]:
+        forbidden = tuple(str(value) for value in forbidden if str(value))
+        invalid = []
+        for node in self.cmds.ls(long=True) or []:
+            leaf = str(node).rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+            if (
+                any(char.isspace() for char in leaf)
+                or any(ord(char) > 127 for char in leaf)
+                or any(token in leaf for token in forbidden)
+                or not re.fullmatch(r"[A-Za-z0-9_]+", leaf)
+            ):
+                invalid.append(str(node))
+        return sorted(set(invalid), key=str.casefold)
+
+    def asset_namespaces(self) -> list[str]:
+        namespaces = self.cmds.namespaceInfo(listOnlyNamespaces=True, recurse=True) or []
+        return sorted({
+            str(namespace) for namespace in namespaces
+            if str(namespace).lstrip(":") not in {"UI", "shared"}
+        }, key=str.casefold)
+
     def asset_roots(self) -> list[str]:
         defaults = {"persp", "top", "front", "side"}
-        candidates = [
-            node for node in self.cmds.ls(assemblies=True, type="transform", long=True) or []
+        candidates = sorted({
+            str(node) for node in self.cmds.ls(
+                assemblies=True, type="transform", long=True
+            ) or []
             if str(node).rsplit("|", 1)[-1].split(":")[-1] not in defaults
-        ]
+        }, key=str.casefold)
         official = [
             node for node in candidates
             if str(node).rsplit("|", 1)[-1].split(":")[-1].casefold() == "root"
@@ -83,7 +225,7 @@ class MayaPreflightAdapter:
 
     def non_horizontal_cameras(self) -> list[str]:
         invalid = []
-        for camera in self.renderable_cameras():
+        for camera in self.preflight_cameras():
             shapes = self.cmds.listRelatives(camera, shapes=True, type="camera", fullPath=True) or []
             for shape in shapes:
                 try:
@@ -92,6 +234,44 @@ class MayaPreflightAdapter:
                 except (RuntimeError, TypeError, ValueError):
                     invalid.append(str(camera))
         return sorted(set(invalid), key=str.lower)
+
+    def preflight_cameras(self) -> list[str]:
+        cameras = set(self.renderable_cameras())
+        focused_panel = self.cmds.getPanel(withFocus=True)
+        panels = []
+        if focused_panel and self.cmds.getPanel(typeOf=focused_panel) == "modelPanel":
+            panels.append(focused_panel)
+        for panel in panels:
+            try:
+                camera = self.cmds.modelEditor(panel, query=True, camera=True)
+            except RuntimeError:
+                continue
+            transform = self._camera_transform(camera)
+            if transform and not self._is_default_camera(transform):
+                cameras.add(transform)
+        for node in self.cmds.ls(selection=True, long=True) or []:
+            transform = self._camera_transform(node)
+            if transform and not self._is_default_camera(transform):
+                cameras.add(transform)
+        return sorted(cameras, key=str.casefold)
+
+    @staticmethod
+    def _is_default_camera(camera: str) -> bool:
+        leaf = str(camera).rsplit("|", 1)[-1].split(":")[-1]
+        return leaf in {"persp", "top", "front", "side"}
+
+    def _camera_transform(self, node: str) -> str:
+        if not node or not self.cmds.objExists(node):
+            return ""
+        try:
+            node_type = self.cmds.nodeType(node)
+        except RuntimeError:
+            return ""
+        if node_type == "camera":
+            parents = self.cmds.listRelatives(node, parent=True, fullPath=True) or []
+            return str(parents[0]) if parents else ""
+        shapes = self.cmds.listRelatives(node, shapes=True, type="camera", fullPath=True) or []
+        return str(node) if shapes else ""
 
     def object_set_exists(self, name: str) -> bool:
         return bool(self.cmds.objExists(name) and self.cmds.nodeType(name) == "objectSet")
@@ -111,6 +291,19 @@ class MayaPreflightAdapter:
                 continue
             rows.append({"node": str(node), "namespace": namespace, "path": path})
         return rows
+
+    def outside_project_references(self, project_root: str) -> list[str]:
+        if not project_root:
+            return []
+        root = Path(os.path.expandvars(project_root)).resolve()
+        issues = []
+        for row in self.reference_records():
+            path = Path(os.path.expandvars(row["path"])).resolve()
+            try:
+                path.relative_to(root)
+            except ValueError:
+                issues.append(f"{row['namespace'] or row['node']}: {row['path']}")
+        return issues
 
     def missing_cast(self, context: PreflightContext) -> list[str]:
         records = {row["namespace"].casefold(): row for row in self.reference_records()}
@@ -170,16 +363,19 @@ def resolve_context(cmds_module=None) -> PreflightContext:
     version = version_match.group(1) if version_match else ""
     if forced == "asset" or (asset_match and forced != "shot"):
         entity, task = _asset_identity(path)
+        metadata = _asset_metadata(path)
+        metadata["policy"] = _preflight_policy()
         return PreflightContext(
             kind="asset",
-            entity=entity,
+            entity=str(metadata.get("asset") or entity),
             task=task,
             version=version,
             scene_path=path,
+            metadata=metadata,
         )
     entity = shot_match.group(3) if shot_match else Path(path).stem
     task = _task_from_scene(path)
-    metadata = {"sequence": shot_match.group(2) if shot_match else ""}
+    metadata = {"sequence": shot_match.group(2) if shot_match else "", "policy": _preflight_policy()}
     metadata.update(_shot_metadata(path))
     return PreflightContext(
         kind="shot",
@@ -242,6 +438,26 @@ def _shot_metadata(scene_path: str) -> dict:
     return {"cast": {}}
 
 
+def _asset_metadata(scene_path: str) -> dict:
+    current = Path(scene_path).parent
+    for parent in (current, *current.parents):
+        data = _read_json(parent / "asset.json")
+        if data:
+            return data
+    return {}
+
+
+def _preflight_policy() -> dict:
+    from smartlib.core.config_loader import ProjectConfig, default_config_dir
+
+    config_dir = Path(os.environ.get("PROJECT_CONFIG_DIR") or default_config_dir())
+    config = ProjectConfig(config_dir)
+    data = dict(config.load("preflight.yml").get("preflight") or {})
+    if config.project_root:
+        data["project_root"] = config.project_root.as_posix()
+    return data
+
+
 def _read_json(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -285,6 +501,22 @@ def _read_json_any(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return default
+
+
+def _texture_path_exists(path: str) -> bool:
+    expanded = os.path.expandvars(str(path or "").strip())
+    if not expanded:
+        return False
+    pattern = expanded.replace("\\", "/")
+    pattern = re.sub(
+        r"<UDIM>|%\(UDIM\)d",
+        "[0-9][0-9][0-9][0-9]",
+        pattern,
+        flags=re.IGNORECASE,
+    )
+    pattern = re.sub(r"#+", lambda match: "[0-9]" * len(match.group(0)), pattern)
+    pattern = re.sub(r"%0\dd", lambda match: "[0-9]" * int(match.group(0)[2]), pattern)
+    return bool(glob.glob(pattern))
 
 
 _WINDOW = None

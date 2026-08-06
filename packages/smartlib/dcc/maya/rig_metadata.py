@@ -68,11 +68,30 @@ def _control_nodes(cmds: Any) -> list[str]:
 
 
 def _root_joint(cmds: Any, joints: list[str]) -> str:
+    influence_roots = _skin_influence_roots(cmds)
+    if len(influence_roots) == 1:
+        return influence_roots[0]
     for joint in joints:
         parents = cmds.listRelatives(joint, parent=True, fullPath=False) or []
         if not any(parent in joints for parent in parents):
             return joint
     return joints[0] if joints else ""
+
+
+def _skin_influence_roots(cmds: Any) -> list[str]:
+    influences: set[str] = set()
+    for skin_cluster in cmds.ls(type="skinCluster") or []:
+        influences.update(cmds.skinCluster(skin_cluster, query=True, influence=True) or [])
+    roots: set[str] = set()
+    for influence in influences:
+        current = influence
+        while True:
+            parents = cmds.listRelatives(current, parent=True, type="joint", fullPath=False) or []
+            if not parents:
+                break
+            current = parents[0]
+        roots.add(str(current).split("|")[-1].split(":")[-1])
+    return sorted(roots)
 
 
 def _export_sets(cmds: Any) -> dict[str, list[str]]:

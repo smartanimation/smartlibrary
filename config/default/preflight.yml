@@ -1,0 +1,30 @@
+preflight:
+  # Project folders may override these values in their own preflight.yml.
+  maya_versions:
+    - "2024.2"
+  linear_unit: cm
+
+  # Asset Manager asset.json category values treated as background assets.
+  # cache_geo_set is skipped for these categories.
+  # An asset.json preflight_profile value takes precedence over category.
+  background_categories:
+    - BG
+    - BGA
+    - ENV
+    - background
+    - environment
+
+  # Node names are restricted to ASCII letters, digits, and underscores.
+  forbidden_name_characters:
+    - " "
+    - "."
+    - "-"
+
+  # Shared Maya-to-USD export contract. Asset-specific root joint names are
+  # recorded in metadata/rig.json rather than fixed at project level.
+  usd_skel:
+    geometry_set: cache_geo_set
+    skeleton_set: skel_export_set
+    root_joint_source: rig_metadata
+    root_joint_metadata_key: root_joint
+    root_joint_detection: skin_influence_root

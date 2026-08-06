@@ -168,7 +168,7 @@ def collect_animation_curves_for_cast(
     cast_key: str,
     namespace: str,
     asset: str = "",
-    controller_root: str = "rig_controllers_grp",
+    controller_root: str = "allRigSet",
     source_workfile: str | Path = "",
 ) -> dict[str, Any]:
     cmds = _maya_cmds()

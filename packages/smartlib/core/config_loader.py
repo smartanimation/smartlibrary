@@ -254,6 +254,22 @@ class ProjectConfig:
                 merged.update({str(key): str(value) for key, value in templates.items()})
         return merged
 
+    @property
+    def usd_skel_contract(self) -> dict[str, str]:
+        """Return the merged Maya-to-USD skeleton export contract."""
+
+        policy = self.load("preflight.yml").get("preflight") or {}
+        configured = policy.get("usd_skel") or {}
+        defaults = {
+            "geometry_set": "cache_geo_set",
+            "skeleton_set": "skel_export_set",
+            "root_joint_source": "rig_metadata",
+            "root_joint_metadata_key": "root_joint",
+            "root_joint_detection": "skin_influence_root",
+        }
+        defaults.update({str(key): str(value) for key, value in configured.items() if value is not None})
+        return defaults
+
 
 def current_project_config() -> ProjectConfig | None:
     config_dir = os.environ.get("PROJECT_CONFIG_DIR")

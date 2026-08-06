@@ -37,7 +37,10 @@ ROLE_ALIASES = {
     "ENVIRONMENT": "BGA",
 }
 VALID_ASSET_PUBLISH = {"approved", "latest"}
-CONSTRUCT_TYPES = {"rig", "camera", "animation", "fx", "light", "audio", "cast", "placement", "layout_overlay"}
+CONSTRUCT_TYPES = {
+    "rig", "camera", "animation", "animation_curve", "fx", "light", "audio",
+    "cast", "placement", "layout_overlay", "set_dress", "preview_render",
+}
 CONSTRUCT_MODES = {"reference", "import", "apply", "reference_cache", "file"}
 FX_CACHE_EXTENSIONS = {".abc", ".usd", ".usda", ".usdc"}
 CAST_CSV_COLUMNS = [
@@ -1952,29 +1955,19 @@ class ShotManagerService:
             "components": components,
         }
 
-    def construct_from_stage_inputs(self, identity: ShotIdentity) -> dict[str, Any]:
+    def construct_from_stage_inputs(
+        self,
+        identity: ShotIdentity,
+        *,
+        cast_contexts: dict[str, str] | None = None,
+        exclude_cast: list[str] | None = None,
+    ) -> dict[str, Any]:
         components: list[dict[str, Any]] = []
         anim_input_path = self.latest_anim_input(identity)
         anim_input = read_json(anim_input_path, {}) if anim_input_path else {}
         if anim_input_path:
-            components.append(
-                asdict(
-                    ConstructComponent(
-                        component_type="animation",
-                        name="anim_input",
-                        version=str(anim_input.get("version") or _version_from_path(anim_input_path) or "latest"),
-                        mode="file",
-                        path=str(anim_input_path),
-                        required=True,
-                        enabled=True,
-                        source={"kind": "anim_input"},
-                    )
-                )
-            )
             for field, component_type, name, mode, required in (
-                ("cast", "cast", "cast", "file", True),
                 ("placements", "placement", "placements", "file", True),
-                ("camera", "camera", "camera", "import", True),
                 ("layout_overlay", "layout_overlay", "layout_overlay", "reference", False),
             ):
                 path = self._project_path_from_text(str(anim_input.get(field) or ""))
@@ -1995,8 +1988,93 @@ class ShotManagerService:
                     )
                 )
 
+        existing_keys = {
+            _construct_component_key(component) for component in components
+        }
+
+        def add_published_component(
+            component_type: str,
+            name: str,
+            version: str,
+            path: str | Path,
+            *,
+            required: bool = False,
+            mode: str = "file",
+            source: dict[str, Any] | None = None,
+        ) -> None:
+            component = asdict(
+                ConstructComponent(
+                    component_type=component_type,
+                    name=name,
+                    version=version or "latest",
+                    mode=mode,
+                    namespace=name if component_type == "camera" else "",
+                    path=str(path),
+                    required=required,
+                    enabled=bool(path and Path(path).exists()),
+                    note="" if path and Path(path).exists() else "Published data was not found.",
+                    source=dict(source or {}),
+                )
+            )
+            key = _construct_component_key(component)
+            if key not in existing_keys:
+                components.append(component)
+                existing_keys.add(key)
+
+        for camera_path_text in self._latest_review_camera_paths(identity):
+            camera_path = Path(camera_path_text)
+            camera_name = camera_path.parents[2].name if len(camera_path.parents) > 2 else camera_path.stem
+            add_published_component(
+                "camera",
+                camera_name,
+                camera_path.parent.name,
+                camera_path,
+                mode="import",
+                source={"kind": "published_camera"},
+            )
+
+        for row in self.list_set_dress_publish_versions(identity):
+            if row.latest:
+                add_published_component(
+                    "set_dress", row.name.removeprefix("set_dress/"), row.version,
+                    row.path, source={"kind": "published_set_dress"},
+                )
+
+        cast_data = self.load_cast(identity)
+        if not (cast_data.get("cast") or {}):
+            cast_data = self.load_sequence_cast(identity.episode, identity.sequence)
+        for cast_key, entry in sorted((cast_data.get("cast") or {}).items()):
+            curve_path = self.latest_animation_curve_path(
+                identity,
+                target=str(cast_key),
+                subset="curves",
+            )
+            if not curve_path:
+                continue
+            curve_data = read_json(curve_path, {}) or {}
+            add_published_component(
+                "animation_curve",
+                str(cast_key),
+                str(curve_data.get("version") or curve_path.parent.name),
+                curve_path,
+                required=bool((entry or {}).get("required", True)),
+                source={
+                    "kind": "animation_curve_data",
+                    "namespace": str((entry or {}).get("namespace") or cast_key),
+                    "asset": str((entry or {}).get("asset") or ""),
+                },
+            )
+
         try:
-            preview = self.build_preview_from_anim_input(identity) if anim_input_path else self.build_preview(identity)
+            preview = (
+                self.build_preview_from_anim_input(identity)
+                if anim_input_path and not (cast_contexts or exclude_cast)
+                else self.build_preview(
+                    identity,
+                    cast_contexts=cast_contexts,
+                    exclude_cast=exclude_cast,
+                )
+            )
         except Exception:
             preview = self.build_preview(identity)
         for item in preview:
@@ -2022,6 +2100,80 @@ class ShotManagerService:
                     )
                 )
             )
+        return {
+            "construct_type": "shot_construct",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "components": components,
+        }
+
+    def resolved_construct(
+        self,
+        identity: ShotIdentity,
+        *,
+        cast_contexts: dict[str, str] | None = None,
+        exclude_cast: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve published inputs and overlay the persisted Construct choices."""
+
+        persisted = self.load_construct(identity)
+        saved_contexts = {
+            str(component.get("name") or ""): str(
+                (component.get("source") or {}).get("context") or ""
+            )
+            for component in (persisted.get("components") or [])
+            if isinstance(component, dict)
+            and str((component.get("source") or {}).get("context") or "")
+        }
+        saved_contexts.update(cast_contexts or {})
+        generated = self.construct_from_stage_inputs(
+            identity,
+            cast_contexts=saved_contexts,
+            exclude_cast=exclude_cast,
+        )
+        persisted_by_key = {
+            _construct_component_key(component): component
+            for component in (persisted.get("components") or [])
+            if isinstance(component, dict)
+        }
+        excluded = {str(value) for value in (exclude_cast or [])}
+        components = []
+        seen = set()
+        for component in generated.get("components") or []:
+            key = _construct_component_key(component)
+            saved = persisted_by_key.get(key) or {}
+            merged = dict(component)
+            for field in ("enabled", "mode", "namespace", "required"):
+                if field in saved:
+                    merged[field] = saved[field]
+            if saved.get("note"):
+                merged["note"] = saved["note"]
+            source = dict(component.get("source") or {})
+            source.update(saved.get("source") or {})
+            merged["source"] = source
+            if str(merged.get("name") or "") in excluded:
+                merged["enabled"] = False
+            components.append(merged)
+            seen.add(key)
+        for component in persisted.get("components") or []:
+            if not isinstance(component, dict):
+                continue
+            source = component.get("source") or {}
+            if (
+                str(source.get("kind") or "") == "anim_input"
+                and str(component.get("component_type") or "").lower()
+                in {"animation", "cast", "camera"}
+            ):
+                continue
+            if str(source.get("kind") or "") in {
+                "published_preview_render",
+                "published_animation_package",
+            }:
+                continue
+            key = _construct_component_key(component)
+            if key not in seen:
+                components.append(dict(component))
         return {
             "construct_type": "shot_construct",
             "episode": identity.episode,
@@ -2936,6 +3088,35 @@ class ShotManagerService:
         self._update_versions(base_dir / "versions.json", version_label)
         return output_path
 
+    def register_shot_scene_publish_files(
+        self,
+        snapshot_path: str | Path,
+        files: dict[str, str],
+        *,
+        errors: dict[str, str] | None = None,
+    ) -> Path:
+        """Register DCC-native files exported beside a scene snapshot."""
+
+        snapshot = Path(snapshot_path)
+        if not snapshot.is_file():
+            raise FileNotFoundError(snapshot)
+        snapshot_data = read_json(snapshot, {}) or {}
+        snapshot_files = dict(snapshot_data.get("files") or {})
+        snapshot_files.update({str(key): str(value) for key, value in files.items()})
+        snapshot_data["files"] = snapshot_files
+        if errors:
+            snapshot_data["export_errors"] = dict(errors)
+        write_json(snapshot, snapshot_data)
+
+        publish_path = snapshot.parent / "publish.json"
+        publish_data = read_json(publish_path, {}) or {}
+        publish_files = dict(publish_data.get("files") or {})
+        publish_files.update(snapshot_files)
+        publish_data["files"] = publish_files
+        if errors:
+            publish_data["export_errors"] = dict(errors)
+        return write_json(publish_path, publish_data)
+
     def list_shot_scene_publish_versions(
         self,
         identity: ShotIdentity,
@@ -3639,6 +3820,29 @@ class ShotManagerService:
             fallback = base_dir / version / fallback_name
             if fallback.exists():
                 return fallback
+
+        # Current layout publishing writes named cameras below the shot.
+        # Preserve the legacy sequence/main lookup above, then fall back to
+        # the same direct publishes exposed by the Construct resolver.
+        camera_root = self.shot_root(identity) / "publish" / "camera"
+        candidates: list[tuple[str, Path]] = []
+        for latest_path in camera_root.glob("*/*/latest.json") if camera_root.exists() else []:
+            latest_data = read_json(latest_path, {}) or {}
+            candidate = latest_path.parent / str(latest_data.get("path") or "")
+            if candidate.is_file():
+                candidates.append((latest_path.parent.parent.name, candidate))
+        if candidates:
+            option = str(camera_option or "main").lower()
+
+            def camera_priority(item: tuple[str, Path]) -> tuple[int, str]:
+                target = item[0].lower()
+                if target == option:
+                    return 0, target
+                if "cha" in target:
+                    return 1, target
+                return 2, target
+
+            return sorted(candidates, key=camera_priority)[0][1]
         return None
 
     @staticmethod

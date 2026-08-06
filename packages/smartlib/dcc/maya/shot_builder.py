@@ -97,7 +97,13 @@ def stage_anim_from_input(
     referenced = build_shot_from_preview(preview_items, anim_shot_data)
     frame_offset = _anim_frame_offset(anim_input)
     camera_path = _project_path(root, str(anim_input.get("camera") or ""))
-    if _construct_enabled(construct_data, "camera", "camera", "camera") and camera_path and camera_path.exists():
+    direct_cameras = [
+        component
+        for component in _enabled_construct_components(construct_data, "camera")
+        if str((component.get("source") or {}).get("kind") or "")
+        == "published_camera"
+    ]
+    if not direct_cameras and _construct_enabled(construct_data, "camera", "camera", "camera") and camera_path and camera_path.exists():
         if camera_path.name == "camera.json":
             camera = _create_camera_from_json(cmds, camera_path, anim_input, frame_offset)
             if camera:
@@ -105,7 +111,6 @@ def stage_anim_from_input(
                     cmds.parent(camera, _ensure_group(cmds, "camera_grp"))
                 except Exception:
                     pass
-                referenced.append(str(camera_path))
         else:
             camera_scene = _camera_scene_from_publish(camera_path)
             if camera_scene and camera_scene.exists():
@@ -119,7 +124,6 @@ def stage_anim_from_input(
                     imported = [camera] if camera else []
                 _parent_imported_top_nodes(cmds, imported, _ensure_group(cmds, "camera_grp"))
                 _offset_animation_keys(cmds, imported, frame_offset)
-                referenced.append(str(camera_scene))
     if _construct_enabled(construct_data, "placement", "placements", "placements"):
         placement_nodes = _apply_anim_placements(cmds, root, anim_input)
         _offset_animation_keys(cmds, placement_nodes, frame_offset)
@@ -127,6 +131,9 @@ def stage_anim_from_input(
         layout_overlay = _load_layout_overlay_usd(cmds, root, anim_input)
         if layout_overlay:
             referenced.append(layout_overlay)
+    _apply_construct_cameras(cmds, root, anim_input, construct_data, frame_offset)
+    _apply_construct_set_dress(root, construct_data)
+    _apply_construct_animation_curves(root, construct_data)
     _apply_shot_timing(cmds, anim_shot_data)
     return referenced
 
@@ -890,15 +897,30 @@ def _camera_scene_from_publish(path: Path) -> Path | None:
     return None
 
 
-def _create_camera_from_json(cmds, camera_json: Path, anim_input: dict, frame_offset: float) -> str:
+def _create_camera_from_json(
+    cmds,
+    camera_json: Path,
+    anim_input: dict,
+    frame_offset: float,
+    *,
+    camera_name: str = "",
+) -> str:
     if not camera_json.exists():
         return ""
     data = read_json(camera_json, {}) or {}
     shot_name = _clean_namespace(str(anim_input.get("shot") or data.get("shot") or "shot"))
-    camera_name = f"{shot_name}_anim_cam"
+    camera_name = _clean_namespace(camera_name) if camera_name else f"{shot_name}_anim_cam"
     if cmds.objExists(camera_name):
         cmds.delete(camera_name)
     camera, camera_shape = cmds.camera(name=camera_name)
+    for attr, value in (data.get("shape_attributes") or {}).items():
+        target_attr = f"{camera_shape}.{attr}"
+        if not cmds.objExists(target_attr):
+            continue
+        try:
+            cmds.setAttr(target_attr, value)
+        except Exception:
+            pass
     if data.get("lens") is not None:
         try:
             cmds.setAttr(f"{camera_shape}.focalLength", float(data["lens"]))
@@ -909,7 +931,9 @@ def _create_camera_from_json(cmds, camera_json: Path, anim_input: dict, frame_of
             cmds.setAttr(f"{camera_shape}.fStop", float(data["fstop"]))
         except Exception:
             pass
-    samples = data.get("animation") or []
+    # Support both the legacy camera package (animation/lens/fstop) and the
+    # current maya_camera/v1 package (samples/shape_attributes).
+    samples = data.get("animation") or data.get("samples") or []
     if samples:
         for sample in samples:
             try:
@@ -945,6 +969,143 @@ def _create_camera_from_json(cmds, camera_json: Path, anim_input: dict, frame_of
             except Exception:
                 pass
     return camera
+
+
+def _enabled_construct_components(construct_data: dict | None, component_type: str) -> list[dict]:
+    if not construct_data:
+        return []
+    expected = str(component_type).strip().lower()
+    return [
+        component
+        for component in (construct_data.get("components") or [])
+        if isinstance(component, dict)
+        and str(component.get("component_type") or component.get("type") or "").strip().lower() == expected
+        and _truthy(component.get("enabled"), default=True)
+    ]
+
+
+def _apply_construct_cameras(
+    cmds,
+    project_root: Path,
+    anim_input: dict,
+    construct_data: dict | None,
+    frame_offset: float,
+) -> list[str]:
+    cameras = []
+    primary_path = _project_path(project_root, str(anim_input.get("camera") or ""))
+    direct_components = [
+        component
+        for component in _enabled_construct_components(construct_data, "camera")
+        if str((component.get("source") or {}).get("kind") or "")
+        == "published_camera"
+    ]
+    primary_enabled = _construct_enabled(
+        construct_data, "camera", "camera", "camera"
+    ) and not direct_components
+    seen = {
+        primary_path.resolve()
+        for _value in (primary_path,)
+        if primary_enabled and primary_path and primary_path.exists()
+    }
+    for component in direct_components:
+        camera_path = _project_path(project_root, str(component.get("path") or ""))
+        if not camera_path or not camera_path.is_file() or camera_path.resolve() in seen:
+            continue
+        seen.add(camera_path.resolve())
+        camera_name = str(component.get("name") or "")
+        group = _ensure_group(cmds, "camera_grp")
+        try:
+            existing = cmds.ls(f"|{group}|{camera_name}", long=True) or []
+            if existing:
+                cmds.delete(existing)
+        except Exception:
+            pass
+        camera_scene = _camera_scene_from_publish(camera_path)
+        if camera_scene and camera_scene.is_file():
+            try:
+                imported = _import_file(cmds, camera_scene, ":")
+                _parent_imported_top_nodes(cmds, imported, group)
+                cameras.append(camera_name)
+                continue
+            except Exception:
+                # Older or incompatible Maya files still have a portable JSON
+                # snapshot beside them, used below as the fallback.
+                pass
+        camera = _create_camera_from_json(
+            cmds,
+            camera_path,
+            anim_input,
+            frame_offset,
+            camera_name=camera_name,
+        )
+        if not camera:
+            continue
+        try:
+            parented = cmds.parent(camera, group) or []
+            camera = str(parented[0]) if parented else camera
+            camera = str(cmds.rename(camera, camera_name))
+        except Exception:
+            pass
+        cameras.append(camera)
+    return cameras
+
+
+def _apply_construct_set_dress(project_root: Path, construct_data: dict | None) -> list[str]:
+    warnings = []
+    from smartlib.dcc.maya import set_dress
+
+    for component in _enabled_construct_components(construct_data, "set_dress"):
+        package_path = _project_path(project_root, str(component.get("path") or ""))
+        if not package_path or not package_path.is_file():
+            continue
+        package = set_dress.load_package(package_path)
+        warnings.extend(set_dress.apply_stack(package.layers, base=package.base))
+    return warnings
+
+
+def _apply_construct_animation_curves(project_root: Path, construct_data: dict | None) -> list[dict]:
+    from smartlib.dcc.maya.animation_curves import apply_animation_curves_from_file
+
+    reports = []
+    direct_components = _enabled_construct_components(
+        construct_data, "animation_curve"
+    )
+    for component in direct_components:
+        source = component.get("source") or {}
+        curve_path = _project_path(project_root, str(component.get("path") or ""))
+        if not curve_path or not curve_path.is_file():
+            continue
+        reports.append(
+            apply_animation_curves_from_file(
+                curve_path,
+                namespace=str(source.get("namespace") or "") or None,
+                clear_existing=True,
+            )
+        )
+    if direct_components:
+        return reports
+
+    # Compatibility for older constructs where curves were only linked from
+    # an Animation Package/cache dependency.
+    for component in _enabled_construct_components(construct_data, "animation"):
+        source = component.get("source") or {}
+        if str(source.get("kind") or "") != "published_animation_package":
+            continue
+        manifest_path = _project_path(project_root, str(component.get("path") or ""))
+        manifest = read_json(manifest_path, {}) if manifest_path and manifest_path.is_file() else {}
+        for cast_data in (manifest.get("casts") or {}).values():
+            dependency = cast_data.get("curve_dependency") or {}
+            curve_path = _project_path(project_root, str(dependency.get("path") or ""))
+            if not curve_path or not curve_path.is_file():
+                continue
+            reports.append(
+                apply_animation_curves_from_file(
+                    curve_path,
+                    namespace=str(cast_data.get("namespace") or "") or None,
+                    clear_existing=True,
+                )
+            )
+    return reports
 
 
 def _shot_data_from_anim_input(anim_input: dict) -> dict:

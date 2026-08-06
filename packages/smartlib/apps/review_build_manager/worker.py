@@ -555,22 +555,29 @@ def _run_scene_construction(
         build_overrides = json.loads(args.overrides_json or "{}")
     except (TypeError, ValueError):
         build_overrides = {}
+    try:
+        construct_data = json.loads(args.construct_json or "{}")
+    except (TypeError, ValueError):
+        construct_data = {}
     _write_status(status_path, state="BUILDING", progress=10, task="Resolve Stage Inputs")
-    if plan.department == "anim":
-        preview = shot_service.build_preview(
-            identity,
-            department=plan.department,
-            cast_contexts=build_overrides.get("cast_contexts") or {},
-            exclude_cast=build_overrides.get("exclude_cast") or [],
-        )
-        preview = shot_service.filter_preview_items_for_construct(identity, preview)
-    else:
-        preview = shot_service.build_preview(
-            identity,
-            department=plan.department,
-            cast_contexts=build_overrides.get("cast_contexts") or {},
-            exclude_cast=build_overrides.get("exclude_cast") or [],
-        )
+    preview = shot_service.build_preview(
+        identity,
+        department=plan.department,
+        cast_contexts=build_overrides.get("cast_contexts") or {},
+        exclude_cast=build_overrides.get("exclude_cast") or [],
+    )
+    enabled_rigs = {
+        str(component.get("name") or "")
+        for component in (construct_data.get("components") or [])
+        if str(component.get("component_type") or "").lower() == "rig"
+        and bool(component.get("enabled", True))
+    }
+    has_rig_contract = any(
+        str(component.get("component_type") or "").lower() == "rig"
+        for component in (construct_data.get("components") or [])
+    )
+    if has_rig_contract:
+        preview = [row for row in preview if row.cast_key in enabled_rigs]
     resolved = [row for row in preview if row.status == "resolved"]
     missing = [row for row in preview if row.required and row.status != "resolved"]
     if missing:
@@ -587,7 +594,7 @@ def _run_scene_construction(
             plan.anim_input,
             shot_data,
             project_root=manager.project_config.project_root,
-            construct_data=shot_service.load_construct(identity),
+            construct_data=construct_data,
         )
     else:
         referenced = stage_shot_from_preview(
@@ -596,6 +603,13 @@ def _run_scene_construction(
             department=plan.department,
             project_root=manager.project_config.project_root,
         )
+    from smartlib.dcc.maya.shot_builder import create_review_display_layers
+
+    review_contract = shot_service.load_cast(identity)
+    review_contract["review_layers"] = shot_service.review_layers(
+        identity, plan.department
+    )
+    review_display_layers = create_review_display_layers(review_contract)
     build_root = (
         shot_service.shot_root(identity)
         / "output"
@@ -651,11 +665,8 @@ def _run_scene_construction(
         "resolution": [width, height],
         "camera": camera,
         "references": referenced,
-        "construct": _construct_snapshot_for_preview(
-            shot_service,
-            identity,
-            resolved,
-        ),
+        "review_display_layers": review_display_layers,
+        "construct": construct_data,
         "build_overrides": build_overrides,
         "status": "validated" if validation["status"] != "failed" else "blocked",
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -1079,6 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scope", choices=("shot", "sequence"), default="shot")
     parser.add_argument("--shots-json", default="[]")
     parser.add_argument("--sequence-options-json", default="{}")
+    parser.add_argument("--construct-json", default="{}")
     parser.add_argument("--overrides-json", default="{}")
     args = parser.parse_args(argv)
     try:

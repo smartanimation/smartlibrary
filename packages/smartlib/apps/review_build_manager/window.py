@@ -45,6 +45,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.job_counter = 0
         self.build_content_settings: dict[tuple[str, str, str], dict] = {}
         self.sequence_input_settings: dict[tuple[str, str], dict] = {}
+        self.current_build_content_rows: list[dict] = []
         self._startup_context_applied = False
         self.job_timer = QtCore.QTimer(self)
         self.job_timer.setInterval(500)
@@ -650,6 +651,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.construct_list.clear()
         self.open_output_btn.setEnabled(False)
         if not row_data:
+            self.current_build_content_rows = []
             self.detail_title.setText("Output History")
             self.detail_summary.setText("Select a shot.")
             self._populate_build_contents(None)
@@ -724,6 +726,15 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 [construct["version"], construct["state"], construct["updated"], scene]
             )
             item.setData(0, QtCore.Qt.UserRole, construct["scene"])
+            validation_results = construct.get("validation_results") or []
+            if validation_results:
+                details = "\n".join(
+                    f"[{entry.get('severity', '')}] {entry.get('code', '')}: "
+                    f"{entry.get('message', '')}"
+                    for entry in validation_results
+                )
+                for column in range(self.construct_list.columnCount()):
+                    item.setToolTip(column, details)
             color = "#80bd72" if construct["state"] in {"PASSED", "READY", "OK"} else "#f2ae30"
             item.setForeground(1, QtGui.QColor(color))
             self.construct_list.addTopLevelItem(item)
@@ -756,25 +767,32 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             cast_contexts=settings["contexts"],
             excluded_cast=list(settings["excluded"]),
         )
+        self.current_build_content_rows = rows
         self.build_contents_group.setTitle(f"Build Contents - {identity.shot}")
-        for data in rows:
+        for row_index, data in enumerate(rows):
             row = self.build_contents_table.rowCount()
             self.build_contents_table.insertRow(row)
             self.build_contents_table.setRowHeight(row, 28)
             check = QtWidgets.QTableWidgetItem()
             check.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsUserCheckable)
             check.setCheckState(QtCore.Qt.Checked if data["enabled"] else QtCore.Qt.Unchecked)
-            check.setData(QtCore.Qt.UserRole, data["cast_key"])
+            check.setData(QtCore.Qt.UserRole, row_index)
+            check.setData(QtCore.Qt.UserRole + 1, data["cast_key"])
             self.build_contents_table.setItem(row, 0, check)
             values = [data["type"], data["cast_key"], data["role"], data["variant"]]
             for column, value in enumerate(values, start=1):
                 self.build_contents_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
-            context_combo = QtWidgets.QComboBox()
-            context_combo.addItems(self.service.asset_context_profiles())
-            context_combo.setCurrentText(data["context"])
-            context_combo.setProperty("cast_key", data["cast_key"])
-            context_combo.currentTextChanged.connect(self._content_context_changed)
-            self.build_contents_table.setCellWidget(row, 5, context_combo)
+            if data["type"] == "rig":
+                context_combo = QtWidgets.QComboBox()
+                context_combo.addItems(self.service.asset_context_profiles())
+                context_combo.setCurrentText(data["context"])
+                context_combo.setProperty("content_row", row_index)
+                context_combo.currentTextChanged.connect(self._content_context_changed)
+                self.build_contents_table.setCellWidget(row, 5, context_combo)
+            else:
+                context_item = QtWidgets.QTableWidgetItem("-")
+                context_item.setTextAlignment(QtCore.Qt.AlignCenter)
+                self.build_contents_table.setItem(row, 5, context_item)
             for column, key in ((6, "official"), (7, "latest"), (8, "state"), (9, "note")):
                 item = QtWidgets.QTableWidgetItem(str(data[key]))
                 if column == 8:
@@ -789,23 +807,33 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if item.column() != 0:
             return
         status = self._selected_status()
-        cast_key = item.data(QtCore.Qt.UserRole)
-        if not status or not cast_key:
+        row_index = item.data(QtCore.Qt.UserRole)
+        if status is None or row_index is None:
             return
+        data = self.current_build_content_rows[int(row_index)]
+        data["component"]["enabled"] = item.checkState() == QtCore.Qt.Checked
         excluded = self._content_settings(status)["excluded"]
-        if item.checkState() == QtCore.Qt.Checked:
-            excluded.discard(str(cast_key))
+        name = str(data["cast_key"])
+        if data["component"]["enabled"]:
+            excluded.discard(name)
         else:
-            excluded.add(str(cast_key))
+            excluded.add(name)
+        self.service.save_build_contents(status.identity, self.current_build_content_rows)
         self._populate_build_contents(status)
 
     def _content_context_changed(self, context: str) -> None:
         status = self._selected_status()
         sender = self.sender()
-        cast_key = sender.property("cast_key") if sender else None
-        if not status or not cast_key:
+        row_index = sender.property("content_row") if sender else None
+        if status is None or row_index is None:
             return
-        self._content_settings(status)["contexts"][str(cast_key)] = str(context)
+        data = self.current_build_content_rows[int(row_index)]
+        name = str(data["cast_key"])
+        self._content_settings(status)["contexts"][name] = str(context)
+        source = dict(data["component"].get("source") or {})
+        source["context"] = str(context)
+        data["component"]["source"] = source
+        self.service.save_build_contents(status.identity, self.current_build_content_rows)
         self._populate_build_contents(status)
 
     def _set_content_checks(self, operation: str) -> None:
@@ -827,10 +855,18 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if status:
             settings = self._content_settings(status)
             settings["excluded"] = {
-                str(self.build_contents_table.item(row, 0).data(QtCore.Qt.UserRole))
+                str(self.build_contents_table.item(row, 0).data(QtCore.Qt.UserRole + 1))
                 for row in range(self.build_contents_table.rowCount())
                 if self.build_contents_table.item(row, 0).checkState() != QtCore.Qt.Checked
             }
+            for row in range(self.build_contents_table.rowCount()):
+                self.current_build_content_rows[row]["component"]["enabled"] = (
+                    self.build_contents_table.item(row, 0).checkState()
+                    == QtCore.Qt.Checked
+                )
+            self.service.save_build_contents(
+                status.identity, self.current_build_content_rows
+            )
             self._populate_build_contents(status)
 
     def _apply_context_to_contents(self) -> None:
@@ -844,7 +880,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         for row in target_rows:
             item = self.build_contents_table.item(row, 0)
             context_widget = self.build_contents_table.cellWidget(row, 5)
-            if not item:
+            if not item or not isinstance(context_widget, QtWidgets.QComboBox):
                 continue
             current_context = (
                 context_widget.currentText()
@@ -853,7 +889,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             )
             changes.append(
                 {
-                    "cast_key": str(item.data(QtCore.Qt.UserRole) or ""),
+                    "row": row,
+                    "cast_key": str(item.data(QtCore.Qt.UserRole + 1) or ""),
                     "enabled": item.checkState() == QtCore.Qt.Checked,
                     "current": current_context,
                     "new": context,
@@ -864,6 +901,11 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         settings = self._content_settings(status)
         for change in changes:
             settings["contexts"][change["cast_key"]] = change["new"]
+            data = self.current_build_content_rows[change["row"]]
+            source = dict(data["component"].get("source") or {})
+            source["context"] = change["new"]
+            data["component"]["source"] = source
+        self.service.save_build_contents(status.identity, self.current_build_content_rows)
         self._populate_build_contents(status)
 
     def _confirm_context_changes(self, status, changes: list[dict]) -> bool:
@@ -1203,6 +1245,18 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                 f"{label}_{output_version}_{self.job_counter:03d}.json"
             )
+            construct_snapshot = {}
+            if scope != "sequence":
+                overrides = self._stage_input_overrides(identity)
+                construct_data = self.service.shots.resolved_construct(
+                    identity,
+                    cast_contexts=overrides.get("cast_contexts") or {},
+                    exclude_cast=overrides.get("exclude_cast") or [],
+                )
+                self.service.shots.write_construct(identity, construct_data)
+                construct_snapshot = self.service.shots.construct_snapshot(
+                    identity, construct_data
+                )
             job = {
                 "id": f"#{self.job_counter:04d}",
                 "identity": raw_identity,
@@ -1211,6 +1265,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 "sequence_options": (
                     self._sequence_options(identity) if scope == "sequence" else {}
                 ),
+                "construct": construct_snapshot,
                 "version": output_version,
                 "mode": plan.resolved_mode,
                 "department": plan.department,
@@ -1300,6 +1355,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 json.dumps(job.get("shots") or []),
                 "--sequence-options-json",
                 json.dumps(job.get("sequence_options") or {}),
+                "--construct-json",
+                json.dumps(job.get("construct") or {}),
                 "--operation",
                 job["mode"],
                 "--department",
@@ -1497,10 +1554,21 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if identity is not None and hasattr(identity, "shot"):
             key = (identity.episode, identity.sequence, identity.shot)
             settings = self.build_content_settings.get(key) or {}
-            contexts = settings.get("contexts") or {}
-            excluded = settings.get("excluded") or set()
+            contexts = dict(settings.get("contexts") or {})
+            excluded = set(settings.get("excluded") or set())
+            construct = self.service.shots.load_construct(identity)
+            for component in construct.get("components") or []:
+                if str(component.get("component_type") or "").lower() != "rig":
+                    continue
+                name = str(component.get("name") or "")
+                source = component.get("source") or {}
+                saved_context = str(source.get("context") or "")
+                if name and saved_context and name not in contexts:
+                    contexts[name] = saved_context
+                if name and not bool(component.get("enabled", True)):
+                    excluded.add(name)
             if contexts:
-                overrides["cast_contexts"] = dict(contexts)
+                overrides["cast_contexts"] = contexts
             if excluded:
                 overrides["exclude_cast"] = sorted(
                     set(overrides["exclude_cast"]) | set(excluded)

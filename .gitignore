@@ -19,12 +19,24 @@ tests
 !packages/smartlib/preflight/*.py
 !packages/smartlib/apps/smart_preflight/
 !packages/smartlib/apps/smart_preflight/*.py
+!packages/smartlib/apps/asset_manager/retarget_publish.py
 !packages/smartlib/dcc/maya/preflight.py
+!packages/smartlib/dcc/maya/usd_skel.py
+!config/default/preflight.yml
+!config/maya/retarget/dli.json
 !bat/run_review_build_manager.bat
+!tools/maya/bake_mocap_to_rig.py
+!tools/maya/compare_retarget_scenes.py
+!tools/maya/create_retarget_test_motion.py
+!tools/maya/inspect_mocap_scene.py
+!tools/maya/merge_fk_ik_animation.py
+!tools/maya/validate_fk_retarget.py
+!tools/maya/validate_merged_fk_ik.py
 !tests/
 tests/*
 !tests/test_set_dress_publish.py
 !tests/test_smart_preflight.py
+!tests/test_retarget_publish.py
 
 tools/ffmpeg/*
 !tools/ffmpeg/README.md

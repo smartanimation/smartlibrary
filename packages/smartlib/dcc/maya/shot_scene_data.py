@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 
 DEFAULT_CAMERAS = {"persp", "top", "front", "side"}
@@ -64,6 +65,56 @@ def collect_camera_data(camera: str) -> dict[str, Any]:
         "shape_attributes": attrs,
         "samples": samples,
     }
+
+
+def export_camera_selection(camera: str, output_dir: str | Path) -> dict[str, Any]:
+    """Export a published camera as Maya ASCII and FBX selection files."""
+
+    cmds = _maya_cmds()
+    transform, _shape = _camera_nodes(cmds, camera)
+    camera_name = transform.rsplit("|", 1)[-1].split(":")[-1]
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    ma_path = output / f"{camera_name}.ma"
+    fbx_path = output / f"{camera_name}.fbx"
+    selection = cmds.ls(selection=True, long=True) or []
+    errors = {}
+    try:
+        cmds.select(transform, replace=True)
+        cmds.file(
+            str(ma_path),
+            force=True,
+            options="v=0;",
+            type="mayaAscii",
+            preserveReferences=True,
+            exportSelected=True,
+            channels=True,
+            constraints=True,
+            expressions=True,
+            constructionHistory=True,
+        )
+        try:
+            if not cmds.pluginInfo("fbxmaya", query=True, loaded=True):
+                cmds.loadPlugin("fbxmaya", quiet=True)
+            cmds.file(
+                str(fbx_path),
+                force=True,
+                options="v=0;",
+                type="FBX export",
+                preserveReferences=True,
+                exportSelected=True,
+            )
+        except Exception as exc:
+            errors["fbx"] = str(exc)
+    finally:
+        try:
+            cmds.select(selection, replace=True)
+        except Exception:
+            cmds.select(clear=True)
+    files = {"ma": ma_path.name}
+    if fbx_path.is_file():
+        files["fbx"] = fbx_path.name
+    return {"files": files, "errors": errors}
 
 
 def apply_camera_data(data: dict[str, Any], *, name: str | None = None) -> str:

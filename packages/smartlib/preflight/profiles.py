@@ -7,6 +7,8 @@ from .models import CheckDefinition, OutputDefinition, PreflightContext, Preflig
 COMMON_CHECKS = (
     CheckDefinition("scene_saved", "Scene saved", checks.scene_saved),
     CheckDefinition("scene_unmodified", "Unsaved changes", checks.scene_unmodified),
+    CheckDefinition("maya_version", "Maya version", checks.maya_version),
+    CheckDefinition("linear_unit", "Linear unit", checks.linear_unit),
     CheckDefinition("missing_references", "Missing references", checks.missing_references),
     CheckDefinition("unknown_nodes", "Unknown nodes", checks.unknown_nodes),
 )
@@ -25,6 +27,17 @@ def create_asset_profile() -> PreflightProfile:
         ),
         checks=COMMON_CHECKS + (
             CheckDefinition("asset_root", "Asset root", checks.asset_root),
+            CheckDefinition("no_asset_cameras", "Custom cameras", checks.no_asset_cameras),
+            CheckDefinition("empty_display_layers", "Display Layers", checks.empty_display_layers),
+            CheckDefinition("visible_models", "Hidden models", checks.visible_models),
+            CheckDefinition("no_asset_lights", "Lights", checks.no_asset_lights),
+            CheckDefinition("no_asset_references", "Asset references", checks.no_asset_references),
+            CheckDefinition("meshes_have_uvs", "Missing UVs", checks.meshes_have_uvs),
+            CheckDefinition("texture_files_exist", "Missing textures", checks.texture_files_exist),
+            CheckDefinition("no_local_texture_paths", "Local texture paths", checks.no_local_texture_paths),
+            CheckDefinition("textures_inside_project", "Project texture paths", checks.textures_inside_project),
+            CheckDefinition("valid_node_names", "Node naming", checks.valid_node_names),
+            CheckDefinition("no_asset_namespaces", "Asset namespaces", checks.no_asset_namespaces),
             CheckDefinition("all_rig_set", "allRigSet", checks.all_rig_set),
             CheckDefinition(
                 "cache_geo_set",
@@ -54,6 +67,11 @@ def create_shot_profile() -> PreflightProfile:
             OutputDefinition("metadata", "Metadata", "Frame range and dependencies", required=True),
         ),
         checks=COMMON_CHECKS + (
+            CheckDefinition(
+                "references_inside_project",
+                "Project reference paths",
+                checks.references_inside_project,
+            ),
             CheckDefinition("cast_assets_exist", "Cast coverage", checks.cast_assets_exist),
             CheckDefinition("cast_versions", "Cast publish versions", checks.cast_versions),
             CheckDefinition("namespace_duplicates", "Namespace duplicates", checks.namespace_duplicates),

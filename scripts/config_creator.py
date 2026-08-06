@@ -122,6 +122,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         self.template_files_tab = self.setup_template_files_tab()
         self.naming_tab = self.setup_naming_tab()
+        self.preflight_tab = self.setup_preflight_tab()
         self.context_tab = self.setup_context_tab()
         self.resolvers_tab = self.setup_resolvers_tab()
 
@@ -132,6 +133,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs.addTab(self.template_table["widget"], "Folder Structure")
         self.tabs.addTab(self.template_files_tab, "Templates")
         self.tabs.addTab(self.naming_tab, "Naming")
+        self.tabs.addTab(self.preflight_tab, "Preflight")
         self.tabs.addTab(self.context_tab, "Contexts")
         self.tabs.addTab(self.resolvers_tab, "Resolvers")
         self.tabs.currentChanged.connect(self._refresh_template_files_table)
@@ -151,6 +153,110 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         command_layout.addWidget(self.revert_btn)
         command_layout.addWidget(self.save_btn)
         main_layout.addLayout(command_layout)
+
+    def setup_preflight_tab(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(page)
+        self.preflight_maya_versions = QtWidgets.QLineEdit()
+        self.preflight_maya_versions.setPlaceholderText("2024.2, 2026")
+        self.preflight_linear_unit = QtWidgets.QComboBox()
+        self.preflight_linear_unit.setEditable(True)
+        self.preflight_linear_unit.addItems(["mm", "cm", "m", "in", "ft", "yd"])
+        self.preflight_background_categories = QtWidgets.QLineEdit()
+        self.preflight_background_categories.setPlaceholderText("BG, BGA, ENV, background")
+        self.preflight_forbidden_characters = QtWidgets.QLineEdit()
+        self.preflight_forbidden_characters.setPlaceholderText("<space>, ., -")
+        self.preflight_geometry_set = QtWidgets.QLineEdit()
+        self.preflight_geometry_set.setPlaceholderText("cache_geo_set")
+        self.preflight_skeleton_set = QtWidgets.QLineEdit()
+        self.preflight_skeleton_set.setPlaceholderText("skel_export_set")
+        self.preflight_root_joint_source = QtWidgets.QComboBox()
+        self.preflight_root_joint_source.addItems(["rig_metadata", "scene_detection"])
+        self.preflight_root_joint_metadata_key = QtWidgets.QLineEdit()
+        self.preflight_root_joint_metadata_key.setPlaceholderText("root_joint")
+        self.preflight_root_joint_detection = QtWidgets.QComboBox()
+        self.preflight_root_joint_detection.addItems(
+            ["skin_influence_root", "skeleton_set_root", "joint_hierarchy_root"]
+        )
+        layout.addRow("Allowed Maya Versions:", self.preflight_maya_versions)
+        layout.addRow("Linear Unit:", self.preflight_linear_unit)
+        layout.addRow("Background Categories:", self.preflight_background_categories)
+        layout.addRow("Forbidden Name Characters:", self.preflight_forbidden_characters)
+        export_title = QtWidgets.QLabel("USD Skel Export Contract")
+        export_title.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        layout.addRow(export_title)
+        layout.addRow("Geometry Set:", self.preflight_geometry_set)
+        layout.addRow("Skeleton Set:", self.preflight_skeleton_set)
+        layout.addRow("Root Joint Source:", self.preflight_root_joint_source)
+        layout.addRow("Root Joint Metadata Key:", self.preflight_root_joint_metadata_key)
+        layout.addRow("Root Joint Auto Detection:", self.preflight_root_joint_detection)
+        note = QtWidgets.QLabel(
+            "Saved to preflight.yml. Use <space> to represent a space character.\n"
+            "Background assets skip the configured Geometry Set; asset.json preflight_profile takes precedence.\n"
+            "The actual root joint name is stored per asset in rig metadata."
+        )
+        note.setWordWrap(True)
+        layout.addRow(note)
+        return page
+
+    @staticmethod
+    def _comma_values(text):
+        return [value.strip() for value in str(text or "").split(",") if value.strip()]
+
+    def _load_preflight_editor(self, project_name=None):
+        default_data = load_yml(os.path.join(DEFAULT_DIR, "preflight.yml"))
+        project_data = (
+            load_yml(os.path.join(PROJECTS_ROOT, project_name, "preflight.yml"))
+            if project_name else {}
+        )
+        policy = merge_dicts(default_data, project_data).get("preflight") or {}
+        versions = policy.get("maya_versions") or []
+        if isinstance(versions, str):
+            versions = [versions]
+        backgrounds = policy.get("background_categories") or []
+        forbidden = policy.get("forbidden_name_characters") or []
+        usd_skel = policy.get("usd_skel") or {}
+        display_forbidden = ["<space>" if value == " " else str(value) for value in forbidden]
+        self.preflight_maya_versions.setText(", ".join(map(str, versions)))
+        self.preflight_linear_unit.setCurrentText(str(policy.get("linear_unit") or "cm"))
+        self.preflight_background_categories.setText(", ".join(map(str, backgrounds)))
+        self.preflight_forbidden_characters.setText(", ".join(display_forbidden))
+        self.preflight_geometry_set.setText(str(usd_skel.get("geometry_set") or "cache_geo_set"))
+        self.preflight_skeleton_set.setText(str(usd_skel.get("skeleton_set") or "skel_export_set"))
+        self.preflight_root_joint_source.setCurrentText(
+            str(usd_skel.get("root_joint_source") or "rig_metadata")
+        )
+        self.preflight_root_joint_metadata_key.setText(
+            str(usd_skel.get("root_joint_metadata_key") or "root_joint")
+        )
+        self.preflight_root_joint_detection.setCurrentText(
+            str(usd_skel.get("root_joint_detection") or "skin_influence_root")
+        )
+
+    def _save_preflight_config(self, project_dir):
+        forbidden = [
+            " " if value.casefold() == "<space>" else value
+            for value in self._comma_values(self.preflight_forbidden_characters.text())
+        ]
+        data = {
+            "preflight": {
+                "maya_versions": self._comma_values(self.preflight_maya_versions.text()),
+                "linear_unit": self.preflight_linear_unit.currentText().strip() or "cm",
+                "background_categories": self._comma_values(
+                    self.preflight_background_categories.text()
+                ),
+                "forbidden_name_characters": forbidden,
+                "usd_skel": {
+                    "geometry_set": self.preflight_geometry_set.text().strip() or "cache_geo_set",
+                    "skeleton_set": self.preflight_skeleton_set.text().strip() or "skel_export_set",
+                    "root_joint_source": self.preflight_root_joint_source.currentText().strip() or "rig_metadata",
+                    "root_joint_metadata_key": self.preflight_root_joint_metadata_key.text().strip() or "root_joint",
+                    "root_joint_detection": self.preflight_root_joint_detection.currentText().strip()
+                    or "skin_influence_root",
+                },
+            }
+        }
+        save_yml(os.path.join(project_dir, "preflight.yml"), data)
 
     def setup_template_files_tab(self):
         page = QtWidgets.QWidget()
@@ -1473,6 +1579,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             or "{project}*{episode}*{sequence}*{shot}*{dept}_{preview}_v{version}*t{take}*####.{ext}"
         }
         save_yml(naming_path, naming_data)
+        self._save_preflight_config(proj_dir)
         self._save_context_configs(proj_dir)
         self._save_resolver_rules(proj_dir)
         self.config_saved.emit()
@@ -1508,6 +1615,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.playblast_filename_input.setText(
             str((naming.get("smart_playblast") or {}).get("filename") or "")
         )
+        self._load_preflight_editor(project_name)
         self._load_context_editor(project_name)
         self._load_resolver_editor(project_name)
 
@@ -1522,6 +1630,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.playblast_filename_input.setText(
             str((naming.get("smart_playblast") or {}).get("filename") or "")
         )
+        self._load_preflight_editor()
         self._load_context_editor()
         self._load_resolver_editor()
 

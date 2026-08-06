@@ -235,54 +235,72 @@ class ReviewBuildManagerService:
         cast_contexts: dict[str, str] | None = None,
         excluded_cast: list[str] | None = None,
     ) -> list[dict]:
-        cast_data = self.shots.load_cast(identity)
-        if not (cast_data.get("cast") or {}):
-            cast_data = self.shots.load_sequence_cast(identity.episode, identity.sequence)
-        excluded = {str(value) for value in (excluded_cast or [])}
-        context_map = {str(key): str(value).upper() for key, value in (cast_contexts or {}).items()}
+        context_map = {
+            str(key): str(value).upper()
+            for key, value in (cast_contexts or {}).items()
+        }
+        construct = self.shots.resolved_construct(
+            identity,
+            cast_contexts=context_map,
+            exclude_cast=excluded_cast,
+        )
         rows = []
-        for cast_key, entry in sorted((cast_data.get("cast") or {}).items()):
-            context = context_map.get(str(cast_key), str(default_context or "WORK").upper())
-            asset = str(entry.get("asset") or "")
-            variant = str(entry.get("variant") or "default")
+        for component in construct.get("components") or []:
+            source = dict(component.get("source") or {})
+            name = str(component.get("name") or "")
+            component_type = str(component.get("component_type") or "rig")
+            is_cast = component_type == "rig"
+            context = (
+                context_map.get(
+                    name,
+                    str(source.get("context") or default_context or "WORK").upper(),
+                )
+                if is_cast
+                else ""
+            )
+            asset = str(source.get("asset") or "")
+            variant = str(source.get("variant") or "default")
             asset_root = self.shots.find_asset_root(asset)
             variant_root = asset_root / variant if asset_root else None
-            official_path = None
             latest_path = None
-            if variant_root and variant_root.is_dir():
-                official_path = self.shots.asset_publish_resolver.resolve_context(
-                    variant_root,
-                    context,
-                    version=str(entry.get("asset_publish") or "approved"),
-                )
+            if is_cast and variant_root and variant_root.is_dir():
                 latest_path = self.shots.asset_publish_resolver.resolve_context(
                     variant_root,
                     context,
                     version="latest",
                 )
-            official = official_path.parent.name if official_path else ""
+            official = str(component.get("version") or "")
             latest = latest_path.parent.name if latest_path else ""
-            enabled = str(cast_key) not in excluded
+            enabled = bool(component.get("enabled", True))
+            path = Path(str(component.get("path") or ""))
             state = "EXCLUDED" if not enabled else "MISSING"
-            if enabled and official_path:
+            if enabled and (path.is_file() or path.is_dir()):
                 state = "UPDATE AVAILABLE" if latest and latest != official else "READY"
             rows.append(
                 {
-                    "cast_key": str(cast_key),
-                    "type": "cast",
+                    "cast_key": name,
+                    "component_key": [component_type, name, str(source.get("field") or "")],
+                    "type": "rig" if is_cast else component_type,
                     "asset": asset,
-                    "role": str(entry.get("role") or ""),
+                    "role": str(source.get("role") or ""),
                     "variant": variant,
                     "context": context,
                     "official": official,
                     "latest": latest,
                     "state": state,
-                    "required": bool(entry.get("required", True)),
+                    "required": bool(component.get("required", True)),
                     "enabled": enabled,
-                    "note": str(entry.get("note") or ""),
+                    "note": str(component.get("note") or ""),
+                    "component": dict(component),
                 }
             )
         return rows
+
+    def save_build_contents(self, identity: ShotIdentity, rows: list[dict]) -> Path:
+        return self.shots.write_construct(
+            identity,
+            {"components": [dict(row.get("component") or {}) for row in rows]},
+        )
 
     def list_constructs(self, identity: ShotIdentity, department: str, task: str) -> list[dict]:
         root = (
@@ -302,6 +320,11 @@ class ReviewBuildManagerService:
             validation = read_json(version_dir / "validation.json", {}) or {}
             scene = next(iter(sorted(version_dir.glob("*.m[ab]"))), None)
             state = str(validation.get("state") or validation.get("status") or "VERIFYING").upper()
+            validation_results = [
+                dict(item)
+                for item in (validation.get("results") or [])
+                if isinstance(item, dict)
+            ]
             rows.append(
                 {
                     "version": version_dir.name,
@@ -309,6 +332,7 @@ class ReviewBuildManagerService:
                     "scene": str(scene or ""),
                     "updated": datetime.fromtimestamp(version_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
                     "components": len(manifest.get("components") or manifest.get("resolved_assets") or []),
+                    "validation_results": validation_results,
                 }
             )
         return rows

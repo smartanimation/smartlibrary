@@ -1895,7 +1895,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
         self.shot_data_tree.clear()
         data_type = self._current_data_type()
-        target = self._current_publish_target()
+        target = self._current_data_target()
         if sequence_identity:
             department = self.work_dept_combo.currentText().strip() or "layout"
             rows = (
@@ -2919,12 +2919,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.construct_status_label.setText("Construct: select a shot")
             return
         try:
-            latest_data = self.service.construct_from_stage_inputs(identity)
+            latest_data = self.service.resolved_construct(identity)
         except Exception:
             latest_data = {"components": []}
         latest_map = self._construct_latest_map(latest_data.get("components") or [])
         if record.get("mode") in {"work", "build"}:
             data = self._construct_data_from_work_record(record)
+        elif is_current_record:
+            data = latest_data
         else:
             data = self.service.load_construct(identity)
         if is_current_record and not data.get("components"):
@@ -3234,7 +3236,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not identity:
             return
         try:
-            data = self.service.construct_from_stage_inputs(identity)
+            data = self.service.resolved_construct(identity)
             self.construct_table.setRowCount(0)
             for component in data.get("components") or []:
                 self._append_construct_row(
@@ -4140,7 +4142,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return
         try:
             import maya.cmds as cmds
-            from smartlib.dcc.maya.animation_curves import export_animation_geometry_cache
+            from smartlib.dcc.maya.animation_curves import (
+                collect_animation_curves_for_cast,
+                export_animation_geometry_cache,
+            )
 
             namespace = cast_row["namespace"] or cast_row["cast_key"]
             if hasattr(self.service, "shot_frame_range"):
@@ -4158,6 +4163,29 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     raise RuntimeError(f"Invalid shot.json frame range: {start}-{end}")
             source_workfile = cmds.file(query=True, sceneName=True) or ""
             curve_data_path = self._selected_animation_curve_data_path(cast_row["cast_key"])
+            if not curve_data_path:
+                curve_data = collect_animation_curves_for_cast(
+                    cast_key=cast_row["cast_key"],
+                    asset=cast_row["asset"],
+                    namespace=namespace,
+                    source_workfile=source_workfile,
+                )
+                if curve_data.get("curves"):
+                    curve_data_file = self.service.export_animation_curves_data(
+                        identity,
+                        curve_data,
+                        target=cast_row["cast_key"],
+                        subset="curves",
+                        source_workfile=source_workfile,
+                        comment=comment.strip(),
+                    )
+                    curve_data_path = self.service.publish_animation_from_data(
+                        identity,
+                        curve_data_file,
+                        target=cast_row["cast_key"],
+                        subset="curves",
+                        comment=comment.strip(),
+                    )
             plan = self.service.plan_animation_cache_publish(identity, target=cast_row["cast_key"])
             result = export_animation_geometry_cache(
                 namespace=namespace,
@@ -4408,7 +4436,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return
         try:
             import maya.cmds as cmds
-            from smartlib.dcc.maya.shot_scene_data import collect_camera_data
+            from smartlib.dcc.maya.shot_scene_data import (
+                collect_camera_data,
+                export_camera_selection,
+            )
 
             payload = collect_camera_data(target)
             published = self.service.publish_shot_scene_snapshot(
@@ -4420,10 +4451,23 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 source_workfile=cmds.file(query=True, sceneName=True) or "",
                 comment=comment.strip(),
             )
+            export_result = export_camera_selection(target, published.parent)
+            self.service.register_shot_scene_publish_files(
+                published,
+                export_result.get("files") or {},
+                errors=export_result.get("errors") or {},
+            )
             self.status_label.setText(f"Published {title}: {published}")
             self._populate_publish_targets()
             self.populate_publish_tree()
-            QtWidgets.QMessageBox.information(self, f"Publish {title}", f"Published:\n{published}")
+            exported_names = ", ".join(
+                sorted((export_result.get("files") or {}).values())
+            )
+            QtWidgets.QMessageBox.information(
+                self,
+                f"Publish {title}",
+                f"Published:\n{published}\n\nSelection exports: {exported_names}",
+            )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, f"Publish {title} Failed", str(exc))
 

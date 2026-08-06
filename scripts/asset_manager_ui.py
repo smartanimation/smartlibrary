@@ -151,11 +151,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         settings.setValue("asset_variant", self._current_asset_variant())
         settings.setValue("department", self._current_department())
         settings.setValue("subset", self._current_variant())
+        settings.setValue("work_scene_format", self._selected_work_scene_extension())
         settings.setValue("asset_view", "table" if self.asset_list.viewMode() == QtWidgets.QListView.ListMode else "card")
         settings.setValue("shot_codes", [target["code"] for target in self._selected_cast_targets()])
         settings.setValue("main_splitter", self.main_splitter.saveState())
         settings.setValue("asset_browser_splitter", self.asset_browser_splitter.saveState())
-        settings.setValue("detail_content_splitter", self.detail_content_splitter.saveState())
+        settings.setValue("detail_content_splitter_v2", self.detail_content_splitter.saveState())
+        settings.setValue("work_content_splitter", self.work_content_splitter.saveState())
         settings.endGroup()
 
     def _restore_window_state(self) -> None:
@@ -170,11 +172,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         asset_variant = str(settings.value("asset_variant", "default") or "default")
         department = str(settings.value("department", "model") or "model")
         subset = str(settings.value("subset", "") or "")
+        work_scene_format = str(settings.value("work_scene_format", "ma") or "ma")
         asset_view = str(settings.value("asset_view", "card") or "card")
         shot_codes = set(self._settings_string_list(settings.value("shot_codes")))
         main_splitter = settings.value("main_splitter")
         asset_browser_splitter = settings.value("asset_browser_splitter")
-        detail_content_splitter = settings.value("detail_content_splitter")
+        detail_content_splitter = settings.value("detail_content_splitter_v2")
+        work_content_splitter = settings.value("work_content_splitter")
         settings.endGroup()
 
         self.search_edit.blockSignals(True)
@@ -185,6 +189,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         selected_key = tuple(asset_key) if len(asset_key) == 3 else None
         self._apply_filter(selected_key=selected_key)
         self._restore_detail_selection(asset_variant, department, subset)
+        format_index = self.work_scene_format_combo.findData(work_scene_format.lstrip("."))
+        if format_index >= 0:
+            self.work_scene_format_combo.setCurrentIndex(format_index)
         self._populate_variants()
         self._restore_detail_selection(asset_variant, department, subset)
         self._select_shot_codes(shot_codes)
@@ -202,6 +209,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             (self.main_splitter, main_splitter),
             (self.asset_browser_splitter, asset_browser_splitter),
             (self.detail_content_splitter, detail_content_splitter),
+            (self.work_content_splitter, work_content_splitter),
         ):
             if state:
                 splitter.restoreState(state)
@@ -350,6 +358,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_variant_combo = QtWidgets.QComboBox()
         self.asset_variant_combo.setMinimumWidth(120)
 
+        detail_header_layout = QtWidgets.QHBoxLayout()
+        detail_header_layout.setContentsMargins(0, 0, 0, 0)
+        detail_header_layout.setSpacing(4)
+        detail_header_layout.addWidget(self.back_to_assets_btn)
+        detail_header_layout.addStretch(1)
+        right_layout.addLayout(detail_header_layout)
+
         self.detail_content_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         right_layout.addWidget(self.detail_content_splitter, 1)
 
@@ -360,14 +375,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_variant_header_label.setVisible(False)
         self.asset_variant_combo.setVisible(False)
 
-        selector_layout.addWidget(self.back_to_assets_btn)
-        selector_layout.addWidget(QtWidgets.QLabel("Variant"))
         self.asset_variant_list = QtWidgets.QListWidget()
         self.asset_variant_list.setMinimumHeight(80)
         self.asset_variant_list.setStyleSheet("QListWidget::item { height: 22px; }")
-        selector_layout.addWidget(self.asset_variant_list)
 
-        selector_layout.addWidget(QtWidgets.QLabel("dept"))
         self.dept_list = QtWidgets.QListWidget()
         self.dept_list.setMinimumHeight(90)
         self.dept_list.setStyleSheet("QListWidget::item { height: 22px; }")
@@ -376,22 +387,19 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not self.manager.asset_depts:
             self.dept_list.addItem("model")
         self.dept_list.setCurrentRow(0)
-        selector_layout.addWidget(self.dept_list)
 
-        selector_layout.addWidget(QtWidgets.QLabel("Subset"))
         self.variant_list = QtWidgets.QListWidget()
         self.variant_list.setMinimumHeight(90)
         self.variant_list.setStyleSheet("QListWidget::item { height: 22px; }")
-        selector_layout.addWidget(self.variant_list)
         self.staging_btn = QtWidgets.QPushButton("Stageing")
         self.staging_btn.setStyleSheet(
             "QPushButton { background-color: #5d4f85; color: white; font-weight: bold; }"
             "QPushButton:hover { background-color: #6e60a0; }"
             "QPushButton:disabled { background-color: #4e4b57; color: #b8b8b8; }"
         )
-        selector_layout.addWidget(self.staging_btn)
         selector_layout.addStretch(1)
-        self.detail_content_splitter.addWidget(selector_panel)
+        # Variant/department/subset selectors live in Work Scene. Do not keep
+        # their former empty column in the shared detail layout.
 
         center_panel = QtWidgets.QWidget()
         center_layout = QtWidgets.QVBoxLayout(center_panel)
@@ -429,15 +437,40 @@ class AssetManagerWindow(QtWidgets.QDialog):
         center_layout.addWidget(self.detail_tabs, 1)
         self.detail_content_splitter.addWidget(center_panel)
         self.detail_content_splitter.addWidget(right_info_panel)
-        self.detail_content_splitter.setStretchFactor(0, 0)
-        self.detail_content_splitter.setStretchFactor(1, 1)
-        self.detail_content_splitter.setStretchFactor(2, 0)
+        self.detail_content_splitter.setStretchFactor(0, 1)
+        self.detail_content_splitter.setStretchFactor(1, 0)
+        self.detail_content_splitter.setSizes([760, 280])
 
         work_tab = QtWidgets.QWidget()
         self.work_tab = work_tab
-        work_layout = QtWidgets.QVBoxLayout(work_tab)
-        work_layout.setContentsMargins(4, 4, 4, 4)
+        work_tab_layout = QtWidgets.QVBoxLayout(work_tab)
+        work_tab_layout.setContentsMargins(4, 4, 4, 4)
+        work_tab_layout.setSpacing(4)
+        self.work_content_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        work_tab_layout.addWidget(self.work_content_splitter, 1)
+
+        work_selector_panel = QtWidgets.QWidget()
+        work_selector_layout = QtWidgets.QVBoxLayout(work_selector_panel)
+        work_selector_layout.setContentsMargins(0, 0, 2, 0)
+        work_selector_layout.setSpacing(4)
+        work_selector_layout.addWidget(QtWidgets.QLabel("Variant"))
+        work_selector_layout.addWidget(self.asset_variant_list, 1)
+        work_selector_layout.addWidget(QtWidgets.QLabel("Dept"))
+        work_selector_layout.addWidget(self.dept_list, 1)
+        work_selector_layout.addWidget(QtWidgets.QLabel("Subset"))
+        work_selector_layout.addWidget(self.variant_list, 1)
+        work_selector_layout.addWidget(self.staging_btn)
+        work_selector_panel.setMinimumWidth(120)
+        work_selector_panel.setMaximumWidth(190)
+        self.work_content_splitter.addWidget(work_selector_panel)
+
+        work_main_panel = QtWidgets.QWidget()
+        work_layout = QtWidgets.QVBoxLayout(work_main_panel)
+        work_layout.setContentsMargins(2, 0, 0, 0)
         work_layout.setSpacing(4)
+        self.work_content_splitter.addWidget(work_main_panel)
+        self.work_content_splitter.setStretchFactor(0, 0)
+        self.work_content_splitter.setStretchFactor(1, 1)
         self.dept_tabs = QtWidgets.QTabBar()
         self.dept_tabs.setExpanding(False)
         for dept in self.manager.asset_depts:
@@ -449,6 +482,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         self.dependency_label = QtWidgets.QLabel("")
         self.dependency_label.setVisible(False)
+
+        work_format_layout = QtWidgets.QHBoxLayout()
+        work_format_layout.setContentsMargins(0, 0, 0, 0)
+        work_format_layout.setSpacing(4)
+        work_format_layout.addWidget(QtWidgets.QLabel("Scene Format"))
+        self.work_scene_format_combo = QtWidgets.QComboBox()
+        self.work_scene_format_combo.addItem("Maya ASCII (.ma)", "ma")
+        self.work_scene_format_combo.addItem("Maya Binary (.mb)", "mb")
+        self.work_scene_format_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        work_format_layout.addWidget(self.work_scene_format_combo)
+        work_format_layout.addStretch(1)
+        work_layout.addLayout(work_format_layout)
 
         self.work_list = QtWidgets.QTableWidget(0, 4)
         self.work_list.setHorizontalHeaderLabels(["Thumbnail", "File", "Updated", "Comment"])
@@ -465,7 +510,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.open_scene_btn = QtWidgets.QPushButton("OPEN")
         self.reference_btn = QtWidgets.QPushButton("REFERENCE")
         self.save_scene_btn = QtWidgets.QPushButton("SAVE")
-        self.publish_btn = QtWidgets.QPushButton("Publish")
         green_button_style = (
             "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; }"
             "QPushButton:hover { background-color: #3d835f; }"
@@ -479,13 +523,68 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.open_scene_btn.setStyleSheet(green_button_style)
         self.reference_btn.setStyleSheet(green_button_style)
         self.save_scene_btn.setStyleSheet(blue_button_style)
-        self.publish_btn.setStyleSheet(blue_button_style)
         button_grid.addWidget(self.open_scene_btn, 0, 0)
         button_grid.addWidget(self.reference_btn, 0, 1, 1, 2)
-        button_grid.addWidget(self.save_scene_btn, 1, 0)
-        button_grid.addWidget(self.publish_btn, 1, 1, 1, 2)
+        button_grid.addWidget(self.save_scene_btn, 1, 0, 1, 3)
         work_layout.addLayout(button_grid)
         self.detail_tabs.addTab(work_tab, "Work Scene")
+
+        publish_tab = QtWidgets.QWidget()
+        self.asset_publish_tab = publish_tab
+        publish_tab_layout = QtWidgets.QVBoxLayout(publish_tab)
+        publish_tab_layout.setContentsMargins(4, 4, 4, 4)
+        publish_tab_layout.setSpacing(4)
+
+        publish_header = QtWidgets.QHBoxLayout()
+        publish_header.setContentsMargins(0, 0, 0, 0)
+        publish_header.setSpacing(4)
+        publish_header.addWidget(QtWidgets.QLabel("USD Asset Publish"))
+        publish_header.addStretch(1)
+        self.refresh_publish_btn = QtWidgets.QPushButton("Refresh")
+        self.publish_selected_btn = QtWidgets.QPushButton("Publish Selected")
+        self.publish_selected_btn.setStyleSheet(blue_button_style)
+        self.publish_selected_btn.setToolTip("Publish the work scene selected in the Work Scene tab")
+        publish_header.addWidget(self.refresh_publish_btn)
+        publish_header.addWidget(self.publish_selected_btn)
+        publish_tab_layout.addLayout(publish_header)
+
+        publish_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.asset_publish_type_list = QtWidgets.QListWidget()
+        self.asset_publish_type_list.setFixedWidth(132)
+        self.asset_publish_type_list.setStyleSheet("QListWidget::item { height: 26px; }")
+        for label, key in (
+            ("Asset", "asset"),
+            ("Geometry", "geometry"),
+            ("Rig", "rig"),
+            ("Look", "look"),
+            ("Groom", "groom"),
+            ("Retarget", "retarget"),
+        ):
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, key)
+            self.asset_publish_type_list.addItem(item)
+        self.asset_publish_type_list.setCurrentRow(0)
+        publish_splitter.addWidget(self.asset_publish_type_list)
+
+        self.asset_publish_tree = QtWidgets.QTreeWidget()
+        self.asset_publish_tree.setHeaderLabels(
+            ["Name", "Component", "Representation", "Official", "Latest", "State", "Updated", "Comment"]
+        )
+        self.asset_publish_tree.setIndentation(12)
+        self.asset_publish_tree.setAlternatingRowColors(False)
+        self.asset_publish_tree.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.asset_publish_tree.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.asset_publish_tree.header().setStretchLastSection(True)
+        self.asset_publish_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self.asset_publish_tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        self.asset_publish_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        publish_splitter.addWidget(self.asset_publish_tree)
+        publish_splitter.setStretchFactor(0, 0)
+        publish_splitter.setStretchFactor(1, 1)
+        publish_splitter.setCollapsible(0, False)
+        publish_splitter.setSizes([132, 900])
+        publish_tab_layout.addWidget(publish_splitter, 1)
+        self.detail_tabs.addTab(publish_tab, "Publish")
 
         data_tab = QtWidgets.QWidget()
         self.data_tab = data_tab
@@ -670,6 +769,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.customContextMenuRequested.connect(self._show_work_context_menu)
         self.work_list.itemChanged.connect(self._on_work_item_changed)
         self.work_list.itemSelectionChanged.connect(self._update_selected_file_info)
+        self.work_list.itemSelectionChanged.connect(self._update_publish_selected_state)
         self.data_list.customContextMenuRequested.connect(self._show_data_context_menu)
         self.data_list.itemSelectionChanged.connect(self._update_selected_file_info)
         self.preview_list.itemSelectionChanged.connect(self._update_selected_file_info)
@@ -678,7 +778,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.open_scene_btn.clicked.connect(self._open_selected_scene)
         self.reference_btn.clicked.connect(self._reference_latest_publish)
         self.save_scene_btn.clicked.connect(self._save_scene)
-        self.publish_btn.clicked.connect(self._publish_selected_work)
+        self.refresh_publish_btn.clicked.connect(self._populate_asset_publish_tree)
+        self.publish_selected_btn.clicked.connect(self._publish_selected_work)
+        self.asset_publish_type_list.currentRowChanged.connect(
+            lambda _row: self._populate_asset_publish_tree()
+        )
         self.staging_btn.clicked.connect(self._stage_work_scene)
         self.quick_preview_btn.clicked.connect(self._quick_preview_setup)
         self.turntable_scene_btn.clicked.connect(self._build_turntable_scene)
@@ -1211,6 +1315,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._update_data_watcher(asset)
         self._populate_preview_list(asset)
         self._populate_context_pack_tree()
+        self._populate_asset_publish_tree(asset)
         self._update_selected_file_info()
 
         for path in self.manager.list_publish_files(asset):
@@ -1226,6 +1331,210 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._update_data_watcher(asset)
         self._update_selected_file_info()
         self.status_label.setText("Data refreshed")
+
+    def _populate_asset_publish_tree(self, asset: Asset | None = None) -> None:
+        tree = getattr(self, "asset_publish_tree", None)
+        if tree is None:
+            return
+        tree.clear()
+        asset = asset or self._current_asset()
+        if not asset:
+            return
+
+        type_item = self.asset_publish_type_list.currentItem()
+        publish_type = str(type_item.data(QtCore.Qt.UserRole) or "asset") if type_item else "asset"
+        variant = self._current_asset_variant()
+        roots = []
+        variant_publish = asset.variant_root(variant) / "publish"
+        if variant_publish.exists():
+            roots.append(variant_publish)
+        if asset.publish_dir.exists() and asset.publish_dir not in roots:
+            roots.append(asset.publish_dir)
+
+        branches = []
+        seen = set()
+        for root in roots:
+            for latest_path in root.rglob("latest.json"):
+                branch = latest_path.parent
+                key = branch.as_posix().lower()
+                if key in seen or not self._publish_branch_matches(branch, root, publish_type):
+                    continue
+                seen.add(key)
+                branches.append((root, branch))
+
+        for root, branch in sorted(branches, key=lambda value: value[1].as_posix().lower()):
+            relative = branch.relative_to(root)
+            parts = relative.parts
+            department = parts[0] if parts else "publish"
+            representation = parts[-1] if len(parts) > 1 else ""
+            component = self._publish_component_name(branch, asset.name)
+            latest_data = self._read_json_for_table(branch / "latest.json")
+            latest = self._metadata_version(latest_data)
+            versions_data = self._read_json_for_table(branch / "versions.json")
+            official = self._official_publish_version(versions_data)
+            versions = sorted(
+                (path for path in branch.iterdir() if path.is_dir() and re.fullmatch(r"v\d+", path.name)),
+                key=lambda path: int(path.name[1:]),
+                reverse=True,
+            )
+            if not official:
+                official = self._official_from_publish_records(versions)
+
+            label = " / ".join(parts) if parts else branch.name
+            root_item = QtWidgets.QTreeWidgetItem(
+                [label, component, representation, official, latest, self._publish_branch_state(official, latest), "", ""]
+            )
+            root_item.setData(0, QtCore.Qt.UserRole, str(branch))
+            root_item.setToolTip(0, str(branch))
+            self._style_publish_state(root_item, 5)
+            tree.addTopLevelItem(root_item)
+
+            for version_dir in versions:
+                publish_json = version_dir / "publish.json"
+                record = self._read_json_for_table(publish_json)
+                updated = self._format_updated(publish_json if publish_json.exists() else version_dir)
+                comment = str(record.get("comment") or "") if isinstance(record, dict) else ""
+                state = "LATEST" if version_dir.name == latest else self._record_publish_status(record)
+                child = QtWidgets.QTreeWidgetItem(
+                    [version_dir.name, component, representation, official, latest, state, updated, comment]
+                )
+                child.setData(0, QtCore.Qt.UserRole, str(version_dir))
+                child.setToolTip(0, str(version_dir))
+                self._style_publish_state(child, 5)
+                root_item.addChild(child)
+            root_item.setExpanded(True)
+
+        tree.resizeColumnToContents(0)
+        tree.resizeColumnToContents(1)
+        tree.resizeColumnToContents(2)
+        self._update_publish_selected_state()
+
+    def _update_publish_selected_state(self) -> None:
+        button = getattr(self, "publish_selected_btn", None)
+        if button is not None:
+            source_path, source_kind = self._publish_source_path()
+            button.setEnabled(bool(self._current_asset() and source_path))
+            if source_path:
+                button.setToolTip(f"Publish current {source_kind} scene: {Path(source_path).name}")
+            else:
+                button.setToolTip("Open a saved asset work scene before publishing")
+
+    def _publish_source_path(self) -> tuple[str | None, str]:
+        current_scene = current_dcc_scene_path()
+        if current_scene:
+            return current_scene, "open"
+        return self._selected_work_path(), "selected work"
+
+    def _selected_publish_type(self) -> str:
+        item = getattr(self, "asset_publish_type_list", None)
+        current = item.currentItem() if item is not None else None
+        return str(current.data(QtCore.Qt.UserRole) or "asset") if current else "asset"
+
+    @staticmethod
+    def _publish_type_departments(publish_type: str) -> set[str]:
+        return {
+            "geometry": {"model", "geo", "geometry"},
+            "rig": {"rig"},
+            "look": {"look", "surfacing"},
+            "groom": {"groom"},
+            "retarget": {"retarget"},
+        }.get(str(publish_type).lower(), set())
+
+    @staticmethod
+    def _publish_branch_matches(branch: Path, root: Path, publish_type: str) -> bool:
+        parts = [part.lower() for part in branch.relative_to(root).parts]
+        department = parts[0] if parts else ""
+        aliases = {
+            "asset": {"asset", "usd"},
+            "geometry": {"model", "geo", "geometry"},
+            "rig": {"rig", "skeleton", "skin"},
+            "look": {"look", "surfacing", "material", "materials"},
+            "groom": {"groom", "hair"},
+            "retarget": {"retarget"},
+        }
+        return department in aliases.get(publish_type, {publish_type})
+
+    @staticmethod
+    def _metadata_version(data) -> str:
+        if not isinstance(data, dict):
+            return ""
+        version = str(data.get("version") or "").strip()
+        if version:
+            return version
+        path = str(data.get("path") or "").replace("\\", "/")
+        match = re.search(r"(?:^|/)(v\d+)(?:/|$)", path)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _official_publish_version(data) -> str:
+        entries = data.get("versions", []) if isinstance(data, dict) else data
+        if not isinstance(entries, list):
+            return ""
+        official = ""
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            status = str(entry.get("status") or "").lower()
+            if status not in {"approved", "official", "released", "stable"}:
+                continue
+            version = str(entry.get("version") or "")
+            if version and (not official or int(version.lstrip("v") or 0) > int(official.lstrip("v") or 0)):
+                official = version
+        return official
+
+    def _official_from_publish_records(self, versions: list[Path]) -> str:
+        for version_dir in versions:
+            record = self._read_json_for_table(version_dir / "publish.json")
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("status") or "").lower() in {"approved", "official", "released", "stable"}:
+                return version_dir.name
+        return ""
+
+    def _publish_component_name(self, branch: Path, asset_name: str) -> str:
+        latest = self._read_json_for_table(branch / "latest.json")
+        if isinstance(latest, dict):
+            path_value = str(latest.get("path") or "")
+            if path_value:
+                name = Path(path_value).name
+                if name:
+                    return name
+        versions = sorted((path for path in branch.iterdir() if path.is_dir()), reverse=True)
+        for version_dir in versions:
+            files = sorted(
+                path for path in version_dir.iterdir()
+                if path.is_file() and path.name not in {"publish.json", "validation.json"}
+            )
+            if files:
+                return files[0].name
+        return f"{asset_name}.usd" if branch.name.lower() == "usd" else ""
+
+    @staticmethod
+    def _publish_branch_state(official: str, latest: str) -> str:
+        if not latest:
+            return "MISSING"
+        if official and official != latest:
+            return "UPDATE AVAILABLE"
+        return "READY"
+
+    @staticmethod
+    def _record_publish_status(record) -> str:
+        if not isinstance(record, dict):
+            return "PUBLISHED"
+        return str(record.get("status") or "PUBLISHED").upper()
+
+    @staticmethod
+    def _style_publish_state(item, column: int) -> None:
+        state = item.text(column).upper()
+        color = None
+        if state in {"READY", "LATEST", "APPROVED", "OFFICIAL", "RELEASED"}:
+            color = QtGui.QColor("#72c48f")
+        elif state in {"UPDATE AVAILABLE", "WARNING"}:
+            color = QtGui.QColor("#d6b46b")
+        elif state in {"MISSING", "ERROR", "FAILED"}:
+            color = QtGui.QColor("#df7777")
+        if color:
+            item.setForeground(column, QtGui.QBrush(color))
 
     def _schedule_data_refresh(self, _path: str = "") -> None:
         self.data_refresh_timer.start()
@@ -1289,6 +1598,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if index >= 0:
             return self.dept_tabs.tabText(index)
         return "model"
+
+    def _selected_work_scene_extension(self) -> str:
+        if current_dcc_name() != "maya":
+            return current_work_scene_extension()
+        combo = getattr(self, "work_scene_format_combo", None)
+        return str(combo.currentData() or "ma") if combo is not None else "ma"
 
     def _current_variant(self) -> str:
         item = self.variant_list.currentItem()
@@ -2552,7 +2867,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         selected_path = self._selected_work_path()
         department = self._current_department()
         dcc = current_dcc_name()
-        ext = current_work_scene_extension()
+        ext = self._selected_work_scene_extension()
         subset = self._effective_work_subset(asset, dcc)
         if dcc == "houdini" and department in {"model", "look"}:
             subset = self._current_variant()
@@ -2592,7 +2907,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 variant=parsed.get("variant") or self._work_variant_arg(asset),
                 subset=subset,
                 version=int(parsed.get("version") or 0) + 1,
-                ext=parsed.get("ext") or ext,
+                ext=ext,
             )
         else:
             target = self.manager.next_work_take_path(
@@ -2603,6 +2918,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 variant=self._work_variant_arg(asset),
                 subset=subset,
                 ext=ext,
+                use_current_extension=False,
             )
 
         comment = ""
@@ -2629,7 +2945,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         department = self._current_department()
         variant = self._work_variant_arg(asset)
         dcc = current_dcc_name()
-        ext = current_work_scene_extension()
+        ext = self._selected_work_scene_extension()
         subset = self._effective_work_subset(asset, dcc)
         if dcc == "houdini" and department in {"model", "look"}:
             subset = self._current_variant()
@@ -2880,14 +3196,127 @@ class AssetManagerWindow(QtWidgets.QDialog):
         fallback = review_path.parent / "turntable.usd"
         return fallback if fallback.exists() else None
 
+    @staticmethod
+    def _retarget_publish_api():
+        _ensure_smartlib_on_path()
+        from smartlib.apps.asset_manager.retarget_publish import (
+            list_retarget_versions,
+            publish_retarget_profile,
+            standard_test_motion,
+            validate_retarget_profile,
+        )
+        return list_retarget_versions, publish_retarget_profile, standard_test_motion, validate_retarget_profile
+
+    def _default_retarget_profile(self, asset: Asset) -> Path | None:
+        variant = self._current_asset_variant()
+        candidates = [
+            asset.variant_root(variant) / "work" / "rig" / "retarget" / f"{asset.name}_retarget.json",
+            asset.root / "rig" / "retarget" / f"{asset.name}.json",
+            Path(__file__).resolve().parents[1] / "config" / "maya" / "retarget" / f"{asset.name.lower()}.json",
+        ]
+        return next((path for path in candidates if path.is_file()), None)
+
+    def _refresh_retarget_publish_tab(self, asset: Asset | None = None) -> None:
+        if not getattr(self, "retarget_publish_table", None):
+            return
+        asset = asset or self._current_asset()
+        self.retarget_publish_table.setRowCount(0)
+        if not asset:
+            self.retarget_test_motion_path_label.setText("")
+            self.publish_retarget_btn.setEnabled(False)
+            return
+        self.publish_retarget_btn.setEnabled(True)
+        _list_versions, _publish, standard_test_motion, _validate = self._retarget_publish_api()
+        test_path = standard_test_motion(self.manager.project_root)
+        self.retarget_test_motion_path_label.setText(test_path.as_posix())
+        current_profile = Path(self.retarget_profile_edit.text()) if self.retarget_profile_edit.text().strip() else None
+        if not current_profile or not current_profile.is_file():
+            default_profile = self._default_retarget_profile(asset)
+            if default_profile:
+                self.retarget_profile_edit.setText(str(default_profile))
+        versions = _list_versions(asset.root, self._current_asset_variant())
+        for entry in versions:
+            row = self.retarget_publish_table.rowCount()
+            self.retarget_publish_table.insertRow(row)
+            values = (entry["version"], entry["published_at"], entry["test_status"], entry["comment"])
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(str(value))
+                item.setData(QtCore.Qt.UserRole, str(entry["path"]))
+                self.retarget_publish_table.setItem(row, column, item)
+        self.retarget_publish_table.resizeColumnsToContents()
+
+    def _browse_retarget_profile(self) -> None:
+        asset = self._current_asset()
+        start = str(asset.root if asset else self.manager.project_root)
+        path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select Retarget Profile", start, "Retarget Profile (*.json)"
+        )
+        if path:
+            self.retarget_profile_edit.setText(path)
+            self._validate_retarget_publish()
+
+    def _validate_retarget_publish(self) -> dict | None:
+        asset = self._current_asset()
+        profile_text = self.retarget_profile_edit.text().strip()
+        if not asset or not profile_text:
+            self.retarget_validation_label.setText("Select an asset and Retarget profile.")
+            return None
+        profile = Path(profile_text)
+        _list_versions, _publish, _test_motion, validate = self._retarget_publish_api()
+        validation = validate(
+            profile,
+            project_root=self.manager.project_root,
+            test_motion=self.retarget_test_motion_check.isChecked(),
+        )
+        status = validation["status"].upper()
+        messages = list(validation["errors"]) + list(validation["warnings"])
+        test_status = validation["test_motion"]["status"]
+        text = f"{status} | Test Motion: {test_status}"
+        if messages:
+            text += "\n" + "\n".join(messages)
+        colors = {"passed": "#72c48f", "warning": "#d6b46b", "failed": "#df7777"}
+        self.retarget_validation_label.setStyleSheet(f"color: {colors.get(validation['status'], '#dddddd')};")
+        self.retarget_validation_label.setText(text)
+        self.status_label.setText(f"Retarget validation: {validation['status']}")
+        return validation
+
+    def _publish_retarget_profile(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        validation = self._validate_retarget_publish()
+        if not validation or validation["errors"]:
+            QtWidgets.QMessageBox.warning(self, "Retarget Publish", "Retarget validation failed. Fix the listed errors before publishing.")
+            return
+        comment = self._ask_comment("Publish Retarget Comment")
+        if comment is None:
+            return
+        _list_versions, publish, _test_motion, _validate = self._retarget_publish_api()
+        try:
+            result = publish(
+                asset.root,
+                self._current_asset_variant(),
+                Path(self.retarget_profile_edit.text().strip()),
+                project_root=self.manager.project_root,
+                comment=comment,
+                run_test_motion=self.retarget_test_motion_check.isChecked(),
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Retarget Publish Failed", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self._refresh_retarget_publish_tab(asset)
+        self.status_label.setText(f"Published Retarget {result['version']}: {result['profile'].name}")
+
     def _publish_selected_work(self) -> None:
         asset = self._current_asset()
-        source_path = self._selected_work_path()
+        source_path, source_kind = self._publish_source_path()
         if not asset:
             self.status_label.setText("Select an asset first")
             return
         if not source_path:
-            self.status_label.setText("Select a work scene first")
+            self.status_label.setText("Open a saved asset work scene first")
             return
 
         parsed = self.manager.parse_work_file(source_path)
@@ -2895,16 +3324,51 @@ class AssetManagerWindow(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self,
                 "Publish Failed",
-                "Selected work scene does not match the naming rule.",
+                f"The {source_kind} scene does not match the asset work naming rule.\n\n"
+                f"Source Scene: {source_path}",
             )
             return
 
-        subset = self._effective_work_subset(asset, current_dcc_name())
+        try:
+            Path(source_path).resolve().relative_to(asset.root.resolve())
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Publish Failed",
+                "The open scene does not belong to the selected asset.\n\n"
+                f"Selected Asset: {asset.name}\n"
+                f"Asset Root: {asset.root}\n"
+                f"Source Scene: {source_path}",
+            )
+            return
+
+        publish_type = self._selected_publish_type()
+        expected_departments = self._publish_type_departments(publish_type)
+        current_department = str(parsed.get("department") or "").lower()
+        if expected_departments and current_department not in expected_departments:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Publish Type Mismatch",
+                f"{publish_type.title()} Publish cannot use the current scene.\n\n"
+                f"Expected Department: {', '.join(sorted(expected_departments))}\n"
+                f"Current Department: {current_department or '-'}\n"
+                f"Source Scene: {source_path}",
+            )
+            return
+
+        subset = self.manager.work_subset_for_path(
+            asset,
+            source_path,
+            parsed["department"],
+            parsed["variant"],
+        )
         publish_formats = self.manager.publish_formats_for_work_file(
             asset,
             source_path,
             subset=subset,
         )
+        if parsed["department"] == "rig" and "usd" not in publish_formats:
+            publish_formats.append("usd")
         targets = {
             publish_format: self.manager.publish_file_path(
                 asset,
@@ -3245,6 +3709,28 @@ def current_dcc_name() -> str:
     except ImportError:
         pass
     return "maya"
+
+
+def current_dcc_scene_path() -> str | None:
+    """Return the saved scene open in the host DCC, if one exists."""
+
+    try:
+        import hou
+
+        scene_name = str(hou.hipFile.path() or "").strip()
+        if scene_name and Path(scene_name).is_file():
+            return str(Path(scene_name))
+    except ImportError:
+        pass
+    try:
+        import maya.cmds as cmds
+
+        scene_name = str(cmds.file(query=True, sceneName=True) or "").strip()
+        if scene_name and Path(scene_name).is_file():
+            return str(Path(scene_name))
+    except ImportError:
+        pass
+    return None
 
 
 def current_work_scene_extension() -> str:
@@ -4701,6 +5187,9 @@ def publish_work_outputs(
             source_workfile,
             dependency_info,
         )
+        if "usd" in targets:
+            validate_rig_usd_skel(rig_metadata)
+    usd_skel_outputs: dict[str, Path] = {}
     snapshot_active = False
     try:
         if should_import_references_for_publish(dependency_info):
@@ -4723,6 +5212,13 @@ def publish_work_outputs(
                     save_maya_snapshot_copy(target, source_workfile)
                 else:
                     shutil.copy2(source_workfile, target)
+            elif publish_format == "usd" and rig_metadata is not None:
+                usd_skel_outputs = publish_rig_usd_skel(
+                    target.parent,
+                    rig_metadata,
+                    overwrite=overwrite,
+                )
+                target = usd_skel_outputs["rig_usd"]
             else:
                 export_root = asset.name if parsed.get("department") == "model" else None
                 export_current_scene_for_publish(
@@ -4735,6 +5231,11 @@ def publish_work_outputs(
             files[publish_format] = target.name
             if rig_metadata is not None:
                 write_rig_publish_metadata(target.parent, rig_metadata)
+        if usd_skel_outputs:
+            for key in ("skeleton_usd", "skin_usd", "validation"):
+                output = usd_skel_outputs[key]
+                if output not in published:
+                    published.append(output)
     finally:
         if snapshot_active:
             reopen_source_workfile(source_workfile)
@@ -4747,7 +5248,71 @@ def publish_work_outputs(
         subset=subset,
         dependency_info=dependency_info,
     )
+    if usd_skel_outputs:
+        augment_usd_skel_publish_record(usd_skel_outputs, rig_metadata or {})
     return published
+
+
+def publish_rig_usd_skel(
+    version_dir: Path,
+    rig_metadata: dict,
+    *,
+    overwrite: bool,
+) -> dict[str, Path]:
+    from smartlib.dcc.maya.usd_skel import publish_usd_skel_package
+
+    contract = current_usd_skel_contract()
+    return publish_usd_skel_package(
+        version_dir,
+        rig_metadata=rig_metadata,
+        contract=contract,
+        overwrite=overwrite,
+    )
+
+
+def validate_rig_usd_skel(rig_metadata: dict) -> dict:
+    from smartlib.dcc.maya.usd_skel import validate_usd_skel_scene
+
+    validation, _export_data = validate_usd_skel_scene(
+        rig_metadata=rig_metadata,
+        contract=current_usd_skel_contract(),
+    )
+    issues = validation.get("issues") or []
+    if issues:
+        raise RuntimeError("USD Skel validation failed:\n- " + "\n- ".join(issues))
+    return validation
+
+
+def current_usd_skel_contract() -> dict[str, str]:
+    from smartlib.core.config_loader import current_project_config
+
+    project_config = current_project_config()
+    if project_config:
+        return project_config.usd_skel_contract
+    return {
+        "geometry_set": "cache_geo_set",
+        "skeleton_set": "skel_export_set",
+        "root_joint_source": "rig_metadata",
+        "root_joint_metadata_key": "root_joint",
+        "root_joint_detection": "skin_influence_root",
+    }
+
+
+def augment_usd_skel_publish_record(outputs: dict[str, Path], rig_metadata: dict) -> Path:
+    version_dir = outputs["rig_usd"].parent
+    publish_path = version_dir / "publish.json"
+    record = read_json_file(publish_path, {}) or {}
+    record.setdefault("files", {})["usd"] = outputs["rig_usd"].name
+    record["usd_skel"] = {
+        "schema": "smartpipeline.usd_skel.v1",
+        "root_joint": rig_metadata.get("root_joint", ""),
+        "rig": outputs["rig_usd"].name,
+        "skeleton": outputs["skeleton_usd"].name,
+        "skin": outputs["skin_usd"].name,
+        "validation": outputs["validation"].name,
+    }
+    write_json_file(publish_path, record)
+    return publish_path
 
 
 def collect_rig_publish_metadata(
