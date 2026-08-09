@@ -143,3 +143,12 @@ env PATH: C:\WINDOWS\System32;C:\WINDOWS;C:\WINDOWS\System32\Wbem
 env SystemRoot: C:\WINDOWS
 env ComSpec: C:\WINDOWS\system32\cmd.exe
 Warning: In image "P:\dev\smartlibrary\templates\hdri\studio_small_03_4k.exr" mip level 1 does not exist [python]
+
+[2026-08-07T23:13:37] launch usdview
+command: cmd.exe /d /s /c P:\dev\smartlibrary\bat\..\tools\usd\usdview.bat D:\Projects\ELCD\assets\CH\main\DLI\default\publish\review\look\turntable\v001\turntable.usd
+cwd: P:\dev\smartlibrary\bat\..\tools\usd
+usd: D:\Projects\ELCD\assets\CH\main\DLI\default\publish\review\look\turntable\v001\turntable.usd
+env PATH: C:\WINDOWS\System32;C:\WINDOWS;C:\WINDOWS\System32\Wbem
+env SystemRoot: C:\WINDOWS
+env ComSpec: C:\WINDOWS\system32\cmd.exe
+Warning (secondary thread): In image "P:\dev\smartlibrary\templates\hdri\studio_small_03_4k.exr" mip level 1 does not exist [python]

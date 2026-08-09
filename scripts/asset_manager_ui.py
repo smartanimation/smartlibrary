@@ -59,6 +59,13 @@ def _asset_context_service(config_dir: str | os.PathLike[str]):
     return AssetContextService(ProjectConfig(config_dir))
 
 
+def _asset_construct_service(variant_root: str | os.PathLike[str]):
+    _ensure_smartlib_on_path()
+    from smartlib.apps.asset_manager import AssetConstructService
+
+    return AssetConstructService(variant_root)
+
+
 def _shot_service(config_dir: str | os.PathLike[str]):
     _ensure_smartlib_on_path()
     from smartlib.apps.shot_manager import ShotManagerService
@@ -483,7 +490,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.dependency_label = QtWidgets.QLabel("")
         self.dependency_label.setVisible(False)
 
-        work_format_layout = QtWidgets.QHBoxLayout()
+        work_format_widget = QtWidgets.QWidget()
+        work_format_layout = QtWidgets.QHBoxLayout(work_format_widget)
         work_format_layout.setContentsMargins(0, 0, 0, 0)
         work_format_layout.setSpacing(4)
         work_format_layout.addWidget(QtWidgets.QLabel("Scene Format"))
@@ -493,7 +501,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_scene_format_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
         work_format_layout.addWidget(self.work_scene_format_combo)
         work_format_layout.addStretch(1)
-        work_layout.addLayout(work_format_layout)
 
         self.work_list = QtWidgets.QTableWidget(0, 4)
         self.work_list.setHorizontalHeaderLabels(["Thumbnail", "File", "Updated", "Comment"])
@@ -508,7 +515,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
         work_layout.addWidget(self.work_list)
         button_grid = QtWidgets.QGridLayout()
         self.open_scene_btn = QtWidgets.QPushButton("OPEN")
-        self.reference_btn = QtWidgets.QPushButton("REFERENCE")
         self.save_scene_btn = QtWidgets.QPushButton("SAVE")
         green_button_style = (
             "QPushButton { background-color: #2f6f4e; color: white; font-weight: bold; }"
@@ -521,10 +527,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             "QPushButton:disabled { background-color: #4b5665; color: #b8b8b8; }"
         )
         self.open_scene_btn.setStyleSheet(green_button_style)
-        self.reference_btn.setStyleSheet(green_button_style)
         self.save_scene_btn.setStyleSheet(blue_button_style)
         button_grid.addWidget(self.open_scene_btn, 0, 0)
-        button_grid.addWidget(self.reference_btn, 0, 1, 1, 2)
+        button_grid.addWidget(work_format_widget, 0, 1, 1, 2)
         button_grid.addWidget(self.save_scene_btn, 1, 0, 1, 3)
         work_layout.addLayout(button_grid)
         self.detail_tabs.addTab(work_tab, "Work Scene")
@@ -553,7 +558,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_publish_type_list.setFixedWidth(132)
         self.asset_publish_type_list.setStyleSheet("QListWidget::item { height: 26px; }")
         for label, key in (
-            ("Asset", "asset"),
             ("Geometry", "geometry"),
             ("Rig", "rig"),
             ("Look", "look"),
@@ -595,25 +599,24 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_header.setContentsMargins(0, 0, 0, 0)
         data_header.setSpacing(4)
         self.refresh_data_btn = QtWidgets.QPushButton("Refresh")
-        data_header.addStretch(1)
+        self.data_type_combo = QtWidgets.QComboBox()
+        self.data_type_combo.addItem("Geo", "geo")
+        self.data_type_combo.addItem("Guide", "guide")
+        self.data_type_combo.addItem("Skin", "skin")
+        self.data_target_combo = QtWidgets.QComboBox()
+        self.data_target_combo.setEditable(True)
+        self.data_target_combo.addItems(["body", "face", "cloth", "hair"])
+        self.data_representation_combo = QtWidgets.QComboBox()
+        self.data_representation_combo.setEditable(True)
+        self.data_representation_combo.addItems(["low", "high"])
+        data_header.addWidget(QtWidgets.QLabel("Type"))
+        data_header.addWidget(self.data_type_combo)
+        data_header.addWidget(QtWidgets.QLabel("Target"))
+        data_header.addWidget(self.data_target_combo, 1)
+        data_header.addWidget(QtWidgets.QLabel("Representation"))
+        data_header.addWidget(self.data_representation_combo)
         data_header.addWidget(self.refresh_data_btn)
         data_layout.addLayout(data_header)
-        assembly_buttons = QtWidgets.QGridLayout()
-        assembly_buttons.setContentsMargins(0, 0, 0, 0)
-        assembly_buttons.setSpacing(4)
-        self.open_assembly_btn = QtWidgets.QPushButton("Open Assembly")
-        self.reload_assembly_btn = QtWidgets.QPushButton("Reload Assembly")
-        self.save_assembly_btn = QtWidgets.QPushButton("Save Assembly")
-        self.publish_assembly_btn = QtWidgets.QPushButton("Publish Assembly")
-        self.open_assembly_btn.setStyleSheet(green_button_style)
-        self.reload_assembly_btn.setStyleSheet(green_button_style)
-        self.save_assembly_btn.setStyleSheet(blue_button_style)
-        self.publish_assembly_btn.setStyleSheet(blue_button_style)
-        assembly_buttons.addWidget(self.open_assembly_btn, 0, 0)
-        assembly_buttons.addWidget(self.reload_assembly_btn, 0, 1)
-        assembly_buttons.addWidget(self.save_assembly_btn, 1, 0)
-        assembly_buttons.addWidget(self.publish_assembly_btn, 1, 1)
-        data_layout.addLayout(assembly_buttons)
         self.data_list = QtWidgets.QTreeWidget()
         self.data_list.setHeaderLabels(["Name", "Version", "Date", "Comment"])
         self.data_list.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
@@ -622,21 +625,62 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_buttons = QtWidgets.QHBoxLayout()
         data_buttons.setContentsMargins(0, 0, 0, 0)
         data_buttons.setSpacing(4)
-        self.export_mesh_btn = QtWidgets.QPushButton("Export Geo FBX")
-        self.import_assembly_btn = QtWidgets.QPushButton("Import Assembly")
+        self.export_mesh_btn = QtWidgets.QPushButton("Export Data")
+        self.import_assembly_btn = QtWidgets.QPushButton("Ingest Assembly")
         self.ingest_fbx_btn = QtWidgets.QPushButton("Ingest Model FBX")
         self.export_guide_btn = QtWidgets.QPushButton("Export Guide")
         self.export_skin_btn = QtWidgets.QPushButton("Export Skin")
-        self.import_data_btn = QtWidgets.QPushButton("Import")
         data_buttons.addStretch(1)
         data_buttons.addWidget(self.export_mesh_btn)
         data_buttons.addWidget(self.import_assembly_btn)
         data_buttons.addWidget(self.ingest_fbx_btn)
-        data_buttons.addWidget(self.export_guide_btn)
-        data_buttons.addWidget(self.export_skin_btn)
-        data_buttons.addWidget(self.import_data_btn)
+        self.export_guide_btn.setVisible(False)
+        self.export_skin_btn.setVisible(False)
         data_layout.addLayout(data_buttons)
         self.detail_tabs.addTab(data_tab, "Data")
+
+        construct_tab = QtWidgets.QWidget()
+        self.construct_tab = construct_tab
+        construct_layout = QtWidgets.QVBoxLayout(construct_tab)
+        construct_layout.setContentsMargins(4, 4, 4, 4)
+        construct_layout.setSpacing(4)
+        construct_header = QtWidgets.QHBoxLayout()
+        construct_header.setContentsMargins(0, 0, 0, 0)
+        construct_header.addWidget(QtWidgets.QLabel("Construct Inputs"))
+        construct_header.addStretch(1)
+        self.refresh_construct_btn = QtWidgets.QPushButton("Refresh")
+        self.save_construct_btn = QtWidgets.QPushButton("Save Recipe")
+        construct_header.addWidget(self.refresh_construct_btn)
+        construct_header.addWidget(self.save_construct_btn)
+        construct_layout.addLayout(construct_header)
+        self.construct_tree = QtWidgets.QTreeWidget()
+        self.construct_tree.setHeaderLabels(
+            ["Use", "Type", "Target", "Representation", "Selected", "Latest", "State"]
+        )
+        self.construct_tree.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.construct_tree.setAlternatingRowColors(False)
+        self.construct_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self.construct_tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        self.construct_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        self.construct_tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        self.construct_tree.header().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents)
+        self.construct_tree.header().setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeToContents)
+        self.construct_tree.header().setStretchLastSection(True)
+        construct_layout.addWidget(self.construct_tree, 1)
+        construct_buttons = QtWidgets.QHBoxLayout()
+        construct_buttons.setContentsMargins(0, 0, 0, 0)
+        self.construct_import_btn = QtWidgets.QPushButton("Import Selected")
+        self.construct_apply_btn = QtWidgets.QPushButton("Apply Selected")
+        self.construct_build_btn = QtWidgets.QPushButton("Build Work Scene")
+        self.construct_import_btn.setStyleSheet(green_button_style)
+        self.construct_apply_btn.setStyleSheet(blue_button_style)
+        self.construct_build_btn.setStyleSheet(blue_button_style)
+        construct_buttons.addStretch(1)
+        construct_buttons.addWidget(self.construct_import_btn)
+        construct_buttons.addWidget(self.construct_apply_btn)
+        construct_buttons.addWidget(self.construct_build_btn)
+        construct_layout.addLayout(construct_buttons)
+        self.detail_tabs.addTab(construct_tab, "Construct")
 
         preview_tab = QtWidgets.QWidget()
         self.preview_tab = preview_tab
@@ -776,7 +820,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.preview_list.itemDoubleClicked.connect(lambda _item: self._open_selected_preview_in_rv())
         self.publish_list.customContextMenuRequested.connect(self._show_publish_context_menu)
         self.open_scene_btn.clicked.connect(self._open_selected_scene)
-        self.reference_btn.clicked.connect(self._reference_latest_publish)
         self.save_scene_btn.clicked.connect(self._save_scene)
         self.refresh_publish_btn.clicked.connect(self._populate_asset_publish_tree)
         self.publish_selected_btn.clicked.connect(self._publish_selected_work)
@@ -794,16 +837,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.publish_client_assembly_btn.clicked.connect(self._publish_client_assembly)
         self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
         self.refresh_data_btn.clicked.connect(self._refresh_current_data)
-        self.open_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=False))
-        self.reload_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=True))
-        self.save_assembly_btn.clicked.connect(self._save_selected_asset_assembly)
-        self.publish_assembly_btn.clicked.connect(self._publish_selected_asset_assembly)
-        self.export_mesh_btn.clicked.connect(lambda: self._show_export_data_menu("mesh"))
+        self.export_mesh_btn.clicked.connect(self._export_selected_data_type)
         self.import_assembly_btn.clicked.connect(self._import_assembly_data)
         self.ingest_fbx_btn.clicked.connect(self._ingest_model_fbx)
         self.export_guide_btn.clicked.connect(lambda: self._show_export_data_menu("guide"))
         self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
-        self.import_data_btn.clicked.connect(self._import_selected_data)
+        self.refresh_construct_btn.clicked.connect(self._populate_construct_tree)
+        self.save_construct_btn.clicked.connect(self._save_construct_recipe)
+        self.construct_import_btn.clicked.connect(lambda: self._execute_construct_inputs("import"))
+        self.construct_apply_btn.clicked.connect(lambda: self._execute_construct_inputs("apply"))
+        self.construct_build_btn.clicked.connect(self._build_construct_work_scene)
         self.data_watcher = QtCore.QFileSystemWatcher(self)
         self.data_refresh_timer = QtCore.QTimer(self)
         self.data_refresh_timer.setSingleShot(True)
@@ -1257,6 +1300,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.setRowCount(0)
         self.work_list.blockSignals(False)
         self.data_list.clear()
+        if getattr(self, "construct_tree", None):
+            self.construct_tree.clear()
         self.preview_list.setRowCount(0)
         self._clear_context_state()
         self.publish_list.clear()
@@ -1312,6 +1357,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.resizeColumnsToContents()
 
         self._populate_data_tree(asset)
+        self._populate_construct_tree(asset)
         self._update_data_watcher(asset)
         self._populate_preview_list(asset)
         self._populate_context_pack_tree()
@@ -1328,6 +1374,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not asset:
             return
         self._populate_data_tree(asset)
+        self._populate_construct_tree(asset)
         self._update_data_watcher(asset)
         self._update_selected_file_info()
         self.status_label.setText("Data refreshed")
@@ -1342,7 +1389,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
 
         type_item = self.asset_publish_type_list.currentItem()
-        publish_type = str(type_item.data(QtCore.Qt.UserRole) or "asset") if type_item else "asset"
+        publish_type = str(type_item.data(QtCore.Qt.UserRole) or "geometry") if type_item else "geometry"
         variant = self._current_asset_variant()
         roots = []
         variant_publish = asset.variant_root(variant) / "publish"
@@ -1428,7 +1475,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _selected_publish_type(self) -> str:
         item = getattr(self, "asset_publish_type_list", None)
         current = item.currentItem() if item is not None else None
-        return str(current.data(QtCore.Qt.UserRole) or "asset") if current else "asset"
+        return str(current.data(QtCore.Qt.UserRole) or "geometry") if current else "geometry"
 
     @staticmethod
     def _publish_type_departments(publish_type: str) -> set[str]:
@@ -1894,11 +1941,17 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     )
 
                     look_scenes = self._context_scene_paths(self.context_assembly, "look")
-                    maya_scene_builder = lambda source, target: write_context_asset_snapshot(
-                        source,
-                        target,
-                        look_scenes=look_scenes,
-                    )
+                    # A rig/model publish without an additional look layer is
+                    # already an immutable scene snapshot. Copy it byte-for-byte
+                    # so missing optional plug-ins cannot make Maya reject an
+                    # otherwise readable binary scene during open/resave.
+                    if look_scenes:
+                        maya_scene_builder = lambda source, target: write_context_asset_snapshot(
+                            source,
+                            target,
+                            look_scenes=look_scenes,
+                            restore_previous=False,
+                        )
                     maya_preview = open_context_asset_assembly
                 except ImportError:
                     maya_scene_builder = None
@@ -1907,11 +1960,17 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     maya_scene_builder=maya_scene_builder,
                 )
                 if maya_preview:
-                    maya_preview(
-                        self.context_verification.scene_path,
-                        asset.name,
-                        resolve_asset_work_template(self.manager, "model"),
-                    )
+                    try:
+                        maya_preview(
+                            self.context_verification.scene_path,
+                            asset.name,
+                            resolve_asset_work_template(self.manager, "model"),
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "Context snapshot was written, but Maya could not open the verification scene.\n"
+                            f"Snapshot: {self.context_verification.scene_path}\n{exc}"
+                        ) from exc
             self._populate_context_state(self.context_assembly, service)
             self._populate_context_pack_tree()
             if self.context_verification and not silent and not self.context_assembly.errors:
@@ -1923,7 +1982,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     f"Context resolved: {asset.name} {self.context_assembly.context_version} {profile}"
                 )
         except Exception as exc:
-            self._clear_context_state()
+            if self.context_assembly:
+                self._populate_context_state(self.context_assembly)
+                self._populate_context_pack_tree()
+            else:
+                self._clear_context_state()
             if silent:
                 self.status_label.setText(str(exc))
             else:
@@ -1980,6 +2043,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 if entry.status == "MISSING":
                     item.setForeground(QtGui.QColor("#d88888"))
+                elif entry.status == "SKIPPED":
+                    item.setForeground(QtGui.QColor("#888888"))
                 elif entry.status == "FALLBACK":
                     item.setForeground(QtGui.QColor("#d6b46b"))
                 elif (
@@ -2049,8 +2114,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
             if entry.publish_type != publish_type:
                 continue
             for key in ("ma", "mb"):
-                path = Path(str((entry.files or {}).get(key) or ""))
-                if path.exists():
+                raw_path = str((entry.files or {}).get(key) or "").strip()
+                if not raw_path:
+                    continue
+                path = Path(raw_path)
+                if path.is_file():
                     paths.append(path)
                     break
         return paths
@@ -2071,7 +2139,25 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         try:
             service = _asset_context_service(self.manager.config_dir)
-            packed = service.pack(self.context_assembly, assembled=self.context_verification)
+            maya_usd_builder = None
+            try:
+                import maya.cmds  # noqa: F401
+                from smartlib.dcc.maya.asset_context import write_context_asset_usd_snapshot
+
+                contract = current_usd_skel_contract()
+                maya_usd_builder = lambda source, target, asset_name: write_context_asset_usd_snapshot(
+                    source,
+                    target,
+                    asset_name=asset_name,
+                    contract=contract,
+                )
+            except ImportError:
+                maya_usd_builder = None
+            packed = service.pack(
+                self.context_assembly,
+                assembled=self.context_verification,
+                maya_usd_builder=maya_usd_builder,
+            )
             self.status_label.setText(f"Context packed: {packed.version_dir}")
             self._populate_context_state(self.context_assembly, service)
             self._populate_context_pack_tree()
@@ -2198,6 +2284,184 @@ class AssetManagerWindow(QtWidgets.QDialog):
             item.setData(0, QtCore.Qt.UserRole, str(path))
             parent.addChild(item)
         self.data_list.expandAll()
+
+    def _construct_service(self, asset: Asset | None = None):
+        asset = asset or self._current_asset()
+        if not asset:
+            return None
+        return _asset_construct_service(asset.variant_root(self._current_asset_variant()))
+
+    def _populate_construct_tree(self, asset: Asset | None = None) -> None:
+        tree = getattr(self, "construct_tree", None)
+        if tree is None:
+            return
+        tree.clear()
+        self._construct_inputs = {}
+        asset = asset or self._current_asset()
+        service = self._construct_service(asset)
+        if not asset or not service:
+            return
+        try:
+            inputs = service.discover()
+        except Exception as exc:
+            self.status_label.setText(f"Construct discovery failed: {exc}")
+            return
+        department = self._current_department().lower()
+        if department == "model":
+            inputs = [item for item in inputs if item.data_type == "geo"]
+        elif department == "rig":
+            inputs = [item for item in inputs if item.data_type in {"rig/guide", "rig/skin", "guide", "skin"}]
+        for construct_input in inputs:
+            item = QtWidgets.QTreeWidgetItem(
+                [
+                    "",
+                    construct_input.data_type,
+                    construct_input.target,
+                    construct_input.representation,
+                    "",
+                    construct_input.latest_version,
+                    construct_input.state,
+                ]
+            )
+            item.setData(0, QtCore.Qt.UserRole, construct_input.logical_id)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(0, QtCore.Qt.Checked if construct_input.use else QtCore.Qt.Unchecked)
+            combo = QtWidgets.QComboBox()
+            for version in reversed(construct_input.versions):
+                combo.addItem(version.version, str(version.path))
+            index = combo.findText(construct_input.selected_version)
+            combo.setCurrentIndex(max(0, index))
+            combo.currentTextChanged.connect(
+                lambda _text, row=item: self._update_construct_row_state(row)
+            )
+            tree.addTopLevelItem(item)
+            tree.setItemWidget(item, 4, combo)
+            self._construct_inputs[construct_input.logical_id] = construct_input
+            self._update_construct_row_state(item)
+        self.status_label.setText(f"Construct inputs: {len(inputs)}")
+
+    def _export_selected_data_type(self) -> None:
+        data_type = str(self.data_type_combo.currentData() or "geo")
+        export_kind = "mesh" if data_type == "geo" else data_type
+        self._show_export_data_menu(export_kind)
+
+    def _update_construct_row_state(self, item) -> None:
+        logical_id = str(item.data(0, QtCore.Qt.UserRole) or "")
+        construct_input = getattr(self, "_construct_inputs", {}).get(logical_id)
+        combo = self.construct_tree.itemWidget(item, 4)
+        if not construct_input or combo is None:
+            return
+        construct_input.selected_version = combo.currentText()
+        construct_input.use = item.checkState(0) == QtCore.Qt.Checked
+        state = construct_input.state
+        item.setText(6, state)
+        color = "#70b77e" if state == "LATEST" else "#d6b46b" if state == "UPDATE AVAILABLE" else "#d46a6a"
+        item.setForeground(6, QtGui.QColor(color))
+
+    def _current_construct_inputs(self):
+        inputs = []
+        for row in range(self.construct_tree.topLevelItemCount()):
+            item = self.construct_tree.topLevelItem(row)
+            self._update_construct_row_state(item)
+            logical_id = str(item.data(0, QtCore.Qt.UserRole) or "")
+            construct_input = getattr(self, "_construct_inputs", {}).get(logical_id)
+            if construct_input:
+                inputs.append(construct_input)
+        return inputs
+
+    def _save_construct_recipe(self, *, quiet: bool = False) -> Path | None:
+        asset = self._current_asset()
+        service = self._construct_service(asset)
+        if not asset or not service:
+            return None
+        try:
+            path = service.save_recipe(
+                self._current_construct_inputs(),
+                asset=asset.name,
+                variant=self._current_asset_variant(),
+                department=self._current_department(),
+            )
+            if not quiet:
+                self.status_label.setText(f"Construct recipe saved: {path}")
+            return path
+        except Exception as exc:
+            if not quiet:
+                QtWidgets.QMessageBox.critical(self, "Save Construct Recipe Failed", str(exc))
+            return None
+
+    def _execute_construct_inputs(self, operation: str) -> None:
+        import_extensions = {".ma", ".mb", ".fbx", ".abc", ".usd", ".usda", ".usdc"}
+        apply_extensions = {".sgt", ".gskinpack", ".jskin"}
+        selected = [item for item in self._current_construct_inputs() if item.use and item.selected]
+        if operation == "import":
+            selected = [item for item in selected if item.selected.path.suffix.lower() in import_extensions]
+        else:
+            selected = [item for item in selected if item.selected.path.suffix.lower() in apply_extensions]
+        if not selected:
+            self.status_label.setText(f"No {operation} inputs are enabled")
+            return
+        self._save_construct_recipe(quiet=True)
+        completed = []
+        failures = []
+        for construct_input in selected:
+            path = construct_input.selected.path
+            try:
+                import_data_file_to_current_dcc(path)
+                completed.append(path.name)
+            except Exception as exc:
+                failures.append(f"{path.name}: {exc}")
+        if failures:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Construct Inputs",
+                f"Completed: {len(completed)}\n\n" + "\n".join(failures),
+            )
+        self.status_label.setText(
+            f"Construct {operation}: {len(completed)} completed, {len(failures)} failed"
+        )
+
+    def _build_construct_work_scene(self) -> None:
+        """Apply the saved recipe to a staged/current scene and persist it as work."""
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        enabled = [item for item in self._current_construct_inputs() if item.use and item.selected]
+        if not enabled:
+            self.status_label.setText("No Construct inputs are enabled")
+            return
+        self._save_construct_recipe(quiet=True)
+        try:
+            import maya.cmds as cmds
+        except ImportError:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Build Work Scene",
+                "Build Work Scene is currently available inside Maya.\n"
+                "Houdini/Blender adapters can continue to use Import Selected.",
+            )
+            return
+
+        try:
+            scene_path = str(cmds.file(query=True, sceneName=True) or "")
+            if not scene_path:
+                self._stage_work_scene()
+                scene_path = str(cmds.file(query=True, sceneName=True) or "")
+            if not scene_path:
+                raise RuntimeError("Stage or open a Work Scene before building Construct inputs.")
+
+            department = self._current_department().lower()
+            if department == "model":
+                self._execute_construct_inputs("import")
+            elif department == "rig":
+                self._execute_construct_inputs("apply")
+            else:
+                self._execute_construct_inputs("import")
+                self._execute_construct_inputs("apply")
+            cmds.file(save=True)
+            self.status_label.setText(f"Construct work scene saved: {Path(scene_path).name}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Build Work Scene Failed", str(exc))
 
     def _latest_published_scene(self) -> Path | None:
         asset = self._current_asset()
@@ -2747,13 +3011,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         path = Path(item.data(0, QtCore.Qt.UserRole))
         menu = QtWidgets.QMenu(self)
-        import_file = menu.addAction("Import")
         open_folder = menu.addAction("Open Folder")
         copy_path = menu.addAction("Copy Path")
         action = menu.exec(self.data_list.mapToGlobal(pos))
-        if action == import_file:
-            import_data_file_to_current_dcc(path)
-        elif action == open_folder:
+        if action == open_folder:
             self.manager.open_in_explorer(path.parent)
         elif action == copy_path:
             self._copy_text(str(path))
@@ -3369,13 +3630,20 @@ class AssetManagerWindow(QtWidgets.QDialog):
         )
         if parsed["department"] == "rig" and "usd" not in publish_formats:
             publish_formats.append("usd")
+        publish_version = self.manager.next_publish_version(
+            asset,
+            department=parsed["department"],
+            variant=parsed["variant"],
+            subset=subset,
+            publish_formats=publish_formats,
+        )
         targets = {
             publish_format: self.manager.publish_file_path(
                 asset,
                 department=parsed["department"],
                 variant=parsed["variant"],
                 subset=subset,
-                version=parsed["version"],
+                version=publish_version,
                 ext=publish_format,
             )
             for publish_format in publish_formats
@@ -3414,9 +3682,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 overwrite=overwrite,
                 comment=comment,
                 subset=subset,
+                publish_version=publish_version,
                 dependency_info=validation,
             )
-            self.status_label.setText("Published: " + ", ".join(path.name for path in published))
+            self.status_label.setText(
+                f"Published v{int(publish_version):03d}: "
+                + ", ".join(path.name for path in published)
+            )
             self._show_current_asset()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Publish Failed", str(exc))
@@ -3459,14 +3731,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         menu = QtWidgets.QMenu(self)
         export_fbx = None
-        export_guide = export_skin_high = export_skin_low = None
+        export_guide = export_skin = None
         if export_kind == "mesh":
             export_fbx = menu.addAction("Selected Mesh: FBX")
         elif export_kind == "guide":
             export_guide = menu.addAction("mGear Guide")
         elif export_kind == "skin":
-            export_skin_high = menu.addAction("mGear Skin: high")
-            export_skin_low = menu.addAction("mGear Skin: low")
+            export_skin = menu.addAction("mGear Skin")
         action = menu.exec(QtGui.QCursor.pos())
         if not action:
             return
@@ -3476,13 +3747,25 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return
         try:
             if action == export_fbx:
-                paths = export_selected_geo_data(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or self._current_variant(), "fbx", comment)
+                target = self.data_target_combo.currentText().strip() or "body"
+                representation = self.data_representation_combo.currentText().strip() or "high"
+                paths = export_selected_geo_data(
+                    asset,
+                    self.manager,
+                    self._work_variant_arg(asset),
+                    representation,
+                    "fbx",
+                    comment,
+                    target=target,
+                )
             elif action == export_guide:
-                paths = [export_mgear_guide(asset, self.manager, self._work_variant_arg(asset), self._work_subset_arg(asset) or "guide")]
-            elif action == export_skin_high:
-                paths = [export_mgear_skin(asset, self.manager, self._work_variant_arg(asset), "high")]
-            elif action == export_skin_low:
-                paths = [export_mgear_skin(asset, self.manager, self._work_variant_arg(asset), "low")]
+                target = self.data_target_combo.currentText().strip() or "body"
+                representation = self.data_representation_combo.currentText().strip() or "high"
+                paths = [export_mgear_guide(asset, self.manager, self._work_variant_arg(asset), f"{target}/{representation}")]
+            elif action == export_skin:
+                target = self.data_target_combo.currentText().strip() or "body"
+                representation = self.data_representation_combo.currentText().strip() or "high"
+                paths = [export_mgear_skin(asset, self.manager, self._work_variant_arg(asset), f"{target}/{representation}")]
             else:
                 return
             for path in paths:
@@ -5169,6 +5452,7 @@ def publish_work_outputs(
     overwrite: bool,
     comment: str,
     subset: str | None,
+    publish_version: int | str | None = None,
     dependency_info: dict | None = None,
 ) -> list[Path]:
     published: list[Path] = []
@@ -5219,6 +5503,11 @@ def publish_work_outputs(
                     overwrite=overwrite,
                 )
                 target = usd_skel_outputs["rig_usd"]
+            elif publish_format in {"ma", "mb"} and parsed.get("department") != "model":
+                # Rig/look/groom scene publishes are complete DCC snapshots. They
+                # do not have a single asset top node that can safely represent
+                # controllers, sets, skeletons, connections, and scene settings.
+                save_maya_snapshot_copy(target, source_workfile)
             else:
                 export_root = asset.name if parsed.get("department") == "model" else None
                 export_current_scene_for_publish(
@@ -5246,6 +5535,7 @@ def publish_work_outputs(
         files=files,
         comment=comment,
         subset=subset,
+        version=publish_version,
         dependency_info=dependency_info,
     )
     if usd_skel_outputs:
@@ -5306,6 +5596,9 @@ def augment_usd_skel_publish_record(outputs: dict[str, Path], rig_metadata: dict
     record["usd_skel"] = {
         "schema": "smartpipeline.usd_skel.v1",
         "root_joint": rig_metadata.get("root_joint", ""),
+        "root_joints": (
+            read_json_file(outputs["validation"], {}).get("root_joints", [])
+        ),
         "rig": outputs["rig_usd"].name,
         "skeleton": outputs["skeleton_usd"].name,
         "skin": outputs["skin_usd"].name,
@@ -5958,6 +6251,8 @@ def export_selected_geo_data(
     subset: str,
     data_format: str,
     comment: str = "",
+    *,
+    target: str = "body",
 ) -> list[Path]:
     try:
         import maya.cmds as cmds
@@ -5970,22 +6265,21 @@ def export_selected_geo_data(
 
     variant = variant or "default"
     subset = subset or "hires"
+    target = target.strip().replace("\\", "/").strip("/") or "body"
     clean_format = data_format.lower().lstrip(".")
     if clean_format != "fbx":
         raise RuntimeError(f"Unsupported geo data format: {data_format}")
     version = manager.next_data_version(
         asset,
-        department="geo",
+        department=f"geo/{target}",
         variant=variant,
         subset=subset,
-        data_format=clean_format,
     )
     data_path = manager.data_version_dir(
         asset,
-        department="geo",
+        department=f"geo/{target}",
         variant=variant,
         subset=subset,
-        data_format=clean_format,
         version=version,
     ) / f"geo.{clean_format}"
 
@@ -6005,10 +6299,9 @@ def export_selected_geo_data(
     source_workfile = cmds.file(query=True, sceneName=True) or ""
     manager.register_data_export(
         asset,
-        department="geo",
+        department=f"geo/{target}",
         variant=variant,
         subset=subset,
-        data_format=clean_format,
         version=version,
         files={clean_format: data_path.name},
         source_workfile=source_workfile,
@@ -6345,6 +6638,7 @@ def export_mgear_skin(asset: Asset, manager: AssetManager, variant: str, subset:
         raise RuntimeError("mGear skin export is available inside Maya.")
 
     version = manager.next_data_version(asset, department="skin", variant=variant, subset=subset)
+    subset_name = subset.replace("\\", "/").strip("/").replace("/", "_")
     path = manager.data_file_path(
         asset,
         department="skin",
@@ -6352,7 +6646,7 @@ def export_mgear_skin(asset: Asset, manager: AssetManager, variant: str, subset:
         subset=subset,
         version=version,
         ext="gSkinPack",
-        name=f"{asset.name}_{subset}",
+        name=f"{asset.name}_{subset_name}",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
 

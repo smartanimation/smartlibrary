@@ -10,6 +10,20 @@ DEFAULT_ASSET_SUBSETS = {
     "groom": [],
 }
 
+CATEGORY_RULE_ALIASES = {
+    "ch": "characters",
+    "char": "characters",
+    "character": "characters",
+    "characters": "characters",
+    "chr": "characters",
+    "bg": "env",
+    "environment": "env",
+    "environments": "env",
+    "set": "env",
+    "sets": "env",
+    "props": "prop",
+}
+
 
 def asset_subset_catalog(asset_config: dict[str, Any] | None) -> dict[str, list[str]]:
     """Return the shared subset catalog used by Asset Manager and Context UI."""
@@ -56,7 +70,17 @@ def subsets_for_asset(
     config = asset_config or {}
     rules = (config.get("work_subsets_by_category") or {}).get(department) or {}
     if isinstance(rules, dict):
-        for key in (category, group, "default"):
+        candidates: list[str] = []
+        for value in (category, group):
+            key = str(value).strip()
+            if not key:
+                continue
+            _extend_unique(candidates, [key, key.lower()])
+            alias = CATEGORY_RULE_ALIASES.get(key.lower())
+            if alias:
+                _extend_unique(candidates, [alias])
+        _extend_unique(candidates, ["default"])
+        for key in candidates:
             values = rules.get(key)
             if isinstance(values, str):
                 return [values]

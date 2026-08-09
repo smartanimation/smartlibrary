@@ -27,7 +27,8 @@ def collect_rig_metadata(
     world_control = _first_existing_node(cmds, WORLD_CONTROL_CANDIDATES)
     controls = _control_nodes(cmds)
     joints = cmds.ls(type="joint", long=False) or []
-    root_joint = _root_joint(cmds, joints)
+    root_joints = _skin_influence_roots(cmds)
+    root_joint = _root_joint(cmds, joints, influence_roots=root_joints)
     export_sets = _export_sets(cmds)
     metadata: dict[str, Any] = {
         "asset": asset_name,
@@ -38,6 +39,7 @@ def collect_rig_metadata(
         "joint_count": len(joints),
         "control_count": len(controls),
         "root_joint": root_joint,
+        "root_joints": root_joints,
         "world_control": world_control,
         "placement": {
             "attach_target": world_control,
@@ -67,8 +69,13 @@ def _control_nodes(cmds: Any) -> list[str]:
     return sorted(controls)
 
 
-def _root_joint(cmds: Any, joints: list[str]) -> str:
-    influence_roots = _skin_influence_roots(cmds)
+def _root_joint(
+    cmds: Any,
+    joints: list[str],
+    *,
+    influence_roots: list[str] | None = None,
+) -> str:
+    influence_roots = influence_roots if influence_roots is not None else _skin_influence_roots(cmds)
     if len(influence_roots) == 1:
         return influence_roots[0]
     for joint in joints:

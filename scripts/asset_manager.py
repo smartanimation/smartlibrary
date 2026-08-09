@@ -57,6 +57,48 @@ def _norm(path: str | os.PathLike[str]) -> Path:
     return Path(str(path).replace("\\", "/")).expanduser()
 
 
+def _work_context_from_path(path: Path) -> dict[str, str]:
+    """Resolve asset work identity from the directory contract.
+
+    Supported layouts:
+      {asset}/{variant}/work/{department}/{dcc}/{subset}/file
+      {asset}/{variant}/{department}/work/{dcc}/{subset}/file
+    """
+
+    parts = path.parts
+    lowered = [part.lower() for part in parts]
+    work_indexes = [index for index, part in enumerate(lowered) if part == "work"]
+    if not work_indexes:
+        return {}
+    index = work_indexes[-1]
+    dcc_names = {"maya", "houdini", "blender", "substance", "mari", "zbrush", "unreal"}
+
+    # New canonical layout: asset/variant/work/department/dcc/subset.
+    if index >= 2 and index + 2 < len(parts) and lowered[index + 2] in dcc_names:
+        result = {
+            "asset": parts[index - 2],
+            "variant": parts[index - 1],
+            "department": parts[index + 1],
+            "dcc": parts[index + 2],
+        }
+        if index + 3 < len(parts) - 1:
+            result["subset"] = parts[index + 3]
+        return result
+
+    # Legacy variant layout: asset/variant/department/work/dcc/subset.
+    if index >= 3 and index + 1 < len(parts) and lowered[index + 1] in dcc_names:
+        result = {
+            "asset": parts[index - 3],
+            "variant": parts[index - 2],
+            "department": parts[index - 1],
+            "dcc": parts[index + 1],
+        }
+        if index + 2 < len(parts) - 1:
+            result["subset"] = parts[index + 2]
+        return result
+    return {}
+
+
 def _load_yaml(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -827,10 +869,14 @@ class AssetManager:
         return _norm(dir_pattern.format(**data)) / file_pattern.format(**data)
 
     def parse_work_file(self, path: str | os.PathLike[str]) -> dict | None:
-        match = WORK_SCENE_RE.match(Path(path).name)
+        source = _norm(path)
+        match = WORK_SCENE_RE.match(source.name)
         if not match:
             return None
         data = match.groupdict()
+        path_context = _work_context_from_path(source)
+        if path_context:
+            data.update(path_context)
         data["version"] = int(data["version"])
         data["take"] = int(data["take"])
         return data
@@ -1090,6 +1136,16 @@ class AssetManager:
         if not formats:
             formats = [source.suffix.lower().lstrip(".")]
         source_ext = source.suffix.lower().lstrip(".")
+        if source_ext in {"ma", "mb"}:
+            # Maya snapshots can contain plug-in data that prevents conversion
+            # between ASCII and binary formats. The work scene format is always
+            # authoritative; additional non-Maya outputs remain governed by
+            # publish_outputs.
+            formats = [
+                item
+                for item in formats
+                if str(item).lower().lstrip(".") not in {"ma", "mb"}
+            ]
         normalized = []
         for item in [source_ext, *formats]:
             clean = str(item).lower().lstrip(".")
@@ -1105,6 +1161,7 @@ class AssetManager:
         files: dict[str, str | os.PathLike[str]],
         comment: str = "",
         subset: str | None = None,
+        version: int | str | None = None,
         dependency_info: dict | None = None,
     ) -> dict:
         source = _norm(source_workfile)
@@ -1116,12 +1173,42 @@ class AssetManager:
             department=parsed["department"],
             variant=parsed["variant"],
             subset=subset or self.work_subset_for_path(asset, source, parsed["department"], parsed["variant"]),
-            version=parsed["version"],
+            version=version if version is not None else parsed["version"],
             files=files,
             source_workfile=_relative_to_asset(source, asset),
             comment=comment,
             dependency_info=dependency_info,
         )
+
+    def next_publish_version(
+        self,
+        asset: Asset,
+        *,
+        department: str,
+        variant: str = "",
+        subset: str | None = None,
+        publish_formats: Iterable[str] = (),
+    ) -> int:
+        """Return the next immutable publish version across all output formats."""
+
+        versions: list[int] = []
+        formats = [str(item).lower().lstrip(".") for item in publish_formats if str(item).strip()]
+        if not formats:
+            formats = [""]
+        for publish_format in formats:
+            base_dir = self.publish_base_dir(
+                asset,
+                department=department,
+                variant=variant,
+                subset=subset,
+                publish_format=publish_format,
+            )
+            if not base_dir.exists():
+                continue
+            for child in base_dir.iterdir():
+                if child.is_dir() and re.fullmatch(r"v\d+", child.name, re.IGNORECASE):
+                    versions.append(_version_number(child.name))
+        return max(versions or [0]) + 1
 
     def publish_metadata_path(
         self,

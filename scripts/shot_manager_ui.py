@@ -286,7 +286,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.publish_animation_curves_btn = QtWidgets.QPushButton("Export Animation Curves")
         self.apply_animation_curves_btn = QtWidgets.QPushButton("Apply Animation Curves")
         self.publish_animation_btn = QtWidgets.QPushButton("Publish Animation Package")
-        self.publish_animation_cache_btn = QtWidgets.QPushButton("Publish Cache")
+        self.publish_animation_cache_btn = QtWidgets.QPushButton("Publish Animation USD")
+        self.publish_animation_alembic_btn = QtWidgets.QPushButton("Publish Alembic Cache")
         self.build_animation_package_btn = QtWidgets.QPushButton("Build Package")
         self.build_animation_review_scene_btn = QtWidgets.QPushButton("Build Review Scene")
         self.export_camera_btn = QtWidgets.QPushButton("Export Camera")
@@ -346,6 +347,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.apply_animation_curves_btn.setToolTip("Available inside Maya.")
             self.publish_animation_cache_btn.setEnabled(False)
             self.publish_animation_cache_btn.setToolTip("Available inside Maya.")
+            self.publish_animation_alembic_btn.setEnabled(False)
+            self.publish_animation_alembic_btn.setToolTip("Available inside Maya.")
             self.build_animation_review_scene_btn.setEnabled(False)
             self.build_animation_review_scene_btn.setToolTip("Available inside Maya.")
             self.export_camera_btn.setEnabled(False)
@@ -480,6 +483,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.apply_animation_curves_btn.clicked.connect(self.apply_animation_curves)
         self.publish_animation_btn.clicked.connect(self.publish_animation)
         self.publish_animation_cache_btn.clicked.connect(self.publish_animation_cache)
+        self.publish_animation_alembic_btn.clicked.connect(self.publish_animation_alembic_cache)
         self.build_animation_package_btn.clicked.connect(self.build_animation_package)
         self.build_animation_review_scene_btn.clicked.connect(self.build_animation_review_scene)
         self.export_camera_btn.clicked.connect(self.export_camera_data)
@@ -861,6 +865,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         for label, key in (
             ("Camera", "camera"),
             ("Animation Cache", "animation_cache"),
+            ("Alembic Cache", "animation_alembic"),
             ("Animation Package", "animation_package"),
             ("Placements", "placements"),
             ("Set Dress", "set_dress"),
@@ -900,6 +905,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.apply_camera_btn,
             self.publish_camera_btn,
             self.publish_animation_cache_btn,
+            self.publish_animation_alembic_btn,
             self.publish_animation_btn,
             self.build_animation_review_scene_btn,
             self.apply_set_dress_btn,
@@ -2035,6 +2041,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.publish_animation_cache_btn.setVisible(
             publish_type == "animation_cache"
         )
+        self.publish_animation_alembic_btn.setVisible(
+            publish_type == "animation_alembic"
+        )
         self.publish_animation_btn.setVisible(
             publish_type == "animation_package"
         )
@@ -2048,6 +2057,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         labels = {
             "camera": "Camera :",
             "animation_cache": "Cast :",
+            "animation_alembic": "Cast :",
             "animation_package": "Package :",
             "placements": "Target :",
             "set_dress": "Package :",
@@ -2061,7 +2071,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         publish_type = self._current_publish_type()
         current = self._current_publish_target()
         targets: list[tuple[str, dict]] = []
-        if publish_type == "animation_cache" and identity:
+        if publish_type in {"animation_cache", "animation_alembic"} and identity:
             cast_data = self.service.load_cast(identity)
             for cast_key, entry in sorted((cast_data.get("cast") or {}).items()):
                 data = dict(entry)
@@ -2139,6 +2149,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return self.service.list_animation_cache_versions(
                 identity,
                 target="",
+            )
+        if publish_type == "animation_alembic" and identity:
+            return self.service.list_animation_cache_versions(
+                identity,
+                target="",
+                subset="alembic",
             )
         if publish_type == "animation_package" and identity:
             return self.service.list_animation_package_versions(identity)
@@ -4126,6 +4142,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Publish Animation Package Failed", str(exc))
 
     def publish_animation_cache(self) -> None:
+        self._publish_animation_cache_format(format_name="usd", subset="cache")
+
+    def publish_animation_alembic_cache(self) -> None:
+        self._publish_animation_cache_format(format_name="abc", subset="alembic")
+
+    def _publish_animation_cache_format(self, *, format_name: str, subset: str) -> None:
         identity = self.current_identity()
         if not identity:
             self.status_label.setText("Select a shot first")
@@ -4186,12 +4208,30 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                         subset="curves",
                         comment=comment.strip(),
                     )
-            plan = self.service.plan_animation_cache_publish(identity, target=cast_row["cast_key"])
+            plan = self.service.plan_animation_cache_publish(
+                identity,
+                target=cast_row["cast_key"],
+                subset=subset,
+            )
+            usd_skel_contract = self.service.project_config.usd_skel_contract
             result = export_animation_geometry_cache(
                 namespace=namespace,
                 output_dir=plan["version_dir"],
                 frame_range=(start, end),
+                skeleton_set=usd_skel_contract.get("skeleton_set", "skel_export_set"),
+                formats=(format_name,),
             )
+            rig_dependency = self.service.resolve_asset_rig_usd_dependency(
+                cast_row["asset"],
+                cast_row["variant"],
+                subset="anim",
+                preferred_context="work",
+            )
+            if format_name == "usd" and result.get("usd_kind") == "usd_skel_animation" and not rig_dependency:
+                raise RuntimeError(
+                    f"Asset USD dependency was not found for {cast_row['asset']} / "
+                    f"{cast_row['variant']}. Pack an Asset Context, or publish rig/anim as a fallback."
+                )
             cache_path = self.service.finalize_animation_cache_publish(
                 identity,
                 result,
@@ -4201,16 +4241,19 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 namespace=namespace,
                 source_workfile=source_workfile,
                 curve_data_path=curve_data_path,
+                rig_dependency=rig_dependency,
                 comment=comment.strip(),
                 version=plan["version"],
+                subset=subset,
             )
             self._populate_publish_targets()
             self.populate_publish_tree()
-            self.status_label.setText(f"Published animation cache: {cache_path}")
+            label = "Animation USD" if format_name == "usd" else "Alembic cache"
+            self.status_label.setText(f"Published {label}: {cache_path}")
             QtWidgets.QMessageBox.information(
                 self,
                 "Publish Cache",
-                f"Published evaluated geometry cache:\n{cache_path.parent}",
+                f"Published {label}:\n{cache_path.parent}",
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Publish Cache Failed", str(exc))

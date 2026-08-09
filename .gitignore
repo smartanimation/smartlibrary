@@ -20,6 +20,7 @@ tests
 !packages/smartlib/apps/smart_preflight/
 !packages/smartlib/apps/smart_preflight/*.py
 !packages/smartlib/apps/asset_manager/retarget_publish.py
+!packages/smartlib/apps/asset_manager/construct.py
 !packages/smartlib/dcc/maya/preflight.py
 !packages/smartlib/dcc/maya/usd_skel.py
 !config/default/preflight.yml
@@ -37,6 +38,7 @@ tests/*
 !tests/test_set_dress_publish.py
 !tests/test_smart_preflight.py
 !tests/test_retarget_publish.py
+!tests/test_asset_construct.py
 
 tools/ffmpeg/*
 !tools/ffmpeg/README.md

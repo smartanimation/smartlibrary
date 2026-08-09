@@ -239,12 +239,12 @@ class ShotManagerService:
         tasks = configured.get(str(department)) if isinstance(configured, dict) else None
         if not isinstance(tasks, list):
             return ["main"]
-        normalized = []
+        normalized = ["main"]
         for task in tasks:
             value = _normalize_work_option(task)
             if value not in normalized:
                 normalized.append(value)
-        return normalized or ["main"]
+        return normalized
 
     @property
     def project_fps(self) -> int:
@@ -2470,12 +2470,15 @@ class ShotManagerService:
         identity: ShotIdentity,
         *,
         target: str,
+        subset: str = "cache",
     ) -> dict[str, Any]:
         clean_target = _clean_publish_token(target or "main")
-        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / "cache"
+        clean_subset = _clean_publish_token(subset or "cache")
+        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / clean_subset
         version = self._next_publish_version(base_dir)
         return {
             "target": clean_target,
+            "subset": clean_subset,
             "version": version,
             "base_dir": base_dir,
             "version_dir": base_dir / version,
@@ -2492,16 +2495,101 @@ class ShotManagerService:
         namespace: str = "",
         source_workfile: str | Path = "",
         curve_data_path: str | Path = "",
+        rig_dependency: dict[str, Any] | None = None,
         comment: str = "",
         version: str,
+        subset: str = "cache",
     ) -> Path:
         clean_target = _clean_publish_token(target or "main")
-        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / "cache"
+        clean_subset = _clean_publish_token(subset or "cache")
+        base_dir = self.shot_root(identity) / "publish" / "animation" / clean_target / clean_subset
         version_dir = base_dir / version
         files = dict(export_result.get("files") or {})
         missing = [name for name in files.values() if not (version_dir / str(name)).exists()]
         if not files or missing:
             raise RuntimeError(f"Animation cache export is incomplete. Missing: {', '.join(missing) or 'files'}")
+
+        if rig_dependency and str(export_result.get("usd_kind") or "") == "usd_skel_animation":
+            animation_usd = version_dir / str(files.get("usd") or "")
+            asset_usd = Path(self.project_config.project_root) / str(rig_dependency.get("path") or "")
+            if animation_usd.is_file() and asset_usd.is_file():
+                from smartlib.dcc.maya.animation_curves import (
+                    rebase_skel_animation_to_asset,
+                    validate_skel_animation_compatibility,
+                )
+
+                skeleton_bindings = rebase_skel_animation_to_asset(
+                    asset_usd,
+                    animation_usd,
+                    list(export_result.get("skeleton_bindings") or []),
+                )
+                export_result["skeleton_bindings"] = skeleton_bindings
+
+                usd_validation = validate_skel_animation_compatibility(
+                    asset_usd,
+                    animation_usd,
+                    skeleton_bindings,
+                )
+                if not usd_validation["ok"]:
+                    raise RuntimeError(
+                        "USD Skel animation is incompatible with the Asset USD:\n- "
+                        + "\n- ".join(usd_validation["errors"])
+                    )
+                export_result["usd_validation"] = usd_validation
+                frame_range = list(export_result.get("frame_range") or self.shot_frame_range(identity))
+                start, end = int(frame_range[0]), int(frame_range[1])
+                shot_data = self.load_shot(identity)
+                fps = int((shot_data.get("editorial") or {}).get("fps") or shot_data.get("fps") or self.project_fps)
+                timing_path = version_dir / "timing.usda"
+                timing_path.write_text(
+                    "\n".join(
+                        [
+                            "#usda 1.0",
+                            "(",
+                            f"    startTimeCode = {start}",
+                            f"    endTimeCode = {end}",
+                            f"    framesPerSecond = {fps}",
+                            f"    timeCodesPerSecond = {fps}",
+                            ")",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                binding_path = version_dir / "animation_binding.usda"
+                binding_path.write_text(
+                    _animation_binding_layer_text(export_result.get("skeleton_bindings") or []),
+                    encoding="utf-8",
+                )
+                composed_path = version_dir / "animation_asset.usda"
+                animation_ref = os.path.relpath(animation_usd, composed_path.parent).replace("\\", "/")
+                asset_ref = os.path.relpath(asset_usd, composed_path.parent).replace("\\", "/")
+                asset_default_prim = _usd_default_prim_name(asset_usd)
+                composed_path.write_text(
+                    "\n".join(
+                        [
+                            "#usda 1.0",
+                            "(",
+                            f'    defaultPrim = "{asset_default_prim}"',
+                            f"    startTimeCode = {start}",
+                            f"    endTimeCode = {end}",
+                            f"    framesPerSecond = {fps}",
+                            f"    timeCodesPerSecond = {fps}",
+                            "    subLayers = [",
+                            "        @animation_binding.usda@,",
+                            f"        @{animation_ref}@,",
+                            "        @timing.usda@,",
+                            f"        @{asset_ref}@",
+                            "    ]",
+                            ")",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                files["composed_usd"] = composed_path.name
+                files["timing_usd"] = timing_path.name
+                files["binding_usd"] = binding_path.name
 
         cache_data = {
             "schema": "smartpipeline.animation_cache.v1",
@@ -2509,6 +2597,7 @@ class ShotManagerService:
             "sequence": identity.sequence,
             "shot": identity.shot,
             "target": clean_target,
+            "subset": clean_subset,
             "asset": asset,
             "variant": variant or "default",
             "namespace": namespace or clean_target,
@@ -2519,6 +2608,11 @@ class ShotManagerService:
             "geometry": list(export_result.get("geometry") or []),
             "topology_signature": str(export_result.get("topology_signature") or ""),
             "files": files,
+            "usd_kind": str(export_result.get("usd_kind") or "point_cache"),
+            "source_skeleton_set": str(export_result.get("source_skeleton_set") or ""),
+            "source_skeleton_roots": list(export_result.get("source_skeleton_roots") or []),
+            "skeleton_bindings": list(export_result.get("skeleton_bindings") or []),
+            "usd_validation": dict(export_result.get("usd_validation") or {}),
             "comment": comment,
         }
         if source_workfile:
@@ -2530,13 +2624,16 @@ class ShotManagerService:
         curve_dependency = self._animation_curve_dependency(curve_path)
         if curve_dependency:
             cache_data["curve_dependency"] = curve_dependency
+        if rig_dependency:
+            cache_data["rig_dependency"] = dict(rig_dependency)
+            cache_data["asset_usd_dependency"] = dict(rig_dependency)
         cache_path = write_json(version_dir / "cache.json", cache_data)
         write_json(
             version_dir / "publish.json",
             {
                 "publish_type": "animation",
                 "target": clean_target,
-                "subset": "cache",
+                "subset": clean_subset,
                 "version": version,
                 "files": {**files, "cache": "cache.json"},
                 "asset_dependency": {
@@ -2545,6 +2642,9 @@ class ShotManagerService:
                     "namespace": namespace or clean_target,
                 },
                 "curve_dependency": curve_dependency,
+                "rig_dependency": dict(rig_dependency or {}),
+                "asset_usd_dependency": dict(rig_dependency or {}),
+                "usd_kind": cache_data["usd_kind"],
                 "topology_signature": cache_data["topology_signature"],
                 "source_workfile": cache_data.get("source_workfile", ""),
                 "comment": comment,
@@ -2553,6 +2653,73 @@ class ShotManagerService:
         write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/cache.json"})
         self._update_versions(base_dir / "versions.json", version)
         return cache_path
+
+    def resolve_asset_rig_usd_dependency(
+        self,
+        asset: str,
+        variant: str = "default",
+        subset: str = "anim",
+        *,
+        preferred_context: str = "work",
+    ) -> dict[str, str]:
+        """Resolve the composed Asset USD entry, falling back to the Rig USD layer."""
+
+        asset_root = self.find_asset_root(asset)
+        if not asset_root:
+            return {}
+        variant_root = asset_root / (variant or "default")
+        context_order = []
+        for context_subset in (preferred_context, "work", "anim", "final", "fast"):
+            clean_context = str(context_subset or "").strip().lower()
+            if clean_context and clean_context not in context_order:
+                context_order.append(clean_context)
+        for context_subset in context_order:
+            asset_base = variant_root / "publish" / "asset" / context_subset
+            latest_asset = read_json(asset_base / "latest.json", {}) or {}
+            asset_version = str(latest_asset.get("version") or "")
+            asset_candidate = asset_base / str(latest_asset.get("usd") or latest_asset.get("path") or "")
+            if not asset_candidate.is_file() and asset_version:
+                asset_candidate = asset_base / asset_version / "asset.usda"
+            if not asset_candidate.is_file() and asset_version:
+                asset_candidate = asset_base / asset_version / "asset.usd"
+            if asset_candidate.is_file() and asset_candidate.suffix.lower() in {".usd", ".usda", ".usdc"}:
+                publish_data = read_json(asset_candidate.parent / "publish.json", {}) or {}
+                return {
+                    "asset": asset,
+                    "variant": variant or "default",
+                    "publish_type": "asset",
+                    "subset": context_subset,
+                    "version": str(publish_data.get("version") or asset_version),
+                    "path": self._relative_to_project(asset_candidate),
+                    "root_joint": str(((publish_data.get("usd_skel") or {}).get("root_joint")) or ""),
+                    "fallback": "false",
+                }
+        base_dir = variant_root / "publish" / "rig" / (subset or "anim")
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        version = str(latest.get("version") or "")
+        candidate = base_dir / str(latest.get("path") or "")
+        if not candidate.is_file() and version:
+            candidate = base_dir / version / "rig.usd"
+        if not candidate.is_file():
+            versions = sorted(path for path in base_dir.glob("v[0-9]*") if path.is_dir())
+            candidate = versions[-1] / "rig.usd" if versions else Path()
+            version = versions[-1].name if versions else ""
+        if not candidate.is_file() or candidate.suffix.lower() not in {".usd", ".usda", ".usdc"}:
+            return {}
+        publish_data = read_json(candidate.parent / "publish.json", {}) or {}
+        dependency_version = str(publish_data.get("version") or version)
+        if dependency_version.isdigit():
+            dependency_version = f"v{int(dependency_version):03d}"
+        return {
+            "asset": asset,
+            "variant": variant or "default",
+            "publish_type": "rig",
+            "subset": subset or "anim",
+            "version": dependency_version,
+            "path": self._relative_to_project(candidate),
+            "root_joint": str((publish_data.get("usd_skel") or {}).get("root_joint") or ""),
+            "fallback": "true",
+        }
 
     def _animation_curve_dependency(self, curve_path: Path | None) -> dict[str, str]:
         if not curve_path or not curve_path.is_file():
@@ -2568,12 +2735,14 @@ class ShotManagerService:
         identity: ShotIdentity,
         *,
         target: str = "main",
+        subset: str = "cache",
     ) -> list[ShotDataVersion]:
         animation_root = self.shot_root(identity) / "publish" / "animation"
+        clean_subset = _clean_publish_token(subset or "cache")
         if target:
-            base_dirs = [animation_root / _clean_publish_token(target) / "cache"]
+            base_dirs = [animation_root / _clean_publish_token(target) / clean_subset]
         else:
-            base_dirs = sorted(animation_root.glob("*/cache"))
+            base_dirs = sorted(animation_root.glob(f"*/{clean_subset}"))
         rows = []
         for base_dir in base_dirs:
             clean_target = base_dir.parent.name
@@ -2587,7 +2756,7 @@ class ShotManagerService:
                 updated = datetime.fromtimestamp(cache_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
                 rows.append(
                     ShotDataVersion(
-                        name=f"publish/animation/{clean_target}/cache",
+                        name=f"publish/animation/{clean_target}/{clean_subset}",
                         version=version_dir.name,
                         path=str(cache_path),
                         updated=updated,
@@ -5031,6 +5200,70 @@ def _preferred_context_scene(version_dir: Path) -> Path | None:
 
 def _is_maya_scene_publish(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in {".ma", ".mb"}
+
+
+def _usd_default_prim_name(path: Path) -> str:
+    try:
+        from pxr import Usd
+    except ImportError as exc:
+        raise RuntimeError(
+            "Python pxr is required to inspect the Asset USD default prim."
+        ) from exc
+
+    stage = Usd.Stage.Open(str(path))
+    if stage is None:
+        raise RuntimeError(f"Could not open Asset USD: {path}")
+    default_prim = stage.GetDefaultPrim()
+    if not default_prim:
+        raise RuntimeError(
+            f"Asset USD has no default prim and cannot be composed: {path}"
+        )
+    return default_prim.GetName()
+
+
+def _animation_binding_layer_text(bindings: list[dict[str, Any]]) -> str:
+    if not bindings:
+        raise RuntimeError("USD Skel animation export did not report any skeleton bindings.")
+
+    tree: dict[str, Any] = {}
+    for binding in bindings:
+        target = str(binding.get("target_skeleton") or "").strip("/")
+        animation = str(binding.get("animation_source") or "").strip()
+        if not target or not animation.startswith("/"):
+            continue
+        branch = tree
+        for token in target.split("/"):
+            branch = branch.setdefault(token, {})
+        branch["__animation_source__"] = animation
+    if not tree:
+        raise RuntimeError("USD Skel animation bindings contain no valid target paths.")
+
+    lines = ["#usda 1.0", ""]
+
+    def write_branch(branch: dict[str, Any], depth: int) -> None:
+        indent = "    " * depth
+        for name, children in branch.items():
+            if name == "__animation_source__":
+                continue
+            animation = children.get("__animation_source__")
+            if animation:
+                lines.extend(
+                    [
+                        f'{indent}over "{name}" (',
+                        f'{indent}    prepend apiSchemas = ["SkelBindingAPI"]',
+                        f"{indent})",
+                        f"{indent}{{",
+                        f"{indent}    rel skel:animationSource = <{animation}>",
+                    ]
+                )
+            else:
+                lines.extend([f'{indent}over "{name}"', f"{indent}{{"])
+            write_branch(children, depth + 1)
+            lines.append(f"{indent}}}")
+
+    write_branch(tree, 0)
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _pipeline_root() -> Path:

@@ -52,6 +52,9 @@ templates:
 
 publish_outputs:
   model:
+    default:
+    - ma
+    - usd
     hires:
     - ma
   rig:
