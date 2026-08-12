@@ -20,6 +20,15 @@ def _qt_modules():
 
 QtCore, QtGui, QtUiTools, QtWidgets = _qt_modules()
 
+
+def _exec_menu(menu, pos):
+    """Execute a context menu with either the Qt 6 or Qt 5 API."""
+    exec_method = getattr(menu, "exec", None)
+    if exec_method is None:
+        exec_method = menu.exec_
+    return exec_method(pos)
+
+
 CONSTRUCT_TYPES = ("rig", "camera", "animation", "fx", "light", "audio", "cast", "placement", "layout_overlay")
 CONSTRUCT_MODES = ("reference", "import", "apply", "reference_cache", "file")
 FX_CACHE_FILTER = "FX Cache Files (*.abc *.usd *.usda *.usdc);;All Files (*.*)"
@@ -934,6 +943,31 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 
     def _setup_context_tab(self) -> None:
         layout = self.context_tab.layout()
+        self.shot_context_profile_combo = QtWidgets.QComboBox()
+        self.shot_context_profile_combo.addItems(["FAST", "WORK", "FINAL"])
+        self.shot_context_profile_combo.setCurrentText("WORK")
+        self.refresh_shot_context_btn = QtWidgets.QPushButton("Refresh Context")
+        self.assemble_shot_context_btn = QtWidgets.QPushButton("Assemble Context")
+        self.assemble_shot_context_btn.setStyleSheet(
+            "QPushButton { background-color: #2f5f9f; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #3b73b8; }"
+        )
+        self.shot_context_component_tree = QtWidgets.QTreeWidget()
+        self.shot_context_component_tree.setColumnCount(7)
+        self.shot_context_component_tree.setHeaderLabels(
+            ["Use", "Type", "Name", "Subset", "Version", "Load Policy", "State"]
+        )
+        self.shot_context_component_tree.setRootIsDecorated(False)
+        self.shot_context_component_tree.setAlternatingRowColors(True)
+        self.shot_context_component_tree.header().setStretchLastSection(True)
+        self.shot_context_component_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        self.shot_context_component_tree.setMinimumHeight(130)
+        self.shot_context_versions_tree = QtWidgets.QTreeWidget()
+        self.shot_context_versions_tree.setColumnCount(3)
+        self.shot_context_versions_tree.setHeaderLabels(["Version", "State", "Comment"])
+        self.shot_context_versions_tree.setRootIsDecorated(False)
+        self.shot_context_versions_tree.header().setStretchLastSection(True)
+        self.shot_context_versions_tree.setMaximumHeight(105)
         self.shot_context_tree.setColumnCount(5)
         self.shot_context_tree.setHeaderLabels(["Item", "State", "Version", "Message", "Path"])
         self.shot_context_tree.setIndentation(10)
@@ -961,13 +995,30 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             "QPushButton:hover { background-color: #3b73b8; }"
         )
         if layout is not None:
+            context_group = QtWidgets.QGroupBox("Shot Context USD Proxy")
+            context_layout = QtWidgets.QVBoxLayout(context_group)
+            context_layout.setContentsMargins(6, 6, 6, 6)
+            context_header = QtWidgets.QHBoxLayout()
+            context_header.addWidget(QtWidgets.QLabel("Profile"))
+            context_header.addWidget(self.shot_context_profile_combo)
+            context_header.addStretch(1)
+            context_header.addWidget(self.refresh_shot_context_btn)
+            context_header.addWidget(self.assemble_shot_context_btn)
+            context_layout.addLayout(context_header)
+            context_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+            context_splitter.addWidget(self.shot_context_component_tree)
+            context_splitter.addWidget(self.shot_context_versions_tree)
+            context_splitter.setStretchFactor(0, 1)
+            context_splitter.setStretchFactor(1, 0)
+            context_layout.addWidget(context_splitter)
+            layout.insertWidget(0, context_group)
             header = QtWidgets.QHBoxLayout()
             self.layout_status_label = QtWidgets.QLabel("Layout Publish Status")
             header.addWidget(self.layout_status_label)
             header.addStretch(1)
             header.addWidget(self.refresh_layout_status_btn)
             header.addWidget(self.build_anim_input_btn)
-            layout.insertLayout(0, header)
+            layout.insertLayout(1, header)
             layout.addWidget(self.context_shot_detail_label)
             layout.addWidget(self.context_shot_detail_tree)
             self.context_shot_detail_label.hide()
@@ -975,6 +1026,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.refresh_layout_status_btn.clicked.connect(self.populate_layout_publish_status)
         self.build_anim_input_btn.clicked.connect(self.build_anim_input_package)
         self.shot_context_tree.itemClicked.connect(self._on_context_tree_item_clicked)
+        self.refresh_shot_context_btn.clicked.connect(self.populate_shot_context_builder)
+        self.assemble_shot_context_btn.clicked.connect(self.assemble_shot_context)
+        self.shot_context_profile_combo.currentTextChanged.connect(
+            lambda _text: self.populate_shot_context_builder()
+        )
 
     def _setup_construct_tab(self) -> None:
         self.construct_tab.setObjectName("construct_tab")
@@ -2438,7 +2494,95 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         source_path = version_path / "animation_curve.json" if version_path.is_dir() else version_path
         return source_path.resolve().as_posix().lower() in published_sources
 
+    def populate_shot_context_builder(self) -> None:
+        if not hasattr(self, "shot_context_component_tree"):
+            return
+        self.shot_context_component_tree.clear()
+        self.shot_context_versions_tree.clear()
+        identity = self.active_shot_identity or self.current_identity()
+        enabled = bool(identity and getattr(identity, "shot", ""))
+        self.assemble_shot_context_btn.setEnabled(enabled)
+        if not enabled:
+            item = QtWidgets.QTreeWidgetItem(["", "", "Open a shot detail", "", "", "", "N/A"])
+            self.shot_context_component_tree.addTopLevelItem(item)
+            return
+        department = self.work_dept_combo.currentText().strip() or "anim"
+        profile = self.shot_context_profile_combo.currentText().strip() or "WORK"
+        try:
+            rows = self.service.shot_context_components(
+                identity, department=department, profile=profile
+            )
+            for row in rows:
+                item = QtWidgets.QTreeWidgetItem(
+                    [
+                        "",
+                        str(row.get("type") or ""),
+                        str(row.get("name") or ""),
+                        str(row.get("subset") or ""),
+                        str(row.get("version") or ""),
+                        "",
+                        str(row.get("state") or ""),
+                    ]
+                )
+                item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+                item.setCheckState(0, QtCore.Qt.Checked if row.get("use") else QtCore.Qt.Unchecked)
+                item.setData(0, QtCore.Qt.UserRole, dict(row))
+                policy = QtWidgets.QComboBox()
+                policy.addItems(["payload", "reference"])
+                policy.setCurrentText(str(row.get("load_policy") or "payload"))
+                self.shot_context_component_tree.addTopLevelItem(item)
+                self.shot_context_component_tree.setItemWidget(item, 5, policy)
+            for row in self.service.list_shot_context_versions(
+                identity, department=department, profile=profile
+            ):
+                item = QtWidgets.QTreeWidgetItem(
+                    [str(row.get("version") or ""), str(row.get("state") or ""), str(row.get("comment") or "")]
+                )
+                item.setData(0, QtCore.Qt.UserRole, str(row.get("path") or ""))
+                self.shot_context_versions_tree.addTopLevelItem(item)
+            for column in (0, 1, 3, 4, 5, 6):
+                self.shot_context_component_tree.resizeColumnToContents(column)
+        except Exception as exc:
+            self.status_label.setText(f"Shot Context refresh failed: {exc}")
+
+    def assemble_shot_context(self) -> None:
+        identity = self.active_shot_identity or self.current_identity()
+        if not identity or not getattr(identity, "shot", ""):
+            self.status_label.setText("Open a shot detail first")
+            return
+        rows = []
+        for index in range(self.shot_context_component_tree.topLevelItemCount()):
+            item = self.shot_context_component_tree.topLevelItem(index)
+            row = item.data(0, QtCore.Qt.UserRole)
+            if not isinstance(row, dict):
+                continue
+            row = dict(row)
+            row["use"] = item.checkState(0) == QtCore.Qt.Checked
+            policy = self.shot_context_component_tree.itemWidget(item, 5)
+            row["load_policy"] = policy.currentText() if policy else "payload"
+            rows.append(row)
+        comment, accepted = QtWidgets.QInputDialog.getText(
+            self, "Assemble Shot Context", "Version comment"
+        )
+        if not accepted:
+            return
+        department = self.work_dept_combo.currentText().strip() or "anim"
+        profile = self.shot_context_profile_combo.currentText().strip() or "WORK"
+        try:
+            path = self.service.build_shot_context(
+                identity,
+                department=department,
+                profile=profile,
+                components=rows,
+                comment=comment.strip(),
+            )
+            self.status_label.setText(f"Assembled Shot Context: {path.parent.name}")
+            self.populate_shot_context_builder()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Assemble Shot Context Failed", str(exc))
+
     def populate_layout_publish_status(self) -> None:
+        self.populate_shot_context_builder()
         shot_identity = self.active_shot_identity or self.current_identity()
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
         self.shot_context_tree.clear()
@@ -3613,7 +3757,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         open_scene = menu.addAction("Open Scene")
         recapture_thumbnail = menu.addAction("Recapture Thumbnail")
         copy_path = menu.addAction("Copy Path")
-        action = menu.exec(self.work_table.mapToGlobal(pos))
+        action = _exec_menu(menu, self.work_table.mapToGlobal(pos))
         if action == open_scene:
             self.open_work_scene()
         elif action == recapture_thumbnail:
@@ -3688,6 +3832,72 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not path:
             self.status_label.setText("Select a work scene first")
             return
+        if identity:
+            try:
+                from smartlib.apps.review_build_manager.service import (
+                    ReviewBuildManagerService,
+                )
+                from smartlib.core.metadata import read_json, sidecar_path
+
+                metadata = read_json(sidecar_path(path), {}) or {}
+                current_construct = metadata.get("construct") or {}
+                if current_construct.get("components"):
+                    update_service = ReviewBuildManagerService(
+                        self.service.project_config
+                    )
+                    desired_construct = self.service.construct_from_stage_inputs(
+                        identity
+                    )
+                    changes = update_service.construct_diff(
+                        identity,
+                        current=current_construct,
+                        desired=desired_construct,
+                    )
+                    changed = [
+                        row for row in changes
+                        if row.get("change") != "UNCHANGED"
+                    ]
+                    if changed:
+                        details = "\n".join(
+                            f"{(row.get('after') or row.get('before') or {}).get('name', '-')}: "
+                            f"{row.get('change')}"
+                            + (
+                                f" [{row.get('asset_status')}]"
+                                if row.get("asset_status") else ""
+                            )
+                            for row in changed[:12]
+                        )
+                        answer = QtWidgets.QMessageBox.question(
+                            self,
+                            "Construct Updates Available",
+                            "Published components have changed.\n\n"
+                            f"{details}\n\n"
+                            "Yes: UPDATE Buildして最新ConstructをOpen\n"
+                            "No: 現在のWork SceneをOpen",
+                            QtWidgets.QMessageBox.Yes
+                            | QtWidgets.QMessageBox.No
+                            | QtWidgets.QMessageBox.Cancel,
+                            QtWidgets.QMessageBox.Yes,
+                        )
+                        if answer == QtWidgets.QMessageBox.Cancel:
+                            return
+                        if answer == QtWidgets.QMessageBox.Yes:
+                            from smartlib.apps.review_build_manager.window import show
+
+                            manager_window = show(
+                                self.service.project_config.config_dir,
+                                parent=self,
+                                initial_scope="Shot",
+                            )
+                            QtCore.QTimer.singleShot(
+                                0,
+                                lambda: manager_window.queue_update_and_open(identity),
+                            )
+                            return
+            except Exception as exc:
+                self.status_label.setText(
+                    f"Update check skipped: {exc}"
+                )
         try:
             _ensure_smartlib_on_path()
             import importlib

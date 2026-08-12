@@ -46,6 +46,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.build_content_settings: dict[tuple[str, str, str], dict] = {}
         self.sequence_input_settings: dict[tuple[str, str], dict] = {}
         self.current_build_content_rows: list[dict] = []
+        self._open_after_build_identity: tuple[str, str, str] | None = None
         self._startup_context_applied = False
         self.job_timer = QtCore.QTimer(self)
         self.job_timer.setInterval(500)
@@ -72,7 +73,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.project_combo.setFixedWidth(150)
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItems(BUILD_MODES)
-        self.mode_combo.setToolTip("AUTO resolves Stage, Update, Rebuild, or Review Only per shot.")
+        self.mode_combo.setToolTip(
+            "WORK STAGE builds an editable scene; REND STAGE builds render outputs; "
+            "UPDATE applies Construct differences."
+        )
+        self.generate_review_check = QtWidgets.QCheckBox("Generate Review")
+        self.generate_review_check.setChecked(False)
         self.scope_combo = QtWidgets.QComboBox()
         self.scope_combo.addItems(["Shot", "Sequence"])
         self.department_combo = QtWidgets.QComboBox()
@@ -93,6 +99,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         toolbar.addStretch(1)
         toolbar.addWidget(QtWidgets.QLabel("Mode"))
         toolbar.addWidget(self.mode_combo)
+        toolbar.addWidget(self.generate_review_check)
         toolbar.addWidget(QtWidgets.QLabel("Scope"))
         toolbar.addWidget(self.scope_combo)
         toolbar.addWidget(QtWidgets.QLabel("Dept"))
@@ -131,6 +138,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         )
         self.input_context_combo = QtWidgets.QComboBox()
         self.input_context_combo.addItems(self.service.asset_context_profiles())
+        self.input_representation_combo = QtWidgets.QComboBox()
+        self.input_representation_combo.addItem("Project Default", "project")
+        self.input_representation_combo.addItem("Maya", "maya")
+        self.input_representation_combo.addItem("USD", "usd")
         self.input_camera_edit = QtWidgets.QLineEdit()
         self.input_camera_edit.setPlaceholderText("latest camera (optional override)")
         self.input_overlay_check = QtWidgets.QCheckBox("Use Layout Overlay")
@@ -148,17 +159,19 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.input_policy_combo, 0, 1)
         layout.addWidget(QtWidgets.QLabel("Context"), 1, 0)
         layout.addWidget(self.input_context_combo, 1, 1)
-        layout.addWidget(QtWidgets.QLabel("Camera"), 2, 0)
-        layout.addWidget(self.input_camera_edit, 2, 1)
+        layout.addWidget(QtWidgets.QLabel("Representation"), 2, 0)
+        layout.addWidget(self.input_representation_combo, 2, 1)
+        layout.addWidget(QtWidgets.QLabel("Camera"), 3, 0)
+        layout.addWidget(self.input_camera_edit, 3, 1)
         option_row = QtWidgets.QHBoxLayout()
         option_row.addWidget(self.input_placements_check)
         option_row.addWidget(self.input_overlay_check)
-        layout.addLayout(option_row, 3, 0, 1, 2)
-        layout.addWidget(QtWidgets.QLabel("Exclude Cast"), 4, 0)
-        layout.addWidget(self.input_exclude_cast_edit, 4, 1)
-        layout.addWidget(QtWidgets.QLabel("Comment"), 5, 0)
-        layout.addWidget(self.input_comment_edit, 5, 1)
-        layout.addWidget(self.generate_inputs_btn, 6, 0, 1, 2)
+        layout.addLayout(option_row, 4, 0, 1, 2)
+        layout.addWidget(QtWidgets.QLabel("Exclude Cast"), 5, 0)
+        layout.addWidget(self.input_exclude_cast_edit, 5, 1)
+        layout.addWidget(QtWidgets.QLabel("Comment"), 6, 0)
+        layout.addWidget(self.input_comment_edit, 6, 1)
+        layout.addWidget(self.generate_inputs_btn, 7, 0, 1, 2)
         layout.setColumnStretch(1, 1)
         return self.stage_inputs_panel
 
@@ -357,11 +370,20 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.dry_run_btn.clicked.connect(self.dry_run)
         self.department_combo.currentTextChanged.connect(self._department_changed)
         self.task_combo.currentTextChanged.connect(self._refresh_plan_columns)
+        self.task_combo.currentTextChanged.connect(self._status_basis_changed)
         self.mode_combo.currentTextChanged.connect(self._refresh_plan_columns)
+        self.mode_combo.currentTextChanged.connect(self._status_basis_changed)
         self.mode_combo.currentTextChanged.connect(self._update_stage_inputs_visibility)
         self.scope_combo.currentTextChanged.connect(self._scope_changed)
         self.input_policy_combo.currentTextChanged.connect(self._refresh_plan_columns)
         self.input_context_combo.currentTextChanged.connect(self._refresh_plan_columns)
+        self.input_representation_combo.currentIndexChanged.connect(
+            self._refresh_plan_columns
+        )
+        self.input_representation_combo.currentIndexChanged.connect(
+            self._status_basis_changed
+        )
+        self.generate_review_check.toggled.connect(self._generate_review_toggled)
         self.input_camera_edit.textChanged.connect(self._refresh_plan_columns)
         self.input_placements_check.toggled.connect(self._refresh_plan_columns)
         self.input_overlay_check.toggled.connect(self._refresh_plan_columns)
@@ -397,7 +419,17 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.footer_label.setText("Scanning shots...")
         QtWidgets.QApplication.processEvents()
         try:
-            self.rows = self.service.scan()
+            self.rows = [
+                self.service.shot_status(
+                    identity,
+                    mode=self.mode_combo.currentText(),
+                    department=self.department_combo.currentText(),
+                    task=self.task_combo.currentText(),
+                    generate_review=self.generate_review_check.isChecked(),
+                    overrides=self._stage_input_overrides(identity),
+                )
+                for identity in self.service.shots.list_shots()
+            ]
             self._populate_filters()
             self._populate_tree()
             self._apply_filters()
@@ -409,7 +441,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             dirty = sum(row.state == "DIRTY" for row in self.rows)
             missing = sum(row.state == "MISSING" for row in self.rows)
             self.footer_label.setText(
-                f"{dirty} shots require rebuild  |  {missing} package missing  |  Worker: not connected"
+                f"{dirty} shots require rebuild  |  {missing} inputs missing  |  Worker: not connected"
             )
         except Exception as exc:
             self.footer_label.setText(f"Scan failed: {exc}")
@@ -614,25 +646,23 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 )
             )
             self.shot_table.setItem(row, 4, validation_item)
-            if plan.resolved_mode == "REVIEW ONLY":
-                display_state = row_data.state
-                version_label = row_data.output_label
-            else:
-                display_state = plan.state
-                if self.scope_combo.currentText() == "Sequence":
-                    from smartlib.apps.shot_manager import SequenceIdentity
+            display_state = (
+                plan.state if plan.state in {"BLOCKED", "WARNING"} else row_data.state
+            )
+            if self.scope_combo.currentText() == "Sequence":
+                from smartlib.apps.shot_manager import SequenceIdentity
 
-                    version_label = "Next " + self.service.next_sequence_construct_version(
-                        SequenceIdentity(identity.episode, identity.sequence),
-                        plan.department,
-                        plan.task,
-                    )
-                else:
-                    version_label = "Next " + self.service.next_construct_version(
-                        identity,
-                        plan.department,
-                        plan.task,
-                    )
+                version_label = "Next " + self.service.next_sequence_construct_version(
+                    SequenceIdentity(identity.episode, identity.sequence),
+                    plan.department,
+                    plan.task,
+                )
+            else:
+                version_label = "Next " + self.service.next_construct_version(
+                    identity,
+                    plan.department,
+                    plan.task,
+                )
             state = QtWidgets.QTableWidgetItem(display_state)
             state.setForeground(
                 QtGui.QColor(STATE_COLORS.get(display_state, "#dddddd"))
@@ -696,8 +726,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         )
         self.detail_summary.setText(
             f"State: {row_data.state}\n"
-            f"Animation Package: {row_data.source_version or '-'}\n"
-            f"Output: {row_data.output_label}\n"
+            f"Animation Curves: {row_data.source_version or '-'}\n"
+            f"Construct: {row_data.output_label}\n"
             f"{row_data.message}"
         )
         for output in row_data.outputs:
@@ -766,6 +796,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             default_context=self.input_context_combo.currentText(),
             cast_contexts=settings["contexts"],
             excluded_cast=list(settings["excluded"]),
+            representation=str(
+                self.input_representation_combo.currentData() or "project"
+            ),
         )
         self.current_build_content_rows = rows
         self.build_contents_group.setTitle(f"Build Contents - {identity.shot}")
@@ -1165,7 +1198,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 else ShotIdentity(*raw_identity)
             )
             plan = self._build_plan(identity)
-            if plan.buildable and plan.resolved_mode in {"STAGE", "UPDATE", "REBUILD"}:
+            if plan.buildable and plan.resolved_mode in {"WORK STAGE", "REND STAGE", "UPDATE"}:
                 try:
                     if scope == "sequence":
                         self.service.ensure_sequence_stage_input(
@@ -1192,70 +1225,48 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 continue
             self.job_counter += 1
             if scope == "sequence":
-                if plan.resolved_mode == "REVIEW ONLY":
-                    output_version = self.service.next_sequence_output_version(identity)
-                    job_root = (
-                        self.service.shots.sequence_workspace_root(
-                            identity.episode, identity.sequence
-                        )
-                        / "output"
-                        / "review"
-                        / "layout"
-                        / "_jobs"
+                output_version = self.service.next_sequence_construct_version(
+                    identity, plan.department, plan.task
+                )
+                job_root = (
+                    self.service.shots.sequence_workspace_root(
+                        identity.episode, identity.sequence
                     )
-                else:
-                    output_version = self.service.next_sequence_construct_version(
-                        identity,
-                        plan.department,
-                        plan.task,
-                    )
-                    job_root = (
-                        self.service.shots.sequence_workspace_root(
-                            identity.episode, identity.sequence
-                        )
-                        / "output"
-                        / "scene_build"
-                        / "_jobs"
-                    )
+                    / "output" / "scene_build" / "_jobs"
+                )
                 label = identity.sequence
             else:
-                if plan.resolved_mode == "REVIEW ONLY":
-                    output_version = self.service.next_output_version(identity)
-                    job_root = (
-                        self.service.shots.shot_root(identity)
-                        / "output"
-                        / "review"
-                        / "animation"
-                        / "_jobs"
-                    )
-                else:
-                    output_version = self.service.next_construct_version(
-                        identity,
-                        plan.department,
-                        plan.task,
-                    )
-                    job_root = (
-                        self.service.shots.shot_root(identity)
-                        / "output"
-                        / "scene_build"
-                        / "_jobs"
-                    )
+                output_version = self.service.next_construct_version(
+                    identity, plan.department, plan.task
+                )
+                job_root = (
+                    self.service.shots.shot_root(identity)
+                    / "output" / "scene_build" / "_jobs"
+                )
                 label = identity.shot
             status_file = job_root / (
                 f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                 f"{label}_{output_version}_{self.job_counter:03d}.json"
             )
             construct_snapshot = {}
+            construct_changes = []
             if scope != "sequence":
                 overrides = self._stage_input_overrides(identity)
+                previous_construct = self.service.shots.load_construct(identity)
                 construct_data = self.service.shots.resolved_construct(
                     identity,
                     cast_contexts=overrides.get("cast_contexts") or {},
                     exclude_cast=overrides.get("exclude_cast") or [],
+                    representation=overrides.get("representation") or "project",
                 )
                 self.service.shots.write_construct(identity, construct_data)
                 construct_snapshot = self.service.shots.construct_snapshot(
                     identity, construct_data
+                )
+                construct_changes = self.service.construct_diff(
+                    identity,
+                    current=previous_construct,
+                    desired=construct_data,
                 )
             job = {
                 "id": f"#{self.job_counter:04d}",
@@ -1266,8 +1277,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     self._sequence_options(identity) if scope == "sequence" else {}
                 ),
                 "construct": construct_snapshot,
+                "construct_changes": construct_changes,
                 "version": output_version,
                 "mode": plan.resolved_mode,
+                "generate_review": self.generate_review_check.isChecked(),
                 "department": plan.department,
                 "task_name": plan.task,
                 "status_file": str(status_file),
@@ -1277,6 +1290,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 "elapsed": QtCore.QElapsedTimer(),
                 "row": self.queue_table.rowCount(),
                 "stderr": "",
+                "open_after_build": (
+                    scope == "shot"
+                    and self._open_after_build_identity == tuple(raw_identity)
+                ),
             }
             self.pending_jobs.append(job)
             self._append_queue_row(job)
@@ -1357,8 +1374,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 json.dumps(job.get("sequence_options") or {}),
                 "--construct-json",
                 json.dumps(job.get("construct") or {}),
+                "--construct-diff-json",
+                json.dumps(job.get("construct_changes") or []),
                 "--operation",
                 job["mode"],
+                "--generate-review",
+                "1" if job.get("generate_review") else "0",
                 "--department",
                 job["department"],
                 "--task-name",
@@ -1419,6 +1440,26 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 job["message"] = job["stderr"].strip().splitlines()[-1]
             job["task"] = self._failure_summary(job.get("message") or job.get("stderr"))
         self._update_queue_row(job)
+        if success and job.get("open_after_build"):
+            scene_path = Path(str(job.get("message") or ""))
+            if scene_path.is_file():
+                try:
+                    from smartlib.apps.shot_manager import ShotIdentity
+                    from smartlib.dcc.maya.shot_builder import open_work_scene
+
+                    identity = ShotIdentity(*job["identity"])
+                    open_work_scene(
+                        scene_path,
+                        self.service.shots.load_shot(identity),
+                    )
+                    self.footer_label.setText(
+                        f"Updated and opened: {scene_path.name}"
+                    )
+                except Exception as exc:
+                    self.footer_label.setText(
+                        f"Build completed, but Open failed: {exc}"
+                    )
+            self._open_after_build_identity = None
         self.active_job = None
         self.worker_process = None
         self.job_timer.stop()
@@ -1426,6 +1467,15 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self._start_next_job()
         else:
             self.scan_updates()
+
+    def queue_update_and_open(self, identity) -> None:
+        """Queue one UPDATE and open the generated Construct on completion."""
+        raw = (identity.episode, identity.sequence, identity.shot)
+        self.scope_combo.setCurrentText("Shot")
+        self.mode_combo.setCurrentText("UPDATE")
+        self._restore_shot_selection(identity, ("shot", *raw))
+        self._open_after_build_identity = raw
+        self._enqueue_builds([raw])
 
     def _update_queue_row(self, job: dict) -> None:
         row = int(job["row"])
@@ -1540,11 +1590,19 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         return self.input_policy_combo.currentText().strip().upper()
 
     def _stage_input_overrides(self, identity=None) -> dict:
+        stage_context = (
+            "REND"
+            if self.mode_combo.currentText() == "REND STAGE"
+            else self.input_context_combo.currentText().strip()
+        )
         overrides = {
-            "context": self.input_context_combo.currentText().strip(),
+            "context": stage_context,
             "camera": self.input_camera_edit.text().strip(),
             "layout_overlay": self.input_overlay_check.isChecked(),
             "use_placements": self.input_placements_check.isChecked(),
+            "representation": str(
+                self.input_representation_combo.currentData() or "project"
+            ),
             "exclude_cast": [
                 value.strip()
                 for value in self.input_exclude_cast_edit.text().split(",")
@@ -1569,6 +1627,15 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     excluded.add(name)
             if contexts:
                 overrides["cast_contexts"] = contexts
+            if self.mode_combo.currentText() == "REND STAGE":
+                rig_names = {
+                    str(component.get("name") or "")
+                    for component in construct.get("components") or []
+                    if str(component.get("component_type") or "").lower() == "rig"
+                }
+                overrides["cast_contexts"] = {
+                    name: "REND" for name in rig_names | set(contexts) if name
+                }
             if excluded:
                 overrides["exclude_cast"] = sorted(
                     set(overrides["exclude_cast"]) | set(excluded)
@@ -1800,7 +1867,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             )
 
     def _update_stage_inputs_visibility(self, *_args) -> None:
-        visible = self.mode_combo.currentText() != "REVIEW ONLY"
+        visible = True
         self.stage_inputs_panel.setVisible(visible)
         self.sequence_inputs_panel.setVisible(
             visible and self.scope_combo.currentText() == "Sequence"
@@ -1817,7 +1884,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
     def _scope_changed(self, scope: str) -> None:
         selected = self._selected_status()
         if scope == "Sequence":
-            self.mode_combo.setCurrentText("STAGE")
+            self.mode_combo.setCurrentText("WORK STAGE")
             layout_index = self.department_combo.findText("layout")
             if layout_index >= 0:
                 self.department_combo.setCurrentIndex(layout_index)
@@ -1828,9 +1895,48 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
     def _department_changed(self, _department: str) -> None:
         self._populate_tasks()
         self._refresh_plan_columns()
+        self._status_basis_changed()
 
     def _refresh_plan_columns(self, *_args) -> None:
         self._apply_filters()
+
+    def _status_basis_changed(self, *_args) -> None:
+        # During settings restoration there is no scan result yet; the normal
+        # startup scan will use the restored controls.
+        if self.rows:
+            self.scan_updates()
+
+    def _generate_review_toggled(self, enabled: bool) -> None:
+        """Apply the MOV requirement without resolving every shot again."""
+
+        if not self.rows:
+            return
+        previous = {self._identity_key(row): row for row in self.rows}
+        self.rows = [self.service.apply_generate_review_requirement(row, enabled) for row in self.rows]
+        current = {self._identity_key(row): row for row in self.rows}
+        self._populate_filters()
+        for table_row in range(self.shot_table.rowCount()):
+            shot_item = self.shot_table.item(table_row, 2)
+            key = tuple(shot_item.data(QtCore.Qt.UserRole) or ()) if shot_item else ()
+            before = previous.get(key)
+            after = current.get(key)
+            state_item = self.shot_table.item(table_row, 5)
+            if not before or not after or not state_item:
+                continue
+            # Preserve BLOCKED/WARNING states supplied by Build validation.
+            if state_item.text() == before.state and before.state != after.state:
+                state_item.setText(after.state)
+                state_item.setForeground(
+                    QtGui.QColor(STATE_COLORS.get(after.state, "#dddddd"))
+                )
+        selected = self._selected_status()
+        if selected and self.scope_combo.currentText() != "Sequence":
+            self.detail_summary.setText(
+                f"State: {selected.state}\n"
+                f"Animation Curves: {selected.source_version or '-'}\n"
+                f"Construct: {selected.output_label}\n"
+                f"{selected.message}"
+            )
 
     def dry_run(self) -> None:
         identities = self._selected_or_checked_identities()
@@ -1888,7 +1994,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         splitter = settings.value("splitter")
         if splitter:
             self.main_splitter.restoreState(splitter)
-        self.mode_combo.setCurrentText(str(settings.value("mode", "AUTO")))
+        saved_mode = str(settings.value("mode", "WORK STAGE"))
+        saved_mode = {"AUTO": "WORK STAGE", "STAGE": "WORK STAGE", "REBUILD": "WORK STAGE", "REVIEW ONLY": "WORK STAGE"}.get(saved_mode, saved_mode)
+        self.mode_combo.setCurrentText(saved_mode)
         self.scope_combo.setCurrentText(str(settings.value("scope", "Shot")))
         self.department_combo.setCurrentText(
             str(settings.value("department", "anim"))
@@ -1900,6 +2008,11 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         )
         self.input_context_combo.setCurrentText(
             str(settings.value("input_context", "WORK"))
+        )
+        representation = str(settings.value("input_representation", "project"))
+        representation_index = self.input_representation_combo.findData(representation)
+        self.input_representation_combo.setCurrentIndex(
+            representation_index if representation_index >= 0 else 0
         )
         self.input_camera_edit.setText(str(settings.value("input_camera", "")))
         self.input_overlay_check.setChecked(
@@ -1925,6 +2038,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         settings.setValue("task", self.task_combo.currentText())
         settings.setValue("input_policy", self.input_policy_combo.currentText())
         settings.setValue("input_context", self.input_context_combo.currentText())
+        settings.setValue(
+            "input_representation",
+            str(self.input_representation_combo.currentData() or "project"),
+        )
         settings.setValue("input_camera", self.input_camera_edit.text())
         settings.setValue("input_overlay", self.input_overlay_check.isChecked())
         settings.setValue(

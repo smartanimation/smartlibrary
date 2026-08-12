@@ -64,7 +64,7 @@ class AssetContextService:
     """Resolve and snapshot asset context assemblies without importing DCC APIs."""
 
     MAYA_SNAPSHOT_REVISION = 5
-    USD_PACK_REVISION = 2
+    USD_PACK_REVISION = 3
 
     def __init__(self, project_config: ProjectConfig):
         self.project_config = project_config
@@ -113,11 +113,8 @@ class AssetContextService:
 
     def load_context(self, context_name: str = "asset", version: str | None = None) -> dict[str, Any]:
         resolved_version = version or self.active_context_version(context_name)
-        paths = [
-            context_dir / f"{resolved_version}.yml"
-            for context_dir in self.context_dirs(context_name)
-        ]
-        existing_paths = [path for path in paths if path.is_file()]
+        paths = [self._context_layer_path(context_dir, resolved_version) for context_dir in self.context_dirs(context_name)]
+        existing_paths = [path for path in paths if path is not None]
         data: dict[str, Any] = {}
         for path in existing_paths:
             data = deep_merge(data, load_config(path))
@@ -133,9 +130,41 @@ class AssetContextService:
         data["_source_paths"] = [str(path) for path in existing_paths]
         return data
 
+    @staticmethod
+    def _context_layer_path(context_dir: Path, resolved_version: str) -> Path | None:
+        """Resolve the newest context layer not newer than the requested version.
+
+        Project context versions are independent from the bundled default version.
+        For example, project ``v004`` must still inherit bundled ``v001`` when no
+        bundled ``v004`` exists.
+        """
+
+        exact = context_dir / f"{resolved_version}.yml"
+        if exact.is_file():
+            return exact
+        requested = parse_version(resolved_version)
+        candidates: list[tuple[int, Path]] = []
+        if context_dir.is_dir():
+            for path in context_dir.glob("v*.yml"):
+                candidate = parse_version(path.stem)
+                if candidate is None or (requested is not None and candidate > requested):
+                    continue
+                candidates.append((candidate, path))
+        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
     def quality_profiles(self, context_name: str = "asset", version: str | None = None) -> list[str]:
         context = self.load_context(context_name, version)
         return list((context.get("quality_profiles") or {}).keys())
+
+    def quality_profiles_for_asset(
+        self,
+        identity: AssetIdentity,
+        context_name: str = "asset",
+        version: str | None = None,
+    ) -> list[str]:
+        context = self.load_context(context_name, version)
+        _asset_class, profiles = self._profiles_for_identity(identity, context)
+        return list(profiles.keys())
 
     def assemble(
         self,
@@ -147,7 +176,7 @@ class AssetContextService:
     ) -> AssetContextAssembly:
         context = self.load_context(context_name, context_version)
         version_label = str(context.get("_version_label"))
-        profiles = context.get("quality_profiles") or {}
+        asset_class, profiles = self._profiles_for_identity(identity, context)
         profile = profiles.get(quality_profile)
         if not isinstance(profile, dict):
             raise KeyError(f"Quality profile was not found: {context_name}/{version_label}/{quality_profile}")
@@ -183,6 +212,7 @@ class AssetContextService:
                 "version": version_label,
                 "quality_profile": quality_profile,
                 "config": str(context.get("_path")),
+                "asset_class": asset_class,
             },
             "resolved_representations": [
                 {
@@ -238,36 +268,39 @@ class AssetContextService:
         version_label = format_version(next_version([version for version in versions if version]))
         version_dir = base_dir / version_label
         manifest_path = write_json(version_dir / "build_manifest.json", assembly.manifest)
-        scene_suffix = assembled.scene_path.suffix.lower()
-        if scene_suffix not in {".ma", ".mb"}:
-            scene_suffix = ".ma"
-        scene_path = version_dir / f"asset{scene_suffix}"
-        scene_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(assembled.scene_path, scene_path)
+        assembled_suffix = assembled.scene_path.suffix.lower()
+        is_maya_snapshot = assembled_suffix in {".ma", ".mb"}
+        scene_path = None
+        if is_maya_snapshot:
+            scene_path = version_dir / f"asset{assembled_suffix}"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(assembled.scene_path, scene_path)
         usd_path = (
             maya_usd_builder(
                 assembled.scene_path,
                 version_dir / "asset.usda",
                 assembly.identity.name,
             )
-            if maya_usd_builder
+            if maya_usd_builder and is_maya_snapshot
             else self._write_asset_usd(assembly, version_dir / "asset.usda")
         )
         assembly_record = read_json(assembled.assembly_json, {}) or {}
         composition = dict(assembly_record.get("composition") or {})
         composition["assembly"] = str(assembled.assembly_dir.as_posix())
-        composition["usd_pack_revision"] = self.USD_PACK_REVISION if maya_usd_builder else 0
+        composition["usd_pack_revision"] = self.USD_PACK_REVISION
+        files = {
+            "usd": usd_path.name,
+            "build_manifest": manifest_path.name,
+        }
+        if scene_path:
+            files[assembled_suffix.lstrip(".")] = scene_path.name
         publish_data = {
             "asset": assembly.identity.name,
             "publish_type": "asset",
             "subset": subset,
             "variant": assembly.identity.variant,
             "version": version_label,
-            "files": {
-                scene_suffix.lstrip("."): scene_path.name,
-                "usd": usd_path.name,
-                "build_manifest": manifest_path.name,
-            },
+            "files": files,
             "context": assembly.manifest["context"],
             "composition": composition,
         }
@@ -276,21 +309,20 @@ class AssetContextService:
             if optional_path.is_file():
                 publish_data["files"][optional_name.rsplit(".", 1)[0]] = optional_name
         publish_json = write_json(version_dir / "publish.json", publish_data)
-        write_json(
-            base_dir / "latest.json",
-            {
-                "version": version_label,
-                "path": f"{version_label}/{scene_path.name}",
-                "scene": f"{version_label}/{scene_path.name}",
-                "usd": f"{version_label}/{usd_path.name}",
-            },
-        )
+        latest_data = {
+            "version": version_label,
+            "path": f"{version_label}/{scene_path.name if scene_path else usd_path.name}",
+            "usd": f"{version_label}/{usd_path.name}",
+        }
+        if scene_path:
+            latest_data["scene"] = f"{version_label}/{scene_path.name}"
+        write_json(base_dir / "latest.json", latest_data)
         self._update_versions(base_dir / "versions.json", version_label)
         self._set_assembly_status(assembled, "packed", version_label)
         return PackedAssetContext(
             version_dir=version_dir,
             manifest_path=manifest_path,
-            scene_path=scene_path,
+            scene_path=scene_path or usd_path,
             usd_path=usd_path,
             publish_json=publish_json,
         )
@@ -299,7 +331,7 @@ class AssetContextService:
     def _write_asset_usd(assembly: AssetContextAssembly, target: Path) -> Path:
         """Compose resolved atomic USD representations into the Asset entry layer."""
 
-        strength = {"look": 0, "groom": 1, "rig": 2, "model": 3, "geometry": 3}
+        strength = {"look": 0, "groom": 1, "rig": 2, "assembly": 3, "model": 3, "geometry": 3}
         layers: list[tuple[int, str, Path]] = []
         missing: list[str] = []
         for entry in assembly.entries:
@@ -343,6 +375,37 @@ class AssetContextService:
         )
         return target
 
+    def _profiles_for_identity(
+        self,
+        identity: AssetIdentity,
+        context: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        recipes = context.get("asset_context_recipes") or {}
+        metadata = read_json(self.paths.asset_root(identity) / "asset.json", {}) or {}
+        values = {
+            "asset_type": str(metadata.get("asset_type") or metadata.get("type") or identity.category),
+            "category": identity.category,
+            "group": identity.group,
+        }
+        for asset_class, recipe in recipes.items():
+            if not isinstance(recipe, dict) or not self._recipe_matches(recipe.get("match"), values):
+                continue
+            profiles = recipe.get("profiles") or {}
+            if isinstance(profiles, dict) and profiles:
+                return str(asset_class), profiles
+        return "default", context.get("quality_profiles") or {}
+
+    @staticmethod
+    def _recipe_matches(match: Any, values: dict[str, str]) -> bool:
+        if not isinstance(match, dict) or not match:
+            return False
+        for key, expected in match.items():
+            candidates = expected if isinstance(expected, (list, tuple, set)) else [expected]
+            normalized = {str(value).strip().lower() for value in candidates if str(value).strip()}
+            if normalized and values.get(str(key), "").strip().lower() not in normalized:
+                return False
+        return True
+
     def write_assembly(
         self,
         assembly: AssetContextAssembly,
@@ -353,11 +416,27 @@ class AssetContextService:
             raise RuntimeError("Context assembly is blocked by unresolved representations.")
         assembly_dir = self._assembly_dir(assembly)
         manifest_path = write_json(assembly_dir / "build_manifest.json", assembly.manifest)
-        scene_path, scene_source = self._pack_maya_scene_entry(
-            assembly,
-            assembly_dir,
-            maya_scene_builder=maya_scene_builder,
-        )
+        maya_source = self._maya_scene_entry_source(assembly)
+        if maya_source:
+            scene_path, scene_source = self._pack_maya_scene_entry(
+                assembly,
+                assembly_dir,
+                maya_scene_builder=maya_scene_builder,
+            )
+            composition = {
+                "source": str(scene_source.as_posix()),
+                "maya_scene_source": str(scene_source.as_posix()),
+                "mode": "maya_reference_snapshot" if maya_scene_builder else "scene_entry_copy",
+                "maya_snapshot_revision": self.MAYA_SNAPSHOT_REVISION if maya_scene_builder else 0,
+            }
+        else:
+            scene_source = self._usd_scene_entry_source(assembly)
+            scene_path = self._write_asset_usd(assembly, assembly_dir / "asset.usda")
+            composition = {
+                "source": str(scene_source.as_posix()) if scene_source else "",
+                "mode": "usd_composition_snapshot",
+                "usd_pack_revision": self.USD_PACK_REVISION,
+            }
         assembly_json = write_json(
             assembly_dir / "assembly.json",
             {
@@ -371,11 +450,7 @@ class AssetContextService:
                     "build_manifest": manifest_path.name,
                 },
                 "context": assembly.manifest["context"],
-                "composition": {
-                    "maya_scene_source": str(scene_source.as_posix()),
-                    "mode": "maya_reference_snapshot" if maya_scene_builder else "scene_entry_copy",
-                    "maya_snapshot_revision": self.MAYA_SNAPSHOT_REVISION if maya_scene_builder else 0,
-                },
+                "composition": composition,
             },
         )
         return AssembledAssetContext(
@@ -391,13 +466,26 @@ class AssetContextService:
         assembly_json = assembly_dir / "assembly.json"
         record = read_json(assembly_json, {}) or {}
         files = record.get("files") or {}
-        scene_name = str(files.get("ma") or files.get("mb") or "")
+        scene_name = str(
+            files.get("ma") or files.get("mb") or files.get("usd")
+            or files.get("usda") or files.get("usdc") or ""
+        )
         if scene_name:
             scene_path = assembly_dir / Path(scene_name).name
         else:
             scene_path = next(
-                (path for path in (assembly_dir / "asset.ma", assembly_dir / "asset.mb") if path.exists()),
-                assembly_dir / "asset.ma",
+                (
+                    path
+                    for path in (
+                        assembly_dir / "asset.ma",
+                        assembly_dir / "asset.mb",
+                        assembly_dir / "asset.usda",
+                        assembly_dir / "asset.usd",
+                        assembly_dir / "asset.usdc",
+                    )
+                    if path.exists()
+                ),
+                assembly_dir / "asset.usda",
             )
         if not manifest_path.exists() or not scene_path.exists() or not assembly_json.exists():
             return None
@@ -436,10 +524,12 @@ class AssetContextService:
         latest_version_dir = Path(packs[0]["manifest_path"]).parent
         publish_record = read_json(latest_version_dir / "publish.json", {}) or {}
         publish_files = publish_record.get("files") or {}
-        scene_name = str(publish_files.get("ma") or publish_files.get("mb") or "")
-        scene_exists = bool(scene_name and (latest_version_dir / Path(scene_name).name).exists())
-        if not scene_exists:
-            return True
+        assembled = self.current_assembly(assembly)
+        requires_maya_scene = bool(assembled and assembled.scene_path.suffix.lower() in {".ma", ".mb"})
+        if requires_maya_scene:
+            scene_name = str(publish_files.get("ma") or publish_files.get("mb") or "")
+            if not scene_name or not (latest_version_dir / Path(scene_name).name).exists():
+                return True
         if not (latest_version_dir / "asset.usda").exists():
             return True
         composition = publish_record.get("composition") or {}
@@ -500,6 +590,20 @@ class AssetContextService:
                 path = Path(raw_path)
                 if path.is_file():
                     return path
+        return None
+
+    @staticmethod
+    def _usd_scene_entry_source(assembly: AssetContextAssembly) -> Path | None:
+        by_type = {"assembly": 0, "asset": 1, "model": 2, "geometry": 2, "look": 3, "groom": 4}
+        entries = sorted(assembly.entries, key=lambda entry: (by_type.get(entry.publish_type, 99), entry.publish_type))
+        for entry in entries:
+            for key, raw_path in (entry.files or {}).items():
+                path = Path(str(raw_path or "").strip())
+                if not str(path):
+                    continue
+                if key.lower() in {"usd", "usda", "usdc"} or path.suffix.lower() in {".usd", ".usda", ".usdc"}:
+                    if path.is_file():
+                        return path
         return None
 
     def list_packs(self, identity: AssetIdentity, *, quality_profile: str, context_name: str = "asset") -> list[dict]:

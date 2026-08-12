@@ -23,6 +23,8 @@ tests
 !packages/smartlib/apps/asset_manager/construct.py
 !packages/smartlib/dcc/maya/preflight.py
 !packages/smartlib/dcc/maya/usd_skel.py
+!packages/smartlib/dcc/maya/set_dress_usd.py
+!packages/smartlib/core/asset_load_policy.py
 !config/default/preflight.yml
 !config/maya/retarget/dli.json
 !bat/run_review_build_manager.bat
@@ -35,10 +37,12 @@ tests
 !tools/maya/validate_merged_fk_ik.py
 !tests/
 tests/*
+!tests/test_shot_context.py
 !tests/test_set_dress_publish.py
 !tests/test_smart_preflight.py
 !tests/test_retarget_publish.py
 !tests/test_asset_construct.py
+!tests/test_asset_load_policy.py
 
 tools/ffmpeg/*
 !tools/ffmpeg/README.md

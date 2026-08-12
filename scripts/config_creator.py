@@ -79,8 +79,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.target_project = target_project
         self.software_configs = {} # sid をキーに設定データを保持
         self.context_configs = {}
+        self._current_asset_class_key = "default"
         self.context_active_versions = {}
         self.asset_subset_catalog = {}
+        self.workspace_representation = "maya"
         self.template_file_settings = {}
         self._context_loading = False
         self._current_context_key = None
@@ -573,9 +575,24 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def setup_context_tab(self):
         page = QtWidgets.QWidget()
-        root = QtWidgets.QHBoxLayout(page)
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(8, 8, 8, 8)
+        policy_group = QtWidgets.QGroupBox("Shot Build Policy")
+        policy_layout = QtWidgets.QFormLayout(policy_group)
+        self.workspace_representation_combo = QtWidgets.QComboBox()
+        self.workspace_representation_combo.addItem("Maya Reference", "maya")
+        self.workspace_representation_combo.addItem("USD Payload", "usd")
+        self.workspace_representation_combo.setToolTip(
+            "Default used by Review Build Manager when Representation is Project Default."
+        )
+        policy_layout.addRow("Default Representation:", self.workspace_representation_combo)
+        page_layout.addWidget(policy_group)
+
+        content = QtWidgets.QWidget()
+        root = QtWidgets.QHBoxLayout(content)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
+        page_layout.addWidget(content, 1)
 
         left = QtWidgets.QWidget()
         left.setFixedWidth(220)
@@ -606,6 +623,23 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
         profile_group = QtWidgets.QGroupBox("Quality Profiles")
         profile_layout = QtWidgets.QVBoxLayout(profile_group)
+        class_actions = QtWidgets.QHBoxLayout()
+        class_actions.addWidget(QtWidgets.QLabel("Asset Class"))
+        self.context_asset_class_combo = QtWidgets.QComboBox()
+        self.context_asset_class_combo.setMinimumWidth(180)
+        class_actions.addWidget(self.context_asset_class_combo)
+        self.context_add_asset_class_btn = QtWidgets.QPushButton("+ Add Class")
+        self.context_delete_asset_class_btn = QtWidgets.QPushButton("Delete Class")
+        class_actions.addWidget(self.context_add_asset_class_btn)
+        class_actions.addWidget(self.context_delete_asset_class_btn)
+        class_actions.addStretch()
+        profile_layout.addLayout(class_actions)
+        match_layout = QtWidgets.QHBoxLayout()
+        match_layout.addWidget(QtWidgets.QLabel("Asset Type Match"))
+        self.context_asset_class_match = QtWidgets.QLineEdit()
+        self.context_asset_class_match.setPlaceholderText("CH, character, characters")
+        match_layout.addWidget(self.context_asset_class_match, 1)
+        profile_layout.addLayout(match_layout)
         profile_actions = QtWidgets.QHBoxLayout()
         profile_actions.addStretch()
         self.context_add_profile_btn = QtWidgets.QPushButton("+ Add Profile")
@@ -613,9 +647,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         profile_actions.addWidget(self.context_add_profile_btn)
         profile_actions.addWidget(self.context_delete_profile_btn)
         profile_layout.addLayout(profile_actions)
-        self.context_profile_table = QtWidgets.QTableWidget(0, 5)
+        self.context_profile_table = QtWidgets.QTableWidget(0, 6)
         self.context_profile_table.setHorizontalHeaderLabels(
-            ["Profile", "Model", "Look", "Rig", "Groom"]
+            ["Profile", "Model", "Assembly", "Look", "Rig", "Groom"]
         )
         self._configure_context_table(self.context_profile_table)
         profile_layout.addWidget(self.context_profile_table)
@@ -687,6 +721,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.context_set_active_btn.clicked.connect(self._set_active_context_version)
         self.context_add_profile_btn.clicked.connect(self._add_context_profile)
         self.context_delete_profile_btn.clicked.connect(self._delete_context_profile)
+        self.context_asset_class_combo.currentIndexChanged.connect(self._on_asset_class_changed)
+        self.context_add_asset_class_btn.clicked.connect(self._add_asset_class)
+        self.context_delete_asset_class_btn.clicked.connect(self._delete_asset_class)
         self.context_add_representation_btn.clicked.connect(self._add_context_representation)
         self.context_delete_representation_btn.clicked.connect(self._delete_context_representation)
         self.context_representation_table.itemChanged.connect(self._on_representation_item_changed)
@@ -1023,6 +1060,16 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 load_yml(os.path.join(root, "templates_assets.yml")),
             )
         self.asset_subset_catalog = asset_subset_catalog(asset_config)
+        workspace_policy = asset_config.get("workspace_load_policy") or {}
+        self.workspace_representation = str(
+            workspace_policy.get("representation") or "maya"
+        ).strip().lower()
+        representation_index = self.workspace_representation_combo.findData(
+            self.workspace_representation
+        )
+        self.workspace_representation_combo.setCurrentIndex(
+            representation_index if representation_index >= 0 else 0
+        )
         context_names = set()
         for root in roots:
             context_root = os.path.join(root, "contexts")
@@ -1086,25 +1133,43 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         match = re.search(r"(\d+)$", version)
         result["version"] = int(match.group(1)) if match else result.get("version", 1)
         profiles = result.get("quality_profiles") or {}
-        normalized_profiles = {}
         representations = copy.deepcopy(result.get("representations") or {})
-        for profile_name, profile in profiles.items():
-            if not isinstance(profile, dict):
+
+        def normalize_profiles(raw_profiles):
+            normalized = {}
+            for profile_name, profile in (raw_profiles or {}).items():
+                if not isinstance(profile, dict):
+                    continue
+                normalized[str(profile_name)] = {}
+                for publish_type, value in profile.items():
+                    values = list(value.values()) if isinstance(value, dict) else [value]
+                    values = [str(item) for item in values if item not in (None, "", "none")]
+                    selected = (
+                        str(value.get("default") or next(iter(value.values()), "none"))
+                        if isinstance(value, dict)
+                        else str(value or "none")
+                    )
+                    normalized[str(profile_name)][str(publish_type)] = selected
+                    existing = representations.setdefault(str(publish_type), [])
+                    if isinstance(existing, dict):
+                        existing = list(existing.keys())
+                        representations[str(publish_type)] = existing
+                    for item in values:
+                        if item not in existing:
+                            existing.append(item)
+            return normalized
+
+        result["quality_profiles"] = normalize_profiles(profiles)
+        recipes = result.get("asset_context_recipes") or {}
+        normalized_recipes = {}
+        for asset_class, recipe in recipes.items():
+            if not isinstance(recipe, dict):
                 continue
-            normalized_profiles[str(profile_name)] = {}
-            for publish_type, value in profile.items():
-                values = list(value.values()) if isinstance(value, dict) else [value]
-                values = [str(item) for item in values if item not in (None, "", "none")]
-                selected = str(value.get("default") or next(iter(value.values()), "none")) if isinstance(value, dict) else str(value or "none")
-                normalized_profiles[str(profile_name)][str(publish_type)] = selected
-                existing = representations.setdefault(str(publish_type), [])
-                if isinstance(existing, dict):
-                    existing = list(existing.keys())
-                    representations[str(publish_type)] = existing
-                for item in values:
-                    if item not in existing:
-                        existing.append(item)
-        result["quality_profiles"] = normalized_profiles
+            normalized_recipe = copy.deepcopy(recipe)
+            normalized_recipe["profiles"] = normalize_profiles(recipe.get("profiles"))
+            normalized_recipes[str(asset_class)] = normalized_recipe
+        if normalized_recipes:
+            result["asset_context_recipes"] = normalized_recipes
         result.pop("representations", None)
         result.setdefault("output_formats", {})
         return result
@@ -1139,6 +1204,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def _clear_context_editor(self):
         self._context_loading = True
+        self.context_asset_class_combo.clear()
+        self.context_asset_class_match.clear()
         self.context_profile_table.setRowCount(0)
         self.context_representation_table.setRowCount(0)
         self.context_output_table.setRowCount(0)
@@ -1153,6 +1220,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         if not data:
             return
         self._context_loading = True
+        self.context_asset_class_combo.addItem("Default / Legacy", "default")
+        for asset_class in sorted((data.get("asset_context_recipes") or {}).keys()):
+            self.context_asset_class_combo.addItem(asset_class, asset_class)
+        self._current_asset_class_key = "default"
         representations = self.asset_subset_catalog
         for publish_type in sorted(representations):
             for name in representations[publish_type]:
@@ -1160,8 +1231,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 self.context_representation_table.insertRow(row)
                 self.context_representation_table.setItem(row, 0, QtWidgets.QTableWidgetItem(publish_type))
                 self.context_representation_table.setItem(row, 1, QtWidgets.QTableWidgetItem(name))
-        for profile_name, profile in (data.get("quality_profiles") or {}).items():
-            self._append_profile_row(profile_name, profile, representations)
+        self._populate_asset_class_profiles(data, representations)
         self.context_profile_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.context_representation_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         self._context_loading = False
@@ -1174,7 +1244,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         row = self.context_profile_table.rowCount()
         self.context_profile_table.insertRow(row)
         self.context_profile_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(profile_name)))
-        for column, publish_type in enumerate(("model", "look", "rig", "groom"), 1):
+        for column, publish_type in enumerate(("model", "assembly", "look", "rig", "groom"), 1):
             combo = QtWidgets.QComboBox()
             combo.addItem("none")
             combo.addItems(list(representations.get(publish_type, [])))
@@ -1208,13 +1278,95 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             if not name:
                 continue
             profile = {}
-            for column, publish_type in enumerate(("model", "look", "rig", "groom"), 1):
+            for column, publish_type in enumerate(("model", "assembly", "look", "rig", "groom"), 1):
                 combo = self.context_profile_table.cellWidget(row, column)
                 profile[publish_type] = combo.currentText().strip() if combo else "none"
             profiles[name] = profile
         self.asset_subset_catalog = representations
         data.pop("representations", None)
-        data["quality_profiles"] = profiles
+        if self._current_asset_class_key == "default":
+            data["quality_profiles"] = profiles
+        else:
+            recipe = data.setdefault("asset_context_recipes", {}).setdefault(
+                self._current_asset_class_key, {}
+            )
+            recipe["profiles"] = profiles
+            matches = [
+                value.strip()
+                for value in self.context_asset_class_match.text().split(",")
+                if value.strip()
+            ]
+            recipe["match"] = {"asset_type": matches}
+
+    def _populate_asset_class_profiles(self, data=None, representations=None):
+        data = data or self._current_context_data() or {}
+        representations = representations or self._representations_from_table()
+        self.context_profile_table.setRowCount(0)
+        if self._current_asset_class_key == "default":
+            profiles = data.get("quality_profiles") or {}
+            self.context_asset_class_match.clear()
+            self.context_asset_class_match.setEnabled(False)
+            self.context_delete_asset_class_btn.setEnabled(False)
+        else:
+            recipe = (data.get("asset_context_recipes") or {}).get(
+                self._current_asset_class_key, {}
+            )
+            profiles = recipe.get("profiles") or {}
+            matches = (recipe.get("match") or {}).get("asset_type") or []
+            if isinstance(matches, str):
+                matches = [matches]
+            self.context_asset_class_match.setText(", ".join(str(value) for value in matches))
+            self.context_asset_class_match.setEnabled(True)
+            self.context_delete_asset_class_btn.setEnabled(True)
+        for profile_name, profile in profiles.items():
+            self._append_profile_row(profile_name, profile, representations)
+
+    def _on_asset_class_changed(self, index):
+        if self._context_loading or index < 0:
+            return
+        self._store_context_editor()
+        self._current_asset_class_key = str(
+            self.context_asset_class_combo.itemData(index) or "default"
+        )
+        self._context_loading = True
+        self._populate_asset_class_profiles()
+        self._context_loading = False
+
+    def _add_asset_class(self):
+        data = self._current_context_data()
+        if not data:
+            return
+        name, ok = QtWidgets.QInputDialog.getText(self, "Add Asset Class", "Class name:")
+        name = name.strip().lower()
+        if not ok or not name:
+            return
+        recipes = data.setdefault("asset_context_recipes", {})
+        if name in recipes:
+            QtWidgets.QMessageBox.warning(self, "Duplicate Asset Class", f"Asset class already exists: {name}")
+            return
+        self._store_context_editor()
+        recipes[name] = {"match": {"asset_type": [name]}, "profiles": {}}
+        self._context_loading = True
+        self.context_asset_class_combo.addItem(name, name)
+        index = self.context_asset_class_combo.count() - 1
+        self.context_asset_class_combo.setCurrentIndex(index)
+        self._current_asset_class_key = name
+        self._populate_asset_class_profiles(data)
+        self._context_loading = False
+
+    def _delete_asset_class(self):
+        if self._current_asset_class_key == "default":
+            return
+        data = self._current_context_data()
+        if not data:
+            return
+        (data.get("asset_context_recipes") or {}).pop(self._current_asset_class_key, None)
+        self._context_loading = True
+        self.context_asset_class_combo.removeItem(self.context_asset_class_combo.currentIndex())
+        self.context_asset_class_combo.setCurrentIndex(0)
+        self._current_asset_class_key = "default"
+        self._populate_asset_class_profiles(data)
+        self._context_loading = False
 
     def _add_context_version(self):
         if not self._current_context_key:
@@ -1285,7 +1437,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._context_loading = True
         representations = self._representations_from_table()
         for row in range(self.context_profile_table.rowCount()):
-            for column, publish_type in enumerate(("model", "look", "rig", "groom"), 1):
+            for column, publish_type in enumerate(("model", "assembly", "look", "rig", "groom"), 1):
                 combo = self.context_profile_table.cellWidget(row, column)
                 if not combo:
                     continue
@@ -1450,8 +1602,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         for context_name, versions in self.context_configs.items():
             for version, data in versions.items():
                 profiles = data.get("quality_profiles") or {}
+                recipe_profiles = [
+                    (asset_class, recipe.get("profiles") or {})
+                    for asset_class, recipe in (data.get("asset_context_recipes") or {}).items()
+                    if isinstance(recipe, dict)
+                ]
                 representations = self.asset_subset_catalog
-                if not profiles:
+                if not profiles and not recipe_profiles:
                     errors.append(f"{context_name}/{version}: at least one Quality Profile is required")
                 for publish_type, names in representations.items():
                     clean = [str(name).strip() for name in names]
@@ -1465,6 +1622,16 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                     for publish_type, value in profile.items():
                         if value not in ("", "none") and value not in representations.get(publish_type, []):
                             errors.append(f"{context_name}/{version}/{profile_name}: {publish_type}/{value} is not registered")
+                for asset_class, class_profiles in recipe_profiles:
+                    for profile_name, profile in class_profiles.items():
+                        if not profile_name.strip():
+                            errors.append(f"{context_name}/{version}/{asset_class}: Profile name is required")
+                        for publish_type, value in profile.items():
+                            if value not in ("", "none") and value not in representations.get(publish_type, []):
+                                errors.append(
+                                    f"{context_name}/{version}/{asset_class}/{profile_name}: "
+                                    f"{publish_type}/{value} is not registered"
+                                )
                 for publish_type, by_representation in (data.get("output_formats") or {}).items():
                     for representation, formats in (by_representation or {}).items():
                         if representation not in representations.get(publish_type, []):
@@ -1487,6 +1654,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         asset_config_path = os.path.join(proj_dir, "templates_assets.yml")
         asset_config = load_yml(asset_config_path)
         asset_config["asset_subsets"] = copy.deepcopy(self.asset_subset_catalog)
+        workspace_policy = dict(asset_config.get("workspace_load_policy") or {})
+        workspace_policy["representation"] = str(
+            self.workspace_representation_combo.currentData() or "maya"
+        )
+        asset_config["workspace_load_policy"] = workspace_policy
         save_yml(asset_config_path, asset_config)
 
     def save_config(self):

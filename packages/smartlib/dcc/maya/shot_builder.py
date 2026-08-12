@@ -95,6 +95,16 @@ def stage_anim_from_input(
     anim_shot_data = _shot_data_from_anim_input(anim_input)
     _apply_scene_policy(cmds, anim_shot_data)
     referenced = build_shot_from_preview(preview_items, anim_shot_data)
+    # Shot Context USD is an alternative cast representation. Loading it next
+    # to Maya rig references duplicates backgrounds and makes Maya-first
+    # projects appear to contain an unloaded reference.
+    context_proxy = (
+        _load_context_usd(cmds, root, anim_input)
+        if _construct_uses_usd(construct_data)
+        else ""
+    )
+    if context_proxy:
+        referenced.append(context_proxy)
     frame_offset = _anim_frame_offset(anim_input)
     camera_path = _project_path(root, str(anim_input.get("camera") or ""))
     direct_cameras = [
@@ -127,7 +137,7 @@ def stage_anim_from_input(
     if _construct_enabled(construct_data, "placement", "placements", "placements"):
         placement_nodes = _apply_anim_placements(cmds, root, anim_input)
         _offset_animation_keys(cmds, placement_nodes, frame_offset)
-    if _construct_enabled(construct_data, "layout_overlay", "layout_overlay", "layout_overlay"):
+    if not context_proxy and _construct_enabled(construct_data, "layout_overlay", "layout_overlay", "layout_overlay"):
         layout_overlay = _load_layout_overlay_usd(cmds, root, anim_input)
         if layout_overlay:
             referenced.append(layout_overlay)
@@ -135,6 +145,76 @@ def stage_anim_from_input(
     _apply_construct_set_dress(root, construct_data)
     _apply_construct_animation_curves(root, construct_data)
     _apply_shot_timing(cmds, anim_shot_data)
+    return referenced
+
+
+def update_anim_construct(
+    scene_path: str | Path,
+    preview_items: Iterable,
+    anim_input_path: str | Path,
+    shot_data: dict | None,
+    *,
+    project_root: str | Path,
+    construct_data: dict,
+    construct_diff: list[dict],
+) -> list[str]:
+    """Open an existing Construct and apply only selected component changes."""
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Construct update is available inside Maya.") from exc
+
+    scene = Path(scene_path)
+    if not scene.is_file():
+        raise FileNotFoundError(scene)
+    root = Path(project_root)
+    anim_input = read_json(Path(anim_input_path), {}) or {}
+    selected = [
+        row for row in construct_diff
+        if bool(row.get("selected", True)) and row.get("change") != "UNCHANGED"
+    ]
+    selected_types = {
+        str(((row.get("after") or row.get("before") or {}).get("component_type") or "")).lower()
+        for row in selected
+    }
+    selected_rigs = {
+        str(((row.get("after") or row.get("before") or {}).get("name") or ""))
+        for row in selected
+        if str(((row.get("after") or row.get("before") or {}).get("component_type") or "")).lower() == "rig"
+    }
+
+    cmds.file(str(scene), open=True, force=True)
+    for row in selected:
+        component = row.get("before") or row.get("after") or {}
+        if str(component.get("component_type") or "").lower() != "rig":
+            continue
+        namespace = str(component.get("namespace") or "").strip(":")
+        if not namespace:
+            continue
+        for reference_node in cmds.ls(type="reference") or []:
+            if reference_node == "sharedReferenceNode":
+                continue
+            try:
+                reference_namespace = str(
+                    cmds.referenceQuery(reference_node, namespace=True) or ""
+                ).strip(":")
+                if reference_namespace == namespace:
+                    cmds.file(removeReference=True, referenceNode=reference_node)
+            except Exception:
+                continue
+    changed_preview = [
+        item for item in preview_items
+        if str(getattr(item, "cast_key", "")) in selected_rigs
+    ]
+    referenced = build_shot_from_preview(changed_preview, shot_data or {})
+    frame_offset = _anim_frame_offset(anim_input)
+    if "camera" in selected_types:
+        _apply_construct_cameras(cmds, root, anim_input, construct_data, frame_offset)
+    if "set_dress" in selected_types:
+        _apply_construct_set_dress(root, construct_data)
+    if "animation_curve" in selected_types:
+        _apply_construct_animation_curves(root, construct_data)
+    _apply_shot_timing(cmds, shot_data or _shot_data_from_anim_input(anim_input))
     return referenced
 
 
@@ -253,13 +333,16 @@ def build_animation_review_scene(
 
     set_dress_warnings = []
     if plan.get("set_dress_paths"):
-        from smartlib.dcc.maya import set_dress
+        from smartlib.dcc.maya import set_dress, set_dress_usd
 
         for raw_path in plan.get("set_dress_paths") or []:
             package = set_dress.load_package(raw_path)
-            set_dress_warnings.extend(
-                set_dress.apply_stack(package.layers, base=package.base)
-            )
+            for target, backend in (("maya", set_dress), ("usd", set_dress_usd)):
+                layers = [layer for layer in package.layers if layer.target == target]
+                is_usd = target == "usd"
+                base = [state for state in package.base if ("," in state.node_id) == is_usd]
+                if layers or base:
+                    set_dress_warnings.extend(backend.apply_stack(layers, base=base))
 
     frame_range = plan.get("frame_range") or []
     if len(frame_range) >= 2:
@@ -873,6 +956,40 @@ def _load_layout_overlay_usd(cmds, project_root: Path, anim_input: dict) -> str:
         except Exception:
             pass
     return str(usd_path)
+
+
+def _load_context_usd(cmds, project_root: Path, anim_input: dict) -> str:
+    usd_path = _project_path(project_root, str(anim_input.get("context_usd") or ""))
+    if not usd_path or not usd_path.is_file():
+        return ""
+    try:
+        cmds.loadPlugin("mayaUsdPlugin", quiet=True)
+    except Exception:
+        return ""
+    group = _ensure_group(cmds, "context_grp")
+    transform = cmds.createNode("transform", name=_unique_node_name(cmds, "context_USD"), parent=group)
+    shape = cmds.createNode("mayaUsdProxyShape", name=f"{transform}Shape", parent=transform)
+    cmds.setAttr(f"{shape}.filePath", str(usd_path).replace("\\", "/"), type="string")
+    for attr, value in (
+        ("smartpipelineRole", "shot_context"),
+        ("smartpipelineContextVersion", str(anim_input.get("context_version") or "")),
+        ("smartpipelineContextProfile", str(anim_input.get("context_profile") or "WORK")),
+    ):
+        try:
+            cmds.addAttr(transform, longName=attr, dataType="string")
+            cmds.setAttr(f"{transform}.{attr}", value, type="string")
+        except Exception:
+            pass
+    return str(usd_path)
+
+
+def _construct_uses_usd(construct_data: dict | None) -> bool:
+    return any(
+        str(component.get("component_type") or "").strip().lower() == "usd"
+        and bool(component.get("enabled", True))
+        for component in ((construct_data or {}).get("components") or [])
+        if isinstance(component, dict)
+    )
 
 
 def _camera_scene_from_publish(path: Path) -> Path | None:

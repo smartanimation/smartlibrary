@@ -185,12 +185,14 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             self.create_variant_btn,
             self.set_thumbnail_btn,
             self.add_to_cast_btn,
-            self.save_asset_sequence_cast_btn,
-            self.publish_asset_sequence_cast_btn,
             self.remove_asset_sequence_cast_btn,
         ):
             buttons.addWidget(button)
         buttons.addStretch(1)
+        sequence_buttons = QtWidgets.QHBoxLayout()
+        sequence_buttons.addStretch(1)
+        sequence_buttons.addWidget(self.save_asset_sequence_cast_btn)
+        sequence_buttons.addWidget(self.publish_asset_sequence_cast_btn)
         self.asset_table = QtWidgets.QTableWidget(0, len(ASSET_HEADERS))
         self.asset_table.setHorizontalHeaderLabels(ASSET_HEADERS)
         self.asset_table.horizontalHeader().setStretchLastSection(True)
@@ -212,6 +214,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         center.addWidget(self.available_asset_table, 1)
         center.addWidget(self.sequence_cast_label)
         center.addWidget(self.asset_table, 1)
+        center.addLayout(sequence_buttons)
 
         right = QtWidgets.QVBoxLayout()
         self.asset_thumb = QtWidgets.QLabel("Thumbnail")
@@ -275,14 +278,12 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         configure_asset_card_list(self.sequence_cast_list, QtCore, QtWidgets)
         self.sequence_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.sequence_cast_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        sequence_buttons = QtWidgets.QHBoxLayout()
         self.save_sequence_cast_btn = QtWidgets.QPushButton("Save Sequence Cast")
         self.publish_sequence_cast_btn = QtWidgets.QPushButton("Publish Sequence Cast")
         self.remove_sequence_cast_btn = QtWidgets.QPushButton("Remove Sequence Cast")
-        sequence_buttons.addStretch(1)
-        sequence_buttons.addWidget(self.save_sequence_cast_btn)
-        sequence_buttons.addWidget(self.publish_sequence_cast_btn)
-        sequence_buttons.addWidget(self.remove_sequence_cast_btn)
+        self.save_sequence_cast_btn.setVisible(False)
+        self.publish_sequence_cast_btn.setVisible(False)
+        self.remove_sequence_cast_btn.setVisible(False)
         shot_buttons = QtWidgets.QHBoxLayout()
         self.add_cast_btn = QtWidgets.QPushButton("Add Cast")
         self.remove_cast_btn = QtWidgets.QPushButton("Remove Cast")
@@ -302,7 +303,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         bottom.addWidget(self.publish_shot_cast_btn)
         center.addWidget(QtWidgets.QLabel("Sequence Cast"))
         center.addWidget(self.sequence_cast_list, 1)
-        center.addLayout(sequence_buttons)
         center.addLayout(shot_buttons)
         center.addWidget(QtWidgets.QLabel("Shot Cast"))
         center.addWidget(self.shot_cast_list, 1)
@@ -375,21 +375,26 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
 
     def populate_categories(self) -> None:
         current = self.selected_categories()
-        self.category_filter.clear()
+        previous_categories = {
+            self.category_filter.item(row).text()
+            for row in range(self.category_filter.count())
+        }
         categories = self._active_category_values()
+        valid_current = current & set(categories)
+        check_all = not current or not valid_current or current == previous_categories
+        self.category_filter.blockSignals(True)
+        self.category_filter.clear()
         for category in categories:
             item = QtWidgets.QListWidgetItem(category)
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
-            item.setCheckState(QtCore.Qt.Checked if not current or category in current else QtCore.Qt.Unchecked)
+            item.setCheckState(QtCore.Qt.Checked if check_all or category in valid_current else QtCore.Qt.Unchecked)
             self.category_filter.addItem(item)
+        self.category_filter.blockSignals(False)
 
     def _active_category_values(self) -> list[str]:
         sequence = self.selected_sequence()
         if sequence:
-            values = {
-                str(row.get("role") or row.get("category") or "").strip()
-                for row in self._sequence_cast_draft(sequence)
-            }
+            values = {str(row.category or "").strip() for row in self.asset_rows}
             return sorted(value for value in values if value)
         return self.service.categories()
 
@@ -658,8 +663,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.metadata_table.setRowCount(0)
         self.asset_info.setText(
             f"{data.get('asset', '')}\n"
-            f"Category: {data.get('role') or data.get('category') or ''}\n"
-            f"Group: {data.get('namespace') or data.get('group') or ''}\n"
+            f"Category: {data.get('category') or data.get('role') or ''}\n"
+            f"Group: {data.get('group') or data.get('namespace') or ''}\n"
             f"Variant: {data.get('variant', 'default')}\n"
             f"Status: {data.get('asset_publish', 'approved')}"
         )
@@ -1037,6 +1042,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         if not isinstance(data, dict):
             data = {}
         asset_row = self._asset_for_cast(data)
+        read_only = self._detail_cast_is_sequence_cast(item)
         self._set_label_pixmap(self.cast_thumb, asset_row.thumbnail if asset_row else "")
         self._populating_cast_detail = True
         self.cast_info_table.blockSignals(True)
@@ -1048,17 +1054,22 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             key_item.setFlags(key_item.flags() & ~QtCore.Qt.ItemIsEditable)
             value_item = QtWidgets.QTableWidgetItem(str(value))
             value_item.setData(QtCore.Qt.UserRole, str(key))
-            if str(key) not in EDITABLE_CAST_DETAIL_KEYS:
+            if read_only or str(key) not in EDITABLE_CAST_DETAIL_KEYS:
                 value_item.setFlags(value_item.flags() & ~QtCore.Qt.ItemIsEditable)
             else:
-                value_item.setToolTip("Editable. Save Sequence Cast or Save Shot Cast to persist.")
+                value_item.setToolTip("Editable. Save Shot Cast to persist.")
             self.cast_info_table.setItem(row, 0, key_item)
             self.cast_info_table.setItem(row, 1, value_item)
         self.cast_info_table.blockSignals(False)
         self._populating_cast_detail = False
 
+    def _detail_cast_is_sequence_cast(self, item) -> bool:
+        return bool(item and self.sequence_cast_list.row(item) >= 0)
+
     def _on_cast_detail_changed(self, table_item) -> None:
         if self._populating_cast_detail or table_item.column() != 1:
+            return
+        if self._detail_cast_is_sequence_cast(self._detail_cast_item):
             return
         key = str(table_item.data(QtCore.Qt.UserRole) or "")
         if key not in EDITABLE_CAST_DETAIL_KEYS or self._detail_cast_item is None:
@@ -1088,21 +1099,10 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         menu = QtWidgets.QMenu(self)
         add_action = menu.addAction("Add to Shot Cast")
         add_action.setEnabled(bool(self.sequence_cast_list.selectedItems()))
-        menu.addSeparator()
-        save_action = menu.addAction("Save Sequence Cast")
-        publish_action = menu.addAction("Publish Sequence Cast")
-        remove_action = menu.addAction("Remove from Sequence Cast")
-        remove_action.setEnabled(bool(self.sequence_cast_list.selectedItems()))
         global_pos = self.sequence_cast_list.mapToGlobal(pos)
         action = menu.exec_(global_pos) if hasattr(menu, "exec_") else menu.exec(global_pos)
         if action == add_action:
             self.add_sequence_cast_to_shot()
-        elif action == save_action:
-            self.save_sequence_cast()
-        elif action == publish_action:
-            self.publish_sequence_cast()
-        elif action == remove_action:
-            self.remove_sequence_cast()
 
     def remove_sequence_cast(self) -> None:
         episode, sequence = self._active_sequence_for_sequence_cast()

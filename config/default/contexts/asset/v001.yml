@@ -29,6 +29,63 @@ quality_profiles:
     look: high
     rig: anim
 
+asset_context_recipes:
+  character:
+    match:
+      asset_type:
+        - CH
+        - character
+        - characters
+    profiles:
+      FAST:
+        model: low
+        look: low
+        rig: layout
+        groom: none
+      WORK:
+        model: low
+        look: low
+        rig: anim
+        groom: none
+      FINAL:
+        model: high
+        look: high
+        rig: anim
+        groom: none
+
+  environment:
+    match:
+      asset_type:
+        - BG
+        - env
+        - environment
+        - set
+    profiles:
+      FAST:
+        assembly: render
+        look: none
+      WORK:
+        assembly: render
+        look: none
+      FINAL:
+        assembly: render
+        look: high
+
+  prop:
+    match:
+      asset_type:
+        - prop
+    profiles:
+      FAST:
+        model: proxy
+        look: none
+      WORK:
+        model: proxy
+        look: low
+      FINAL:
+        model: render
+        look: high
+
 viewport:
   background: bbox
   textures: low

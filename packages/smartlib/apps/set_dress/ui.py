@@ -6,7 +6,7 @@ from pathlib import Path
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.qt import parent_for_maya
-from smartlib.dcc.maya import set_dress
+from smartlib.dcc.maya import set_dress, set_dress_usd
 from smartlib.setdress import SetDressPublishService
 
 
@@ -66,6 +66,9 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.scope.setCurrentText(
             str(self.package.context.get("scope") or "shot")
         )
+        self.target.setCurrentText(
+            str(self.package.context.get("target") or "maya").upper()
+        )
         self.package_name.setText(
             str(self.package.context.get("package") or "main")
         )
@@ -124,10 +127,14 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.search = QtWidgets.QLineEdit()
         self.search.setPlaceholderText("Search nodes...")
         top.addWidget(self.search, 1)
+        self.target = QtWidgets.QComboBox()
+        self.target.addItems(["Maya", "USD"])
         self.scope = QtWidgets.QComboBox()
         self.scope.addItems(["shot", "sequence"])
         self.package_name = QtWidgets.QLineEdit("main")
         self.package_name.setMaximumWidth(140)
+        top.addWidget(QtWidgets.QLabel("Target"))
+        top.addWidget(self.target)
         top.addWidget(QtWidgets.QLabel("Save scope"))
         top.addWidget(self.scope)
         top.addWidget(QtWidgets.QLabel("Package"))
@@ -182,6 +189,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.layer_list.itemChanged.connect(self._item_changed)
         self.layer_list.orderChanged.connect(self._sync_order)
         self.search.textChanged.connect(lambda *_: self.refresh_table())
+        self.target.currentTextChanged.connect(lambda *_: self._autosave())
         self.scope.currentTextChanged.connect(lambda *_: self._autosave())
         self.package_name.editingFinished.connect(self._autosave)
 
@@ -194,7 +202,11 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
                 return
         else:
             name = "shot_fix"
-        layer = set_dress.SetDressLayer(name=name.strip(), scope=self.scope.currentText() if hasattr(self, "scope") else "shot")
+        layer = set_dress.SetDressLayer(
+            name=name.strip(),
+            scope=self.scope.currentText() if hasattr(self, "scope") else "shot",
+            target=self._target_name() if hasattr(self, "target") else "maya",
+        )
         self.package.layers.insert(0, layer)
         self.refresh_layers(select_id=layer.id)
         self._autosave()
@@ -210,6 +222,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.layer_list.clear()
         for layer in self.package.layers:
             text = f"{'○' if layer.muted else '●'}  {layer.name}    {len(layer.changes)} changes"
+            text = f"[{layer.target.upper()}] {text}"
             item = QtWidgets.QListWidgetItem(text)
             item.setData(QtCore.Qt.UserRole, layer.id)
             item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled)
@@ -241,7 +254,11 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
     def _item_changed(self, item):
         layer = next((layer for layer in self.package.layers if layer.id == item.data(QtCore.Qt.UserRole)), None)
         if layer:
-            text = item.text().split("  ", 1)[-1]
+            text = item.text()
+            prefix = f"[{layer.target.upper()}] "
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+            text = text.split("  ", 1)[-1]
             layer.name = text.rsplit("    ", 1)[0].strip() or layer.name
             self.refresh_layers(select_id=layer.id)
             self._autosave()
@@ -269,7 +286,10 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
             self.add_layer()
             layer = self.current_layer()
         try:
-            self.recorded = set_dress.capture_scene(self.selection_only.isChecked())
+            backend = self._backend()
+            if backend is set_dress_usd:
+                backend.prepare_recording(self.selection_only.isChecked())
+            self.recorded = backend.capture_scene(self.selection_only.isChecked())
             self.package.base = set_dress.remember_base(
                 self.package.base, self.recorded
             )
@@ -277,15 +297,17 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
             return self._error(str(exc))
         if not self.recorded:
             return self._error("No transform nodes found. Select a set hierarchy or disable Selected hierarchy.")
+        layer.target = self._target_name()
         self._autosave()
         self.recording_layer_id = layer.id
+        self.target.setEnabled(False)
         self.record_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status.setText(f"RECORDING {len(self.recorded)} NODES — edit the Maya viewport")
 
     def stop_capture(self):
         try:
-            current = set_dress.capture_scene(self.selection_only.isChecked())
+            current = self._backend().capture_scene(self.selection_only.isChecked())
             changes = set_dress.diff_states(self.recorded or [], current)
         except Exception as exc:
             return self._error(str(exc))
@@ -297,6 +319,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.recording_layer_id = ""
         self.record_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.target.setEnabled(True)
         self.refresh_layers(select_id=layer.id if layer else "")
         self._autosave()
         revision = self._create_revision()
@@ -307,9 +330,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
 
     def restore(self):
         try:
-            warnings = set_dress.restore_base(
-                self.package.layers, base=self.package.base
-            )
+            warnings = self._restore_all_backends()
             self.status.setText(f"BASE RESTORED{_warning_suffix(warnings)}")
         except Exception as exc:
             self._error(str(exc))
@@ -319,16 +340,14 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         if not layer:
             return
         try:
-            warnings = set_dress.apply_changes(layer.changes)
+            warnings = self._backend(layer.target).apply_changes(layer.changes)
             self.status.setText(f"APPLIED {layer.name}{_warning_suffix(warnings)}")
         except Exception as exc:
             self._error(str(exc))
 
     def _apply_stack(self):
         try:
-            warnings = set_dress.apply_stack(
-                self.package.layers, base=self.package.base
-            )
+            warnings = self._apply_all_backends()
             self.status.setText(f"STACK APPLIED{_warning_suffix(warnings)}")
         except Exception as exc:
             self._error(str(exc))
@@ -431,6 +450,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.package.context.update({
             "scope": self.scope.currentText(),
             "package": self.package_name.text().strip() or "main",
+            "target": self._target_name(),
         })
         if self.identity:
             self.package.context.update({
@@ -438,6 +458,37 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
                 "sequence": self.identity.sequence,
                 "shot": self.identity.shot,
             })
+
+    def _target_name(self):
+        return self.target.currentText().strip().lower()
+
+    def _backend(self, target=None):
+        return set_dress_usd if (target or self._target_name()).lower() == "usd" else set_dress
+
+    def _target_base(self, target):
+        is_usd = target == "usd"
+        return [state for state in self.package.base if ("," in state.node_id) == is_usd]
+
+    def _target_layers(self, target):
+        return [layer for layer in self.package.layers if layer.target == target]
+
+    def _apply_all_backends(self):
+        warnings = []
+        for target in ("maya", "usd"):
+            layers = self._target_layers(target)
+            base = self._target_base(target)
+            if layers or base:
+                warnings.extend(self._backend(target).apply_stack(layers, base=base))
+        return warnings
+
+    def _restore_all_backends(self):
+        warnings = []
+        for target in ("maya", "usd"):
+            layers = self._target_layers(target)
+            base = self._target_base(target)
+            if layers or base:
+                warnings.extend(self._backend(target).restore_base(layers, base=base))
+        return warnings
 
     def _canonical_path(self, *, allow_dialog=False):
         if self.identity:

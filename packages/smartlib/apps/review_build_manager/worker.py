@@ -253,7 +253,37 @@ def _prepare_review_project_copy(
     working_project.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(published_project, working_project)
     marker = working_project.with_suffix(".relinked")
+    error_marker = working_project.with_suffix(".relink_error.txt")
     marker.unlink(missing_ok=True)
+    error_marker.unlink(missing_ok=True)
+    try:
+        ae_render = config.load("ae_render.yml") or {}
+    except Exception:
+        ae_render = {}
+    queue_config = ae_render.get("render_queue") or {}
+    render_template = str(queue_config.get("render_settings_template") or "Best Settings")
+    render_aliases = [
+        value.strip()
+        for value in str(
+            queue_config.get("render_settings_template_aliases")
+            or "最良設定,最高設定"
+        ).split(",")
+        if value.strip()
+    ]
+    output_template = str(
+        queue_config.get("output_module_template") or "Apple ProRes 422 Proxy"
+    )
+    output_aliases = [
+        value.strip()
+        for value in str(
+            queue_config.get("output_module_template_aliases")
+            or "Apple ProRes 422 Prox,ProRes 422 Proxy,QuickTime Apple ProRes 422 Proxy"
+        ).split(",")
+        if value.strip()
+    ]
+    audio_output = str(queue_config.get("audio_output", True)).strip().lower() not in {
+        "", "0", "false", "no", "off"
+    }
     mappings = [
         {
             "layer": layer,
@@ -269,9 +299,26 @@ def _prepare_review_project_copy(
                 "(function () {",
                 f"  var projectFile = new File({json.dumps(str(working_project).replace(chr(92), '/'))});",
                 f"  var markerFile = new File({json.dumps(str(marker).replace(chr(92), '/'))});",
+                f"  var errorFile = new File({json.dumps(str(error_marker).replace(chr(92), '/'))});",
                 f"  var mappings = {json.dumps(mappings)};",
+                f"  var renderTemplate = {json.dumps(render_template)};",
+                f"  var renderAliases = {json.dumps(render_aliases)};",
+                f"  var outputTemplate = {json.dumps(output_template)};",
+                f"  var outputAliases = {json.dumps(output_aliases)};",
+                f"  var audioOutput = {'true' if audio_output else 'false'};",
+                "  try {",
                 "  app.open(projectFile);",
                 "  function norm(value) { return String(value || '').replace(/\\\\/g, '/').toUpperCase(); }",
+                "  function normalizedName(value) { return String(value || '').replace(/[\\u200B-\\u200D\\uFEFF]/g, '').replace(/\\s+/g, ' ').replace(/^\\s+|\\s+$/g, '').toLowerCase(); }",
+                "  function applyNamedTemplate(target, preferred, aliases, available, label) {",
+                "    var requested = [preferred].concat(aliases || []);",
+                "    for (var r = 0; r < requested.length; r++) {",
+                "      for (var a = 0; a < available.length; a++) {",
+                "        if (normalizedName(available[a]) === normalizedName(requested[r])) { target.applyTemplate(available[a]); return available[a]; }",
+                "      }",
+                "    }",
+                "    throw new Error(label + ' template not found: ' + requested.join(', ') + '. Available: ' + available.join(', '));",
+                "  }",
                 "  for (var i = 1; i <= app.project.numItems; i++) {",
                 "    var item = app.project.item(i);",
                 "    if (!(item instanceof FootageItem) || !item.file) continue;",
@@ -287,9 +334,24 @@ def _prepare_review_project_copy(
                 "      break;",
                 "    }",
                 "  }",
+                "  var queue = app.project.renderQueue;",
+                "  if (queue.numItems < 1) throw new Error('Published project has no Render Queue item.');",
+                "  var sourceQueueItem = queue.item(1);",
+                "  var outputComp = sourceQueueItem.comp;",
+                "  if (!outputComp) throw new Error('Render Queue item 1 has no output comp.');",
+                "  while (queue.numItems > 0) queue.item(queue.numItems).remove();",
+                "  var freshQueueItem = queue.items.add(outputComp);",
+                "  applyNamedTemplate(freshQueueItem, renderTemplate, renderAliases, freshQueueItem.templates || [], 'Render settings');",
+                "  var freshOutputModule = freshQueueItem.outputModule(1);",
+                "  applyNamedTemplate(freshOutputModule, outputTemplate, outputAliases, freshOutputModule.templates || [], 'Output module');",
+                "  try { freshOutputModule.setSettings({'Audio Output': audioOutput ? 'On' : 'Off'}); } catch (ignored) {}",
                 "  app.project.save(projectFile);",
                 "  markerFile.open('w'); markerFile.write('ok'); markerFile.close();",
                 "  app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);",
+                "  } catch (error) {",
+                "    errorFile.open('w'); errorFile.write(String(error) + '\\n' + (error.line || '')); errorFile.close();",
+                "    try { app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES); } catch (ignored) {}",
+                "  }",
                 "}());",
             ]
         ),
@@ -303,6 +365,11 @@ def _prepare_review_project_copy(
     while time.time() < deadline:
         if marker.is_file():
             return working_project
+        if error_marker.is_file():
+            raise RuntimeError(
+                "After Effects footage relink failed: "
+                + error_marker.read_text(encoding="utf-8", errors="replace")
+            )
         time.sleep(0.5)
     raise RuntimeError(f"After Effects footage relink timed out: {working_project}")
 
@@ -441,7 +508,11 @@ def _construct_scene_validation(cmds, scene_path: Path, references: list[str]) -
             }
         )
     unloaded = []
-    for path in references:
+    maya_references = [
+        path for path in references
+        if Path(str(path)).suffix.lower() in {".ma", ".mb"}
+    ]
+    for path in maya_references:
         if not path or not Path(path).is_file():
             continue
         try:
@@ -549,6 +620,7 @@ def _run_scene_construction(
     from smartlib.dcc.maya.shot_builder import (
         stage_anim_from_input,
         stage_shot_from_preview,
+        update_anim_construct,
     )
     shot_service = manager.shots
     try:
@@ -559,6 +631,10 @@ def _run_scene_construction(
         construct_data = json.loads(args.construct_json or "{}")
     except (TypeError, ValueError):
         construct_data = {}
+    try:
+        construct_diff = json.loads(args.construct_diff_json or "[]")
+    except (TypeError, ValueError):
+        construct_diff = []
     _write_status(status_path, state="BUILDING", progress=10, task="Resolve Stage Inputs")
     preview = shot_service.build_preview(
         identity,
@@ -576,6 +652,13 @@ def _run_scene_construction(
         str(component.get("component_type") or "").lower() == "rig"
         for component in (construct_data.get("components") or [])
     )
+    usd_cast = {
+        str(component.get("name") or "")
+        for component in (construct_data.get("components") or [])
+        if str(component.get("component_type") or "").lower() == "usd"
+    }
+    if usd_cast:
+        preview = [row for row in preview if row.cast_key not in usd_cast]
     if has_rig_contract:
         preview = [row for row in preview if row.cast_key in enabled_rigs]
     resolved = [row for row in preview if row.status == "resolved"]
@@ -588,7 +671,39 @@ def _run_scene_construction(
 
     _write_status(status_path, state="BUILDING", progress=20, task=plan.resolved_mode.title())
     shot_data = shot_service.load_shot(identity)
-    if plan.department == "anim":
+    update_source_scene = ""
+    if plan.resolved_mode == "UPDATE" and plan.department == "anim":
+        previous = next(
+            (
+                row for row in manager.list_constructs(
+                    identity, plan.department, plan.task
+                )
+                if str(row.get("state") or "").upper()
+                in {"PASSED", "READY", "OK", "WARNING"}
+                and Path(str(row.get("scene") or "")).is_file()
+            ),
+            None,
+        )
+        if previous:
+            update_source_scene = str(previous["scene"])
+            referenced = update_anim_construct(
+                update_source_scene,
+                resolved,
+                plan.anim_input,
+                shot_data,
+                project_root=manager.project_config.project_root,
+                construct_data=construct_data,
+                construct_diff=construct_diff,
+            )
+        else:
+            referenced = stage_anim_from_input(
+                resolved,
+                plan.anim_input,
+                shot_data,
+                project_root=manager.project_config.project_root,
+                construct_data=construct_data,
+            )
+    elif plan.department == "anim":
         referenced = stage_anim_from_input(
             resolved,
             plan.anim_input,
@@ -610,6 +725,13 @@ def _run_scene_construction(
         identity, plan.department
     )
     review_display_layers = create_review_display_layers(review_contract)
+    try:
+        referenced = list(dict.fromkeys([
+            *referenced,
+            *(cmds.file(query=True, reference=True) or []),
+        ]))
+    except Exception:
+        referenced = list(dict.fromkeys(referenced))
     build_root = (
         shot_service.shot_root(identity)
         / "output"
@@ -630,10 +752,32 @@ def _run_scene_construction(
     )
     cmds.file(rename=str(scene_path))
     cmds.file(save=True, type=scene_type, force=True)
+    usd_path = None
+    usd_error = ""
+    if plan.resolved_mode == "REND STAGE":
+        usd_path = build_root / (
+            f"{identity.shot}_{plan.department}_{plan.task}_{args.output_version}.usd"
+        )
+        try:
+            if not cmds.pluginInfo("mayaUsdPlugin", query=True, loaded=True):
+                cmds.loadPlugin("mayaUsdPlugin", quiet=True)
+            if hasattr(cmds, "mayaUSDExport"):
+                cmds.mayaUSDExport(file=str(usd_path), mergeTransformAndShape=True)
+            else:
+                cmds.file(str(usd_path), force=True, type="USD Export", exportAll=True)
+        except Exception as exc:
+            usd_error = str(exc)
     validation = _validation_payload(
         plan,
         _construct_scene_validation(cmds, scene_path, referenced),
     )
+    if plan.resolved_mode == "REND STAGE" and (not usd_path or not usd_path.is_file()):
+        validation["results"].append({
+            "severity": "ERROR",
+            "code": "USD_EXPORT_FAILED",
+            "message": usd_error or "Render USD was not generated.",
+        })
+        validation["status"] = "failed"
 
     editorial = shot_data.get("editorial") or {}
     start = int(editorial.get("cut_in") or shot_data.get("cut_in") or 1001)
@@ -648,6 +792,152 @@ def _run_scene_construction(
         if parent.split("|")[-1] not in {"persp", "top", "front", "side"}
     ]
     camera = _preferred_camera(cameras) or ""
+    review_sequences = {}
+    review_output_records = {}
+    review_layers = {}
+    review_movie = None
+    review_project = None
+    review_spec_path = None
+    review_requested = str(args.generate_review).strip().lower() not in {
+        "", "0", "false", "no", "off"
+    }
+    if review_requested:
+        layer_contracts = shot_service.review_layers(identity, plan.department)
+        specs = []
+        for layer_name, contract in sorted(
+            layer_contracts.items(),
+            key=lambda item: (int((item[1] or {}).get("order") or 0), item[0]),
+        ):
+            if int(review_display_layers.get(layer_name, 0)) <= 0:
+                continue
+            contract = contract or {}
+            configured = contract.get("camera") or {}
+            configured_name = (
+                str(configured.get("name") or "")
+                if isinstance(configured, dict) else str(configured)
+            )
+            layer_camera = _camera_for_layer(cameras, layer_name, configured_name)
+            if not layer_camera:
+                continue
+            layer_range = contract.get("export_frame_range") or [start, end]
+            resolution_contract = contract.get("resolution") or {}
+            specs.append({
+                "name": layer_name,
+                "display_layer": layer_name,
+                "camera": layer_camera,
+                "frame_range": [int(layer_range[0]), int(layer_range[1])],
+                "resolution": [
+                    int(resolution_contract.get("width") or width),
+                    int(resolution_contract.get("height") or height),
+                ],
+            })
+        if not specs:
+            raise RuntimeError(
+                "No populated Review Layer could be reconstructed from review_spec.json."
+            )
+        for index, spec in enumerate(specs):
+            _activate_review_layer(cmds, specs, spec["name"])
+            layer_start, layer_end = spec["frame_range"]
+            layer_width, layer_height = spec["resolution"]
+            pattern = (
+                f"{identity.shot}_{plan.department}_{_clean_name(spec['name'])}_"
+                f"{args.output_version}_####.png"
+            )
+            sequence = _render_camera_sequence(
+                cmds,
+                camera=spec["camera"],
+                output_dir=build_root / "review" / _clean_name(spec["name"]),
+                start=layer_start,
+                end=layer_end,
+                width=layer_width,
+                height=layer_height,
+                status_path=status_path,
+                progress_start=65 + int(index / max(1, len(specs)) * 25),
+                progress_end=65 + int((index + 1) / max(1, len(specs)) * 25),
+                output_pattern=pattern,
+            )
+            review_sequences[spec["name"]] = sequence
+            layer_dir = build_root / "review" / _clean_name(spec["name"])
+            first_file = layer_dir / pattern.replace("####", f"{layer_start:04d}")
+            last_file = layer_dir / pattern.replace("####", f"{layer_end:04d}")
+            review_output_records[spec["name"]] = {
+                "first_file": str(first_file),
+                "last_file": str(last_file),
+                "file_count": max(1, layer_end - layer_start + 1),
+                "members": list(spec.get("members") or []),
+            }
+            review_layers[spec["name"]] = {
+                **spec,
+                "sequence": sequence,
+                "version": args.output_version,
+            }
+
+        if review_sequences:
+            review_output_root = (
+                shot_service.shot_root(identity)
+                / "output" / "review" / "animation"
+            )
+            review_output_dir = review_output_root / args.output_version
+            review_movie = review_output_dir / (
+                f"{identity.shot}_animation_review_{args.output_version}.mov"
+            )
+            published_review_project = _latest_review_project(
+                shot_service, identity, plan.department
+            )
+            if not published_review_project:
+                raise RuntimeError(
+                    "Published Review Project was not found. Publish "
+                    f"review_project/{plan.department} before Generate Review."
+                )
+            review_project = review_output_dir / "review_project.aep"
+            _write_status(
+                status_path, state="BUILDING", progress=91,
+                task="Relink AE Footage",
+            )
+            _prepare_review_project_copy(
+                published_review_project,
+                review_project,
+                review_output_records,
+                manager.project_config,
+            )
+            _write_status(
+                status_path, state="BUILDING", progress=94,
+                task="Render AE MOV",
+            )
+            _render_review_project(
+                review_project, review_movie, manager.project_config
+            )
+            _update_output_history(
+                review_output_root, args.output_version, review_movie
+            )
+            _review_spec, review_spec_path = shot_service.resolved_review_spec(
+                identity, department=plan.department
+            )
+            review_plan = {
+                "schema": "smartpipeline.construct_review_build.v1",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "construct_version": args.output_version,
+                "source_construct": str(scene_path),
+                "review_spec": str(review_spec_path),
+                "output_dir": str(review_output_dir),
+                "scene": str(scene_path),
+                "scene_path": str(scene_path),
+            }
+            shot_service.write_animation_review_build_manifest(
+                review_plan,
+                {
+                    "playblast_sequences": review_sequences,
+                    "review_layers": review_layers,
+                    "published_review_project": str(published_review_project),
+                    "review_project": str(review_project),
+                    "movie": str(review_movie),
+                    "frame_range": [start, end],
+                    "resolution": [width, height],
+                    "fps": float(shot_data.get("fps") or shot_service.project_fps),
+                },
+            )
 
     manifest = {
         "format": "smartpipeline.scene_build_manifest",
@@ -659,14 +949,22 @@ def _run_scene_construction(
         "department": plan.department,
         "task": plan.task,
         "source_workfile": plan.source_scene,
+        "update_source_construct": update_source_scene,
         "anim_input": plan.anim_input,
         "scene": str(scene_path),
+        "usd": str(usd_path) if usd_path and usd_path.is_file() else "",
         "frame_range": [start, end],
         "resolution": [width, height],
         "camera": camera,
         "references": referenced,
         "review_display_layers": review_display_layers,
         "construct": construct_data,
+        "construct_diff": construct_diff,
+        "review_requested": review_requested,
+        "review_sequences": review_sequences,
+        "review_project": str(review_project) if review_project else "",
+        "review_movie": str(review_movie) if review_movie and review_movie.is_file() else "",
+        "review_spec": str(review_spec_path) if review_spec_path else "",
         "build_overrides": build_overrides,
         "status": "validated" if validation["status"] != "failed" else "blocked",
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -885,14 +1183,13 @@ def run(args) -> int:
             f"{item.code}: {item.message}" for item in orchestration_plan.validations
         )
         raise RuntimeError(f"Scene build is blocked. {details}")
-    if orchestration_plan.resolved_mode != "REVIEW ONLY":
-        return _run_scene_construction(
-            args=args,
-            manager=manager,
-            identity=identity,
-            plan=orchestration_plan,
-            status_path=status_path,
-        )
+    return _run_scene_construction(
+        args=args,
+        manager=manager,
+        identity=identity,
+        plan=orchestration_plan,
+        status_path=status_path,
+    )
     _write_status(status_path, state="BUILDING", progress=8, task="Resolve")
     plan = shot_service.animation_review_build_plan(identity)
     source_version = str(plan.get("package_version") or "")
@@ -1084,14 +1381,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shot", required=True)
     parser.add_argument("--output-version", required=True)
     parser.add_argument("--status-file", required=True)
-    parser.add_argument("--operation", default="AUTO")
+    parser.add_argument("--operation", default="WORK STAGE")
     parser.add_argument("--department", default="anim")
     parser.add_argument("--task-name", default="")
     parser.add_argument("--scope", choices=("shot", "sequence"), default="shot")
     parser.add_argument("--shots-json", default="[]")
     parser.add_argument("--sequence-options-json", default="{}")
     parser.add_argument("--construct-json", default="{}")
+    parser.add_argument("--construct-diff-json", default="[]")
     parser.add_argument("--overrides-json", default="{}")
+    parser.add_argument("--generate-review", default="1")
     args = parser.parse_args(argv)
     try:
         return run(args)

@@ -81,13 +81,22 @@ def test_base_snapshot_keeps_the_first_value_across_multiple_captures():
 
 def test_package_round_trip(tmp_path):
     package = SetDressPackage(
-        layers=[SetDressLayer(name="shot_fix", changes=[Change("a", "chair", "visibility", True, False)])],
+        layers=[SetDressLayer(name="shot_fix", target="usd", changes=[Change("a", "chair", "visibility", True, False)])],
         context={"sequence": "sq010", "shot": "sh020"},
         base=[NodeState("a", "chair", {"visibility": True})],
     )
     path = save_package(package, tmp_path / "shot.setdress.json")
     loaded = load_package(path)
     assert loaded.to_dict() == package.to_dict()
+
+
+def test_version_one_layer_defaults_to_maya_target():
+    package = SetDressPackage.from_dict({
+        "format": "smart-set-dress",
+        "version": 1,
+        "layers": [{"name": "legacy", "changes": []}],
+    })
+    assert package.layers[0].target == "maya"
 
 
 def test_scene_payload_round_trip_and_checksum():

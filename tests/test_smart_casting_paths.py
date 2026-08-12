@@ -57,6 +57,13 @@ def test_smart_casting_lists_assets_and_shots_from_configured_roots(tmp_path: Pa
     asset_root = project_root / "library" / "assets" / "props" / "bp" / "Chair"
     write_json(asset_root / "asset.json", {"category": "props", "group": "bp", "asset": "Chair"})
     write_json(asset_root / "default" / "variant.json", {"variant": "default", "status": "approved"})
+    write_json(
+        asset_root / "default" / "publish" / "asset" / "work" / "v001" / "asset.json",
+        {"category": "props", "group": "bp", "asset": "Chair"},
+    )
+    prop_root = project_root / "library" / "assets" / "prop" / "bp" / "Cup"
+    write_json(prop_root / "asset.json", {"category": "prop", "group": "bp", "asset": "Cup"})
+    write_json(prop_root / "default" / "variant.json", {"variant": "default"})
 
     shot_root = (
         project_root
@@ -111,6 +118,28 @@ def test_smart_casting_saves_edited_namespace(tmp_path: Path) -> None:
     assert saved["cast"]["Chair_A"]["namespace"] == "setChair_custom"
 
 
+def test_smart_casting_asset_registration_defaults_namespace_to_asset_name(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    asset_root = project_root / "library" / "assets" / "CH" / "main" / "Chair"
+    write_json(asset_root / "asset.json", {"category": "CH", "group": "main", "asset": "Chair"})
+    write_json(asset_root / "default" / "variant.json", {"variant": "default"})
+
+    service = SmartCastingService(ProjectConfig(config_dir))
+    asset = service.list_assets()[0]
+
+    _path, rows = service.add_assets_to_sequence_cast("ep001", "sq010", [asset])
+    assert rows[0]["cast_key"] == "Chair_main"
+    assert rows[0]["namespace"] == "Chair"
+    saved = service.load_sequence_cast("ep001", "sq010")["cast"]
+    assert saved["Chair_main"]["namespace"] == "Chair"
+
+    _path, rows = service.add_assets_to_sequence_cast("ep001", "sq010", [asset])
+    assert rows[0]["cast_key"] == "Chair_02"
+    assert rows[0]["namespace"] == "Chair_02"
+
+
 def test_smart_casting_sequence_cast_rows_include_context_statuses(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
@@ -147,3 +176,101 @@ def test_smart_casting_sequence_cast_rows_include_context_statuses(tmp_path: Pat
 
     rows = service.sequence_cast_rows("ep001", "sq010")
     assert rows[0]["contexts"] == {"FAST": "Missing", "WORK": "Ready", "FINAL": "WIP"}
+
+
+def test_sequence_cast_save_adds_missing_casts_to_shots_without_overwriting(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    chair_root = project_root / "library" / "assets" / "CH" / "main" / "Chair"
+    table_root = project_root / "library" / "assets" / "BG" / "main" / "Table"
+    write_json(chair_root / "asset.json", {"category": "CH", "group": "main", "asset": "Chair"})
+    write_json(chair_root / "default" / "variant.json", {"variant": "default"})
+    write_json(table_root / "asset.json", {"category": "BG", "group": "main", "asset": "Table"})
+    write_json(table_root / "default" / "variant.json", {"variant": "default"})
+    for shot in ("sh010", "sh020"):
+        write_json(
+            project_root
+            / "production"
+            / "shots"
+            / "episodes"
+            / "ep001"
+            / "sequences"
+            / "sq010"
+            / "shots"
+            / shot
+            / "shot.json",
+            {"episode": "ep001", "sequence": "sq010", "shot": shot},
+        )
+
+    service = SmartCastingService(ProjectConfig(config_dir))
+    service.save_shot_cast(
+        ShotIdentity("ep001", "sq010", "sh010"),
+        [
+            {
+                "cast_key": "Chair_main",
+                "asset": "Chair",
+                "variant": "default",
+                "role": "CHA",
+                "namespace": "Chair_shot_override",
+                "asset_publish": "v003",
+                "required": False,
+                "note": "shot override",
+            }
+        ],
+    )
+
+    service.save_sequence_cast(
+        "ep001",
+        "sq010",
+        [
+            {
+                "cast_key": "Chair_main",
+                "asset": "Chair",
+                "variant": "default",
+                "role": "CHA",
+                "namespace": "Chair_main",
+                "asset_publish": "approved",
+                "required": True,
+                "note": "sequence value",
+            },
+            {
+                "cast_key": "Table_main",
+                "asset": "Table",
+                "variant": "default",
+                "role": "BGA",
+                "namespace": "Table_main",
+                "asset_publish": "approved",
+                "required": True,
+                "note": "sequence table",
+            },
+        ],
+    )
+
+    sh010 = service.load_shot_cast(ShotIdentity("ep001", "sq010", "sh010"))["cast"]
+    assert sh010["Chair_main"]["namespace"] == "Chair_shot_override"
+    assert sh010["Chair_main"]["asset_publish"] == "v003"
+    assert sh010["Chair_main"]["required"] is False
+    assert sh010["Chair_main"]["note"] == "shot override"
+    assert sh010["Table_main"]["namespace"] == "Table_main"
+
+    sh020 = service.load_shot_cast(ShotIdentity("ep001", "sq010", "sh020"))["cast"]
+    assert sorted(sh020) == ["Chair_main", "Table_main"]
+
+    service.save_sequence_cast(
+        "ep001",
+        "sq010",
+        [
+            {
+                "cast_key": "Chair_main",
+                "asset": "Chair",
+                "variant": "default",
+                "role": "CHA",
+                "namespace": "Chair_main",
+                "asset_publish": "approved",
+                "required": True,
+                "note": "sequence value",
+            }
+        ],
+    )
+    assert "Table_main" in service.load_shot_cast(ShotIdentity("ep001", "sq010", "sh020"))["cast"]

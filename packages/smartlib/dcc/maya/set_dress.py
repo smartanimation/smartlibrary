@@ -56,6 +56,7 @@ class SetDressLayer:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "new_layer"
     scope: str = "shot"
+    target: str = "maya"
     muted: bool = False
     changes: list[Change] = field(default_factory=list)
 
@@ -82,6 +83,7 @@ class SetDressPackage:
                 id=str(raw_layer.get("id") or uuid.uuid4().hex),
                 name=str(raw_layer.get("name") or "layer"),
                 scope=str(raw_layer.get("scope") or "shot"),
+                target=str(raw_layer.get("target") or "maya"),
                 muted=bool(raw_layer.get("muted", False)),
                 changes=changes,
             ))

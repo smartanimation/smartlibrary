@@ -20,7 +20,16 @@ set_dress.show()
 
 ## Workflow
 
-1. Select a set hierarchy in Maya.
+Choose **Maya** or **USD** in Target before recording. Maya mode captures Maya
+transform hierarchies; USD mode captures UFE prim hierarchies from a
+`mayaUsdProxyShape`. Both target types can coexist in one Set Dress package.
+
+USD changes are authored to the MayaUSD stage session layer, so the source USD
+background file is not modified. USD mode requires `mayaUsdPlugin` plus the
+MayaUSD Python and UFE bindings. With **Selected hierarchy** disabled, all
+transformable prims on every MayaUSD ProxyShape are inspected.
+
+1. Choose the target and select a Maya hierarchy or MayaUSD prim hierarchy.
 2. Select or create the destination layer.
 3. Click **Record**.
 4. Move, rotate, scale, or hide objects in the viewport.

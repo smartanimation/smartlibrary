@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from smartlib.core.metadata import read_json
+
 from smartlib.apps.shot_manager import (
     SequenceIdentity,
     ShotIdentity,
@@ -11,7 +13,13 @@ from smartlib.apps.shot_manager import (
 )
 
 
-BUILD_MODES = ("AUTO", "STAGE", "UPDATE", "REBUILD", "REVIEW ONLY")
+BUILD_MODES = ("WORK STAGE", "REND STAGE", "UPDATE")
+LEGACY_MODE_ALIASES = {
+    "AUTO": "WORK STAGE",
+    "STAGE": "WORK STAGE",
+    "REBUILD": "WORK STAGE",
+    "REVIEW ONLY": "WORK STAGE",
+}
 
 
 @dataclass(frozen=True)
@@ -53,13 +61,14 @@ class SceneBuildOrchestrator:
         self,
         identity: ShotIdentity,
         *,
-        requested_mode: str = "AUTO",
+        requested_mode: str = "WORK STAGE",
         department: str = "anim",
         task: str = "",
         input_policy: str = "GENERATE MISSING",
         overrides: dict | None = None,
     ) -> SceneBuildPlan:
-        mode = str(requested_mode or "AUTO").strip().upper()
+        mode = str(requested_mode or "WORK STAGE").strip().upper()
+        mode = LEGACY_MODE_ALIASES.get(mode, mode)
         if mode not in BUILD_MODES:
             raise ValueError(f"Unsupported build mode: {requested_mode}")
         department = str(department or "anim").strip().lower()
@@ -69,13 +78,7 @@ class SceneBuildOrchestrator:
         latest_work = self._latest_work(identity, department, task)
         anim_input = self.shots.latest_anim_input(identity)
         animation_package = self.shots.latest_animation_package_path(identity)
-        resolved = self._resolve_mode(
-            mode,
-            identity=identity,
-            latest_work=latest_work,
-            anim_input=anim_input,
-            animation_package=animation_package,
-        )
+        resolved = mode
         validations = list(
             self._validate(
                 identity,
@@ -121,17 +124,14 @@ class SceneBuildOrchestrator:
         self,
         identity: SequenceIdentity,
         *,
-        requested_mode: str = "STAGE",
+        requested_mode: str = "WORK STAGE",
         department: str = "layout",
         task: str = "",
         input_policy: str = "GENERATE MISSING",
         overrides: dict | None = None,
     ) -> SceneBuildPlan:
-        mode = str(requested_mode or "STAGE").strip().upper()
-        if mode == "AUTO":
-            mode = "STAGE"
-        if mode == "REVIEW ONLY":
-            mode = "STAGE"
+        mode = str(requested_mode or "WORK STAGE").strip().upper()
+        mode = LEGACY_MODE_ALIASES.get(mode, mode)
         tasks = self.shots.shot_tasks(department)
         task = str(task or (tasks[0] if tasks else "main"))
         input_policy = str(input_policy or "GENERATE MISSING").strip().upper()
@@ -231,34 +231,6 @@ class SceneBuildOrchestrator:
             default=None,
         )
 
-    def _resolve_mode(
-        self,
-        requested: str,
-        *,
-        identity: ShotIdentity,
-        latest_work,
-        anim_input: Path | None,
-        animation_package: Path | None,
-    ) -> str:
-        if requested != "AUTO":
-            return requested
-        if latest_work is None:
-            return "STAGE"
-        metadata_paths = [
-            self.shots.shot_root(identity) / "shot.json",
-            self.shots.shot_root(identity) / "cast.json",
-            Path(anim_input) if anim_input else None,
-        ]
-        work_path = Path(latest_work.path)
-        if work_path.is_file() and any(
-            path and path.is_file() and path.stat().st_mtime > work_path.stat().st_mtime
-            for path in metadata_paths
-        ):
-            return "UPDATE"
-        if animation_package:
-            return "REVIEW ONLY"
-        return "UPDATE"
-
     def _validate(
         self,
         identity: ShotIdentity,
@@ -277,7 +249,36 @@ class SceneBuildOrchestrator:
             yield BuildValidation("ERROR", "MISSING_SHOT", f"shot.json was not found: {shot_path}")
         if not cast_path.is_file():
             yield BuildValidation("ERROR", "MISSING_CAST", f"cast.json was not found: {cast_path}")
-        if mode in {"STAGE", "UPDATE", "REBUILD"} and department == "anim" and not anim_input:
+        try:
+            construct = self.shots.construct_from_stage_inputs(
+                identity,
+                cast_contexts=dict(overrides.get("cast_contexts") or {}),
+                exclude_cast=list(overrides.get("exclude_cast") or []),
+                representation=str(overrides.get("representation") or "project"),
+            )
+        except Exception:
+            construct = {"components": []}
+        for component in construct.get("components") or []:
+            if str(component.get("component_type") or "").lower() != "rig":
+                continue
+            source = component.get("source") or {}
+            asset = str(source.get("asset") or "")
+            asset_root = self.shots.find_asset_root(asset)
+            if not asset_root:
+                continue
+            variant = str(source.get("variant") or "default")
+            asset_data = read_json(asset_root / "asset.json", {}) or {}
+            variant_data = read_json(asset_root / variant / "variant.json", {}) or {}
+            status = str(
+                variant_data.get("status") or asset_data.get("status") or ""
+            ).strip().lower()
+            if status == "omit":
+                yield BuildValidation(
+                    "ERROR",
+                    "ASSET_OMITTED",
+                    f"{component.get('name') or asset}: asset status is omit.",
+                )
+        if mode in {"WORK STAGE", "REND STAGE", "UPDATE"} and department == "anim" and not anim_input:
             if input_policy == "USE EXISTING":
                 yield BuildValidation(
                     "ERROR",
@@ -313,13 +314,7 @@ class SceneBuildOrchestrator:
                 "NO_WORK_SCENE",
                 "No existing work scene was found; the worker will perform an initial Stage.",
             )
-        if mode == "REVIEW ONLY" and not animation_package:
-            yield BuildValidation(
-                "ERROR",
-                "MISSING_ANIMATION_PACKAGE",
-                "Animation Package is required for Review Only.",
-            )
-        if mode in {"STAGE", "UPDATE", "REBUILD"} and anim_input:
+        if mode in {"WORK STAGE", "REND STAGE", "UPDATE"} and anim_input:
             preview = self.shots.build_preview_from_anim_input(identity)
             missing = [
                 row
@@ -335,13 +330,11 @@ class SceneBuildOrchestrator:
 
     @staticmethod
     def _summary(mode: str, latest_work) -> str:
-        if mode == "STAGE":
-            return "Create a verification scene from metadata."
+        if mode == "WORK STAGE":
+            return "Create an editable work scene from published data."
+        if mode == "REND STAGE":
+            return "Create render-context Maya and USD stages from publishes."
         if mode == "UPDATE":
             source = Path(latest_work.path).name if latest_work else "no work scene"
             return f"Reconstruct changes for review; source: {source}."
-        if mode == "REBUILD":
-            return "Reconstruct the entire verification scene from metadata."
-        if mode == "REVIEW ONLY":
-            return "Keep scene inputs unchanged and regenerate review output."
         return "No build is required."

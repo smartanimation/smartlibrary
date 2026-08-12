@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from smartlib.apps.review_build_manager.service import ReviewBuildManagerService
-from smartlib.apps.shot_manager import ShotIdentity, ShotManagerService
+from smartlib.apps.review_build_manager.service import (
+    ReviewBuildManagerService,
+    ReviewOutput,
+    ReviewShotStatus,
+)
+from smartlib.apps.shot_manager import BuildPreviewItem, ShotIdentity, ShotManagerService
 from smartlib.core.config_loader import ProjectConfig
 
 
@@ -88,6 +93,8 @@ def test_construct_from_cast_resolves_rig_publish(tmp_path: Path) -> None:
     assert construct["components"][0]["component_type"] == "rig"
     assert construct["components"][0]["namespace"] == "hero"
     assert construct["components"][0]["path"] == str(scene_path)
+    assert construct["components"][0]["version"] == "v001"
+    assert construct["components"][0]["source"]["asset_publish"] == "approved"
 
 
 def test_write_construct_normalizes_fx_cache(tmp_path: Path) -> None:
@@ -180,8 +187,11 @@ def test_resolved_construct_overlays_saved_choices_and_context() -> None:
         ]
     }
 
-    def generated(_identity, *, cast_contexts=None, exclude_cast=None):
+    def generated(
+        _identity, *, cast_contexts=None, exclude_cast=None, representation="project"
+    ):
         captured["contexts"] = dict(cast_contexts or {})
+        captured["representation"] = representation
         return {
             "components": [
                 {
@@ -204,6 +214,116 @@ def test_resolved_construct_overlays_saved_choices_and_context() -> None:
     assert result["components"][0]["enabled"] is False
     assert result["components"][0]["source"]["context"] == "FAST"
     assert result["components"][1]["name"] == "smoke"
+
+
+def test_missing_background_asset_usd_is_visible_but_not_required(tmp_path: Path) -> None:
+    service = object.__new__(ShotManagerService)
+    variant_root = tmp_path / "assets" / "env" / "set" / "Room" / "default"
+    variant_root.mkdir(parents=True)
+    background = BuildPreviewItem(
+        cast_key="Room_main",
+        asset="Room",
+        variant="default",
+        namespace="Room_main",
+        role="BGA",
+        review_layer="",
+        asset_publish="approved",
+        required=True,
+        status="resolved",
+        variant_root=str(variant_root),
+        publish_path=str(variant_root / "publish" / "asset" / "work" / "v001" / "Room.ma"),
+    )
+    service.latest_anim_input = lambda _identity: None
+    service._latest_review_camera_paths = lambda _identity: []
+    service.list_set_dress_publish_versions = lambda _identity: []
+    service.list_preview_render_versions = lambda _identity: []
+    service.latest_animation_package_path = lambda _identity: None
+    service.load_cast = lambda _identity: {"cast": {}}
+    service.load_sequence_cast = lambda *_args: {"cast": {}}
+    service.build_preview = lambda *_args, **_kwargs: [background]
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    component = service.construct_from_stage_inputs(
+        identity, representation="usd"
+    )["components"][0]
+
+    assert component["component_type"] == "usd"
+    assert component["path"] == ""
+    assert component["required"] is False
+    assert component["enabled"] is True
+    assert component["note"] == "MISSING: Compose/Pack Asset USD required"
+
+    maya_component = service.construct_from_stage_inputs(identity)["components"][0]
+    assert maya_component["component_type"] == "rig"
+    assert maya_component["mode"] == "reference"
+    assert maya_component["path"] == background.publish_path
+    assert maya_component["namespace"] == "Room_main"
+
+
+def test_background_resolves_formal_asset_usda_after_pack(tmp_path: Path) -> None:
+    service = object.__new__(ShotManagerService)
+    variant_root = tmp_path / "assets" / "env" / "set" / "Room" / "default"
+    # A component model USD is not a valid shot entry by itself.
+    model_usd = variant_root / "publish" / "model" / "render" / "v003" / "model.usd"
+    model_usd.parent.mkdir(parents=True)
+    model_usd.write_text("#usda 1.0", encoding="utf-8")
+    item = BuildPreviewItem(
+        cast_key="Room_main",
+        asset="Room",
+        variant="default",
+        namespace="Room_main",
+        role="BGA",
+        review_layer="",
+        asset_publish="approved",
+        required=True,
+        status="resolved",
+        variant_root=str(variant_root),
+    )
+    assert service._asset_usd_for_preview(item, profile="WORK") is None
+
+    asset_usd = variant_root / "publish" / "asset" / "final" / "v004" / "asset.usda"
+    asset_usd.parent.mkdir(parents=True)
+    asset_usd.write_text("#usda 1.0", encoding="utf-8")
+    write_json(
+        variant_root / "publish" / "asset" / "final" / "latest.json",
+        {"version": "v004", "path": "v004/asset.usda"},
+    )
+
+    assert service._asset_usd_for_preview(item, profile="WORK") == asset_usd
+
+
+def test_resolved_construct_keeps_missing_background_optional() -> None:
+    service = object.__new__(ShotManagerService)
+    service.load_construct = lambda _identity: {
+        "components": [
+            {
+                "component_type": "usd",
+                "name": "Room_main",
+                "required": True,
+                "note": "old blocking background",
+                "source": {"kind": "cast_entry", "role": "BGA", "context": "WORK"},
+            }
+        ]
+    }
+    service.construct_from_stage_inputs = lambda *_args, **_kwargs: {
+        "components": [
+            {
+                "component_type": "usd",
+                "name": "Room_main",
+                "path": "",
+                "required": False,
+                "enabled": True,
+                "note": "MISSING: Compose/Pack Asset USD required",
+                "source": {"kind": "cast_entry", "role": "BGA", "context": "WORK"},
+            }
+        ]
+    }
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    component = service.resolved_construct(identity)["components"][0]
+
+    assert component["required"] is False
+    assert component["note"] == "MISSING: Compose/Pack Asset USD required"
 
 
 def test_build_manager_contents_use_construct_components() -> None:
@@ -242,6 +362,144 @@ def test_build_manager_contents_use_construct_components() -> None:
     assert rows[0]["context"] == ""
     assert rows[1]["context"] == "WORK"
     assert rows[1]["state"] == "EXCLUDED"
+
+
+def test_work_stage_status_uses_construct_curves_without_animation_package(
+    tmp_path: Path,
+) -> None:
+    manager = object.__new__(ReviewBuildManagerService)
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+    build_dir = tmp_path / "v003"
+    build_dir.mkdir()
+    write_json(
+        build_dir / "build_manifest.json",
+        {
+            "construct": {"components": []},
+            "review_requested": False,
+        },
+    )
+    curve = tmp_path / "curves" / "v002" / "animation_curve.json"
+    write_json(curve, {})
+    rig = tmp_path / "hero.ma"
+    rig.write_text("// Maya ASCII", encoding="utf-8")
+    desired = {
+        "components": [
+            {
+                "component_type": "rig",
+                "name": "hero",
+                "path": str(rig),
+                "required": True,
+                "enabled": True,
+                "source": {"role": "CHA"},
+            },
+            {
+                "component_type": "animation_curve",
+                "name": "hero",
+                "version": "v002",
+                "path": str(curve),
+                "required": True,
+                "enabled": True,
+            },
+        ]
+    }
+    manager.shots = SimpleNamespace(
+        resolved_construct=lambda *_args, **_kwargs: desired,
+        load_cast=lambda _identity: {
+            "cast": {"hero": {"required": True, "role": "CHA"}}
+        },
+        load_sequence_cast=lambda *_args: {"cast": {}},
+        load_shot=lambda _identity: {"status": "wip"},
+        shot_root=lambda _identity: tmp_path,
+    )
+    manager.list_constructs = lambda *_args: [
+        {
+            "version": "v003",
+            "directory": str(build_dir),
+            "scene": str(build_dir / "shot.ma"),
+            "updated": "2026-08-12 10:00",
+        }
+    ]
+    manager.construct_diff = lambda *_args, **_kwargs: []
+
+    status = manager.shot_status(identity, mode="WORK STAGE")
+
+    assert status.state == "UP TO DATE"
+    assert status.source_version == "v002"
+    assert "Animation Package" not in status.message
+
+
+def test_work_stage_status_reports_missing_required_animation_curve(
+    tmp_path: Path,
+) -> None:
+    manager = object.__new__(ReviewBuildManagerService)
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+    rig = tmp_path / "hero.ma"
+    rig.write_text("// Maya ASCII", encoding="utf-8")
+    manager.shots = SimpleNamespace(
+        resolved_construct=lambda *_args, **_kwargs: {
+            "components": [{
+                "component_type": "rig",
+                "name": "hero",
+                "path": str(rig),
+                "required": True,
+                "enabled": True,
+                "source": {"role": "CHA"},
+            }]
+        },
+        load_cast=lambda _identity: {
+            "cast": {"hero": {"required": True, "role": "CHA"}}
+        },
+        load_sequence_cast=lambda *_args: {"cast": {}},
+        load_shot=lambda _identity: {},
+        shot_root=lambda _identity: tmp_path,
+    )
+    manager.list_constructs = lambda *_args: []
+    manager.construct_diff = lambda *_args, **_kwargs: []
+
+    status = manager.shot_status(identity, mode="WORK STAGE")
+
+    assert status.state == "MISSING"
+    assert "Animation Curves: hero" in status.message
+
+
+def test_generate_review_toggle_uses_cached_construct_and_output(tmp_path: Path) -> None:
+    movie = tmp_path / "review.mov"
+    base = ReviewShotStatus(
+        identity=SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010"),
+        state="UP TO DATE",
+        output_version="v003",
+        output_label="v003",
+        last_review="-",
+        thumbnail="",
+        comment="",
+        source_version="v001",
+        message="Construct and Animation Curves are current.",
+        outputs=(),
+    )
+
+    required = ReviewBuildManagerService.apply_generate_review_requirement(base, True)
+    assert required.state == "READY"
+    assert "MOV is not available" in required.message
+
+    optional = ReviewBuildManagerService.apply_generate_review_requirement(required, False)
+    assert optional.state == "UP TO DATE"
+
+    movie.write_bytes(b"mov")
+    with_movie = replace(
+        base,
+        outputs=(
+            ReviewOutput(
+                version="v003",
+                directory=str(tmp_path),
+                movie=str(movie),
+                state="COMPLETE",
+            ),
+        ),
+    )
+    unchanged = ReviewBuildManagerService.apply_generate_review_requirement(
+        with_movie, True
+    )
+    assert unchanged.state == "UP TO DATE"
 
 
 def test_construct_discovers_publishes_without_anim_input(tmp_path: Path) -> None:

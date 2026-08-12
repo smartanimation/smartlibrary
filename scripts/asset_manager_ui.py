@@ -32,6 +32,14 @@ def _qt_modules():
 QtCore, QtGui, QtWidgets = _qt_modules()
 
 
+def _exec_menu(menu, pos):
+    """Execute a context menu with either the Qt 6 or Qt 5 API."""
+    exec_method = getattr(menu, "exec", None)
+    if exec_method is None:
+        exec_method = menu.exec_
+    return exec_method(pos)
+
+
 def _ensure_smartlib_on_path() -> None:
     root = (
         os.environ.get("SMARTPIPELINE_ROOT")
@@ -546,10 +554,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         publish_header.addWidget(QtWidgets.QLabel("USD Asset Publish"))
         publish_header.addStretch(1)
         self.refresh_publish_btn = QtWidgets.QPushButton("Refresh")
+        self.publish_geometry_usd_btn = QtWidgets.QPushButton("Publish Geometry USD")
+        self.publish_geometry_usd_btn.setStyleSheet(blue_button_style)
+        self.publish_geometry_usd_btn.setToolTip(
+            "Publish the current model subset and always include model.usd"
+        )
         self.publish_selected_btn = QtWidgets.QPushButton("Publish Selected")
         self.publish_selected_btn.setStyleSheet(blue_button_style)
         self.publish_selected_btn.setToolTip("Publish the work scene selected in the Work Scene tab")
         publish_header.addWidget(self.refresh_publish_btn)
+        publish_header.addWidget(self.publish_geometry_usd_btn)
         publish_header.addWidget(self.publish_selected_btn)
         publish_tab_layout.addLayout(publish_header)
 
@@ -627,12 +641,20 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_buttons.setSpacing(4)
         self.export_mesh_btn = QtWidgets.QPushButton("Export Data")
         self.import_assembly_btn = QtWidgets.QPushButton("Ingest Assembly")
+        self.open_assembly_btn = QtWidgets.QPushButton("Open Assembly")
+        self.reload_assembly_btn = QtWidgets.QPushButton("Reload ASSEMBLY_USD_PROXY")
+        self.save_assembly_btn = QtWidgets.QPushButton("Save Assembly")
+        self.publish_assembly_btn = QtWidgets.QPushButton("Publish Assembly")
         self.ingest_fbx_btn = QtWidgets.QPushButton("Ingest Model FBX")
         self.export_guide_btn = QtWidgets.QPushButton("Export Guide")
         self.export_skin_btn = QtWidgets.QPushButton("Export Skin")
         data_buttons.addStretch(1)
         data_buttons.addWidget(self.export_mesh_btn)
         data_buttons.addWidget(self.import_assembly_btn)
+        data_buttons.addWidget(self.open_assembly_btn)
+        data_buttons.addWidget(self.reload_assembly_btn)
+        data_buttons.addWidget(self.save_assembly_btn)
+        data_buttons.addWidget(self.publish_assembly_btn)
         data_buttons.addWidget(self.ingest_fbx_btn)
         self.export_guide_btn.setVisible(False)
         self.export_skin_btn.setVisible(False)
@@ -747,11 +769,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         context_header.setSpacing(4)
         self.context_version_combo = QtWidgets.QComboBox()
         self.context_version_combo.setVisible(False)
+        self.context_use_scene_btn = QtWidgets.QPushButton("Use Current Scene")
+        self.context_use_scene_btn.setToolTip(
+            "Publish the current Maya work scene as an intermediate assembly input."
+        )
         self.context_assemble_btn = QtWidgets.QPushButton("Assemble")
         self.publish_client_assembly_btn = QtWidgets.QPushButton("Publish Assembly Client")
         self.context_pack_btn = QtWidgets.QPushButton("Pack")
         self.context_pack_btn.setEnabled(False)
         context_header.addStretch(1)
+        context_header.addWidget(self.context_use_scene_btn)
         context_header.addWidget(self.context_assemble_btn)
         context_header.addWidget(self.publish_client_assembly_btn)
         context_header.addWidget(self.context_pack_btn)
@@ -823,6 +850,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.save_scene_btn.clicked.connect(self._save_scene)
         self.refresh_publish_btn.clicked.connect(self._populate_asset_publish_tree)
         self.publish_selected_btn.clicked.connect(self._publish_selected_work)
+        self.publish_geometry_usd_btn.clicked.connect(
+            lambda: self._publish_selected_work(force_usd=True)
+        )
         self.asset_publish_type_list.currentRowChanged.connect(
             lambda _row: self._populate_asset_publish_tree()
         )
@@ -834,11 +864,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_version_combo.currentTextChanged.connect(self._populate_context_profiles)
         self.context_profile_list.currentRowChanged.connect(self._on_context_profile_selected)
         self.context_assemble_btn.clicked.connect(self._assemble_selected_asset_context)
+        self.context_use_scene_btn.clicked.connect(self._use_current_scene_as_assembly)
         self.publish_client_assembly_btn.clicked.connect(self._publish_client_assembly)
         self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
         self.refresh_data_btn.clicked.connect(self._refresh_current_data)
         self.export_mesh_btn.clicked.connect(self._export_selected_data_type)
         self.import_assembly_btn.clicked.connect(self._import_assembly_data)
+        self.open_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=False))
+        self.reload_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=True))
+        self.save_assembly_btn.clicked.connect(self._save_selected_asset_assembly)
+        self.publish_assembly_btn.clicked.connect(self._publish_selected_asset_assembly)
         self.ingest_fbx_btn.clicked.connect(self._ingest_model_fbx)
         self.export_guide_btn.clicked.connect(lambda: self._show_export_data_menu("guide"))
         self.export_skin_btn.clicked.connect(lambda: self._show_export_data_menu("skin"))
@@ -1465,6 +1500,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 button.setToolTip(f"Publish current {source_kind} scene: {Path(source_path).name}")
             else:
                 button.setToolTip("Open a saved asset work scene before publishing")
+        usd_button = getattr(self, "publish_geometry_usd_btn", None)
+        if usd_button is not None:
+            is_geometry = self._selected_publish_type() == "geometry"
+            usd_button.setVisible(is_geometry)
+            usd_button.setEnabled(bool(is_geometry and self._current_asset() and source_path))
 
     def _publish_source_path(self) -> tuple[str | None, str]:
         current_scene = current_dcc_scene_path()
@@ -1870,7 +1910,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
         version = self.context_version_combo.currentText().strip() or None
         try:
             service = _asset_context_service(self.manager.config_dir)
-            profiles = service.quality_profiles("asset", version)
+            asset = self._current_asset()
+            profiles = (
+                service.quality_profiles_for_asset(
+                    self._asset_context_identity(asset), "asset", version
+                )
+                if asset
+                else service.quality_profiles("asset", version)
+            )
             self.context_profile_list.addItems(profiles)
             preferred = current or "WORK"
             matches = self.context_profile_list.findItems(preferred, QtCore.Qt.MatchExactly)
@@ -1910,6 +1957,62 @@ class AssetManagerWindow(QtWidgets.QDialog):
             name=asset.name,
             variant=self._current_asset_variant() if asset.uses_variant_structure(self._current_asset_variant()) else "default",
         )
+
+    def _use_current_scene_as_assembly(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        try:
+            import maya.cmds as cmds
+
+            _ensure_smartlib_on_path()
+            from smartlib.core.config_loader import ProjectConfig
+            from smartlib.core.path_resolver import ProjectPaths
+            from smartlib.dcc.maya import asset_assembly
+
+            scene_text = str(cmds.file(query=True, sceneName=True) or "").strip()
+            if not scene_text:
+                raise RuntimeError("Save the current Maya scene before using it as an assembly input.")
+
+            project_config = ProjectConfig(self.manager.config_dir)
+            if project_config.project_root is None:
+                raise RuntimeError("project_root is not set in the project configuration.")
+            identity = self._asset_context_identity(asset)
+            variant_root = ProjectPaths(
+                project_config.project_root,
+                project_config.templates,
+                project_config.project_name,
+            ).asset_variant_root(identity)
+            work_root = variant_root / "work"
+            scene_path = Path(scene_text).resolve()
+            try:
+                scene_path.relative_to(work_root.resolve())
+            except ValueError as exc:
+                raise RuntimeError(
+                    "The current Maya scene does not belong to the selected asset work area.\n"
+                    f"Selected: {identity.category}/{identity.group}/{identity.name}/{identity.variant}\n"
+                    f"Expected under: {work_root}\n"
+                    f"Current scene: {scene_path}"
+                ) from exc
+
+            asset_assembly.set_assembly_context(
+                identity.category,
+                identity.group,
+                identity.name,
+                identity.variant,
+            )
+            comment = self._ask_comment("Current Scene Assembly Comment")
+            if comment is None:
+                return
+            assembly_path = asset_assembly.publish_assembly(project_config, comment=comment)
+            self.status_label.setText(
+                f"Current scene assembly published: {Path(assembly_path).parent.name}/{Path(assembly_path).name}"
+            )
+            self._assemble_selected_asset_context(silent=True)
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(self, "Use Current Scene Failed", str(exc))
 
     def _assemble_selected_asset_context(self, silent: bool = False) -> None:
         asset = self._current_asset()
@@ -1959,7 +2062,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     self.context_assembly,
                     maya_scene_builder=maya_scene_builder,
                 )
-                if maya_preview:
+                if maya_preview and self.context_verification.scene_path.suffix.lower() in {".ma", ".mb"}:
                     try:
                         maya_preview(
                             self.context_verification.scene_path,
@@ -2657,7 +2760,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         copy_data.setEnabled(asset is not None)
         copy_work.setEnabled(asset is not None)
         copy_publish.setEnabled(asset is not None)
-        action = menu.exec(self.asset_list.mapToGlobal(pos))
+        action = _exec_menu(menu, self.asset_list.mapToGlobal(pos))
         if action == create_asset:
             self._create_asset()
         elif action == initialize_assets:
@@ -2951,7 +3054,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         open_folder = menu.addAction("Open Folder")
         recapture_thumbnail = menu.addAction("Recapture Thumbnail")
         copy_path = menu.addAction("Copy Path")
-        action = menu.exec(self.work_list.mapToGlobal(pos))
+        action = _exec_menu(menu, self.work_list.mapToGlobal(pos))
         if action == open_scene:
             self._open_selected_scene()
         elif action == open_folder:
@@ -2975,7 +3078,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         menu.addSeparator()
         open_folder = menu.addAction("Open Folder")
         copy_path = menu.addAction("Copy Path")
-        action = menu.exec(QtGui.QCursor.pos())
+        action = _exec_menu(menu, QtGui.QCursor.pos())
         if action == open_scene:
             self._open_work_path(path)
         elif action == reference_scene:
@@ -3013,7 +3116,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         open_folder = menu.addAction("Open Folder")
         copy_path = menu.addAction("Copy Path")
-        action = menu.exec(self.data_list.mapToGlobal(pos))
+        action = _exec_menu(menu, self.data_list.mapToGlobal(pos))
         if action == open_folder:
             self.manager.open_in_explorer(path.parent)
         elif action == copy_path:
@@ -3046,7 +3149,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         import_file = menu.addAction("Import")
         open_folder = menu.addAction("Open Folder")
         copy_path = menu.addAction("Copy Path")
-        action = menu.exec(self.publish_list.mapToGlobal(pos))
+        action = _exec_menu(menu, self.publish_list.mapToGlobal(pos))
         if action == import_file:
             import_file_to_current_dcc(path)
         elif action == open_folder:
@@ -3570,7 +3673,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._refresh_retarget_publish_tab(asset)
         self.status_label.setText(f"Published Retarget {result['version']}: {result['profile'].name}")
 
-    def _publish_selected_work(self) -> None:
+    def _publish_selected_work(self, _checked: bool = False, *, force_usd: bool = False) -> None:
         asset = self._current_asset()
         source_path, source_kind = self._publish_source_path()
         if not asset:
@@ -3628,6 +3731,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             source_path,
             subset=subset,
         )
+        if force_usd and "usd" not in publish_formats:
+            publish_formats.append("usd")
         if parsed["department"] == "rig" and "usd" not in publish_formats:
             publish_formats.append("usd")
         publish_version = self.manager.next_publish_version(
@@ -3738,7 +3843,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             export_guide = menu.addAction("mGear Guide")
         elif export_kind == "skin":
             export_skin = menu.addAction("mGear Skin")
-        action = menu.exec(QtGui.QCursor.pos())
+        action = _exec_menu(menu, QtGui.QCursor.pos())
         if not action:
             return
 
@@ -3886,7 +3991,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             if comment is None:
                 return
             path = asset_assembly.save_assembly(project_config, comment=comment)
-            self.status_label.setText(f"Saved assembly: {Path(path).name}")
+            self.status_label.setText(f"Saved assembly: {Path(path).parent.name}/{Path(path).name}")
             current_asset = self._current_asset()
             if current_asset:
                 self._populate_data_tree(current_asset)

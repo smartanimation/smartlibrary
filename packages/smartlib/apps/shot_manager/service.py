@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -12,6 +14,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig, load_config
 from smartlib.core.asset_publish_resolver import AssetPublishResolver
+from smartlib.core.asset_load_policy import resolve_asset_load_policy
 from smartlib.core.credentials import credentials_path
 from smartlib.core.metadata import read_json, sidecar_path, write_json
 from smartlib.core.path_resolver import ProjectPaths
@@ -39,9 +42,9 @@ ROLE_ALIASES = {
 VALID_ASSET_PUBLISH = {"approved", "latest"}
 CONSTRUCT_TYPES = {
     "rig", "camera", "animation", "animation_curve", "fx", "light", "audio",
-    "cast", "placement", "layout_overlay", "set_dress", "preview_render",
+    "cast", "placement", "layout_overlay", "set_dress", "preview_render", "usd",
 }
-CONSTRUCT_MODES = {"reference", "import", "apply", "reference_cache", "file"}
+CONSTRUCT_MODES = {"reference", "import", "apply", "reference_cache", "file", "payload"}
 FX_CACHE_EXTENSIONS = {".abc", ".usd", ".usda", ".usdc"}
 CAST_CSV_COLUMNS = [
     "episode",
@@ -1930,7 +1933,9 @@ class ShotManagerService:
                     ConstructComponent(
                         component_type="rig",
                         name=item.cast_key,
-                        version=item.asset_publish or "approved",
+                        version=_version_from_path(Path(item.publish_path))
+                        or item.asset_publish
+                        or "approved",
                         mode="reference",
                         namespace=item.namespace or item.cast_key,
                         path=item.publish_path,
@@ -1943,6 +1948,7 @@ class ShotManagerService:
                             "variant": item.variant,
                             "role": item.role,
                             "status": item.status,
+                            "asset_publish": item.asset_publish or "approved",
                         },
                     )
                 )
@@ -1961,6 +1967,7 @@ class ShotManagerService:
         *,
         cast_contexts: dict[str, str] | None = None,
         exclude_cast: list[str] | None = None,
+        representation: str = "project",
     ) -> dict[str, Any]:
         components: list[dict[str, Any]] = []
         anim_input_path = self.latest_anim_input(identity)
@@ -2078,24 +2085,83 @@ class ShotManagerService:
         except Exception:
             preview = self.build_preview(identity)
         for item in preview:
+            role = _normalize_role(item.role)
+            requested_context = str((cast_contexts or {}).get(item.cast_key) or "WORK")
+            asset_metadata = self._asset_workspace_metadata(item)
+            load_policy = {}
+            project_config = getattr(self, "project_config", None)
+            if project_config is not None:
+                try:
+                    load_policy = (
+                        project_config.load("templates_assets.yml").get("workspace_load_policy")
+                        or {}
+                    )
+                except Exception:
+                    load_policy = {}
+            decision = resolve_asset_load_policy(
+                asset_metadata,
+                role=role,
+                requested_context=requested_context,
+                policy=load_policy,
+            )
+            requested_representation = str(representation or "project").strip().lower()
+            if requested_representation in {"", "project", "default"}:
+                requested_representation = str(
+                    load_policy.get("representation") or "maya"
+                ).strip().lower()
+            if requested_representation == "maya":
+                decision = type(decision)(
+                    "reference", requested_context.upper(), "stage representation: maya"
+                )
+            elif requested_representation == "usd":
+                decision = type(decision)(
+                    "payload", requested_context.upper(), "stage representation: usd"
+                )
+            uses_payload = decision.mode == "payload"
+            usd_source = (
+                self._asset_usd_for_preview(item, profile=decision.context)
+                if uses_payload
+                else None
+            )
             components.append(
                 asdict(
                     ConstructComponent(
-                        component_type="rig",
+                        component_type=decision.component_type,
                         name=item.cast_key,
-                        version=item.asset_publish or "approved",
-                        mode="reference",
-                        namespace=item.namespace or item.cast_key,
-                        path=item.publish_path,
-                        required=item.required,
+                        version=(
+                            usd_source.parent.name
+                            if uses_payload and usd_source
+                            else _version_from_path(Path(item.publish_path))
+                            or item.asset_publish
+                            or "approved"
+                        ),
+                        mode=decision.mode,
+                        namespace="" if uses_payload else (item.namespace or item.cast_key),
+                        path=(
+                            str(usd_source or "")
+                            if uses_payload
+                            else item.publish_path
+                        ),
+                        # A background may enter production before its formal
+                        # Asset USD exists. Keep it visible as MISSING without
+                        # blocking construction of the remaining scene.
+                        required=False if uses_payload else item.required,
                         enabled=True,
-                        note=item.message if item.status != "resolved" else "",
+                        note=(
+                            "MISSING: Compose/Pack Asset USD required"
+                            if uses_payload and not usd_source
+                            else item.message if item.status != "resolved" else ""
+                        ),
                         source={
                             "kind": "cast_entry",
                             "asset": item.asset,
                             "variant": item.variant,
                             "role": item.role,
                             "status": item.status,
+                            "asset_publish": item.asset_publish or "approved",
+                            "context": decision.context,
+                            "load_policy": decision.mode,
+                            "load_policy_reason": decision.reason,
                         },
                     )
                 )
@@ -2108,12 +2174,34 @@ class ShotManagerService:
             "components": components,
         }
 
+    def _asset_workspace_metadata(self, item: BuildPreviewItem) -> dict[str, Any]:
+        """Merge asset and variant metadata used by workspace load policy."""
+
+        variant_root = Path(str(item.variant_root or "")) if item.variant_root else None
+        asset_root = variant_root.parent if variant_root else self.find_asset_root(item.asset)
+        metadata: dict[str, Any] = {}
+        if asset_root:
+            metadata.update(read_json(asset_root / "asset.json", {}) or {})
+        if variant_root:
+            variant_data = read_json(variant_root / "variant.json", {}) or {}
+            for key in ("workspace_representation", "load_policy", "capabilities"):
+                if key in variant_data:
+                    if isinstance(metadata.get(key), dict) and isinstance(variant_data[key], dict):
+                        merged = dict(metadata[key])
+                        merged.update(variant_data[key])
+                        metadata[key] = merged
+                    else:
+                        metadata[key] = variant_data[key]
+        metadata.setdefault("asset", item.asset)
+        return metadata
+
     def resolved_construct(
         self,
         identity: ShotIdentity,
         *,
         cast_contexts: dict[str, str] | None = None,
         exclude_cast: list[str] | None = None,
+        representation: str = "project",
     ) -> dict[str, Any]:
         """Resolve published inputs and overlay the persisted Construct choices."""
 
@@ -2131,6 +2219,7 @@ class ShotManagerService:
             identity,
             cast_contexts=saved_contexts,
             exclude_cast=exclude_cast,
+            representation=representation,
         )
         persisted_by_key = {
             _construct_component_key(component): component
@@ -2140,6 +2229,11 @@ class ShotManagerService:
         excluded = {str(value) for value in (exclude_cast or [])}
         components = []
         seen = set()
+        generated_cast_types = {
+            str(component.get("name") or ""): str(component.get("component_type") or "").lower()
+            for component in (generated.get("components") or [])
+            if str((component.get("source") or {}).get("kind") or "") == "cast_entry"
+        }
         for component in generated.get("components") or []:
             key = _construct_component_key(component)
             saved = persisted_by_key.get(key) or {}
@@ -2147,7 +2241,19 @@ class ShotManagerService:
             for field in ("enabled", "mode", "namespace", "required"):
                 if field in saved:
                     merged[field] = saved[field]
-            if saved.get("note"):
+            generated_source = component.get("source") or {}
+            is_optional_background = (
+                str(component.get("component_type") or "").lower() == "usd"
+                and _normalize_role(str(generated_source.get("role") or ""))
+                in {"BGA", "ENV"}
+            )
+            # Older construct files may have persisted backgrounds as required
+            # rig inputs. Formal Asset USD is intentionally optional while an
+            # assembly is still being composed, so stale choices must not turn
+            # the missing background back into a build blocker.
+            if is_optional_background:
+                merged["required"] = False
+            if saved.get("note") and not is_optional_background:
                 merged["note"] = saved["note"]
             source = dict(component.get("source") or {})
             source.update(saved.get("source") or {})
@@ -2170,6 +2276,15 @@ class ShotManagerService:
                 "published_preview_render",
                 "published_animation_package",
             }:
+                continue
+            if (
+                str(source.get("kind") or "") == "cast_entry"
+                and str(component.get("name") or "") in generated_cast_types
+                and str(component.get("component_type") or "").lower()
+                != generated_cast_types[str(component.get("name") or "")]
+            ):
+                # The generated policy row is authoritative when metadata or
+                # project policy changes an existing cast representation.
                 continue
             key = _construct_component_key(component)
             if key not in seen:
@@ -3816,6 +3931,44 @@ class ShotManagerService:
         sequence_editorial = sequence_data.get("editorial") or {}
         camera_publish = self._latest_shot_camera_publish(identity)
         layout_overlay = self._latest_layout_overlay_usd(identity)
+        context_profile = str((overrides or {}).get("context") or "WORK").strip().upper()
+        representation = str(
+            (overrides or {}).get("representation") or "project"
+        ).strip().lower()
+        if representation in {"", "project", "default"}:
+            try:
+                representation = str(
+                    (
+                        self.project_config.load("templates_assets.yml").get(
+                            "workspace_load_policy"
+                        ) or {}
+                    ).get("representation") or "maya"
+                ).strip().lower()
+            except Exception:
+                representation = "maya"
+        context_usd = None
+        context_version = ""
+        if representation == "usd":
+            context_rows = self.shot_context_components(
+                identity,
+                department="anim",
+                profile=context_profile,
+                cast_contexts=(overrides or {}).get("cast_contexts") or {},
+                exclude_cast=(overrides or {}).get("exclude_cast") or [],
+            )
+            if context_rows:
+                self.build_shot_context(
+                    identity,
+                    department="anim",
+                    profile=context_profile,
+                    components=context_rows,
+                    comment=comment or "Generated with anim input package",
+                )
+            context_usd, context_version = self.latest_shot_context(
+                identity,
+                department="anim",
+                profile=context_profile,
+            )
         cut_in = editorial.get("cut_in")
         cut_out = editorial.get("cut_out")
         handles = self._editorial_handles(editorial)
@@ -3837,6 +3990,9 @@ class ShotManagerService:
             "camera": self._relative_to_project(camera_publish) if camera_publish else "",
             "layout_overlay": self._relative_to_project(layout_overlay) if layout_overlay else "",
             "layout_overlay_usage": "reference_only",
+            "context_usd": self._relative_to_project(context_usd) if context_usd else "",
+            "context_version": context_version,
+            "context_profile": context_profile,
             "editorial": self._relative_to_project(self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence / "latest.json"),
             "comment": comment,
         }
@@ -3876,6 +4032,271 @@ class ShotManagerService:
         write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/anim_input.json"})
         self._update_versions(base_dir / "versions.json", version_label)
         return anim_input_path
+
+    def shot_context_root(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+        profile: str = "WORK",
+    ) -> Path:
+        """Return the version root for a generated shot workspace context."""
+
+        return (
+            self.shot_root(identity)
+            / "data"
+            / "context"
+            / _normalize_work_option(department)
+            / _clean_publish_token(profile).upper()
+        )
+
+    def latest_shot_context(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+        profile: str = "WORK",
+    ) -> tuple[Path | None, str]:
+        root = self.shot_context_root(identity, department=department, profile=profile)
+        latest = read_json(root / "latest.json", {}) or {}
+        version = str(latest.get("version") or "")
+        path = root / str(latest.get("path") or "")
+        if path.is_file():
+            return path, version
+        fallback = root / version / "context.usda" if version else None
+        return (fallback, version) if fallback and fallback.is_file() else (None, "")
+
+    def shot_context_components(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+        profile: str = "WORK",
+        cast_contexts: dict[str, str] | None = None,
+        exclude_cast: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Resolve lightweight, non-editable workspace components for a shot."""
+
+        components: list[dict[str, Any]] = []
+        for item in self.build_preview(
+            identity,
+            department=department,
+            cast_contexts=cast_contexts,
+            exclude_cast=exclude_cast,
+        ):
+            role = _normalize_role(item.role)
+            component_type = ""
+            if role in {"BGA", "ENV"}:
+                component_type = "background"
+            elif role == "CROWD":
+                component_type = "crowd"
+            elif role == "FX":
+                component_type = "fx"
+            if not component_type:
+                continue
+            source = self._asset_usd_for_preview(item, profile=profile)
+            components.append(
+                {
+                    "use": bool(source),
+                    "type": component_type,
+                    "name": item.cast_key,
+                    "subset": profile.lower(),
+                    "version": source.parent.name if source else "",
+                    "load_policy": "payload",
+                    "source": str(source) if source else "",
+                    "state": "READY" if source else "MISSING",
+                }
+            )
+        overlay = self._latest_layout_overlay_usd(identity)
+        components.append(
+            {
+                "use": bool(overlay),
+                "type": "layout_overlay",
+                "name": "layout_overlay",
+                "subset": "proxy",
+                "version": overlay.parent.name if overlay else "",
+                "load_policy": "payload",
+                "source": str(overlay) if overlay else "",
+                "state": "READY" if overlay else "OPTIONAL",
+            }
+        )
+        return components
+
+    def build_shot_context(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+        profile: str = "WORK",
+        components: list[dict[str, Any]] | None = None,
+        comment: str = "",
+    ) -> Path:
+        """Create an immutable workspace-reconstruction context snapshot."""
+
+        root = self.shot_context_root(identity, department=department, profile=profile)
+        version = self._next_publish_version(root)
+        version_dir = root / version
+        version_dir.mkdir(parents=True, exist_ok=False)
+        rows = deepcopy(
+            components
+            if components is not None
+            else self.shot_context_components(
+                identity, department=department, profile=profile
+            )
+        )
+        enabled = []
+        missing = []
+        for row in rows:
+            source = Path(str(row.get("source") or ""))
+            row["use"] = bool(row.get("use"))
+            row["source"] = self._relative_to_project(source) if source.is_file() else ""
+            if row["use"] and source.is_file():
+                enabled.append((row, source))
+            elif row["use"]:
+                missing.append(str(row.get("name") or row.get("type") or "component"))
+        if missing:
+            raise RuntimeError("Shot Context has missing enabled components: " + ", ".join(missing))
+
+        context_path = version_dir / "context.usda"
+        context_path.write_text(
+            self._shot_context_usda(version_dir, enabled), encoding="utf-8"
+        )
+        context_data = {
+            "schema_version": 1,
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "department": _normalize_work_option(department),
+            "profile": _clean_publish_token(profile).upper(),
+            "version": version,
+            "components": rows,
+            "comment": comment,
+        }
+        context_json = write_json(version_dir / "context.json", context_data)
+        digest = hashlib.sha256(
+            json.dumps(context_data, sort_keys=True, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+        write_json(
+            version_dir / "build_manifest.json",
+            {
+                "manifest_type": "shot_context",
+                "version": version,
+                "context": "context.usda",
+                "context_metadata": context_json.name,
+                "metadata_hash": digest,
+                "resolved_components": [row for row, _source in enabled],
+            },
+        )
+        write_json(root / "latest.json", {"version": version, "path": f"{version}/context.usda"})
+        self._update_versions(root / "versions.json", version)
+        return context_path
+
+    def list_shot_context_versions(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str = "anim",
+        profile: str = "WORK",
+    ) -> list[dict[str, Any]]:
+        root = self.shot_context_root(identity, department=department, profile=profile)
+        latest = read_json(root / "latest.json", {}) or {}
+        rows = []
+        for version_dir in sorted(root.glob("v*"), reverse=True):
+            metadata = read_json(version_dir / "context.json", {}) or {}
+            rows.append(
+                {
+                    "version": version_dir.name,
+                    "state": "LATEST" if latest.get("version") == version_dir.name else "AVAILABLE",
+                    "comment": str(metadata.get("comment") or ""),
+                    "path": str(version_dir / "context.usda"),
+                }
+            )
+        return rows
+
+    def _shot_context_usda(
+        self,
+        version_dir: Path,
+        components: list[tuple[dict[str, Any], Path]],
+    ) -> str:
+        groups = {"background": [], "crowd": [], "fx": [], "layout_overlay": []}
+        for row, source in components:
+            groups.setdefault(str(row.get("type") or "other"), []).append((row, source))
+        lines = ["#usda 1.0", "(", '    defaultPrim = "Context"', ")", "", 'def Xform "Context"', "{"]
+        for component_type, label in (
+            ("background", "Background"),
+            ("crowd", "Crowd"),
+            ("fx", "FX"),
+            ("layout_overlay", "LayoutOverlay"),
+        ):
+            lines.append(f'    def Scope "{label}"')
+            lines.append("    {")
+            for row, source in groups.get(component_type, []):
+                name = _clean_publish_token(row.get("name") or component_type)
+                relative = self._relative_path(version_dir, source)
+                arc = "payload" if row.get("load_policy") == "payload" else "references"
+                lines.extend(
+                    [
+                        f'        def Xform "{name}" (',
+                        f'            {arc} = @{relative}@',
+                        "        )",
+                        "        {",
+                        "        }",
+                    ]
+                )
+            lines.append("    }")
+        lines.extend(["}", ""])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _usd_companion_for_publish(path: Path) -> Path | None:
+        if str(path) in {"", "."}:
+            return None
+        if path.suffix.lower() in {".usd", ".usda", ".usdc"} and path.is_file():
+            return path
+        directory = path if path.is_dir() else path.parent
+        for name in ("asset.usda", "asset.usd", "model.usd", "model.usda"):
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _asset_usd_for_preview(
+        self,
+        item: BuildPreviewItem,
+        *,
+        profile: str = "WORK",
+    ) -> Path | None:
+        """Resolve the formal packed Asset USD used by shot construction.
+
+        Component model/assembly publishes are deliberately not accepted here.
+        A background becomes available to shots only after Compose/Pack has
+        produced ``publish/asset/{context}/v###/asset.usda``.
+        """
+
+        variant_root = Path(item.variant_root) if item.variant_root else None
+        if not variant_root or not variant_root.is_dir():
+            return None
+        profile_name = str(profile or "WORK").upper()
+        preferred_contexts = tuple(
+            dict.fromkeys((profile_name.lower(), "final", "work", "fast"))
+        )
+        asset_root = variant_root / "publish" / "asset"
+        for context_name in preferred_contexts:
+            base = asset_root / context_name
+            latest = read_json(base / "latest.json", {}) or {}
+            latest_path = base / str(latest.get("path") or "")
+            if latest_path.is_file() and latest_path.name.lower() == "asset.usda":
+                return latest_path
+            latest_version = str(latest.get("version") or "")
+            if latest_version:
+                candidate = base / latest_version / "asset.usda"
+                if candidate.is_file():
+                    return candidate
+            for version_dir in sorted(base.glob("v*"), reverse=True) if base.is_dir() else []:
+                candidate = version_dir / "asset.usda"
+                if candidate.is_file():
+                    return candidate
+        return None
 
     def _status_from_file(self, name: str, path: Path, *, exists: bool | None = None, message: str = "") -> LayoutPublishStatusItem:
         ready = path.exists() if exists is None else exists and path.exists()
@@ -4916,12 +5337,13 @@ class ShotManagerService:
             return {}
         role = _role_from_asset_selection(selected)
         cast_key = _unique_cast_key(existing_cast or {}, selected.get("asset"))
+        namespace = _unique_namespace(existing_cast or {}, selected.get("asset"))
         return {
             "cast_key": cast_key,
             "asset": selected.get("asset", ""),
             "variant": selected.get("variant", "default") or "default",
             "role": role,
-            "namespace": cast_key,
+            "namespace": namespace,
             "asset_publish": "approved",
             "required": True,
             "note": f"from Asset Manager: {selected.get('category', '')}/{selected.get('group', '')}",
@@ -5085,6 +5507,21 @@ def _unique_cast_key(existing_cast: dict[str, Any], asset_name: Any) -> str:
         return candidate
     index = 2
     while f"{base}_{index:02d}" in existing_cast:
+        index += 1
+    return f"{base}_{index:02d}"
+
+
+def _unique_namespace(existing_cast: dict[str, Any], asset_name: Any) -> str:
+    base = re.sub(r"[^0-9A-Za-z_]+", "_", str(asset_name or "asset")).strip("_") or "asset"
+    namespaces = {
+        str(entry.get("namespace") or key)
+        for key, entry in existing_cast.items()
+        if isinstance(entry, dict)
+    }
+    if base not in namespaces:
+        return base
+    index = 2
+    while f"{base}_{index:02d}" in namespaces:
         index += 1
     return f"{base}_{index:02d}"
 
@@ -5254,6 +5691,7 @@ def _animation_binding_layer_text(bindings: list[dict[str, Any]]) -> str:
                         f"{indent})",
                         f"{indent}{{",
                         f"{indent}    rel skel:animationSource = <{animation}>",
+                        f'{indent}    uniform token visibility = "invisible"',
                     ]
                 )
             else:

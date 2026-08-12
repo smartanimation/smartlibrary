@@ -755,7 +755,7 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
                 warnings.append(result.warning)
             message = f"Extracted work: {result.workfile}"
             if result.publishfile:
-                message = f"{message}\nPublished USD: {result.publishfile}"
+                message = f"{message}\nPublished model: {result.publishfile}"
             if result.assembly_usd_path:
                 message = f"{message}\nAssembly preview: {result.assembly_usd_path}"
             if warnings:

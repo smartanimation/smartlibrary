@@ -12,6 +12,7 @@ from smartlib.core.metadata import read_json, write_json
 from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
 
 CAST_CONTEXTS = ("FAST", "WORK", "FINAL")
+CASTING_EXCLUDED_CATEGORIES = {"prop"}
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,11 @@ class SmartCastingService:
             category = str(metadata.get("category") or asset_root.parent.parent.name)
             group = str(metadata.get("group") or asset_root.parent.name)
             asset = str(metadata.get("asset") or metadata.get("name") or asset_root.name)
+            if category.strip().lower() in CASTING_EXCLUDED_CATEGORIES:
+                continue
+            expected_root = self.paths.asset_root(AssetIdentity(category, group, asset))
+            if asset_root.resolve() != expected_root.resolve():
+                continue
             description = str(metadata.get("description") or "")
             status = str(metadata.get("status") or "Wait")
             variants = self._variant_names(asset_root)
@@ -262,11 +268,50 @@ class SmartCastingService:
 
     def save_sequence_cast(self, episode: str, sequence: str, rows: list[dict[str, Any]]) -> Path:
         existing = self.load_sequence_cast(episode, sequence)
-        return self.shot_service.write_sequence_cast(
+        cast_data = self.shot_service.build_cast_data(rows, existing=existing)
+        path = self.shot_service.write_sequence_cast(
             episode,
             sequence,
-            self.shot_service.build_cast_data(rows, existing=existing),
+            cast_data,
         )
+        self.sync_sequence_cast_to_shots(episode, sequence, cast_data)
+        return path
+
+    def sync_sequence_cast_to_shots(
+        self,
+        episode: str,
+        sequence: str,
+        cast_data: dict[str, Any] | None = None,
+    ) -> dict[str, list[str]]:
+        sequence_cast = dict((cast_data or self.load_sequence_cast(episode, sequence)).get("cast") or {})
+        added_by_shot: dict[str, list[str]] = {}
+        for identity in self.shots_for_sequence(episode, sequence):
+            shot_data = self.load_shot_cast(identity)
+            shot_cast = dict(shot_data.get("cast") or {})
+            namespaces = {
+                str(entry.get("namespace") or key): key
+                for key, entry in shot_cast.items()
+                if isinstance(entry, dict)
+            }
+            added: list[str] = []
+            for cast_key, entry in sequence_cast.items():
+                key = str(cast_key or "").strip()
+                if not key or key in shot_cast or not isinstance(entry, dict):
+                    continue
+                if not self._asset_for_cast_entry(entry):
+                    continue
+                namespace = str(entry.get("namespace") or key).strip()
+                if namespace and namespace in namespaces:
+                    continue
+                shot_cast[key] = dict(entry)
+                namespaces[namespace or key] = key
+                added.append(key)
+            if added:
+                updated = dict(shot_data)
+                updated["cast"] = shot_cast
+                self.shot_service.write_cast(identity, updated)
+                added_by_shot[identity.shot] = added
+        return added_by_shot
 
     def publish_sequence_cast(self, episode: str, sequence: str, comment: str = "") -> Path:
         return self.shot_service.publish_sequence_cast(episode, sequence, comment=comment)

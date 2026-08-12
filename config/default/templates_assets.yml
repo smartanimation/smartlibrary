@@ -77,6 +77,33 @@ work_subsets_by_category:
     env: [proxy, render]
     prop: [proxy, render]
 
+# Artist workspace representation policy used by Build Manager's
+# "Project Default" selection. The UI's Maya/USD choices override it per build.
+workspace_load_policy:
+  # Current projects are Maya-first. Change to "usd" when a project is ready
+  # to use packed Asset USD as its default shot representation.
+  representation: maya
+  defaults:
+    character:
+      mode: reference
+      context: WORK
+    rigged_prop:
+      mode: reference
+      context: WORK
+    prop:
+      mode: payload
+      context: WORK
+    environment:
+      mode: payload
+      context: WORK
+    unknown:
+      mode: reference
+      context: WORK
+  category_classes:
+    character: [CH, char, character, characters, hero]
+    environment: [BG, env, environment, set, sets]
+    prop: [prop, props, bp, cp]
+
 staging_dependencies:
   model:
     default:

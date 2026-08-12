@@ -75,6 +75,8 @@
     try {
       var defaultNamingPath = path.join(configRoot, "default", "naming.yml");
       var defaultNaming = fs.existsSync(defaultNamingPath) ? parseSimpleYaml(fs.readFileSync(defaultNamingPath, "utf8")) : {};
+      var defaultAeRenderPath = path.join(configRoot, "default", "ae_render.yml");
+      var defaultAeRender = fs.existsSync(defaultAeRenderPath) ? parseSimpleYaml(fs.readFileSync(defaultAeRenderPath, "utf8")) : {};
       fs.readdirSync(configRoot, { withFileTypes: true }).forEach(function (entry) {
         var templatePath;
         var aeRenderPath;
@@ -97,7 +99,7 @@
           name: String(anchors.project_name || entry.name),
           root: String(anchors.project_root || ""),
           configDir: path.join(configRoot, entry.name).replace(/\\/g, "/"),
-          aeRender: fs.existsSync(aeRenderPath) ? parseSimpleYaml(fs.readFileSync(aeRenderPath, "utf8")) : {},
+          aeRender: mergeObjects(defaultAeRender, fs.existsSync(aeRenderPath) ? parseSimpleYaml(fs.readFileSync(aeRenderPath, "utf8")) : {}),
           naming: mergeObjects(defaultNaming, fs.existsSync(namingPath) ? parseSimpleYaml(fs.readFileSync(namingPath, "utf8")) : {}),
           shots: loadShotContexts(String(anchors.project_root || ""), String(anchors.project_name || entry.name))
         });

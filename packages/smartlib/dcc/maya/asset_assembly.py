@@ -247,7 +247,7 @@ def register_selected_component(
     asset_name = asset or _safe_name(target)
     locator = create_place_locator(asset_name)
     component_target = _target_from_locator(locator)
-    center = _bbox_center(cmds, nodes)
+    center = _bbox_bottom_center(cmds, nodes)
     try:
         cmds.xform(locator, worldSpace=True, translation=center)
     except Exception:
@@ -280,7 +280,7 @@ def place_published_asset_at_selection(
         raise RuntimeError("Select scene nodes to replace with a placed asset.")
     locator = create_place_locator(asset)
     target = _target_from_locator(locator)
-    matrix = _source_world_matrix(cmds, selected)
+    matrix = _source_placement_matrix(cmds, selected, _bbox_bottom_center(cmds, selected))
     if matrix:
         _set_locator_to_source_matrix(cmds, locator, matrix)
     component = AssemblyComponent(
@@ -303,7 +303,6 @@ def place_published_asset_at_selection(
         source_nodes=selected,
         usd_mode=component.usd_mode,
     )
-    latest_asset_usd(project_config, component.category, component.group, component.asset, component.variant)
     refresh_assembly_preview_usd(project_config, reload=True)
     for node in selected:
         if cmds.objExists(node):
@@ -339,7 +338,6 @@ def place_published_asset_at_locator(
         usd_mode=_normalize_usd_mode(usd_mode),
         local_offset_y=_get_float_attr(cmds, locator, LOCAL_OFFSET_Y_ATTR),
     )
-    latest_asset_usd(project_config, component.category, component.group, component.asset, component.variant)
     _set_component_metadata(
         locator,
         target=component.target,
@@ -538,7 +536,8 @@ def save_assembly(project_config: ProjectConfig, comment: str = "") -> Path:
     paths = ProjectPaths(project_root)
     data_path = _save_assembly_data(project_config, context, paths, comment=comment)
     data = read_json(data_path, {}) or {}
-    files = _write_working_assembly_usd(
+    component_usd_errors = _ensure_assembly_component_usd_outputs(project_config, data, comment=comment)
+    files = _write_saved_assembly_usd(
         project_config,
         context,
         paths,
@@ -547,11 +546,19 @@ def save_assembly(project_config: ProjectConfig, comment: str = "") -> Path:
         comment=comment,
         export_local=True,
         reload=True,
+        component_usd_errors=component_usd_errors,
     )
     return files["entry"]
 
 
 def publish_assembly(project_config: ProjectConfig, comment: str = "") -> Path:
+    """Publish the assembly representation without creating a formal Asset Pack.
+
+    ``assembly.usda`` remains an intermediate representation consumed by the
+    Asset Manager Context workflow.  Only Context ``Pack`` may create the
+    formal ``publish/asset/{context}/v###/asset.usda`` entry point.
+    """
+
     context = current_assembly_context(project_config)
     _ensure_assembly_asset(project_config, context, comment=comment)
     project_root = _project_root(project_config)
@@ -562,6 +569,7 @@ def publish_assembly(project_config: ProjectConfig, comment: str = "") -> Path:
     version = _next_version_label(base_dir)
     version_dir = base_dir / version
     version_dir.mkdir(parents=True, exist_ok=True)
+    component_usd_errors = _ensure_assembly_component_usd_outputs(project_config, data, comment=comment)
     files = _write_assembly_usd_layers(
         data,
         project_root=project_root,
@@ -594,22 +602,13 @@ def publish_assembly(project_config: ProjectConfig, comment: str = "") -> Path:
                 else ("placeholder" if files["local_error"] else "empty"),
                 "error": files["local_error"],
             },
+            "component_usd_errors": component_usd_errors,
             "source_data": _relative_to_project(data_path, project_root),
             "comment": comment,
         },
     )
     write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/assembly.usda"})
     _update_versions(base_dir / "versions.json", version)
-    _publish_assembly_usd_entry(
-        paths,
-        context.identity,
-        assembly_version=version,
-        assembly_usd_path=usda_path,
-        data_path=data_path,
-        component_count=len(data.get("components") or []),
-        local_geometry_file=files["local"].name if files["local"].exists() else "",
-        comment=comment,
-    )
     return usda_path
 
 
@@ -619,6 +618,7 @@ def refresh_assembly_preview_usd(project_config: ProjectConfig, comment: str = "
     project_root = _project_root(project_config)
     paths = ProjectPaths(project_root)
     data = _assembly_data(context, version="preview", comment=comment)
+    component_usd_errors = _ensure_assembly_component_usd_outputs(project_config, data, comment=comment)
     files = _write_working_assembly_usd(
         project_config,
         context,
@@ -628,6 +628,7 @@ def refresh_assembly_preview_usd(project_config: ProjectConfig, comment: str = "
         comment=comment,
         export_local=False,
         reload=reload,
+        component_usd_errors=component_usd_errors,
     )
     return files["entry"]
 
@@ -660,6 +661,7 @@ def _write_working_assembly_usd(
     comment: str = "",
     export_local: bool = False,
     reload: bool = False,
+    component_usd_errors: list[str] | None = None,
 ) -> dict[str, Any]:
     project_root = _project_root(project_config)
     preview_dir = paths.asset_variant_root(context.identity) / "data" / "assembly" / "preview"
@@ -683,9 +685,71 @@ def _write_working_assembly_usd(
         if files["local_nodes"] and not files["local_error"]
         else ("placeholder" if files["local_error"] else ("empty" if export_local else ("cached" if files["local"].exists() else "empty"))),
         "local_geometry_error": files["local_error"],
+        "component_usd_errors": component_usd_errors or [],
         "comment": comment,
     }
     write_json(preview_dir / "assembly_preview.json", metadata)
+    if reload:
+        _set_assembly_usd_proxy(_maya_cmds(), files["entry"], reload=True)
+    return files
+
+
+def _write_saved_assembly_usd(
+    project_config: ProjectConfig,
+    context: AssemblyContext,
+    paths: ProjectPaths,
+    data: dict[str, Any],
+    *,
+    data_path: Path,
+    comment: str = "",
+    export_local: bool = True,
+    reload: bool = False,
+    component_usd_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    project_root = _project_root(project_config)
+    base_dir = paths.asset_variant_root(context.identity) / "data" / "assembly" / "saved"
+    version = data_path.parent.name if parse_version(data_path.parent.name) is not None else _next_version_label(base_dir)
+    version_dir = base_dir / version
+    version_dir.mkdir(parents=True, exist_ok=True)
+    files = _write_assembly_usd_layers(
+        data,
+        project_root=project_root,
+        output_dir=version_dir,
+        export_local=export_local,
+    )
+    record_files = {
+        "usd": files["entry"].name,
+        "assets_usd": files["assets"].name,
+    }
+    if files["local"].exists():
+        record_files["local_usd"] = files["local"].name
+    write_json(
+        version_dir / "assembly_save.json",
+        {
+            "publish_type": "assembly",
+            "subset": "saved",
+            "asset": context.asset,
+            "category": context.category,
+            "group": context.group,
+            "variant": context.variant,
+            "version": version,
+            "files": record_files,
+            "components": len(data.get("components") or []),
+            "local_geometry": {
+                "nodes": files["local_nodes"],
+                "file": files["local"].name if files["local"].exists() else "",
+                "status": "exported"
+                if files["local_nodes"] and not files["local_error"]
+                else ("placeholder" if files["local_error"] else "empty"),
+                "error": files["local_error"],
+            },
+            "component_usd_errors": component_usd_errors or [],
+            "source_data": _relative_to_project(data_path, project_root),
+            "comment": comment,
+        },
+    )
+    write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/assembly.usda"})
+    _update_versions(base_dir / "versions.json", version)
     if reload:
         _set_assembly_usd_proxy(_maya_cmds(), files["entry"], reload=True)
     return files
@@ -734,13 +798,325 @@ def _write_assembly_usd_layers(
     }
 
 
+def _ensure_assembly_component_usd_outputs(
+    project_config: ProjectConfig,
+    data: dict[str, Any],
+    *,
+    comment: str = "",
+) -> list[str]:
+    cmds = _maya_cmds()
+    project_root = _project_root(project_config)
+    paths = ProjectPaths(project_root)
+    errors: list[str] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in data.get("components") or []:
+        if not isinstance(row, dict):
+            continue
+        identity = _component_identity(row)
+        if not identity.name:
+            continue
+        key = (identity.category, identity.group, identity.name, identity.variant)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if _component_has_current_asset_usd(paths, identity):
+                continue
+            _ensure_component_asset_usd_from_latest_model(cmds, paths, identity, comment=comment)
+            usd_error = _latest_model_usd_error(paths, identity)
+            if usd_error:
+                errors.append(f"{identity.category}/{identity.group}/{identity.name}/{identity.variant}: {usd_error}")
+        except Exception as exc:
+            if _latest_asset_usd_entry(paths, identity):
+                continue
+            errors.append(f"{identity.category}/{identity.group}/{identity.name}/{identity.variant}: {exc}")
+    return errors
+
+
+def _component_identity(row: dict[str, Any]) -> AssetIdentity:
+    return AssetIdentity(
+        _safe_name(str(row.get("category") or "prop")),
+        _safe_name(str(row.get("group") or "bp")),
+        _safe_name(str(row.get("asset") or "")),
+        _safe_name(str(row.get("variant") or "default")),
+    )
+
+
+def _component_has_current_asset_usd(paths: ProjectPaths, identity: AssetIdentity) -> bool:
+    try:
+        model_version, subset, _ma_path = _latest_model_maya_publish(paths, identity)
+    except RuntimeError:
+        return _latest_asset_usd_entry(paths, identity) is not None
+    return _asset_usd_matches_model(paths, identity, subset=subset, model_version=model_version)
+
+
+def _ensure_component_asset_usd_from_latest_model(
+    cmds: Any,
+    paths: ProjectPaths,
+    identity: AssetIdentity,
+    *,
+    comment: str = "",
+    subset_hint: str = "",
+) -> Path:
+    model_version, subset, ma_path = _latest_model_maya_publish(paths, identity, subset_hint=subset_hint)
+    if _asset_usd_matches_model(paths, identity, subset=subset, model_version=model_version):
+        entry = _latest_asset_usd_entry(paths, identity)
+        if entry:
+            return entry
+    model_usd_path = ma_path.parent / "model.usd"
+    usd_error = ""
+    if _needs_model_usd_export(ma_path, model_usd_path):
+        usd_error = _export_model_maya_publish_to_usd(cmds, ma_path, model_usd_path)
+    _update_model_publish_usd_record(
+        paths,
+        identity,
+        subset=subset,
+        version=model_version,
+        ma_path=ma_path,
+        model_usd_path=model_usd_path,
+        usd_error=usd_error,
+        comment=comment,
+    )
+    return _publish_asset_usd_entry(
+        paths,
+        identity,
+        model_version=model_version,
+        model_usd_path=model_usd_path,
+        subset=subset,
+        comment=comment,
+    )
+
+
+def _latest_model_usd_error(paths: ProjectPaths, identity: AssetIdentity) -> str:
+    try:
+        model_version, subset, _ma_path = _latest_model_maya_publish(paths, identity)
+    except RuntimeError:
+        return ""
+    record = read_json(paths.asset_publish_dir(identity, "model", subset) / model_version / "publish.json", {}) or {}
+    if not isinstance(record, dict):
+        return ""
+    if str(record.get("usd_export_status") or "").lower() not in {"failed", "placeholder"}:
+        return ""
+    return str(record.get("usd_export_error") or record.get("usd_export_status") or "USD export failed.")
+
+
+def _latest_model_maya_publish(
+    paths: ProjectPaths,
+    identity: AssetIdentity,
+    *,
+    subset_hint: str = "",
+) -> tuple[str, str, Path]:
+    for subset in _model_subset_order(subset_hint):
+        base_dir = paths.asset_publish_dir(identity, "model", subset)
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        version = str(latest.get("version") or "").strip()
+        path_text = str(latest.get("path") or "").strip()
+        if path_text:
+            latest_path = base_dir / path_text
+            version_label = version or latest_path.parent.name
+            parsed = parse_version(version_label)
+            for candidate in _maya_publish_candidates(latest_path):
+                if parsed is not None and candidate.exists():
+                    return format_version(parsed), subset, candidate
+        candidates: list[tuple[int, Path]] = []
+        for version_dir in base_dir.glob("v*"):
+            parsed = parse_version(version_dir.name)
+            if parsed is None:
+                continue
+            for candidate in (version_dir / "model.ma", version_dir / "model.mb"):
+                if candidate.exists():
+                    candidates.append((parsed, candidate))
+        if candidates:
+            parsed, path = max(candidates, key=lambda item: item[0])
+            return format_version(parsed), subset, path
+    raise RuntimeError(
+        "Latest Maya model publish was not found for "
+        f"{identity.category}/{identity.group}/{identity.name}/{identity.variant}."
+    )
+
+
+def _model_subset_order(subset_hint: str = "") -> list[str]:
+    order = []
+    for subset in (subset_hint, "proxy", "render"):
+        subset = str(subset or "").strip()
+        if subset and subset not in order:
+            order.append(subset)
+    return order
+
+
+def _maya_publish_candidates(path: Path) -> list[Path]:
+    candidates = [path]
+    if path.name != "model.ma":
+        candidates.append(path.parent / "model.ma")
+    if path.name != "model.mb":
+        candidates.append(path.parent / "model.mb")
+    return candidates
+
+
+def _latest_asset_usd_entry(paths: ProjectPaths, identity: AssetIdentity) -> Path | None:
+    base_dir = paths.asset_variant_root(identity) / "publish" / "usd"
+    latest = read_json(base_dir / "latest.json", {}) or {}
+    path_text = str(latest.get("path") or "").strip()
+    if path_text:
+        latest_path = base_dir / path_text
+        if latest_path.exists():
+            return latest_path
+    asset_name = _safe_name(identity.name)
+    candidates: list[tuple[int, Path]] = []
+    for version_dir in base_dir.glob("v*"):
+        parsed = parse_version(version_dir.name)
+        if parsed is None:
+            continue
+        for candidate in (version_dir / f"{asset_name}.usd", version_dir / f"{asset_name}.usda"):
+            if candidate.exists():
+                candidates.append((parsed, candidate))
+    if not candidates:
+        return None
+    parsed, path = max(candidates, key=lambda item: item[0])
+    version = format_version(parsed)
+    write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/{path.name}"})
+    _update_versions(base_dir / "versions.json", version)
+    return path
+
+
+def _asset_usd_matches_model(
+    paths: ProjectPaths,
+    identity: AssetIdentity,
+    *,
+    subset: str,
+    model_version: str,
+) -> bool:
+    model_record = read_json(paths.asset_publish_dir(identity, "model", subset) / model_version / "publish.json", {}) or {}
+    if isinstance(model_record, dict) and str(model_record.get("usd_export_status") or "").lower() in {
+        "failed",
+        "placeholder",
+    }:
+        return False
+    entry = _latest_asset_usd_entry(paths, identity)
+    if not entry:
+        return False
+    data = read_json(entry.parent / "publish.json", {}) or {}
+    dependencies = data.get("dependencies") if isinstance(data, dict) else {}
+    model = dependencies.get("model") if isinstance(dependencies, dict) else {}
+    return bool(
+        isinstance(model, dict)
+        and str(model.get("subset") or "") == subset
+        and str(model.get("version") or "") == model_version
+    )
+
+
+def _needs_model_usd_export(ma_path: Path, model_usd_path: Path) -> bool:
+    record = read_json(model_usd_path.parent / "publish.json", {}) or {}
+    if isinstance(record, dict) and str(record.get("usd_export_status") or "").lower() in {"failed", "placeholder"}:
+        return True
+    if not model_usd_path.exists():
+        return True
+    try:
+        return model_usd_path.stat().st_mtime < ma_path.stat().st_mtime
+    except OSError:
+        return True
+
+
+def _export_model_maya_publish_to_usd(cmds: Any, ma_path: Path, model_usd_path: Path) -> str:
+    previous_selection = cmds.ls(selection=True, long=True) or []
+    before_refs = set(cmds.ls(type="reference") or [])
+    new_ref_nodes: list[str] = []
+    try:
+        namespace = _unique_namespace(cmds, ma_path.stem)
+        new_nodes = cmds.file(
+            str(ma_path).replace("\\", "/"),
+            reference=True,
+            namespace=namespace,
+            returnNewNodes=True,
+        ) or []
+        after_refs = set(cmds.ls(type="reference") or [])
+        new_ref_nodes = sorted(after_refs - before_refs)
+        roots = _reference_transform_roots(cmds, new_nodes)
+        if not roots:
+            roots = _reference_mesh_roots(cmds, new_nodes)
+        if not roots:
+            error = f"No exportable transform roots were found in Maya model publish: {ma_path}"
+            _write_placeholder_usd(model_usd_path, error)
+            return error
+        cmds.select(roots, replace=True)
+        return _export_selected_usd(cmds, model_usd_path)
+    except Exception as exc:
+        error = str(exc)
+        _write_placeholder_usd(model_usd_path, error)
+        return error
+    finally:
+        _remove_reference_nodes(cmds, new_ref_nodes)
+        _restore_selection(cmds, previous_selection)
+
+
+def _remove_reference_nodes(cmds: Any, reference_nodes: list[str]) -> None:
+    for reference_node in reversed(reference_nodes):
+        if not reference_node or not cmds.objExists(reference_node):
+            continue
+        try:
+            filename = cmds.referenceQuery(reference_node, filename=True)
+        except Exception:
+            filename = ""
+        if not filename:
+            continue
+        try:
+            cmds.file(filename, removeReference=True)
+        except Exception:
+            pass
+
+
+def _update_model_publish_usd_record(
+    paths: ProjectPaths,
+    identity: AssetIdentity,
+    *,
+    subset: str,
+    version: str,
+    ma_path: Path,
+    model_usd_path: Path,
+    usd_error: str = "",
+    comment: str = "",
+) -> None:
+    version_dir = ma_path.parent
+    record_path = version_dir / "publish.json"
+    record = read_json(record_path, {}) or {}
+    if not isinstance(record, dict):
+        record = {}
+    files = record.get("files") if isinstance(record.get("files"), dict) else {}
+    if ma_path.exists():
+        files["ma"] = ma_path.name
+    if model_usd_path.exists():
+        files["usd"] = model_usd_path.name
+    record.update(
+        {
+            "asset": identity.name,
+            "category": identity.category,
+            "group": identity.group,
+            "variant": identity.variant,
+            "publish_type": "model",
+            "subset": subset,
+            "version": parse_version(version),
+            "files": files,
+            "comment": comment or str(record.get("comment") or ""),
+            "usd_export_status": "placeholder" if usd_error else "exported",
+        }
+    )
+    if usd_error:
+        record["usd_export_error"] = usd_error
+    else:
+        record.pop("usd_export_error", None)
+    write_json(record_path, record)
+    base_dir = paths.asset_publish_dir(identity, "model", subset)
+    write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/{model_usd_path.name}"})
+    _update_versions(base_dir / "versions.json", version)
+
+
 def latest_assembly_usd(project_config: ProjectConfig) -> Path:
     context = current_assembly_context(project_config)
     project_root = _project_root(project_config)
     paths = ProjectPaths(project_root)
-    preview_path = paths.asset_variant_root(context.identity) / "data" / "assembly" / "preview" / "assembly.usda"
-    if preview_path.exists():
-        return preview_path
+    saved_path = _latest_saved_assembly_usd(paths, context.identity)
+    if saved_path:
+        return saved_path
 
     assembly_base = paths.asset_variant_root(context.identity) / "publish" / "assembly" / "render"
     latest = read_json(assembly_base / "latest.json", {}) or {}
@@ -749,6 +1125,10 @@ def latest_assembly_usd(project_config: ProjectConfig) -> Path:
         latest_path = assembly_base / path_text
         if latest_path.exists():
             return latest_path
+
+    preview_path = paths.asset_variant_root(context.identity) / "data" / "assembly" / "preview" / "assembly.usda"
+    if preview_path.exists():
+        return preview_path
 
     base_dir = paths.asset_variant_root(context.identity) / "publish" / "usd"
     asset_name = _safe_name(context.asset)
@@ -775,6 +1155,31 @@ def latest_assembly_usd(project_config: ProjectConfig) -> Path:
         return entry_path
 
     raise RuntimeError(f"Latest assembly USD was not found: {base_dir}")
+
+
+def _latest_saved_assembly_usd(paths: ProjectPaths, identity: AssetIdentity) -> Path | None:
+    base_dir = paths.asset_variant_root(identity) / "data" / "assembly" / "saved"
+    latest = read_json(base_dir / "latest.json", {}) or {}
+    path_text = str(latest.get("path") or "").strip()
+    if path_text:
+        latest_path = base_dir / path_text
+        if latest_path.exists():
+            return latest_path
+    candidates: list[tuple[int, Path]] = []
+    for version_dir in base_dir.glob("v*"):
+        parsed = parse_version(version_dir.name)
+        if parsed is None:
+            continue
+        entry_path = version_dir / "assembly.usda"
+        if entry_path.exists():
+            candidates.append((parsed, entry_path))
+    if not candidates:
+        return None
+    parsed_version, entry_path = max(candidates, key=lambda item: item[0])
+    version = format_version(parsed_version)
+    write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/{entry_path.name}"})
+    _update_versions(base_dir / "versions.json", version)
+    return entry_path
 
 
 def latest_asset_usd(
@@ -869,6 +1274,8 @@ def latest_asset_maya_reference(
 
 
 def open_assembly_usd(project_config: ProjectConfig, *, reload: bool = False) -> Path:
+    if reload:
+        return refresh_assembly_preview_usd(project_config, reload=True)
     usd_path = latest_assembly_usd(project_config)
     cmds = _maya_cmds()
     return _set_assembly_usd_proxy(cmds, usd_path, reload=reload)
@@ -942,7 +1349,7 @@ def publish_component_model(
     version_dir = base_dir / version
     version_dir.mkdir(parents=True, exist_ok=True)
 
-    ma_path = version_dir / "model.ma"
+    ma_path = version_dir / f"model{_current_scene_maya_extension(cmds)}"
     usd_path = version_dir / "model.usd"
     top_node, warning, _bottom_offset = _build_extract_export_hierarchy(
         cmds,
@@ -960,7 +1367,7 @@ def publish_component_model(
             str(ma_path).replace("\\", "/"),
             force=True,
             options="v=0;",
-            type="mayaAscii",
+            type=_maya_file_type(ma_path),
             exportSelected=True,
         )
         usd_error = _export_selected_usd(cmds, usd_path)
@@ -977,7 +1384,7 @@ def publish_component_model(
         "publish_type": "model",
         "subset": subset or "render",
         "version": parse_version(version),
-        "files": {"ma": "model.ma", "usd": "model.usd"},
+        "files": {_maya_file_key(ma_path): ma_path.name, "usd": "model.usd"},
         "source_nodes": component.source_nodes,
         "extract_rule": rule,
         "comment": comment,
@@ -1034,19 +1441,12 @@ def compose_component_asset_usd(
     )
     project_root = _project_root(project_config)
     paths = ProjectPaths(project_root)
-    model_base = paths.asset_publish_dir(identity, "model", subset or "render")
-    model_version, model_usd_path = _latest_model_usd(model_base)
-    if not model_version or not model_usd_path:
-        raise RuntimeError(f"Latest model USD was not found under: {model_base}")
-    if not model_usd_path.exists():
-        raise RuntimeError(f"Latest model USD does not exist: {model_usd_path}")
-    return _publish_asset_usd_entry(
+    return _ensure_component_asset_usd_from_latest_model(
+        _maya_cmds(),
         paths,
         identity,
-        model_version=model_version,
-        model_usd_path=model_usd_path,
-        subset=subset or "render",
         comment=comment,
+        subset_hint=subset or "render",
     )
 
 
@@ -1224,6 +1624,7 @@ def extract_component(
     )
     service = AssetManagerService(project_config)
     created = service.create_asset(request)
+    scene_extension = _current_scene_maya_extension(cmds)
     workfile = _component_workfile(
         project_config,
         request.identity,
@@ -1231,32 +1632,39 @@ def extract_component(
         subset=subset,
         version=version,
         take=take,
+        extension=scene_extension,
     )
     workfile.parent.mkdir(parents=True, exist_ok=True)
-    source_matrix = _source_world_matrix(cmds, nodes)
-    top_node, warning, bottom_offset = _build_extract_export_hierarchy(
-        cmds,
-        component,
-        nodes,
-        center_to_origin=center_to_origin,
-        bottom_to_ground=bottom_to_ground,
-        freeze_transforms=_rule_bool(rule, "freeze_transforms", False),
-    )
     previous_selection = cmds.ls(selection=True, long=True) or []
-    published: PublishedComponent | None = None
+    published_model: Path | None = None
+    placement_matrix: list[float] = []
+    working_nodes: list[str] = []
+    parked_nodes: list[dict[str, str]] = []
+    top_node = ""
+    warning = ""
     try:
+        working_nodes, parked_nodes = _park_extract_root_name_conflicts(cmds, _safe_name(component.asset), nodes)
+        placement_origin = _bbox_bottom_center(cmds, working_nodes)
+        placement_matrix = _source_placement_matrix(cmds, working_nodes, placement_origin)
+        top_node, warning, _bottom_offset = _build_extract_export_hierarchy(
+            cmds,
+            component,
+            working_nodes,
+            center_to_origin=center_to_origin,
+            bottom_to_ground=bottom_to_ground,
+            freeze_transforms=_rule_bool(rule, "freeze_transforms", False),
+            placement_matrix=placement_matrix,
+        )
         cmds.select(top_node, replace=True)
         cmds.file(
             str(workfile).replace("\\", "/"),
             force=True,
             options="v=0;",
-            type="mayaAscii",
+            type=_maya_file_type(workfile),
             exportSelected=True,
         )
         if publish_after_extract:
-            cmds.select(top_node, replace=True)
-            published = _publish_extracted_component_outputs(
-                cmds,
+            published_model = _publish_extracted_component_workfile(
                 project_config,
                 request.identity,
                 component,
@@ -1266,14 +1674,12 @@ def extract_component(
                 extract_rule=rule,
             )
     finally:
-        if cmds.objExists(top_node):
+        if top_node and cmds.objExists(top_node):
             cmds.delete(top_node)
+        _restore_extract_root_name_conflicts(cmds, parked_nodes)
         _restore_selection(cmds, previous_selection)
-    publishfile = published.asset_usd_path if published and published.asset_usd_path else None
-    if published and not publishfile and not published.usd_error:
-        publishfile = published.usd_path
-    if source_matrix and cmds.objExists(component.locator):
-        _set_locator_to_source_matrix(cmds, component.locator, source_matrix)
+    if placement_matrix and cmds.objExists(component.locator):
+        _set_locator_to_source_matrix(cmds, component.locator, placement_matrix)
     local_offset_y = 0.0
     _set_string_attr(cmds, component.locator, TARGET_ATTR, component.target)
     _set_string_attr(cmds, component.locator, ASSET_ATTR, component.asset)
@@ -1284,31 +1690,16 @@ def extract_component(
     _set_string_attr(cmds, component.locator, USD_MODE_ATTR, _normalize_usd_mode(component.usd_mode))
     _set_float_attr(cmds, component.locator, LOCAL_OFFSET_Y_ATTR, local_offset_y)
     assembly_usd_path = None
-    if published and reference_after_publish:
-        if published.usd_error:
-            warning = _join_errors(
-                warning,
-                f"USD export failed; kept original source visible and skipped assembly preview update: {published.usd_error}",
-            )
-        else:
-            try:
-                assembly_usd_path = refresh_assembly_preview_usd(project_config, comment=description, reload=True)
-            except Exception as exc:
-                warning = _join_errors(
-                    warning,
-                    f"Assembly USD refresh failed; kept original source visible: {exc}",
-                )
-            else:
-                for node in nodes:
-                    if cmds.objExists(node):
-                        try:
-                            cmds.setAttr(f"{node}.visibility", False)
-                        except Exception:
-                            pass
+    if reference_after_publish:
+        reference_path = published_model or workfile
+        warning = _join_errors(
+            warning,
+            _reference_extracted_component(cmds, component, reference_path, nodes, local_offset_y=local_offset_y),
+        )
     return ExtractedComponent(
         component=component,
         workfile=workfile,
-        publishfile=publishfile,
+        publishfile=published_model,
         assembly_usd_path=assembly_usd_path,
         asset_root=created.asset_root,
         variant_root=created.variant_root,
@@ -1347,8 +1738,9 @@ def _publish_extracted_component_workfile(
     version = _next_version_label(base_dir)
     version_dir = base_dir / version
     version_dir.mkdir(parents=True, exist_ok=True)
-    publishfile = version_dir / "model.ma"
+    publishfile = version_dir / f"model{_maya_file_extension(workfile)}"
     shutil.copy2(workfile, publishfile)
+    file_key = _maya_file_key(publishfile)
     write_json(
         version_dir / "publish.json",
         {
@@ -1359,7 +1751,7 @@ def _publish_extracted_component_workfile(
             "publish_type": "model",
             "subset": subset or "proxy",
             "version": parse_version(version),
-            "files": {"ma": publishfile.name},
+            "files": {file_key: publishfile.name},
             "source_workfile": _relative_to_project(workfile, project_root),
             "source_nodes": component.source_nodes,
             "extract_rule": extract_rule or {},
@@ -1392,7 +1784,7 @@ def _publish_extracted_component_outputs(
     version_dir = base_dir / version
     version_dir.mkdir(parents=True, exist_ok=True)
 
-    ma_path = version_dir / "model.ma"
+    ma_path = version_dir / f"model{_maya_file_extension(workfile)}"
     usd_path = version_dir / "model.usd"
     shutil.copy2(workfile, ma_path)
     usd_error = _export_selected_usd(cmds, usd_path)
@@ -1403,7 +1795,7 @@ def _publish_extracted_component_outputs(
         except OSError:
             pass
 
-    files = {"ma": ma_path.name}
+    files = {_maya_file_key(ma_path): ma_path.name}
     if not usd_error and usd_path.exists():
         files["usd"] = usd_path.name
     record = {
@@ -1862,13 +2254,39 @@ def _component_workfile(
     subset: str,
     version: int,
     take: int,
+    extension: str = ".ma",
 ) -> Path:
     project_root = _project_root(project_config)
     paths = ProjectPaths(project_root)
     version_label = format_version(version)
     take_label = str(take).zfill(2)
-    filename = f"{project_config.project_name}_{identity.name}_{department}_{identity.variant}_{version_label}_{take_label}.ma"
+    filename = (
+        f"{project_config.project_name}_{identity.name}_{department}_{identity.variant}_{version_label}_{take_label}"
+        f"{_maya_file_extension(extension)}"
+    )
     return paths.asset_variant_root(identity) / "work" / department / "maya" / subset / filename
+
+
+def _current_scene_maya_extension(cmds: Any) -> str:
+    try:
+        scene_path = Path(cmds.file(query=True, sceneName=True) or "")
+    except Exception:
+        return ".ma"
+    return _maya_file_extension(scene_path)
+
+
+def _maya_file_extension(path_or_extension: str | Path) -> str:
+    text = str(path_or_extension or "").strip().lower()
+    suffix = Path(text).suffix.lower() if text and not text.startswith(".") else text
+    return ".mb" if suffix == ".mb" else ".ma"
+
+
+def _maya_file_type(path_or_extension: str | Path) -> str:
+    return "mayaBinary" if _maya_file_extension(path_or_extension) == ".mb" else "mayaAscii"
+
+
+def _maya_file_key(path_or_extension: str | Path) -> str:
+    return "mb" if _maya_file_extension(path_or_extension) == ".mb" else "ma"
 
 
 def _publish_asset_usd_entry(
@@ -1918,68 +2336,6 @@ def _publish_asset_usd_entry(
                 }
             },
             "comment": comment,
-        },
-    )
-    write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/{entry_path.name}"})
-    _update_versions(base_dir / "versions.json", version)
-    return entry_path
-
-
-def _publish_assembly_usd_entry(
-    paths: ProjectPaths,
-    identity: AssetIdentity,
-    *,
-    assembly_version: str,
-    assembly_usd_path: Path,
-    data_path: Path,
-    component_count: int,
-    local_geometry_file: str = "",
-    comment: str = "",
-) -> Path:
-    base_dir = paths.asset_variant_root(identity) / "publish" / "usd"
-    version = _next_version_label(base_dir)
-    version_dir = base_dir / version
-    version_dir.mkdir(parents=True, exist_ok=True)
-    asset_name = _safe_name(identity.name)
-    entry_path = version_dir / f"{asset_name}.usd"
-    payload_path = version_dir / f"{asset_name}.payload.usd"
-    json_path = version_dir / f"{asset_name}.json"
-    payload_relative = Path(os.path.relpath(assembly_usd_path.resolve(), version_dir.resolve())).as_posix()
-    payload_path.write_text(
-        _asset_payload_usd(asset_name, payload_relative, publish_type="assembly_payload"),
-        encoding="utf-8",
-    )
-    entry_path.write_text(
-        _asset_entry_usd(asset_name, payload_path.name, publish_type="assembly_usd"),
-        encoding="utf-8",
-    )
-    metadata = {
-        "asset": identity.name,
-        "category": identity.category,
-        "group": identity.group,
-        "variant": identity.variant,
-        "publish_type": "usd",
-        "subset": "assembly",
-        "version": parse_version(version),
-        "assembly": {
-            "version": assembly_version,
-            "path": _relative_to_project(assembly_usd_path, paths.project_root),
-            "data": _relative_to_project(data_path, paths.project_root),
-            "components": component_count,
-            "local_geometry": local_geometry_file,
-        },
-        "comment": comment,
-    }
-    write_json(json_path, metadata)
-    write_json(
-        version_dir / "publish.json",
-        {
-            **metadata,
-            "files": {
-                "usd": entry_path.name,
-                "payload": payload_path.name,
-                "metadata": json_path.name,
-            },
         },
     )
     write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/{entry_path.name}"})
@@ -2037,30 +2393,41 @@ def _build_extract_export_hierarchy(
     center_to_origin: bool,
     bottom_to_ground: bool | None = None,
     freeze_transforms: bool = False,
+    placement_matrix: list[float] | None = None,
 ) -> tuple[str, str, float]:
     if bottom_to_ground is None:
         bottom_to_ground = center_to_origin
     warning = ""
     asset_name = _safe_name(component.asset)
-    top_node = _unique_node(cmds, asset_name)
-    if top_node != asset_name:
-        warning = f"Could not create exact top node '{asset_name}'. Maya created '{top_node}'."
-    top_node = cmds.group(empty=True, name=top_node)
+    top_node = cmds.group(empty=True, name=asset_name)
+    top_leaf = str(top_node).split("|")[-1]
+    if top_leaf != asset_name:
+        warning = f"Could not create exact top node '{asset_name}'. Maya created '{top_leaf}'."
     geo_node = cmds.group(empty=True, name="geo", parent=top_node)
-    duplicates = cmds.duplicate(nodes, returnRootsOnly=True) or []
-    for node in duplicates:
+    placement_matrix = placement_matrix or _source_placement_matrix(cmds, nodes, _bbox_bottom_center(cmds, nodes))
+    placement_inverse = _matrix_inverse(placement_matrix)
+    source_roots = _extract_geometry_roots(cmds, nodes)
+    duplicates = []
+    for source in source_roots:
+        duplicate = ""
         try:
-            cmds.parent(node, geo_node, absolute=True)
-            _reset_transform(cmds, node)
+            duplicate = (cmds.duplicate(source, returnRootsOnly=True) or [""])[0]
+            if not duplicate:
+                continue
+            duplicate = cmds.rename(duplicate, _node_leaf_name(source))
+            duplicate = cmds.parent(duplicate, geo_node, absolute=True)[0]
+            world_matrix = [float(value) for value in cmds.xform(source, query=True, matrix=True, worldSpace=True)]
+            local_matrix = _matrix_multiply(world_matrix, placement_inverse)
+            cmds.xform(duplicate, matrix=local_matrix, worldSpace=True)
+            duplicates.append(duplicate)
         except Exception:
+            if duplicate and cmds.objExists(duplicate):
+                duplicates.append(duplicate)
             pass
     bottom_offset = 0.0
-    if bottom_to_ground and duplicates:
-        try:
-            bbox = cmds.exactWorldBoundingBox(duplicates)
-            bottom_offset = -float(bbox[1])
-        except Exception:
-            bottom_offset = 0.0
+    if duplicates:
+        if center_to_origin or bottom_to_ground:
+            bottom_offset = _asset_local_ground_offset(cmds, duplicates)
     if abs(bottom_offset) > 1.0e-6:
         for node in duplicates:
             try:
@@ -2078,7 +2445,7 @@ def _build_extract_export_hierarchy(
                 pass
     for node in duplicates:
         try:
-            if center_to_origin or freeze_transforms:
+            if freeze_transforms:
                 _freeze_transform(cmds, node)
         except Exception:
             pass
@@ -2187,7 +2554,6 @@ def _reference_extracted_component(
             except Exception:
                 pass
     if cmds.objExists(group_name):
-        _set_string_attr(cmds, component.locator, SOURCE_NODES_ATTR, _encode_source_nodes([group_name]))
         cmds.select(group_name, replace=True)
         _log_asset_assembly(f"reference complete group={group_name}")
     return warning
@@ -2242,6 +2608,41 @@ def _reference_mesh_roots(cmds: Any, nodes: list[str]) -> list[str]:
             if shapes:
                 roots.append(node)
     return sorted(set(root for root in roots if root and cmds.objExists(root)))
+
+
+def _extract_geometry_roots(cmds: Any, nodes: list[str]) -> list[str]:
+    roots = []
+    for node in nodes:
+        if not node or not cmds.objExists(node):
+            continue
+        try:
+            node_type = cmds.nodeType(node)
+        except Exception:
+            continue
+        if node_type == "mesh":
+            roots.extend(cmds.listRelatives(node, parent=True, fullPath=True) or [])
+            continue
+        if node_type != "transform":
+            continue
+        direct_shapes = cmds.listRelatives(node, shapes=True, fullPath=True, noIntermediate=True) or []
+        if any(cmds.objExists(shape) and cmds.nodeType(shape) == "mesh" for shape in direct_shapes):
+            roots.extend(cmds.ls(node, long=True) or [node])
+            continue
+        descendants = cmds.listRelatives(node, allDescendents=True, fullPath=True) or []
+        for descendant in descendants:
+            if not descendant or not cmds.objExists(descendant):
+                continue
+            try:
+                if cmds.nodeType(descendant) != "mesh" or _is_intermediate_shape(cmds, descendant):
+                    continue
+            except Exception:
+                continue
+            roots.extend(cmds.listRelatives(descendant, parent=True, fullPath=True) or [])
+    return _unique_existing_nodes(cmds, roots)
+
+
+def _node_leaf_name(node: str) -> str:
+    return _safe_name(str(node or "").split("|")[-1].split(":")[-1] or "geo")
 
 
 def _restore_assembly_data(data: dict[str, Any]) -> int:
@@ -2379,6 +2780,76 @@ def _restore_selection(cmds: Any, nodes: list[str]) -> None:
             pass
 
 
+def _park_extract_root_name_conflicts(
+    cmds: Any,
+    asset_name: str,
+    nodes: list[str],
+) -> tuple[list[str], list[dict[str, str]]]:
+    if not asset_name:
+        return nodes, []
+    conflicts = []
+    for candidate in cmds.ls(asset_name, long=True, type="transform") or []:
+        full = (cmds.ls(candidate, long=True) or [candidate])[0]
+        if full == f"|{asset_name}":
+            conflicts.append(full)
+    if not conflicts:
+        return nodes, []
+    holder = cmds.group(empty=True, name=_unique_node(cmds, f"__{asset_name}_EXTRACT_HOLD"))
+    parked = []
+    updated_nodes = list(nodes)
+    for conflict in conflicts:
+        if not cmds.objExists(conflict):
+            continue
+        parents = cmds.listRelatives(conflict, parent=True, fullPath=True) or []
+        parent = parents[0] if parents else ""
+        try:
+            moved = (cmds.parent(conflict, holder, absolute=True) or [conflict])[0]
+        except Exception:
+            continue
+        moved = (cmds.ls(moved, long=True) or [moved])[0]
+        parked.append({"old": conflict, "current": moved, "parent": parent, "holder": holder})
+        updated_nodes = [_remap_dag_path(node, conflict, moved) for node in updated_nodes]
+    return updated_nodes, parked
+
+
+def _restore_extract_root_name_conflicts(cmds: Any, parked_nodes: list[dict[str, str]]) -> None:
+    holders = []
+    for row in reversed(parked_nodes):
+        current = row.get("current", "")
+        if not current or not cmds.objExists(current):
+            continue
+        parent = row.get("parent", "")
+        try:
+            if parent and cmds.objExists(parent):
+                cmds.parent(current, parent, absolute=True)
+            else:
+                cmds.parent(current, world=True, absolute=True)
+        except Exception:
+            pass
+        holder = row.get("holder", "")
+        if holder:
+            holders.append(holder)
+    for holder in holders:
+        if not holder or not cmds.objExists(holder):
+            continue
+        children = cmds.listRelatives(holder, children=True, fullPath=True) or []
+        if children:
+            continue
+        try:
+            cmds.delete(holder)
+        except Exception:
+            pass
+
+
+def _remap_dag_path(node: str, old_root: str, new_root: str) -> str:
+    if node == old_root:
+        return new_root
+    prefix = f"{old_root}|"
+    if node.startswith(prefix):
+        return f"{new_root}|{node[len(prefix):]}"
+    return node
+
+
 def _match_world_matrix(cmds: Any, node: str, target: str) -> None:
     matrix = cmds.xform(target, query=True, matrix=True, worldSpace=True)
     cmds.xform(node, matrix=matrix, worldSpace=True)
@@ -2399,6 +2870,17 @@ def _source_world_matrix(cmds: Any, nodes: list[str]) -> list[float]:
         if node and cmds.objExists(node):
             return [float(value) for value in cmds.xform(node, query=True, matrix=True, worldSpace=True)]
     return []
+
+
+def _source_placement_matrix(cmds: Any, nodes: list[str], origin: list[float]) -> list[float]:
+    matrix = _source_world_matrix(cmds, nodes) or _identity_matrix()
+    matrix = [float(value) for value in matrix]
+    if len(matrix) != 16:
+        matrix = _identity_matrix()
+    matrix[12] = float(origin[0])
+    matrix[13] = float(origin[1])
+    matrix[14] = float(origin[2])
+    return matrix
 
 
 def _set_locator_to_source_matrix(cmds: Any, locator: str, matrix: list[float]) -> None:
@@ -2424,6 +2906,74 @@ def _freeze_transform(cmds: Any, node: str) -> None:
 def _bbox_center(cmds: Any, nodes: list[str]) -> list[float]:
     bbox = cmds.exactWorldBoundingBox(nodes)
     return [(bbox[0] + bbox[3]) * 0.5, (bbox[1] + bbox[4]) * 0.5, (bbox[2] + bbox[5]) * 0.5]
+
+
+def _bbox_bottom_center(cmds: Any, nodes: list[str]) -> list[float]:
+    bbox = cmds.exactWorldBoundingBox(nodes)
+    return [(bbox[0] + bbox[3]) * 0.5, float(bbox[1]), (bbox[2] + bbox[5]) * 0.5]
+
+
+def _asset_local_ground_offset(cmds: Any, nodes: list[str]) -> float:
+    try:
+        bbox = cmds.exactWorldBoundingBox(nodes)
+        return -float(bbox[1])
+    except Exception:
+        return 0.0
+
+
+def _identity_matrix() -> list[float]:
+    return [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+
+
+def _matrix_multiply(left: list[float], right: list[float]) -> list[float]:
+    if len(left) != 16 or len(right) != 16:
+        return _identity_matrix()
+    return [
+        sum(float(left[row * 4 + k]) * float(right[k * 4 + column]) for k in range(4))
+        for row in range(4)
+        for column in range(4)
+    ]
+
+
+def _matrix_inverse(matrix: list[float]) -> list[float]:
+    if len(matrix) != 16:
+        return _identity_matrix()
+    size = 4
+    rows = [
+        [float(matrix[row * 4 + column]) for column in range(size)]
+        + [1.0 if row == column else 0.0 for column in range(size)]
+        for row in range(size)
+    ]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(rows[row][column]))
+        if abs(rows[pivot][column]) < 1.0e-10:
+            return _identity_matrix()
+        rows[column], rows[pivot] = rows[pivot], rows[column]
+        scale = rows[column][column]
+        rows[column] = [value / scale for value in rows[column]]
+        for row in range(size):
+            if row == column:
+                continue
+            factor = rows[row][column]
+            rows[row] = [value - factor * rows[column][index] for index, value in enumerate(rows[row])]
+    return [rows[row][column + size] for row in range(size) for column in range(size)]
 
 
 def _ensure_placements_group(cmds: Any) -> str:

@@ -60,7 +60,7 @@ class ReviewBuildManagerService:
         except (FileNotFoundError, KeyError, TypeError, ValueError):
             profiles = []
         ordered = []
-        for profile in [*profiles, "WORK", "FINAL", "FAST"]:
+        for profile in [*profiles, "WORK", "REND", "FINAL", "FAST"]:
             value = str(profile).strip().upper()
             if value and value not in ordered:
                 ordered.append(value)
@@ -70,7 +70,7 @@ class ReviewBuildManagerService:
         self,
         identity: ShotIdentity,
         *,
-        mode: str = "AUTO",
+        mode: str = "WORK STAGE",
         department: str = "anim",
         task: str = "",
         input_policy: str = "GENERATE MISSING",
@@ -224,8 +224,61 @@ class ReviewBuildManagerService:
             or self.project_config.config_dir.name
         )
 
-    def scan(self) -> list[ReviewShotStatus]:
-        return [self.shot_status(identity) for identity in self.shots.list_shots()]
+    def scan(
+        self,
+        *,
+        mode: str = "WORK STAGE",
+        department: str = "anim",
+        task: str = "main",
+        generate_review: bool = False,
+        overrides: dict | None = None,
+    ) -> list[ReviewShotStatus]:
+        return [
+            self.shot_status(
+                identity,
+                mode=mode,
+                department=department,
+                task=task,
+                generate_review=generate_review,
+                overrides=overrides,
+            )
+            for identity in self.shots.list_shots()
+        ]
+
+    @staticmethod
+    def apply_generate_review_requirement(
+        status: ReviewShotStatus,
+        enabled: bool,
+    ) -> ReviewShotStatus:
+        """Update only the optional MOV requirement from cached scan data."""
+
+        if status.state in {"MISSING", "DIRTY"}:
+            return status
+        matching_review = next(
+            (
+                output for output in status.outputs
+                if output.version == status.output_version
+                and output.movie
+                and Path(output.movie).is_file()
+            ),
+            None,
+        )
+        missing_message = "Construct is current; Generate Review MOV is not available."
+        if enabled and not matching_review:
+            if status.state == "UP TO DATE":
+                return replace(status, state="READY", message=missing_message)
+            return status
+        if status.message == missing_message:
+            return replace(
+                status,
+                state="UP TO DATE",
+                message=(
+                    "Construct and Animation Curves are current; review was generated."
+                    if enabled and matching_review
+                    else "Construct and Animation Curves are current."
+                ),
+            )
+        return status
 
     def build_contents(
         self,
@@ -234,6 +287,7 @@ class ReviewBuildManagerService:
         default_context: str = "WORK",
         cast_contexts: dict[str, str] | None = None,
         excluded_cast: list[str] | None = None,
+        representation: str = "project",
     ) -> list[dict]:
         context_map = {
             str(key): str(value).upper()
@@ -243,6 +297,7 @@ class ReviewBuildManagerService:
             identity,
             cast_contexts=context_map,
             exclude_cast=excluded_cast,
+            representation=representation,
         )
         rows = []
         for component in construct.get("components") or []:
@@ -250,13 +305,14 @@ class ReviewBuildManagerService:
             name = str(component.get("name") or "")
             component_type = str(component.get("component_type") or "rig")
             is_cast = component_type == "rig"
+            is_usd = component_type == "usd"
             context = (
                 context_map.get(
                     name,
                     str(source.get("context") or default_context or "WORK").upper(),
                 )
                 if is_cast
-                else ""
+                else "payload" if is_usd else ""
             )
             asset = str(source.get("asset") or "")
             variant = str(source.get("variant") or "default")
@@ -269,10 +325,12 @@ class ReviewBuildManagerService:
                     context,
                     version="latest",
                 )
-            official = str(component.get("version") or "")
-            latest = latest_path.parent.name if latest_path else ""
-            enabled = bool(component.get("enabled", True))
             path = Path(str(component.get("path") or ""))
+            official = str(component.get("version") or "")
+            latest = latest_path.parent.name if latest_path else (
+                path.parent.name if is_usd and path.is_file() else ""
+            )
+            enabled = bool(component.get("enabled", True))
             state = "EXCLUDED" if not enabled else "MISSING"
             if enabled and (path.is_file() or path.is_dir()):
                 state = "UPDATE AVAILABLE" if latest and latest != official else "READY"
@@ -302,6 +360,82 @@ class ReviewBuildManagerService:
             {"components": [dict(row.get("component") or {}) for row in rows]},
         )
 
+    def construct_diff(
+        self,
+        identity: ShotIdentity,
+        *,
+        current: dict | None = None,
+        desired: dict | None = None,
+        cast_contexts: dict[str, str] | None = None,
+        excluded_cast: list[str] | None = None,
+        representation: str = "project",
+    ) -> list[dict]:
+        """Compare a saved Construct with freshly resolved published inputs."""
+        current = current or self.shots.load_construct(identity)
+        desired = desired or self.shots.construct_from_stage_inputs(
+            identity,
+            cast_contexts=cast_contexts,
+            exclude_cast=excluded_cast,
+            representation=representation,
+        )
+
+        def key(component: dict) -> tuple[str, str, str]:
+            source = component.get("source") or {}
+            return (
+                str(component.get("component_type") or "").lower(),
+                str(component.get("name") or ""),
+                str(source.get("field") or source.get("kind") or ""),
+            )
+
+        old = {key(row): dict(row) for row in current.get("components") or []}
+        new = {key(row): dict(row) for row in desired.get("components") or []}
+        changes = []
+        for component_key in sorted(set(old) | set(new)):
+            before = old.get(component_key)
+            after = new.get(component_key)
+            change = "UNCHANGED"
+            if before is None:
+                change = "ADDED"
+            elif after is None:
+                change = "REMOVED"
+            else:
+                fields = [
+                    name for name in ("version", "path", "enabled", "mode")
+                    if before.get(name) != after.get(name)
+                ]
+                if str((before.get("source") or {}).get("context") or "") != str(
+                    (after.get("source") or {}).get("context") or ""
+                ):
+                    fields.append("context")
+                if fields:
+                    change = "UPDATED"
+            component = after or before or {}
+            asset_status = self._construct_asset_status(component)
+            changes.append({
+                "key": list(component_key),
+                "change": change,
+                "severity": "ERROR" if asset_status == "omit" else (
+                    "INFO" if change == "UNCHANGED" else "WARNING"
+                ),
+                "asset_status": asset_status,
+                "selected": change != "UNCHANGED" and asset_status != "omit",
+                "before": before or {},
+                "after": after or {},
+            })
+        return changes
+
+    def _construct_asset_status(self, component: dict) -> str:
+        if str(component.get("component_type") or "").lower() != "rig":
+            return ""
+        source = component.get("source") or {}
+        asset_root = self.shots.find_asset_root(str(source.get("asset") or ""))
+        if not asset_root:
+            return "missing"
+        metadata = read_json(asset_root / "asset.json", {}) or {}
+        variant = str(source.get("variant") or "default")
+        variant_data = read_json(asset_root / variant / "variant.json", {}) or {}
+        return str(variant_data.get("status") or metadata.get("status") or "").strip().lower()
+
     def list_constructs(self, identity: ShotIdentity, department: str, task: str) -> list[dict]:
         root = (
             self.shots.shot_root(identity)
@@ -328,6 +462,7 @@ class ReviewBuildManagerService:
             rows.append(
                 {
                     "version": version_dir.name,
+                    "directory": str(version_dir),
                     "state": state,
                     "scene": str(scene or ""),
                     "updated": datetime.fromtimestamp(version_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
@@ -456,7 +591,24 @@ class ReviewBuildManagerService:
             "mayapy.exe was not resolved. Set SMARTPIPELINE_MAYAPY or configure software_maya*.yml."
         )
 
-    def shot_status(self, identity: ShotIdentity) -> ReviewShotStatus:
+    def shot_status(
+        self,
+        identity: ShotIdentity,
+        *,
+        mode: str = "WORK STAGE",
+        department: str = "anim",
+        task: str = "main",
+        generate_review: bool = False,
+        overrides: dict | None = None,
+    ) -> ReviewShotStatus:
+        if str(mode or "WORK STAGE").upper() == "WORK STAGE":
+            return self._work_stage_status(
+                identity,
+                department=department,
+                task=task,
+                generate_review=generate_review,
+                overrides=overrides or {},
+            )
         source = self.shots.latest_animation_package_path(identity)
         source_version = source.parent.name if source else ""
         outputs = tuple(self.list_outputs(identity))
@@ -493,6 +645,132 @@ class ReviewBuildManagerService:
             output_version=output_version,
             output_label=output_label,
             last_review=latest_output.updated if latest_output else "-",
+            thumbnail=str(thumbnail) if thumbnail.is_file() else "",
+            comment=str(shot_data.get("status") or ""),
+            source_version=source_version,
+            message=message,
+            outputs=outputs,
+        )
+
+    def _work_stage_status(
+        self,
+        identity: ShotIdentity,
+        *,
+        department: str,
+        task: str,
+        generate_review: bool,
+        overrides: dict,
+    ) -> ReviewShotStatus:
+        """Evaluate WORK STAGE from Construct inputs, never Animation Package."""
+
+        desired = self.shots.resolved_construct(
+            identity,
+            cast_contexts=dict(overrides.get("cast_contexts") or {}),
+            exclude_cast=list(overrides.get("exclude_cast") or []),
+            representation=str(overrides.get("representation") or "project"),
+        )
+        components = [
+            row for row in (desired.get("components") or [])
+            if isinstance(row, dict) and bool(row.get("enabled", True))
+        ]
+        def component_available(row: dict) -> bool:
+            value = str(row.get("path") or "").strip()
+            return bool(value) and Path(value).exists()
+
+        missing = [
+            str(row.get("name") or row.get("component_type") or "input")
+            for row in components
+            if bool(row.get("required", True))
+            and not component_available(row)
+        ]
+        missing_curves = []
+        curve_names = {
+            str(row.get("name") or "")
+            for row in components
+            if str(row.get("component_type") or "").lower() == "animation_curve"
+        }
+        if str(department or "").lower() == "anim":
+            cast_data = self.shots.load_cast(identity)
+            if not (cast_data.get("cast") or {}):
+                cast_data = self.shots.load_sequence_cast(
+                    identity.episode, identity.sequence
+                )
+            excluded = {str(value) for value in overrides.get("exclude_cast") or []}
+            missing_curves = [
+                str(cast_key)
+                for cast_key, entry in (cast_data.get("cast") or {}).items()
+                if bool((entry or {}).get("required", True))
+                and str((entry or {}).get("role") or "").strip().upper()
+                not in {"BG", "BGA", "ENV", "BACKGROUND", "SET"}
+                and str(cast_key) not in excluded
+                and str(cast_key) not in curve_names
+            ]
+
+        constructs = self.list_constructs(identity, department, task)
+        latest = constructs[0] if constructs else None
+        manifest = (
+            read_json(
+                Path(str(latest.get("directory") or "")) / "build_manifest.json",
+                {},
+            ) or {}
+            if latest else {}
+        )
+        recorded = manifest.get("construct") or {"components": []}
+        changes = self.construct_diff(identity, current=recorded, desired=desired)
+        changed = [row for row in changes if row.get("change") != "UNCHANGED"]
+
+        curve_versions = sorted({
+            str(row.get("version") or "")
+            for row in components
+            if str(row.get("component_type") or "").lower() == "animation_curve"
+            and str(row.get("version") or "")
+        })
+        source_version = ", ".join(curve_versions)
+        if missing or missing_curves:
+            state = "MISSING"
+            details = []
+            if missing:
+                details.append("required inputs: " + ", ".join(missing))
+            if missing_curves:
+                details.append("Animation Curves: " + ", ".join(missing_curves))
+            message = "Missing " + "; ".join(details) + "."
+        elif not latest:
+            state = "READY"
+            message = "Construct inputs and Animation Curves are ready."
+        elif changed:
+            state = "DIRTY"
+            names = [
+                str((row.get("after") or row.get("before") or {}).get("name") or "input")
+                for row in changed
+            ]
+            message = "Construct inputs changed: " + ", ".join(dict.fromkeys(names)) + "."
+        elif generate_review and not Path(
+            str(manifest.get("review_movie") or "")
+        ).is_file():
+            state = "READY"
+            message = "Construct is current; Generate Review MOV is not available."
+        else:
+            state = "UP TO DATE"
+            message = (
+                "Construct and Animation Curves are current; review was generated."
+                if generate_review
+                else "Construct and Animation Curves are current."
+            )
+
+        shot_data = self.shots.load_shot(identity)
+        thumbnail = self.shots.shot_root(identity) / "thumbnail.jpg"
+        version = str(latest.get("version") or "") if latest else ""
+        outputs = tuple(self.list_outputs(identity))
+        latest_review = outputs[0] if outputs else None
+        return ReviewShotStatus(
+            identity=identity,
+            state=state,
+            output_version=version,
+            output_label=version or "-",
+            last_review=(
+                latest_review.updated
+                if latest_review else str(latest.get("updated") or "-") if latest else "-"
+            ),
             thumbnail=str(thumbnail) if thumbnail.is_file() else "",
             comment=str(shot_data.get("status") or ""),
             source_version=source_version,

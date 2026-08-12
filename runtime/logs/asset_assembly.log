@@ -200,3 +200,23 @@
 [2026-06-11T02:34:14] reference complete group=Chair_REF_GRP
 [2026-06-11T03:07:30] usd placement start locator=Chair_place_LOC usd=D:\Projects\STKB\assets\prop\bp\Chair\default\publish\usd\v001\Chair.usd
 [2026-06-11T03:07:30] usd placement complete proxy=Chair_USD_PROXY
+[2026-08-10T10:23:24] reference start locator=trashcan_place_LOC workfile=D:\Projects\ELCD\assets\prop\bp\trashcan\default\publish\model\proxy\v001\model.mb
+[2026-08-10T10:23:24] reference group created trashcan_REF_GRP namespace=trashcan
+[2026-08-10T10:23:24] reference loaded new_nodes=14
+[2026-08-10T10:23:24] reference roots=['|trashcan1:trashcan1']
+[2026-08-10T10:23:24] reference complete group=trashcan_REF_GRP
+[2026-08-10T12:39:17] reference start locator=trashcan_place_LOC workfile=D:\Projects\ELCD\assets\prop\bp\trashcan\default\publish\model\proxy\v002\model.mb
+[2026-08-10T12:39:17] reference group created trashcan_REF_GRP namespace=trashcan
+[2026-08-10T12:39:17] reference loaded new_nodes=13
+[2026-08-10T12:39:17] reference roots=['|trashcan1:trashcan']
+[2026-08-10T12:39:17] reference complete group=trashcan_REF_GRP
+[2026-08-12T13:15:11] reference start locator=laptop_place_LOC workfile=D:\Projects\ELCD\assets\prop\bp\laptop\default\publish\model\proxy\v001\model.mb
+[2026-08-12T13:15:11] reference group created laptop_REF_GRP namespace=laptop
+[2026-08-12T13:15:12] reference loaded new_nodes=8
+[2026-08-12T13:15:12] reference roots=['|laptop1:laptop']
+[2026-08-12T13:15:12] reference complete group=laptop_REF_GRP
+[2026-08-12T13:16:04] reference start locator=cup_place_LOC workfile=D:\Projects\ELCD\assets\prop\bp\cup\default\publish\model\proxy\v001\model.mb
+[2026-08-12T13:16:04] reference group created cup_REF_GRP namespace=cup
+[2026-08-12T13:16:05] reference loaded new_nodes=8
+[2026-08-12T13:16:05] reference roots=['|cup:cup']
+[2026-08-12T13:16:05] reference complete group=cup_REF_GRP
