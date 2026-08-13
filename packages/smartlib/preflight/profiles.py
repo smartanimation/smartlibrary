@@ -29,7 +29,12 @@ def create_asset_profile() -> PreflightProfile:
             CheckDefinition("asset_root", "Asset root", checks.asset_root),
             CheckDefinition("no_asset_cameras", "Custom cameras", checks.no_asset_cameras),
             CheckDefinition("empty_display_layers", "Display Layers", checks.empty_display_layers),
-            CheckDefinition("visible_models", "Hidden models", checks.visible_models),
+            CheckDefinition(
+                "publish_geometry_visibility",
+                "Publish Geometry Visibility",
+                checks.publish_geometry_visibility,
+                outputs=("geometry",),
+            ),
             CheckDefinition("no_asset_lights", "Lights", checks.no_asset_lights),
             CheckDefinition("no_asset_references", "Asset references", checks.no_asset_references),
             CheckDefinition("meshes_have_uvs", "Missing UVs", checks.meshes_have_uvs),

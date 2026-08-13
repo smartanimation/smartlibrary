@@ -140,19 +140,27 @@ def all_rig_set(adapter, _context: PreflightContext) -> CheckResult:
 
 
 def cache_geo_set(adapter, _context: PreflightContext) -> CheckResult:
-    category = str(_context.metadata.get("category") or "").casefold()
-    asset_profile = str(
-        _context.metadata.get("preflight_profile")
-        or _context.metadata.get("asset_type")
-        or category
-    ).casefold()
-    background = {
-        str(value).casefold()
-        for value in _context.metadata.get("policy", {}).get("background_categories", ())
-    }
-    if asset_profile in background or asset_profile in {"background", "environment", "bg"}:
+    asset_profile = _asset_profile(_context)
+    if _is_background_asset(_context):
         return _result(Severity.PASS, f"Skipped for background profile: {asset_profile}")
     return _required_set(adapter, "cache_geo_set")
+
+
+def _asset_profile(context: PreflightContext) -> str:
+    return str(
+        context.metadata.get("preflight_profile")
+        or context.metadata.get("asset_type")
+        or context.metadata.get("category")
+        or "default"
+    ).casefold()
+
+
+def _is_background_asset(context: PreflightContext) -> bool:
+    background = {
+        str(value).casefold()
+        for value in context.metadata.get("policy", {}).get("background_categories", ())
+    }
+    return _asset_profile(context) in background | {"background", "environment", "bg"}
 
 
 def no_asset_cameras(adapter, _context: PreflightContext) -> CheckResult:
@@ -169,11 +177,18 @@ def empty_display_layers(adapter, _context: PreflightContext) -> CheckResult:
     return _result(Severity.PASS, "Display Layers contain no members.")
 
 
-def visible_models(adapter, _context: PreflightContext) -> CheckResult:
-    hidden = tuple(adapter.hidden_models())
-    if hidden:
-        return _result(Severity.ERROR, "Hidden model geometry was found.", hidden)
-    return _result(Severity.PASS, "All model geometry is visible.")
+def publish_geometry_visibility(adapter, context: PreflightContext) -> CheckResult:
+    if _is_background_asset(context):
+        return _result(
+            Severity.PASS,
+            f"Skipped for background profile: {_asset_profile(context)}",
+        )
+    if not adapter.object_set_exists("cache_geo_set"):
+        return _result(Severity.ERROR, "Required objectSet was not found: cache_geo_set")
+    issues = tuple(adapter.publish_geometry_visibility_issues("cache_geo_set"))
+    if issues:
+        return _result(Severity.ERROR, "Publish geometry in cache_geo_set is hidden.", issues)
+    return _result(Severity.PASS, "All cache_geo_set geometry is visible.")
 
 
 def no_asset_lights(adapter, _context: PreflightContext) -> CheckResult:

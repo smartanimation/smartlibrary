@@ -13,3 +13,17 @@ paths:
   MAYA_PLUG_IN_PATH:
   MAYA_MODULE_PATH:
   PYTHONPATH:
+
+plugin_profiles:
+  core:
+    required: []
+    optional: [fbxmaya, AbcImport, AbcExport]
+  work_stage:
+    required: []
+    optional: []
+  rend_stage:
+    required: []
+    optional: [mtoa, vrayformaya, mayaUsdPlugin]
+  update:
+    required: []
+    optional: []

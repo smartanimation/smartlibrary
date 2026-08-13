@@ -32,6 +32,73 @@ def _clean_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in "_-" else "_" for char in value)
 
 
+def _plugin_profile_name(operation: str) -> str:
+    return {
+        "WORK STAGE": "work_stage",
+        "REND STAGE": "rend_stage",
+        "UPDATE": "update",
+    }.get(str(operation or "").strip().upper(), "work_stage")
+
+
+def _load_build_plugins(cmds, config, operation: str, maya_config_name: str = "software_maya2024.yml") -> dict:
+    """Load deterministic core/mode plug-ins and report every result."""
+
+    maya_config = config.load(maya_config_name) or {}
+    profiles = maya_config.get("plugin_profiles") or {}
+    profile_name = _plugin_profile_name(operation)
+    requested = []
+    for name in ("core", profile_name):
+        profile = profiles.get(name) or {}
+        for requirement in ("required", "optional"):
+            values = profile.get(requirement) or []
+            if isinstance(values, str):
+                text = values.strip()
+                values = [] if text in {"", "[]", "null", "None"} else text.split(",")
+            for plugin in values:
+                plugin = str(plugin).strip()
+                if plugin and not any(row["name"] == plugin for row in requested):
+                    requested.append({
+                        "name": plugin,
+                        "requirement": requirement,
+                        "profile": name,
+                    })
+    results = []
+    failures = []
+    for row in requested:
+        plugin = row["name"]
+        error = ""
+        try:
+            if not cmds.pluginInfo(plugin, query=True, loaded=True):
+                cmds.loadPlugin(plugin, quiet=True)
+            loaded = bool(cmds.pluginInfo(plugin, query=True, loaded=True))
+            version = str(cmds.pluginInfo(plugin, query=True, version=True) or "") if loaded else ""
+            if not loaded:
+                error = "loadPlugin returned without loading the plug-in"
+        except Exception as exc:
+            loaded = False
+            version = ""
+            error = str(exc)
+        result = {**row, "loaded": loaded, "version": version, "error": error}
+        results.append(result)
+        if row["requirement"] == "required" and not loaded:
+            failures.append(f"{plugin}: {error or 'not loaded'}")
+    if failures:
+        raise RuntimeError("Required Maya plug-in load failed: " + "; ".join(failures))
+    return {"profile": profile_name, "plugins": results}
+
+
+def _plugin_validation_results(report: dict | None) -> list[dict]:
+    return [
+        {
+            "severity": "WARNING",
+            "code": "OPTIONAL_PLUGIN_UNAVAILABLE",
+            "message": f"{row.get('name')}: {row.get('error') or 'not loaded'}",
+        }
+        for row in ((report or {}).get("plugins") or [])
+        if row.get("requirement") == "optional" and not row.get("loaded")
+    ]
+
+
 def _preferred_camera(cameras: list[str]) -> str:
     return next(
         (camera for camera in cameras if "cam_cha" in camera.lower()),
@@ -769,7 +836,10 @@ def _run_scene_construction(
             usd_error = str(exc)
     validation = _validation_payload(
         plan,
-        _construct_scene_validation(cmds, scene_path, referenced),
+        [
+            *_construct_scene_validation(cmds, scene_path, referenced),
+            *_plugin_validation_results(getattr(args, "plugin_report", None)),
+        ],
     )
     if plan.resolved_mode == "REND STAGE" and (not usd_path or not usd_path.is_file()):
         validation["results"].append({
@@ -957,6 +1027,7 @@ def _run_scene_construction(
         "resolution": [width, height],
         "camera": camera,
         "references": referenced,
+        "plugin_report": getattr(args, "plugin_report", {}),
         "review_display_layers": review_display_layers,
         "construct": construct_data,
         "construct_diff": construct_diff,
@@ -1073,7 +1144,10 @@ def _run_sequence_construction(
     cmds.file(save=True, type=scene_type, force=True)
     validation = _validation_payload(
         plan,
-        _construct_scene_validation(cmds, scene_path, referenced),
+        [
+            *_construct_scene_validation(cmds, scene_path, referenced),
+            *_plugin_validation_results(getattr(args, "plugin_report", None)),
+        ],
     )
     editorial = staged_sequence_data.get("editorial") or {}
     start = int(editorial.get("cut_in") or recipe_plan.frame_start)
@@ -1105,6 +1179,7 @@ def _run_sequence_construction(
         "frame_range": [start, end],
         "resolution": [width, height],
         "references": referenced,
+        "plugin_report": getattr(args, "plugin_report", {}),
         "status": "validated" if validation["status"] != "failed" else "blocked",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -1145,6 +1220,10 @@ def run(args) -> int:
     from smartlib.review.playblast_package import encode_prores_proxy_mov, find_ffmpeg
 
     config = ProjectConfig(args.config_dir)
+    _write_status(status_path, state="BUILDING", progress=4, task="Load Maya Plugins")
+    args.plugin_report = _load_build_plugins(
+        cmds, config, args.operation, args.maya_config
+    )
     manager = ReviewBuildManagerService(config)
     shot_service = manager.shots
     if args.scope == "sequence":
@@ -1376,6 +1455,7 @@ def run(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build one animation review output.")
     parser.add_argument("--config-dir", required=True)
+    parser.add_argument("--maya-config", default="software_maya2024.yml")
     parser.add_argument("--episode", required=True)
     parser.add_argument("--sequence", required=True)
     parser.add_argument("--shot", required=True)

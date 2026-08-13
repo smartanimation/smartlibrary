@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -284,6 +285,12 @@ class AssetContextService:
             if maya_usd_builder and is_maya_snapshot
             else self._write_asset_usd(assembly, version_dir / "asset.usda")
         )
+        if scene_path is None:
+            scene_path = self._write_maya_usd_wrapper(
+                version_dir / "asset.ma",
+                usd_path,
+                assembly.identity.name,
+            )
         assembly_record = read_json(assembled.assembly_json, {}) or {}
         composition = dict(assembly_record.get("composition") or {})
         composition["assembly"] = str(assembled.assembly_dir.as_posix())
@@ -292,8 +299,7 @@ class AssetContextService:
             "usd": usd_path.name,
             "build_manifest": manifest_path.name,
         }
-        if scene_path:
-            files[assembled_suffix.lstrip(".")] = scene_path.name
+        files[scene_path.suffix.lower().lstrip(".")] = scene_path.name
         publish_data = {
             "asset": assembly.identity.name,
             "publish_type": "asset",
@@ -311,21 +317,40 @@ class AssetContextService:
         publish_json = write_json(version_dir / "publish.json", publish_data)
         latest_data = {
             "version": version_label,
-            "path": f"{version_label}/{scene_path.name if scene_path else usd_path.name}",
+            "path": f"{version_label}/{scene_path.name}",
             "usd": f"{version_label}/{usd_path.name}",
+            "scene": f"{version_label}/{scene_path.name}",
         }
-        if scene_path:
-            latest_data["scene"] = f"{version_label}/{scene_path.name}"
         write_json(base_dir / "latest.json", latest_data)
         self._update_versions(base_dir / "versions.json", version_label)
         self._set_assembly_status(assembled, "packed", version_label)
         return PackedAssetContext(
             version_dir=version_dir,
             manifest_path=manifest_path,
-            scene_path=scene_path or usd_path,
+            scene_path=scene_path,
             usd_path=usd_path,
             publish_json=publish_json,
         )
+
+    @staticmethod
+    def _write_maya_usd_wrapper(target: Path, usd_path: Path, asset_name: str) -> Path:
+        """Write a lightweight Maya scene for a USD-only verified assembly."""
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9_]", "_", asset_name or "asset")
+        if safe_name[:1].isdigit():
+            safe_name = f"_{safe_name}"
+        relative_usd = os.path.relpath(usd_path, target.parent).replace("\\", "/")
+        target.write_text(
+            "//Maya ASCII 2024 scene\n"
+            'requires maya "2024";\n'
+            'requires -nodeType "mayaUsdProxyShape" "mayaUsdPlugin" "0.24";\n'
+            f'createNode transform -n "{safe_name}";\n'
+            f'createNode mayaUsdProxyShape -n "{safe_name}Shape" -p "{safe_name}";\n'
+            f'    setAttr ".filePath" -type "string" "{relative_usd}";\n',
+            encoding="utf-8",
+        )
+        return target
 
     @staticmethod
     def _write_asset_usd(assembly: AssetContextAssembly, target: Path) -> Path:
@@ -460,6 +485,115 @@ class AssetContextService:
             assembly_json=assembly_json,
         )
 
+    def write_current_scene_assembly(
+        self,
+        assembly: AssetContextAssembly,
+        source_scene: Path,
+        *,
+        comment: str = "",
+    ) -> tuple[AssetContextAssembly, AssembledAssetContext]:
+        """Register an open Maya scene as the verification snapshot.
+
+        This route is intended for self-contained character/prop scenes.  It
+        deliberately avoids Maya assembly nodes and treats the saved scene as
+        the authoritative input for the selected Context.
+        """
+
+        source_scene = Path(source_scene)
+        if not source_scene.is_file():
+            raise FileNotFoundError(f"Current Maya scene was not found: {source_scene}")
+        if source_scene.suffix.lower() not in {".ma", ".mb"}:
+            raise RuntimeError("USD Current Scene requires a saved Maya .ma or .mb scene.")
+
+        supplied_entries = [
+            replace(
+                entry,
+                status="SKIPPED",
+                message="Supplied by the current Maya scene snapshot.",
+            )
+            if entry.status == "MISSING"
+            else entry
+            for entry in assembly.entries
+        ]
+        supplied_entries.append(
+            AssetContextEntry(
+                publish_type="current_scene",
+                requested_subset=assembly.quality_profile.lower(),
+                resolved_subset="maya",
+                version="current",
+                status="RESOLVED",
+                path=str(source_scene.parent.as_posix()),
+                files={source_scene.suffix.lower().lstrip("."): str(source_scene.as_posix())},
+                latest_version="current",
+                comment=comment,
+                message="Saved Maya scene used as the Context source.",
+            )
+        )
+        manifest = dict(assembly.manifest)
+        manifest["resolved_representations"] = [
+            {
+                "publish_type": entry.publish_type,
+                "requested_subset": entry.requested_subset,
+                "resolved_subset": entry.resolved_subset,
+                "version": entry.version,
+                "latest_version": entry.latest_version,
+                "status": entry.status,
+                "path": entry.path,
+                "files": entry.files,
+                "comment": entry.comment,
+                "message": entry.message,
+            }
+            for entry in supplied_entries
+        ]
+        manifest["source_policy"] = "current_scene"
+        manifest["source_scene"] = str(source_scene.as_posix())
+        manifest["validation"] = {
+            "status": "OK",
+            "errors": [],
+            "warnings": list(assembly.errors),
+        }
+        supplied = replace(
+            assembly,
+            entries=supplied_entries,
+            errors=[],
+            manifest=manifest,
+        )
+
+        assembly_dir = self._assembly_dir(supplied)
+        assembly_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = write_json(assembly_dir / "build_manifest.json", supplied.manifest)
+        scene_path = assembly_dir / f"asset{source_scene.suffix.lower()}"
+        if source_scene.resolve() != scene_path.resolve():
+            shutil.copy2(source_scene, scene_path)
+        assembly_json = write_json(
+            assembly_dir / "assembly.json",
+            {
+                "asset": supplied.identity.name,
+                "publish_type": "asset",
+                "subset": self._pack_subset(supplied),
+                "variant": supplied.identity.variant,
+                "status": "verifying",
+                "files": {
+                    scene_path.suffix.lower().lstrip("."): scene_path.name,
+                    "build_manifest": manifest_path.name,
+                },
+                "context": supplied.manifest["context"],
+                "composition": {
+                    "source": str(source_scene.as_posix()),
+                    "maya_scene_source": str(source_scene.as_posix()),
+                    "mode": "current_scene_snapshot",
+                    "maya_snapshot_revision": self.MAYA_SNAPSHOT_REVISION,
+                    "comment": comment,
+                },
+            },
+        )
+        return supplied, AssembledAssetContext(
+            assembly_dir=assembly_dir,
+            manifest_path=manifest_path,
+            scene_path=scene_path,
+            assembly_json=assembly_json,
+        )
+
     def current_assembly(self, assembly: AssetContextAssembly) -> AssembledAssetContext | None:
         assembly_dir = self._assembly_dir(assembly)
         manifest_path = assembly_dir / "build_manifest.json"
@@ -509,7 +643,7 @@ class AssetContextService:
             return False
         record = read_json(assembled.assembly_json, {}) or {}
         composition = record.get("composition") or {}
-        if composition.get("mode") == "maya_reference_snapshot":
+        if composition.get("mode") in {"maya_reference_snapshot", "current_scene_snapshot"}:
             return int(composition.get("maya_snapshot_revision") or 0) == self.MAYA_SNAPSHOT_REVISION
         return True
 
@@ -535,7 +669,7 @@ class AssetContextService:
         composition = publish_record.get("composition") or {}
         if int(composition.get("usd_pack_revision") or 0) != self.USD_PACK_REVISION:
             return True
-        if composition.get("mode") == "maya_reference_snapshot":
+        if composition.get("mode") in {"maya_reference_snapshot", "current_scene_snapshot"}:
             if int(composition.get("maya_snapshot_revision") or 0) != self.MAYA_SNAPSHOT_REVISION:
                 return True
         latest_manifest = packs[0]["manifest"]

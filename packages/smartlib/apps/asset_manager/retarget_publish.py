@@ -36,6 +36,70 @@ def retarget_publish_root(asset_root: Path, variant: str = "default") -> Path:
     return Path(asset_root) / variant / "publish" / "retarget"
 
 
+def retarget_data_root(asset_root: Path, variant: str = "default") -> Path:
+    return Path(asset_root) / variant / "data" / "retarget"
+
+
+def list_retarget_data_versions(asset_root: Path, variant: str = "default") -> list[dict]:
+    root = retarget_data_root(asset_root, variant)
+    versions = []
+    for directory in sorted(root.glob("v[0-9][0-9][0-9]"), reverse=True):
+        manifest = read_json(directory / "data.json", {}) or {}
+        profile_name = str(manifest.get("profile") or f"{Path(asset_root).name}_retarget.json")
+        versions.append({
+            "version": directory.name,
+            "path": directory,
+            "profile": directory / profile_name,
+            "created_at": str(manifest.get("created_at") or ""),
+            "comment": str(manifest.get("comment") or ""),
+        })
+    return versions
+
+
+def save_retarget_data_version(
+    asset_root: Path,
+    variant: str,
+    profile_path: Path,
+    *,
+    comment: str = "",
+) -> dict:
+    profile_path = Path(profile_path)
+    profile = read_json(profile_path, None)
+    if not isinstance(profile, dict):
+        raise ValueError(f"Retarget profile is not a readable JSON object: {profile_path}")
+    root = retarget_data_root(asset_root, variant)
+    versions = list_retarget_data_versions(asset_root, variant)
+    next_number = max([int(item["version"][1:]) for item in versions] or [0]) + 1
+    version = f"v{next_number:03d}"
+    version_dir = root / version
+    version_dir.mkdir(parents=True, exist_ok=False)
+    target = version_dir / f"{Path(asset_root).name}_retarget.json"
+    write_json(target, profile)
+    manifest = {
+        "schema_version": 1,
+        "data_type": "retarget",
+        "asset": Path(asset_root).name,
+        "variant": variant,
+        "version": next_number,
+        "profile": target.name,
+        "source_profile": profile_path.as_posix(),
+        "comment": comment,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    write_json(version_dir / "data.json", manifest)
+    write_json(root / "latest.json", {"version": version, "profile": f"{version}/{target.name}", "data": f"{version}/data.json"})
+    write_json(root / "versions.json", {"versions": [item["version"] for item in list_retarget_data_versions(asset_root, variant)]})
+    return {"version": version, "directory": version_dir, "profile": target, "manifest": manifest}
+
+
+def latest_retarget_data_profile(asset_root: Path, variant: str = "default") -> Path | None:
+    root = retarget_data_root(asset_root, variant)
+    latest = read_json(root / "latest.json", {}) or {}
+    relative = str(latest.get("profile") or "").strip()
+    path = root / relative if relative else None
+    return path if path and path.is_file() else None
+
+
 def project_test_motion_root(project_root: Path) -> Path:
     return Path(project_root) / "library" / "anim" / "retarget" / "test_motion"
 
@@ -143,6 +207,7 @@ def publish_retarget_profile(
         "version": next_number,
         "profile": target_profile.name,
         "source_profile": Path(profile_path).as_posix(),
+        "source_data": _source_data_summary(profile_path, asset_root, variant),
         "test_motion": validation["test_motion"],
         "validation_status": validation["status"],
         "comment": comment,
@@ -152,3 +217,14 @@ def publish_retarget_profile(
     write_json(root / "latest.json", {"version": version, "publish": f"{version}/publish.json", "profile": f"{version}/{target_profile.name}"})
     write_json(root / "versions.json", {"versions": [item["version"] for item in list_retarget_versions(asset_root, variant)]})
     return {"version": version, "directory": version_dir, "profile": target_profile, "validation": validation}
+
+
+def _source_data_summary(profile_path: Path, asset_root: Path, variant: str) -> dict:
+    profile_path = Path(profile_path)
+    root = retarget_data_root(asset_root, variant)
+    try:
+        relative = profile_path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return {"version": "", "path": profile_path.as_posix()}
+    version = relative.parts[0] if relative.parts and relative.parts[0].lower().startswith("v") else ""
+    return {"version": version, "path": profile_path.as_posix()}

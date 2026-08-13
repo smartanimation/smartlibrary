@@ -567,6 +567,44 @@ class AssetManagerWindow(QtWidgets.QDialog):
         publish_header.addWidget(self.publish_selected_btn)
         publish_tab_layout.addLayout(publish_header)
 
+        self.retarget_publish_options = QtWidgets.QWidget()
+        retarget_options_layout = QtWidgets.QGridLayout(self.retarget_publish_options)
+        retarget_options_layout.setContentsMargins(0, 0, 0, 0)
+        retarget_options_layout.setSpacing(4)
+        self.retarget_profile_edit = QtWidgets.QLineEdit()
+        self.retarget_profile_edit.setPlaceholderText("Asset-specific Retarget profile JSON")
+        self.retarget_profile_edit.setToolTip(
+            "The schema and retarget tool are shared; ANM/MCR dependencies and offsets are stored per asset."
+        )
+        self.retarget_profile_browse_btn = QtWidgets.QPushButton("Browse")
+        self.retarget_test_motion_check = QtWidgets.QCheckBox("Test Motion Check")
+        self.retarget_test_motion_check.setChecked(True)
+        self.retarget_test_motion_path_label = QtWidgets.QLabel("")
+        self.retarget_test_motion_path_label.setWordWrap(True)
+        self.retarget_test_motion_path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.retarget_validation_label = QtWidgets.QLabel("Select a Retarget profile JSON.")
+        self.retarget_validation_label.setWordWrap(True)
+        self.validate_retarget_btn = QtWidgets.QPushButton("Validate")
+        self.retarget_data_version_combo = QtWidgets.QComboBox()
+        self.retarget_data_version_combo.setMinimumWidth(90)
+        self.load_retarget_data_btn = QtWidgets.QPushButton("Load")
+        self.save_retarget_data_btn = QtWidgets.QPushButton("Save New Version")
+        retarget_options_layout.addWidget(QtWidgets.QLabel("Profile"), 0, 0)
+        retarget_options_layout.addWidget(self.retarget_profile_edit, 0, 1)
+        retarget_options_layout.addWidget(self.retarget_profile_browse_btn, 0, 2)
+        retarget_options_layout.addWidget(self.retarget_test_motion_check, 1, 0)
+        retarget_options_layout.addWidget(self.retarget_test_motion_path_label, 1, 1)
+        retarget_options_layout.addWidget(self.validate_retarget_btn, 1, 2)
+        retarget_options_layout.addWidget(self.retarget_validation_label, 2, 0, 1, 3)
+        retarget_options_layout.addWidget(QtWidgets.QLabel("Data Version"), 3, 0)
+        retarget_options_layout.addWidget(self.retarget_data_version_combo, 3, 1)
+        data_version_actions = QtWidgets.QHBoxLayout()
+        data_version_actions.setContentsMargins(0, 0, 0, 0)
+        data_version_actions.addWidget(self.load_retarget_data_btn)
+        data_version_actions.addWidget(self.save_retarget_data_btn)
+        retarget_options_layout.addLayout(data_version_actions, 3, 2)
+        self.retarget_publish_options.setVisible(False)
+
         publish_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.asset_publish_type_list = QtWidgets.QListWidget()
         self.asset_publish_type_list.setFixedWidth(132)
@@ -584,6 +622,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_publish_type_list.setCurrentRow(0)
         publish_splitter.addWidget(self.asset_publish_type_list)
 
+        publish_results_panel = QtWidgets.QWidget()
+        publish_results_layout = QtWidgets.QVBoxLayout(publish_results_panel)
+        publish_results_layout.setContentsMargins(0, 0, 0, 0)
+        publish_results_layout.setSpacing(4)
+        publish_results_layout.addWidget(self.retarget_publish_options)
+
         self.asset_publish_tree = QtWidgets.QTreeWidget()
         self.asset_publish_tree.setHeaderLabels(
             ["Name", "Component", "Representation", "Official", "Latest", "State", "Updated", "Comment"]
@@ -596,7 +640,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_publish_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         self.asset_publish_tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         self.asset_publish_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
-        publish_splitter.addWidget(self.asset_publish_tree)
+        publish_results_layout.addWidget(self.asset_publish_tree, 1)
+        publish_splitter.addWidget(publish_results_panel)
         publish_splitter.setStretchFactor(0, 0)
         publish_splitter.setStretchFactor(1, 1)
         publish_splitter.setCollapsible(0, False)
@@ -769,18 +814,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         context_header.setSpacing(4)
         self.context_version_combo = QtWidgets.QComboBox()
         self.context_version_combo.setVisible(False)
-        self.context_use_scene_btn = QtWidgets.QPushButton("Use Current Scene")
+        self.context_use_scene_btn = QtWidgets.QPushButton("USD Current Scene")
         self.context_use_scene_btn.setToolTip(
-            "Publish the current Maya work scene as an intermediate assembly input."
+            "Register the current Maya scene as the verified source used by Assemble and Pack."
         )
         self.context_assemble_btn = QtWidgets.QPushButton("Assemble")
-        self.publish_client_assembly_btn = QtWidgets.QPushButton("Publish Assembly Client")
         self.context_pack_btn = QtWidgets.QPushButton("Pack")
         self.context_pack_btn.setEnabled(False)
         context_header.addStretch(1)
         context_header.addWidget(self.context_use_scene_btn)
         context_header.addWidget(self.context_assemble_btn)
-        context_header.addWidget(self.publish_client_assembly_btn)
         context_header.addWidget(self.context_pack_btn)
         context_main_layout.addLayout(context_header)
         self.context_readiness_label = QtWidgets.QLabel("PACK BLOCKED: Assemble a Context first")
@@ -850,12 +893,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.save_scene_btn.clicked.connect(self._save_scene)
         self.refresh_publish_btn.clicked.connect(self._populate_asset_publish_tree)
         self.publish_selected_btn.clicked.connect(self._publish_selected_work)
+        self.retarget_profile_browse_btn.clicked.connect(self._browse_retarget_profile)
+        self.validate_retarget_btn.clicked.connect(self._validate_retarget_publish)
+        self.retarget_profile_edit.textChanged.connect(lambda _text: self._update_publish_selected_state())
+        self.load_retarget_data_btn.clicked.connect(self._load_retarget_data_version)
+        self.save_retarget_data_btn.clicked.connect(self._save_retarget_data_version)
         self.publish_geometry_usd_btn.clicked.connect(
             lambda: self._publish_selected_work(force_usd=True)
         )
-        self.asset_publish_type_list.currentRowChanged.connect(
-            lambda _row: self._populate_asset_publish_tree()
-        )
+        self.asset_publish_type_list.currentRowChanged.connect(self._on_publish_type_changed)
         self.staging_btn.clicked.connect(self._stage_work_scene)
         self.quick_preview_btn.clicked.connect(self._quick_preview_setup)
         self.turntable_scene_btn.clicked.connect(self._build_turntable_scene)
@@ -865,7 +911,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_profile_list.currentRowChanged.connect(self._on_context_profile_selected)
         self.context_assemble_btn.clicked.connect(self._assemble_selected_asset_context)
         self.context_use_scene_btn.clicked.connect(self._use_current_scene_as_assembly)
-        self.publish_client_assembly_btn.clicked.connect(self._publish_client_assembly)
         self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
         self.refresh_data_btn.clicked.connect(self._refresh_current_data)
         self.export_mesh_btn.clicked.connect(self._export_selected_data_type)
@@ -1397,6 +1442,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._populate_preview_list(asset)
         self._populate_context_pack_tree()
         self._populate_asset_publish_tree(asset)
+        if self._selected_publish_type() == "retarget":
+            self._refresh_retarget_publish_tab(asset)
         self._update_selected_file_info()
 
         for path in self.manager.list_publish_files(asset):
@@ -1495,8 +1542,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
         button = getattr(self, "publish_selected_btn", None)
         if button is not None:
             source_path, source_kind = self._publish_source_path()
-            button.setEnabled(bool(self._current_asset() and source_path))
-            if source_path:
+            is_retarget = self._selected_publish_type() == "retarget"
+            profile_widget = getattr(self, "retarget_profile_edit", None)
+            profile_path = profile_widget.text().strip() if profile_widget is not None else ""
+            button.setText("Publish Retarget" if is_retarget else "Publish Selected")
+            button.setEnabled(bool(self._current_asset() and (profile_path if is_retarget else source_path)))
+            if is_retarget:
+                button.setToolTip("Validate and version-publish the selected Retarget profile")
+            elif source_path:
                 button.setToolTip(f"Publish current {source_kind} scene: {Path(source_path).name}")
             else:
                 button.setToolTip("Open a saved asset work scene before publishing")
@@ -1505,6 +1558,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
             is_geometry = self._selected_publish_type() == "geometry"
             usd_button.setVisible(is_geometry)
             usd_button.setEnabled(bool(is_geometry and self._current_asset() and source_path))
+
+    def _on_publish_type_changed(self, _row: int = -1) -> None:
+        is_retarget = self._selected_publish_type() == "retarget"
+        if getattr(self, "retarget_publish_options", None) is not None:
+            self.retarget_publish_options.setVisible(is_retarget)
+        if is_retarget:
+            self._refresh_retarget_publish_tab(self._current_asset())
+        self._populate_asset_publish_tree()
+        self._update_publish_selected_state()
 
     def _publish_source_path(self) -> tuple[str | None, str]:
         current_scene = current_dcc_scene_path()
@@ -1524,7 +1586,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             "rig": {"rig"},
             "look": {"look", "surfacing"},
             "groom": {"groom"},
-            "retarget": {"retarget"},
+            "retarget": {"rig"},
         }.get(str(publish_type).lower(), set())
 
     @staticmethod
@@ -1969,7 +2031,6 @@ class AssetManagerWindow(QtWidgets.QDialog):
             _ensure_smartlib_on_path()
             from smartlib.core.config_loader import ProjectConfig
             from smartlib.core.path_resolver import ProjectPaths
-            from smartlib.dcc.maya import asset_assembly
 
             scene_text = str(cmds.file(query=True, sceneName=True) or "").strip()
             if not scene_text:
@@ -1996,23 +2057,34 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     f"Current scene: {scene_path}"
                 ) from exc
 
-            asset_assembly.set_assembly_context(
-                identity.category,
-                identity.group,
-                identity.name,
-                identity.variant,
-            )
-            comment = self._ask_comment("Current Scene Assembly Comment")
+            comment = self._ask_comment("USD Current Scene Comment")
             if comment is None:
                 return
-            assembly_path = asset_assembly.publish_assembly(project_config, comment=comment)
-            self.status_label.setText(
-                f"Current scene assembly published: {Path(assembly_path).parent.name}/{Path(assembly_path).name}"
+
+            service = _asset_context_service(self.manager.config_dir)
+            profile = self._current_context_profile()
+            if not profile:
+                raise RuntimeError("Select a quality profile first.")
+            version = self.context_version_combo.currentText().strip() or None
+            resolved = service.assemble(
+                identity,
+                context_name="asset",
+                context_version=version,
+                quality_profile=profile,
             )
-            self._assemble_selected_asset_context(silent=True)
+            self.context_assembly, self.context_verification = service.write_current_scene_assembly(
+                resolved,
+                scene_path,
+                comment=comment,
+            )
+            self._populate_context_state(self.context_assembly, service)
+            self._populate_context_pack_tree()
+            self.status_label.setText(
+                f"USD Current Scene registered: {self.context_verification.scene_path}"
+            )
         except Exception as exc:
             self.status_label.setText(str(exc))
-            QtWidgets.QMessageBox.critical(self, "Use Current Scene Failed", str(exc))
+            QtWidgets.QMessageBox.critical(self, "USD Current Scene Failed", str(exc))
 
     def _assemble_selected_asset_context(self, silent: bool = False) -> None:
         asset = self._current_asset()
@@ -3564,50 +3636,100 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _retarget_publish_api():
         _ensure_smartlib_on_path()
         from smartlib.apps.asset_manager.retarget_publish import (
+            latest_retarget_data_profile,
+            list_retarget_data_versions,
             list_retarget_versions,
             publish_retarget_profile,
+            retarget_data_root,
+            save_retarget_data_version,
             standard_test_motion,
             validate_retarget_profile,
         )
-        return list_retarget_versions, publish_retarget_profile, standard_test_motion, validate_retarget_profile
+        return {
+            "latest_data": latest_retarget_data_profile,
+            "list_data": list_retarget_data_versions,
+            "list_publish": list_retarget_versions,
+            "publish": publish_retarget_profile,
+            "data_root": retarget_data_root,
+            "save_data": save_retarget_data_version,
+            "test_motion": standard_test_motion,
+            "validate": validate_retarget_profile,
+        }
 
-    def _default_retarget_profile(self, asset: Asset) -> Path | None:
+    def _default_retarget_profile(self, asset: Asset) -> Path:
         variant = self._current_asset_variant()
         candidates = [
             asset.variant_root(variant) / "work" / "rig" / "retarget" / f"{asset.name}_retarget.json",
             asset.root / "rig" / "retarget" / f"{asset.name}.json",
             Path(__file__).resolve().parents[1] / "config" / "maya" / "retarget" / f"{asset.name.lower()}.json",
         ]
-        return next((path for path in candidates if path.is_file()), None)
+        return next((path for path in candidates if path.is_file()), candidates[0])
 
     def _refresh_retarget_publish_tab(self, asset: Asset | None = None) -> None:
-        if not getattr(self, "retarget_publish_table", None):
+        if not getattr(self, "retarget_profile_edit", None):
             return
         asset = asset or self._current_asset()
-        self.retarget_publish_table.setRowCount(0)
         if not asset:
             self.retarget_test_motion_path_label.setText("")
-            self.publish_retarget_btn.setEnabled(False)
+            self._update_publish_selected_state()
             return
-        self.publish_retarget_btn.setEnabled(True)
-        _list_versions, _publish, standard_test_motion, _validate = self._retarget_publish_api()
-        test_path = standard_test_motion(self.manager.project_root)
+        api = self._retarget_publish_api()
+        test_path = api["test_motion"](self.manager.project_root)
         self.retarget_test_motion_path_label.setText(test_path.as_posix())
-        current_profile = Path(self.retarget_profile_edit.text()) if self.retarget_profile_edit.text().strip() else None
-        if not current_profile or not current_profile.is_file():
-            default_profile = self._default_retarget_profile(asset)
-            if default_profile:
-                self.retarget_profile_edit.setText(str(default_profile))
-        versions = _list_versions(asset.root, self._current_asset_variant())
-        for entry in versions:
-            row = self.retarget_publish_table.rowCount()
-            self.retarget_publish_table.insertRow(row)
-            values = (entry["version"], entry["published_at"], entry["test_status"], entry["comment"])
-            for column, value in enumerate(values):
-                item = QtWidgets.QTableWidgetItem(str(value))
-                item.setData(QtCore.Qt.UserRole, str(entry["path"]))
-                self.retarget_publish_table.setItem(row, column, item)
-        self.retarget_publish_table.resizeColumnsToContents()
+        asset_key = (asset.root.as_posix(), self._current_asset_variant())
+        if getattr(self, "_retarget_profile_asset_key", None) != asset_key:
+            default_profile = api["latest_data"](asset.root, self._current_asset_variant()) or self._default_retarget_profile(asset)
+            self.retarget_profile_edit.setText(str(default_profile))
+            self._retarget_profile_asset_key = asset_key
+        selected_version = self.retarget_data_version_combo.currentText()
+        self.retarget_data_version_combo.blockSignals(True)
+        self.retarget_data_version_combo.clear()
+        for entry in api["list_data"](asset.root, self._current_asset_variant()):
+            self.retarget_data_version_combo.addItem(entry["version"], str(entry["profile"]))
+        if selected_version:
+            index = self.retarget_data_version_combo.findText(selected_version)
+            if index >= 0:
+                self.retarget_data_version_combo.setCurrentIndex(index)
+        self.retarget_data_version_combo.blockSignals(False)
+        self._update_publish_selected_state()
+
+    def _load_retarget_data_version(self) -> None:
+        path = self.retarget_data_version_combo.currentData()
+        if not path:
+            self.status_label.setText("No Retarget Data Version is available")
+            return
+        self.retarget_profile_edit.setText(str(path))
+        self._validate_retarget_publish()
+        self.status_label.setText(f"Loaded Retarget Data {self.retarget_data_version_combo.currentText()}")
+
+    def _save_retarget_data_version(self) -> None:
+        asset = self._current_asset()
+        profile_text = self.retarget_profile_edit.text().strip()
+        if not asset or not profile_text:
+            self.status_label.setText("Select an asset and Retarget profile first")
+            return
+        comment = self._ask_comment("Save Retarget Data Version Comment")
+        if comment is None:
+            return
+        api = self._retarget_publish_api()
+        try:
+            result = api["save_data"](
+                asset.root,
+                self._current_asset_variant(),
+                Path(profile_text),
+                comment=comment,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Save Retarget Data Failed", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.retarget_profile_edit.setText(str(result["profile"]))
+        self._refresh_retarget_publish_tab(asset)
+        index = self.retarget_data_version_combo.findText(result["version"])
+        if index >= 0:
+            self.retarget_data_version_combo.setCurrentIndex(index)
+        self._populate_data_tree(asset)
+        self.status_label.setText(f"Saved Retarget Data {result['version']}: {result['profile'].name}")
 
     def _browse_retarget_profile(self) -> None:
         asset = self._current_asset()
@@ -3617,6 +3739,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         )
         if path:
             self.retarget_profile_edit.setText(path)
+            self._update_publish_selected_state()
             self._validate_retarget_publish()
 
     def _validate_retarget_publish(self) -> dict | None:
@@ -3626,8 +3749,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.retarget_validation_label.setText("Select an asset and Retarget profile.")
             return None
         profile = Path(profile_text)
-        _list_versions, _publish, _test_motion, validate = self._retarget_publish_api()
-        validation = validate(
+        api = self._retarget_publish_api()
+        validation = api["validate"](
             profile,
             project_root=self.manager.project_root,
             test_motion=self.retarget_test_motion_check.isChecked(),
@@ -3656,12 +3779,23 @@ class AssetManagerWindow(QtWidgets.QDialog):
         comment = self._ask_comment("Publish Retarget Comment")
         if comment is None:
             return
-        _list_versions, publish, _test_motion, _validate = self._retarget_publish_api()
+        api = self._retarget_publish_api()
+        profile_path = Path(self.retarget_profile_edit.text().strip())
+        data_root = api["data_root"](asset.root, self._current_asset_variant())
         try:
-            result = publish(
+            profile_path.resolve().relative_to(data_root.resolve())
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Save Data Version Required",
+                "Save the Retarget profile as a Data Version before publishing.",
+            )
+            return
+        try:
+            result = api["publish"](
                 asset.root,
                 self._current_asset_variant(),
-                Path(self.retarget_profile_edit.text().strip()),
+                profile_path,
                 project_root=self.manager.project_root,
                 comment=comment,
                 run_test_motion=self.retarget_test_motion_check.isChecked(),
@@ -3670,10 +3804,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Retarget Publish Failed", str(exc))
             self.status_label.setText(str(exc))
             return
+        self._populate_asset_publish_tree(asset)
         self._refresh_retarget_publish_tab(asset)
         self.status_label.setText(f"Published Retarget {result['version']}: {result['profile'].name}")
 
     def _publish_selected_work(self, _checked: bool = False, *, force_usd: bool = False) -> None:
+        if self._selected_publish_type() == "retarget":
+            self._publish_retarget_profile()
+            return
         asset = self._current_asset()
         source_path, source_kind = self._publish_source_path()
         if not asset:

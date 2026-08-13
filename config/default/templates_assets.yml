@@ -66,6 +66,7 @@ publish_outputs:
 # Shared subset catalog for Asset Manager and Context profile configuration.
 asset_subsets:
   model: [proxy, render, low, high]
+  assembly: [render]
   rig: [layout, anim]
   look: [low, high]
   groom: []

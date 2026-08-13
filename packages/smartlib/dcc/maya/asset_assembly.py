@@ -303,13 +303,7 @@ def place_published_asset_at_selection(
         source_nodes=selected,
         usd_mode=component.usd_mode,
     )
-    refresh_assembly_preview_usd(project_config, reload=True)
-    for node in selected:
-        if cmds.objExists(node):
-            try:
-                cmds.setAttr(f"{node}.visibility", False)
-            except Exception:
-                pass
+    _place_published_maya_reference(project_config, cmds, component, selected)
     cmds.select(locator, replace=True)
     return component
 
@@ -349,7 +343,7 @@ def place_published_asset_at_locator(
         usd_mode=component.usd_mode,
         local_offset_y=component.local_offset_y,
     )
-    refresh_assembly_preview_usd(project_config, reload=True)
+    _place_published_maya_reference(project_config, cmds, component, component.source_nodes)
     cmds.select(locator, replace=True)
     return component
 
@@ -1254,6 +1248,8 @@ def latest_asset_maya_reference(
             candidates = [latest_path]
             if latest_path.name != "model.ma":
                 candidates.append(latest_path.parent / "model.ma")
+            if latest_path.name != "model.mb":
+                candidates.append(latest_path.parent / "model.mb")
             for candidate in candidates:
                 if candidate.exists() and candidate.suffix.lower() in {".ma", ".mb"}:
                     return candidate
@@ -2490,6 +2486,72 @@ def _place_usd_component_proxy(
         cmds.select(proxy, replace=True)
         _log_asset_assembly(f"usd placement complete proxy={proxy}")
     return warning
+
+
+def _place_published_maya_reference(
+    project_config: ProjectConfig,
+    cmds: Any,
+    component: AssemblyComponent,
+    original_nodes: list[str],
+) -> None:
+    reference_path = latest_asset_maya_reference(
+        project_config,
+        component.category,
+        component.group,
+        component.asset,
+        component.variant,
+    )
+    _clear_locator_placement_children(cmds, component.locator)
+    warning = _reference_extracted_component(
+        cmds,
+        component,
+        reference_path,
+        original_nodes,
+        local_offset_y=component.local_offset_y,
+    )
+    if warning:
+        raise RuntimeError(warning)
+
+
+def _clear_locator_placement_children(cmds: Any, locator: str) -> None:
+    if not locator or not cmds.objExists(locator):
+        return
+    children = cmds.listRelatives(locator, children=True, fullPath=True) or []
+    for child in children:
+        if not child or not cmds.objExists(child):
+            continue
+        try:
+            if cmds.nodeType(child) != "transform":
+                continue
+        except Exception:
+            continue
+        leaf = _node_leaf_name(child)
+        if not re.search(r"_(REF_GRP|USD_PROXY)\d*$", leaf):
+            continue
+        _remove_references_under_node(cmds, child)
+        if cmds.objExists(child):
+            try:
+                cmds.delete(child)
+            except Exception:
+                pass
+
+
+def _remove_references_under_node(cmds: Any, node: str) -> None:
+    if not node or not cmds.objExists(node):
+        return
+    reference_nodes: set[str] = set()
+    nodes = [node] + (cmds.listRelatives(node, allDescendents=True, fullPath=True) or [])
+    for item in nodes:
+        if not item or not cmds.objExists(item):
+            continue
+        try:
+            if cmds.referenceQuery(item, isNodeReferenced=True):
+                reference_node = cmds.referenceQuery(item, referenceNode=True)
+                if reference_node:
+                    reference_nodes.add(str(reference_node))
+        except Exception:
+            continue
+    _remove_reference_nodes(cmds, sorted(reference_nodes))
 
 
 def _reference_extracted_component(

@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 
 from smartlib.apps.asset_manager.retarget_publish import (
+    latest_retarget_data_profile,
+    list_retarget_data_versions,
     list_retarget_versions,
     publish_retarget_profile,
+    save_retarget_data_version,
     standard_test_motion,
     validate_retarget_profile,
 )
@@ -63,6 +66,22 @@ def test_publish_retarget_profile_versions_and_records_test_motion(tmp_path):
     assert [item["version"] for item in list_retarget_versions(asset_root, "default")] == ["v002", "v001"]
     latest = json.loads((asset_root / "default" / "publish" / "retarget" / "latest.json").read_text())
     assert latest["version"] == "v002"
+
+
+def test_save_retarget_data_versions_are_immutable_and_publish_tracks_source(tmp_path):
+    profile = _profile(tmp_path)
+    asset_root = tmp_path / "assets" / "characters" / "hero" / "DLI"
+    first = save_retarget_data_version(asset_root, "default", profile, comment="draft one")
+    second = save_retarget_data_version(asset_root, "default", profile, comment="draft two")
+    assert first["version"] == "v001"
+    assert second["version"] == "v002"
+    assert latest_retarget_data_profile(asset_root, "default") == second["profile"]
+    assert [item["version"] for item in list_retarget_data_versions(asset_root, "default")] == ["v002", "v001"]
+    published = publish_retarget_profile(
+        asset_root, "default", second["profile"], project_root=tmp_path, run_test_motion=False
+    )
+    manifest = json.loads((published["directory"] / "publish.json").read_text())
+    assert manifest["source_data"]["version"] == "v002"
 
 
 def test_validation_blocks_missing_profile_dependencies(tmp_path):

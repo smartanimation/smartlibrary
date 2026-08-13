@@ -74,14 +74,37 @@ class MayaPreflightAdapter:
             issues.extend(f"{layer}: {member}" for member in members)
         return issues
 
-    def hidden_models(self) -> list[str]:
-        hidden = []
-        for shape in self.cmds.ls(type="mesh", long=True, noIntermediate=True) or []:
-            if self._node_hidden(str(shape)):
-                hidden.append(str(shape))
-        return sorted(set(hidden), key=str.casefold)
+    def publish_geometry_visibility_issues(self, set_name: str) -> list[str]:
+        issues = []
+        for shape in self._set_mesh_shapes(set_name):
+            reason = self._hidden_reason(shape)
+            if reason:
+                issues.append(f"{shape}: {reason}")
+        return sorted(set(issues), key=str.casefold)
 
-    def _node_hidden(self, node: str) -> bool:
+    def _set_mesh_shapes(self, set_name: str) -> list[str]:
+        shapes = set()
+        for member in self.cmds.sets(set_name, query=True) or []:
+            node = str(member).split(".", 1)[0]
+            if not self.cmds.objExists(node):
+                continue
+            try:
+                node_type = self.cmds.nodeType(node)
+            except RuntimeError:
+                continue
+            if node_type == "mesh":
+                shapes.add(node)
+                continue
+            direct = self.cmds.listRelatives(
+                node, shapes=True, type="mesh", fullPath=True, noIntermediate=True
+            ) or []
+            descendants = self.cmds.listRelatives(
+                node, allDescendents=True, type="mesh", fullPath=True, noIntermediate=True
+            ) or []
+            shapes.update(str(shape) for shape in (*direct, *descendants))
+        return sorted(shapes, key=str.casefold)
+
+    def _hidden_reason(self, node: str) -> str:
         current = node
         while current:
             for attribute in ("visibility", "lodVisibility"):
@@ -89,7 +112,7 @@ class MayaPreflightAdapter:
                 if self.cmds.objExists(plug):
                     try:
                         if not bool(self.cmds.getAttr(plug)):
-                            return True
+                            return f"{plug} is off"
                     except RuntimeError:
                         pass
             override = f"{current}.overrideEnabled"
@@ -97,12 +120,21 @@ class MayaPreflightAdapter:
             if self.cmds.objExists(override) and self.cmds.objExists(override_visibility):
                 try:
                     if self.cmds.getAttr(override) and not self.cmds.getAttr(override_visibility):
-                        return True
+                        return f"{override_visibility} is off"
                 except RuntimeError:
                     pass
             parents = self.cmds.listRelatives(current, parent=True, fullPath=True) or []
             current = str(parents[0]) if parents else ""
-        return False
+        for layer in self.cmds.listConnections(node, type="displayLayer") or []:
+            if str(layer).split(":")[-1] in {"defaultLayer", "defaultDisplayLayer"}:
+                continue
+            plug = f"{layer}.visibility"
+            try:
+                if self.cmds.objExists(plug) and not bool(self.cmds.getAttr(plug)):
+                    return f"hidden by Display Layer {layer}"
+            except RuntimeError:
+                pass
+        return ""
 
     def asset_lights(self) -> list[str]:
         return sorted({str(node) for node in self.cmds.ls(lights=True, long=True) or []}, key=str.casefold)

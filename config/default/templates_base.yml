@@ -4,6 +4,9 @@ anchors:
   fps: 24
   resolution: [1920, 1080]
 
+review_build:
+  maya_software: ""
+
 # Shot用の部署リスト
 shot_depts:
   - layout

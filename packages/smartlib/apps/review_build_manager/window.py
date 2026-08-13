@@ -1342,6 +1342,15 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             return
         process = QtCore.QProcess(self)
         environment = QtCore.QProcessEnvironment.systemEnvironment()
+        env_vars, path_vars = self.service.maya_process_environment()
+        for key, value in env_vars.items():
+            environment.insert(key, os.path.expandvars(value))
+        for key, values in path_vars.items():
+            resolved = [os.path.expandvars(value) for value in values if value]
+            current = environment.value(key)
+            if current:
+                resolved.append(current)
+            environment.insert(key, os.pathsep.join(resolved))
         package_root = str(Path(__file__).resolve().parents[3])
         current_pythonpath = environment.value("PYTHONPATH")
         pythonpath = package_root + (os.pathsep + current_pythonpath if current_pythonpath else "")
@@ -1356,6 +1365,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 "smartlib.apps.review_build_manager.worker",
                 "--config-dir",
                 str(self.service.project_config.config_dir),
+                "--maya-config",
+                self.service.maya_software_config_name(),
                 "--episode",
                 identity[0],
                 "--sequence",

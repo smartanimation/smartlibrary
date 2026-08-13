@@ -66,7 +66,7 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
                     continue
                 following_indent = len(following) - len(following.lstrip(" "))
                 next_is_list = (
-                    following_indent > indent
+                    following_indent >= indent
                     and following.strip().startswith("- ")
                 )
                 break
@@ -105,6 +105,11 @@ def _parse_scalar(value: str) -> Any:
         return ""
     if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
+    if value.startswith("[") and value.endswith("]"):
+        contents = value[1:-1].strip()
+        if not contents:
+            return []
+        return [_parse_scalar(item.strip()) for item in contents.split(",")]
     lowered = value.lower()
     if lowered in {"true", "yes", "on"}:
         return True

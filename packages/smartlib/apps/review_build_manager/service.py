@@ -9,7 +9,7 @@ import shutil
 from dataclasses import replace
 
 from smartlib.apps.shot_manager import SequenceIdentity, ShotIdentity, ShotManagerService
-from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.config_loader import ProjectConfig, expand_config_tokens
 from smartlib.core.metadata import read_json
 from smartlib.core.versioning import format_version, parse_version
 from smartlib.apps.review_build_manager.orchestrator import SceneBuildOrchestrator
@@ -556,19 +556,56 @@ class ReviewBuildManagerService:
         ] if root.is_dir() else []
         return format_version(max(numbers, default=0) + 1)
 
+    def maya_software_config_name(self) -> str:
+        """Resolve the enabled Maya registration used by every build process.
+
+        A project may contain multiple registrations (for example ``maya2024``
+        and ``maya2024_2``).  Prefer an explicit build-worker registration,
+        then the most recently enabled registration that has required build
+        plug-ins, before falling back to the legacy maya2024 registration.
+        """
+
+        available = {
+            path.stem.removeprefix("software_"): path
+            for path in self.project_config.config_dir.glob("software_maya*.yml")
+        }
+        base = self.project_config.load("templates_base.yml") or {}
+        enabled = [str(value) for value in (base.get("enabled_softwares") or [])]
+        candidates = [available[name] for name in enabled if name in available]
+        if not candidates:
+            candidates = list(available.values())
+
+        configured = str(
+            (base.get("review_build") or {}).get("maya_software") or ""
+        ).strip()
+        configured_path = available.get(configured)
+        if configured_path and (not enabled or configured in enabled):
+            return configured_path.name
+
+        for path in reversed(candidates):
+            data = self.project_config.load(path.name) or {}
+            if data.get("review_build_worker") or data.get("build_worker"):
+                return path.name
+        for path in reversed(candidates):
+            data = self.project_config.load(path.name) or {}
+            profiles = data.get("plugin_profiles") or {}
+            if any((profile or {}).get("required") for profile in profiles.values()):
+                return path.name
+
+        preferred = self.project_config.config_dir / "software_maya2024.yml"
+        if preferred.is_file():
+            return preferred.name
+        return candidates[-1].name if candidates else "software_maya2024.yml"
+
     def resolve_mayapy(self) -> Path:
         configured = os.environ.get("SMARTPIPELINE_MAYAPY")
         if configured and Path(configured).is_file():
             return Path(configured)
-        candidates = []
-        preferred = self.project_config.config_dir / "software_maya2024.yml"
-        if preferred.is_file():
-            candidates.append(preferred)
-        candidates.extend(
-            path
-            for path in sorted(self.project_config.config_dir.glob("software_maya*.yml"))
-            if path not in candidates
-        )
+        selected = self.project_config.config_dir / self.maya_software_config_name()
+        candidates = [selected]
+        candidates.extend(path for path in sorted(
+            self.project_config.config_dir.glob("software_maya*.yml")
+        ) if path not in candidates)
         for config_path in candidates:
             data = self.project_config.load(config_path.name)
             maya_path = Path(str(data.get("path") or ""))
@@ -590,6 +627,32 @@ class ReviewBuildManagerService:
         raise FileNotFoundError(
             "mayapy.exe was not resolved. Set SMARTPIPELINE_MAYAPY or configure software_maya*.yml."
         )
+
+    def maya_software_config(self) -> dict:
+        """Return the same merged Maya configuration used to resolve mayapy."""
+
+        return self.project_config.load(self.maya_software_config_name())
+
+    def maya_process_environment(self) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """Resolve scalar and path-list environment values for a Maya worker."""
+
+        config = self.maya_software_config()
+        env_vars = {
+            str(key): expand_config_tokens(str(value), self.project_config)
+            for key, value in (config.get("env_vars") or {}).items()
+            if str(key).strip()
+        }
+        paths = {}
+        for key, values in (config.get("paths") or {}).items():
+            if isinstance(values, str):
+                text = values.strip()
+                values = [] if text in {"", "[]", "null", "None"} else [text]
+            paths[str(key)] = [
+                expand_config_tokens(str(value), self.project_config)
+                for value in (values or [])
+                if str(value).strip()
+            ]
+        return env_vars, paths
 
     def shot_status(
         self,

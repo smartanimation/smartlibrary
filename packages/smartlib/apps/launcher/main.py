@@ -513,12 +513,13 @@ class SmartLauncher(QtWidgets.QMainWindow):
         self.check_asset_sheet_cache(folder_name)
         
         # --- 2. アプリリストの更新 ---
-        enabled = [
-            soft_id
-            for soft_id in cfg.get('enabled_softwares', [])
-            if not is_openrv_software(soft_id)
-        ]
         cfg_dir = os.path.join(PROJECTS_ROOT, folder_name)
+        enabled = []
+        for soft_id in cfg.get('enabled_softwares', []):
+            project_info = load_yml(os.path.join(cfg_dir, f"software_{soft_id}.yml"))
+            source_id = project_info.get("source_software") or soft_id
+            if not is_openrv_software(source_id):
+                enabled.append(soft_id)
         if hasattr(self, "usdview_action"):
             usdview_path = resolve_configured_tool(cfg_dir, self.projectroot, "usdview")
             self.usdview_action.setEnabled(bool(usdview_path))
@@ -528,8 +529,9 @@ class SmartLauncher(QtWidgets.QMainWindow):
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         provider = QtWidgets.QFileIconProvider()
         for soft_id in enabled:
-            info = dict(master_data.get(soft_id, {}))
             project_info = load_yml(os.path.join(cfg_dir, f"software_{soft_id}.yml"))
+            source_id = project_info.get("source_software") or soft_id
+            info = dict(master_data.get(source_id, {}))
             info.update(project_info)
             item = QtGui.QStandardItem(info.get('name', soft_id.upper()))
             item.setEditable(False)
@@ -618,7 +620,9 @@ class SmartLauncher(QtWidgets.QMainWindow):
         project_name = anchors.get("project_name", display_project)
         project_root = anchors.get("project_root", self.projectroot)
 
-        if is_openrv_software(soft_id):
+        preliminary_spec = load_yml(os.path.join(cfg_dir, f"software_{soft_id}.yml"))
+        preliminary_source_id = preliminary_spec.get('source_software') or soft_id
+        if is_openrv_software(preliminary_source_id):
             self.launch_openrv_player(
                 cfg_dir=cfg_dir,
                 project_name=project_name,
@@ -633,7 +637,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
         
         # マスターデータをロード
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
-        master_info = master_data.get(soft_id, {})
+        source_id = spec_data.get('source_software') or soft_id
+        master_info = master_data.get(source_id, {})
 
         # 個別設定のpathがあればそれを使う、なければマスターを使う
         raw_exe_path = spec_data.get('path') or master_info.get('path', "")

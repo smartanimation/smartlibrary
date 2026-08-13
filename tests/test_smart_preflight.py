@@ -35,7 +35,7 @@ class FakeAdapter:
     def nonempty_display_layers(self):
         return []
 
-    def hidden_models(self):
+    def publish_geometry_visibility_issues(self, _set_name):
         return []
 
     def asset_lights(self):
@@ -270,6 +270,33 @@ def test_missing_uv_and_invalid_texture_are_asset_errors():
     )
     assert next(row for row in report.results if row.key == "meshes_have_uvs").severity == Severity.ERROR
     assert next(row for row in report.results if row.key == "texture_files_exist").severity == Severity.ERROR
+    assert report.blocked
+
+
+def test_hidden_geometry_outside_cache_set_is_ignored():
+    adapter = FakeAdapter()
+    adapter.publish_geometry_visibility_issues = lambda _set_name: []
+    report = PreflightEngine(adapter, create_asset_profile()).run(
+        PreflightContext(kind="asset", entity="Hero")
+    )
+    result = next(
+        row for row in report.results if row.key == "publish_geometry_visibility"
+    )
+    assert result.severity == Severity.PASS
+
+
+def test_hidden_cache_geometry_blocks_asset_publish():
+    adapter = FakeAdapter()
+    adapter.publish_geometry_visibility_issues = lambda _set_name: [
+        "|Root|geo|body_geoShape: |Root|geo.visibility is off"
+    ]
+    report = PreflightEngine(adapter, create_asset_profile()).run(
+        PreflightContext(kind="asset", entity="Hero")
+    )
+    result = next(
+        row for row in report.results if row.key == "publish_geometry_visibility"
+    )
+    assert result.severity == Severity.ERROR
     assert report.blocked
 
 

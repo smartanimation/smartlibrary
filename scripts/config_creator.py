@@ -65,6 +65,24 @@ def merge_dicts(base, override):
             result[key] = value
     return result
 
+
+def registration_id(source_id, existing_ids):
+    """Return a stable, unique id for another registration of a tool."""
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(source_id or "software").strip())
+    base = base.strip("._-") or "software"
+    existing = {str(value).lower() for value in (existing_ids or [])}
+    if base.lower() not in existing:
+        return base
+    index = 2
+    while "{}_{}".format(base, index).lower() in existing:
+        index += 1
+    return "{}_{}".format(base, index)
+
+
+def source_software_id(registration_id_value, config=None):
+    """Resolve an alias registration back to its master software definition."""
+    return str((config or {}).get("source_software") or registration_id_value)
+
 class ConfigCreatorApp(QtWidgets.QMainWindow):
     config_saved = QtCore.Signal()
 
@@ -892,6 +910,14 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.selected_list.setStyleSheet(list_style)
         self.selected_list.currentItemChanged.connect(self.on_soft_selection_changed)
         left_layout.addWidget(self.selected_list)
+
+        review_build_layout = QtWidgets.QFormLayout()
+        self.review_build_maya_combo = QtWidgets.QComboBox()
+        self.review_build_maya_combo.setToolTip(
+            "Maya registration used by Review Build Manager and its mayapy worker."
+        )
+        review_build_layout.addRow("Review Build Maya:", self.review_build_maya_combo)
+        left_layout.addLayout(review_build_layout)
         
         sel_btns = QtWidgets.QHBoxLayout()
         self.rem_soft_btn = QtWidgets.QPushButton("▲ Remove ▲")
@@ -942,6 +968,19 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         del_node_btn = QtWidgets.QPushButton("- Del")
         add_var_btn.clicked.connect(self.add_tree_path_variable); add_path_btn.clicked.connect(self.add_tree_path); del_node_btn.clicked.connect(self.remove_tree_node)
         tree_btns.addWidget(add_var_btn); tree_btns.addWidget(add_path_btn); tree_btns.addStretch(); tree_btns.addWidget(del_node_btn)
+
+        self.plugin_profile_table = QtWidgets.QTableWidget(0, 3)
+        self.plugin_profile_table.setHorizontalHeaderLabels(
+            ["Build Profile", "Required Plugins", "Optional Plugins"]
+        )
+        self.plugin_profile_table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.Stretch
+        )
+        self.plugin_profile_table.verticalHeader().setVisible(False)
+        plugin_note = QtWidgets.QLabel(
+            "Comma separated plug-in names. Profiles: core, work_stage, rend_stage, update."
+        )
+        plugin_note.setWordWrap(True)
         
         right_layout.addWidget(QtWidgets.QLabel("Software Settings:"))
         right_layout.addWidget(self.software_settings_table, 1)
@@ -949,6 +988,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         right_layout.addWidget(QtWidgets.QLabel("Path Settings:"))
         right_layout.addWidget(self.env_tree)
         right_layout.addLayout(tree_btns)
+        right_layout.addWidget(QtWidgets.QLabel("Build Plugin Profiles:"))
+        right_layout.addWidget(self.plugin_profile_table)
+        right_layout.addWidget(plugin_note)
         
         layout.addLayout(left_layout, 1); layout.addLayout(right_layout, 2)
         return page
@@ -982,17 +1024,21 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self._save_tree_to_memory(previous.text())
         if not current:
             self.software_settings_table.setRowCount(0)
-            self.env_tree.clear(); return
+            self.env_tree.clear()
+            self.plugin_profile_table.setRowCount(0)
+            return
             
         soft_id = current.text()
         if soft_id not in self.software_configs:
             proj_dir = os.path.join(PROJECTS_ROOT, self.name_input.text().strip())
             spec_path = os.path.join(proj_dir, f"software_{soft_id}.yml")
-            def_path = os.path.join(DEFAULT_DIR, f"software_{soft_id}.yml")
+            project_config = load_yml(spec_path) if os.path.exists(spec_path) else {}
+            source_id = source_software_id(soft_id, project_config)
+            def_path = os.path.join(DEFAULT_DIR, f"software_{source_id}.yml")
             default_config = load_yml(def_path)
-            if os.path.exists(spec_path):
+            if project_config:
                 self.software_configs[soft_id] = merge_dicts(
-                    default_config, load_yml(spec_path)
+                    default_config, project_config
                 )
             else:
                 self.software_configs[soft_id] = default_config
@@ -1002,32 +1048,41 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def add_to_selected(self):
         curr = self.global_list.currentItem()
         if not curr: return
-        sid = curr.text()
-        
-        for i in range(self.selected_list.count()):
-            if self.selected_list.item(i).text() == sid: return
+        source_id = curr.text()
+        existing_ids = [
+            self.selected_list.item(i).text()
+            for i in range(self.selected_list.count())
+        ]
+        sid = registration_id(source_id, existing_ids)
             
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
-        master_info = master_data.get(sid, {})
+        master_info = master_data.get(source_id, {})
         
         # アイコンまたはパスからアイコン付きアイテムを作成
         self._add_item_with_icon(self.selected_list, sid, master_info.get('icon', ""), master_info.get('path', ""))
         
-        default_path = os.path.join(DEFAULT_DIR, f"software_{sid}.yml")
-        base_config = load_yml(default_path)
+        default_path = os.path.join(DEFAULT_DIR, f"software_{source_id}.yml")
+        base_config = copy.deepcopy(load_yml(default_path))
         base_config['path'] = master_info.get('path', "")
         base_config['icon'] = master_info.get('icon', "")
+        base_config['source_software'] = source_id
+        if sid != source_id:
+            base_config['name'] = f"{master_info.get('name', source_id)} ({sid})"
         
         self.software_configs[sid] = base_config
         self.selected_list.setCurrentRow(self.selected_list.count() - 1)
         self._populate_tree(self.software_configs[sid])
+        self._refresh_review_build_maya_combo()
 
     def add_custom_software(self):
         p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Exe/Bat", "", "Executables (*.exe *.bat *.cmd)")
         if p:
-            sid = os.path.splitext(os.path.basename(p))[0]
-            for i in range(self.selected_list.count()):
-                if self.selected_list.item(i).text() == sid: return
+            source_id = os.path.splitext(os.path.basename(p))[0]
+            existing_ids = [
+                self.selected_list.item(i).text()
+                for i in range(self.selected_list.count())
+            ]
+            sid = registration_id(source_id, existing_ids)
 
             # カスタムツールはパスからアイコンを抽出
             self._add_item_with_icon(self.selected_list, sid, "", p)
@@ -1035,11 +1090,14 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.software_configs[sid] = {
                 'path': p.replace("\\", "/"),
                 'icon': "",
+                'source_software': source_id,
+                'name': sid,
                 'env_vars': {},
                 'paths': {}
             }
             self.selected_list.setCurrentRow(self.selected_list.count()-1)
             self._populate_tree(self.software_configs[sid])
+            self._refresh_review_build_maya_combo()
 
     def _context_config_roots(self, project_name=None):
         roots = [DEFAULT_DIR]
@@ -1709,6 +1767,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             'templates': {},
             'template_files': self._template_files_from_ui(),
         }
+        review_build_maya = str(
+            self.review_build_maya_combo.currentData() or ""
+        ).strip()
+        if review_build_maya:
+            config['review_build'] = {'maya_software': review_build_maya}
         google_sheets = dict(existing_config.get('google_sheets') or {})
         for prefix, value in google_inputs.items():
             if value:
@@ -1773,8 +1836,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             
         for sid in data.get('enabled_softwares', []):
             p = os.path.join(proj_dir, f"software_{sid}.yml")
-            default_conf = load_yml(os.path.join(DEFAULT_DIR, f"software_{sid}.yml"))
             project_conf = load_yml(p) if os.path.exists(p) else {}
+            source_id = source_software_id(sid, project_conf)
+            default_conf = load_yml(os.path.join(DEFAULT_DIR, f"software_{source_id}.yml"))
             conf = merge_dicts(default_conf, project_conf)
             self._add_item_with_icon(self.selected_list, sid, conf.get('icon', ""), conf.get('path', ""))
             self.software_configs[sid] = conf
@@ -1808,7 +1872,30 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def remove_from_selected(self):
         row = self.selected_list.currentRow()
-        if row >= 0: self.selected_list.takeItem(row)
+        if row >= 0:
+            self.selected_list.takeItem(row)
+            self._refresh_review_build_maya_combo()
+
+    def _refresh_review_build_maya_combo(self, selected_id=None):
+        """List enabled Maya registrations while preserving the current choice."""
+
+        if selected_id is None:
+            selected_id = self.review_build_maya_combo.currentData()
+        self.review_build_maya_combo.blockSignals(True)
+        self.review_build_maya_combo.clear()
+        for index in range(self.selected_list.count()):
+            sid = self.selected_list.item(index).text()
+            config = self.software_configs.get(sid) or {}
+            source_id = source_software_id(sid, config).lower()
+            if source_id == "maya" or source_id.startswith("maya"):
+                self.review_build_maya_combo.addItem(sid, sid)
+        selected_index = self.review_build_maya_combo.findData(str(selected_id or ""))
+        if selected_index >= 0:
+            self.review_build_maya_combo.setCurrentIndex(selected_index)
+        self.review_build_maya_combo.setEnabled(
+            self.review_build_maya_combo.count() > 0
+        )
+        self.review_build_maya_combo.blockSignals(False)
 
     def _save_tree_to_memory(self, soft_id=None):
         if not soft_id:
@@ -1822,7 +1909,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             value_item = self.software_settings_table.item(row, 2)
             key = key_item.text().strip() if key_item else ""
             value = value_item.text() if value_item else ""
-            if key and key not in {"env_vars", "paths"}:
+            if key and key not in {"env_vars", "paths", "plugin_profiles"}:
                 setting_type = key_item.data(QtCore.Qt.ItemDataRole.UserRole)
                 if setting_type == "env_var":
                     env_vars[key] = value
@@ -1838,11 +1925,24 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.software_configs[soft_id].update(settings)
         self.software_configs[soft_id]['env_vars'] = env_vars
         self.software_configs[soft_id]['paths'] = paths
+        plugin_profiles = {}
+        for row in range(self.plugin_profile_table.rowCount()):
+            profile_item = self.plugin_profile_table.item(row, 0)
+            required_item = self.plugin_profile_table.item(row, 1)
+            optional_item = self.plugin_profile_table.item(row, 2)
+            profile = profile_item.text().strip().lower() if profile_item else ""
+            if not profile:
+                continue
+            plugin_profiles[profile] = {
+                "required": self._comma_values(required_item.text() if required_item else ""),
+                "optional": self._comma_values(optional_item.text() if optional_item else ""),
+            }
+        self.software_configs[soft_id]['plugin_profiles'] = plugin_profiles
 
     def _populate_tree(self, conf):
         self.software_settings_table.setRowCount(0)
         for key, value in conf.items():
-            if key in {"env_vars", "paths"}:
+            if key in {"env_vars", "paths", "plugin_profiles"}:
                 continue
             self._append_software_setting_row(
                 key, self._format_setting_value(value), "setting"
@@ -1863,6 +1963,21 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                     child.setFlags(child.flags() | QtCore.Qt.ItemFlag.ItemIsEditable | QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
                     parent.addChild(child)
             parent.setExpanded(True)
+
+        self.plugin_profile_table.setRowCount(0)
+        profiles = conf.get("plugin_profiles") or {}
+        ordered_profiles = ["core", "work_stage", "rend_stage", "update"]
+        for profile in [*ordered_profiles, *sorted(set(profiles) - set(ordered_profiles))]:
+            values = profiles.get(profile) or {}
+            row = self.plugin_profile_table.rowCount()
+            self.plugin_profile_table.insertRow(row)
+            self.plugin_profile_table.setItem(row, 0, QtWidgets.QTableWidgetItem(profile))
+            self.plugin_profile_table.setItem(
+                row, 1, QtWidgets.QTableWidgetItem(", ".join(values.get("required") or []))
+            )
+            self.plugin_profile_table.setItem(
+                row, 2, QtWidgets.QTableWidgetItem(", ".join(values.get("optional") or []))
+            )
 
     def _append_software_setting_row(self, key, value, setting_type):
         row = self.software_settings_table.rowCount()
@@ -2092,6 +2207,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             else: self.env_tree.takeTopLevelItem(self.env_tree.indexOfTopLevelItem(i))
 
     def _apply_data_to_ui(self, data):
+        review_build = data.get("review_build") or {}
+        self._refresh_review_build_maya_combo(review_build.get("maya_software"))
         self.template_file_settings = copy.deepcopy(
             data.get("template_files") or {}
         )
