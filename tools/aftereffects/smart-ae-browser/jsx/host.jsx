@@ -744,6 +744,228 @@ var SmartAEBrowser = SmartAEBrowser || {};
     }
   };
 
+  SmartAEBrowser.inspectPrecompProject = function (payloadJson) {
+    var payload = parseJson(payloadJson) || {};
+    var finalCompConfig = payload.final_comp || {};
+    var names = [String(finalCompConfig.name || "final")];
+    var fallbackNames = finalCompConfig.fallback_names || [];
+    var stageCompName = String(payload.stage_comp || "stage");
+    var expectedLayerIds = payload.expected_layer_ids || [];
+    var finalComp;
+    var stageComp;
+    var inputSchema = { schema: "smartpipeline.precomp_inputs.v1", inputs: {} };
+    var composition = {};
+    var validation = { status: "passed", results: [] };
+    var dependencies = { schema: "smartpipeline.ae_dependency_snapshot.v1", items: [] };
+    var stageLayers = [];
+    var layersByName = {};
+    var i;
+    var j;
+    var item;
+    var layer;
+    var itemName;
+    var sourcePath;
+    var missingEffects = {};
+    var fonts = {};
+    var inputCount = 0;
+
+    function result(severity, code, message, data) {
+      validation.results.push({
+        severity: severity,
+        code: code,
+        message: message,
+        data: data || {}
+      });
+      if (severity === "ERROR") {
+        validation.status = "failed";
+      }
+    }
+
+    if (fallbackNames instanceof Array) {
+      for (i = 0; i < fallbackNames.length; i += 1) {
+        names.push(String(fallbackNames[i] || ""));
+      }
+    } else if (String(fallbackNames || "")) {
+      fallbackNames = splitCsv(String(fallbackNames));
+      for (i = 0; i < fallbackNames.length; i += 1) {
+        names.push(fallbackNames[i]);
+      }
+    }
+    if (!app.project) {
+      result("ERROR", "PROJECT_MISSING", "No After Effects project is open.");
+      return stringify({ input_schema: inputSchema, composition: composition, validation: validation, dependency_snapshot: dependencies });
+    }
+    finalComp = findCompByNames(names);
+    stageComp = findCompByNames([stageCompName]);
+    if (!finalComp) {
+      result("ERROR", "FINAL_COMP_MISSING", "Final comp was not found: " + names.join(", "));
+    } else {
+      composition = {
+        schema: "smartpipeline.precomp_composition.v1",
+        comp: String(finalComp.name || ""),
+        fps: Number(finalComp.frameRate || 0),
+        resolution: [Number(finalComp.width || 0), Number(finalComp.height || 0)],
+        duration: Math.max(1, Math.round(Number(finalComp.duration || 0) * Number(finalComp.frameRate || 0))),
+        duration_seconds: Number(finalComp.duration || 0),
+        display_start_frame: Math.round(Number(finalComp.displayStartTime || 0) * Number(finalComp.frameRate || 0)),
+        "final": { comp: String(finalComp.name || ""), layer_count: finalComp.numLayers, source: "" },
+        stage: { comp: stageCompName, layers: stageLayers }
+      };
+      if (finalComp.numLayers !== 1) {
+        result("ERROR", "FINAL_LAYER_COUNT", "Final comp must contain exactly one layer.", { count: finalComp.numLayers });
+      }
+      if (finalComp.numLayers >= 1) {
+        layer = finalComp.layer(1);
+        composition["final"].source = layer.source ? String(layer.source.name || "") : "";
+        try {
+          var finalEffects = layer.property("ADBE Effect Parade");
+          if (finalEffects && finalEffects.numProperties > 0) {
+            result("ERROR", "FINAL_EFFECTS_NOT_ALLOWED", "Final comp layer must not contain effects.", { count: finalEffects.numProperties });
+          }
+        } catch (finalEffectError) {}
+      }
+    }
+    if (!stageComp) {
+      result("ERROR", "STAGE_COMP_MISSING", "Stage comp was not found: " + stageCompName);
+    } else {
+      for (i = 1; i <= stageComp.numLayers; i += 1) {
+        layer = stageComp.layer(i);
+        itemName = String(layer.name || "");
+        var sourceName = layer.source ? String(layer.source.name || "") : "";
+        var layerRecord = {
+          name: itemName,
+          source: sourceName,
+          order: i,
+          enabled: layer.enabled !== false
+        };
+        stageLayers.push(layerRecord);
+        if (!layersByName[itemName]) {
+          layersByName[itemName] = [];
+        }
+        layersByName[itemName].push(layerRecord);
+      }
+      if (composition.stage) {
+        composition.stage.layers = stageLayers;
+      }
+    }
+
+    if (!(expectedLayerIds instanceof Array)) {
+      expectedLayerIds = [];
+    }
+    if (!expectedLayerIds.length && stageComp) {
+      for (i = 0; i < stageLayers.length; i += 1) {
+        if (("|" + expectedLayerIds.join("|") + "|").indexOf("|" + stageLayers[i].name + "|") < 0) {
+          expectedLayerIds.push(stageLayers[i].name);
+        }
+      }
+    }
+    for (i = 0; i < expectedLayerIds.length; i += 1) {
+      var expectedId = String(expectedLayerIds[i] || "");
+      var matches = layersByName[expectedId] || [];
+      var uniqueSources = {};
+      var occurrences = [];
+      if (!matches.length) {
+        result("ERROR", "STAGE_LAYER_MISSING", "Stage layer was not found: " + expectedId);
+        continue;
+      }
+      for (j = 0; j < matches.length; j += 1) {
+        uniqueSources[matches[j].source] = true;
+        occurrences.push(matches[j].order);
+      }
+      var sourceCount = 0;
+      var sourceKey;
+      for (sourceKey in uniqueSources) {
+        if (uniqueSources.hasOwnProperty(sourceKey)) {
+          sourceCount += 1;
+        }
+      }
+      if (sourceCount > 1) {
+        result("WARNING", "STAGE_LAYER_AMBIGUOUS", "Stage layer name refers to different sources: " + expectedId, { sources: uniqueSources });
+      }
+      inputSchema.inputs[expectedId] = {
+        placeholder: expectedId,
+        composition: stageCompName,
+        required: true,
+        source: matches[0].source,
+        occurrences: occurrences
+      };
+      inputCount += 1;
+    }
+
+    for (i = 1; i <= app.project.numItems; i += 1) {
+      item = app.project.item(i);
+      itemName = String(item.name || "");
+      sourcePath = "";
+      try {
+        if (item instanceof FootageItem && item.file) {
+          sourcePath = item.file.fsName;
+          if (!item.file.exists) {
+            result("ERROR", "MISSING_FOOTAGE", "Missing footage: " + itemName, { path: sourcePath });
+          }
+        }
+      } catch (footageError) {
+        result("ERROR", "MISSING_FOOTAGE", "Unreadable footage: " + itemName, { error: footageError.message });
+      }
+      if (sourcePath || item instanceof CompItem) {
+        dependencies.items.push({
+          name: itemName,
+          path: sourcePath,
+          type: item instanceof CompItem ? "composition" : "footage",
+          stage_input: Boolean(inputSchema.inputs[itemName])
+        });
+      }
+      if (item instanceof CompItem) {
+        for (j = 1; j <= item.numLayers; j += 1) {
+          layer = item.layer(j);
+          try {
+            if (layer.property("Source Text")) {
+              fonts[String(layer.property("Source Text").value.font || "")] = true;
+            }
+          } catch (textError) {}
+          try {
+            var effects = layer.property("ADBE Effect Parade");
+            var effectIndex;
+            var effect;
+            if (effects) {
+              for (effectIndex = 1; effectIndex <= effects.numProperties; effectIndex += 1) {
+                effect = effects.property(effectIndex);
+                if (/missing/i.test(String(effect.name || "") + " " + String(effect.matchName || ""))) {
+                  missingEffects[String(effect.name || effect.matchName)] = true;
+                }
+              }
+            }
+          } catch (effectError) {}
+        }
+      }
+    }
+    if (!inputCount) {
+      result("ERROR", "STAGE_INPUT_MISSING", "No Stage input layer was resolved.");
+    }
+    for (i in missingEffects) {
+      if (missingEffects.hasOwnProperty(i)) {
+        result("ERROR", "MISSING_PLUGIN", "Missing effect/plugin: " + i);
+      }
+    }
+    dependencies.fonts = [];
+    for (i in fonts) {
+      if (fonts.hasOwnProperty(i) && i) {
+        dependencies.fonts.push(i);
+      }
+    }
+    validation.summary = {
+      final_comp: composition.comp || "",
+      input_count: inputCount,
+      dependency_count: dependencies.items.length,
+      font_count: dependencies.fonts.length
+    };
+    return stringify({
+      input_schema: inputSchema,
+      composition: composition,
+      validation: validation,
+      dependency_snapshot: dependencies
+    });
+  };
+
   SmartAEBrowser.runAeBuildManifest = function (payloadJson) {
     var payload = parseJson(payloadJson) || {};
     var manifestFile = File(payload.path);

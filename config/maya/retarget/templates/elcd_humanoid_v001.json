@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "profile_kind": "project_template",
+  "template_id": "elcd_humanoid",
+  "template_version": "v001",
+  "maya_version": "2024",
+  "time_unit": "film",
+  "required_plugins": ["I:/ELCD/lib/tools/py3/dlas-maya-plug-ins/2024/clgIKNode.mll"],
+  "source_skeleton": {
+    "namespace_agnostic_prefix": "MC_",
+    "copy_attributes": ["translate", "rotate", "scale"]
+  },
+  "limb_modes": {"left_arm": "dual", "right_arm": "dual", "left_leg": "ik", "right_leg": "ik"},
+  "rig_settings": {
+    "CTL_L_arm.enable": {"value": 0, "key": false},
+    "CTL_R_arm.enable": {"value": 0, "key": false}
+  },
+  "excluded_transfer_nodes": [],
+  "transfer_nodes": {
+    "center": ["A_C_head", "A_C_hip", "A_C_neckA", "A_C_neckB", "A_C_pelvis", "A_C_spineA", "A_C_spineB", "A_C_spineC"],
+    "left": ["A_L_ankle", "A_L_arch", "A_L_clvcl", "A_L_forFingerA", "A_L_forFingerB", "A_L_forFingerC", "A_L_forFingerD", "A_L_lowArm", "A_L_lowLeg", "A_L_midFingerA", "A_L_midFingerB", "A_L_midFingerC", "A_L_midFingerD", "A_L_pnkFingerA", "A_L_pnkFingerB", "A_L_pnkFingerC", "A_L_pnkFingerD", "A_L_rngFingerA", "A_L_rngFingerB", "A_L_rngFingerC", "A_L_rngFingerD", "A_L_shldr", "A_L_tmbFingerA", "A_L_tmbFingerB", "A_L_tmbFingerC", "A_L_toe", "A_L_upArm", "A_L_upLeg", "A_L_wrist"],
+    "right": ["A_R_ankle", "A_R_arch", "A_R_clvcl", "A_R_forFingerA", "A_R_forFingerB", "A_R_forFingerC", "A_R_forFingerD", "A_R_lowArm", "A_R_lowLeg", "A_R_midFingerA", "A_R_midFingerB", "A_R_midFingerC", "A_R_midFingerD", "A_R_pnkFingerA", "A_R_pnkFingerB", "A_R_pnkFingerC", "A_R_pnkFingerD", "A_R_rngFingerA", "A_R_rngFingerB", "A_R_rngFingerC", "A_R_rngFingerD", "A_R_shldr", "A_R_tmbFingerA", "A_R_tmbFingerB", "A_R_tmbFingerC", "A_R_toe", "A_R_upArm", "A_R_upLeg", "A_R_wrist"],
+    "controls": ["CTL_C_spine", "CTL_C_spineChest", "CTL_C_spineTrs", "CTL_L_arm", "CTL_L_armRoot", "CTL_L_elbow", "CTL_L_foot", "CTL_L_knee", "CTL_L_legRoot", "CTL_R_arm", "CTL_R_armRoot", "CTL_R_elbow", "CTL_R_foot", "CTL_R_knee", "CTL_R_legRoot", "CTL_allLocal"]
+  },
+  "bake_attributes": ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"],
+  "pole_vectors": {
+    "left_arm": {"chain": ["A_L_upArm", "A_L_lowArm", "A_L_wrist"], "control": "CTL_L_elbow", "mode": "rotation", "distance_ratio": 1.0, "enabled": true},
+    "right_arm": {"chain": ["A_R_upArm", "A_R_lowArm", "A_R_wrist"], "control": "CTL_R_elbow", "mode": "rotation", "distance_ratio": 1.0, "enabled": true},
+    "left_leg": {"chain": ["A_L_upLeg", "A_L_lowLeg", "A_L_ankle"], "control": "CTL_L_knee", "mode": "rotation", "distance_ratio": 1.25},
+    "right_leg": {"chain": ["A_R_upLeg", "A_R_lowLeg", "A_R_ankle"], "control": "CTL_R_knee", "mode": "rotation", "distance_ratio": 1.25}
+  },
+  "wrists": {
+    "left": {"source": "MC_LeftHand", "target": "A_L_wrist", "orientation_offset": "auto", "apply_translation": false},
+    "right": {"source": "MC_RightHand", "target": "A_R_wrist", "orientation_offset": "auto", "apply_translation": false}
+  },
+  "dual_arm_match": {
+    "left": {"switch": "CTL_L_arm.enable", "ik_control": "CTL_L_arm", "result_wrist": "J_L_wrist", "iterations": 3},
+    "right": {"switch": "CTL_R_arm.enable", "ik_control": "CTL_R_arm", "result_wrist": "J_R_wrist", "iterations": 3}
+  }
+}

@@ -117,8 +117,8 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         root_layout.addLayout(top_layout)
 
         self.placement_tree = PlacementTreeWidget(self)
-        self.placement_tree.setColumnCount(3)
-        self.placement_tree.setHeaderLabels(["name", "category", "group"])
+        self.placement_tree.setColumnCount(4)
+        self.placement_tree.setHeaderLabels(["name", "category", "group", "motion"])
         self.placement_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.placement_tree.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
         self.placement_tree.setDefaultDropAction(QtCore.Qt.MoveAction)
@@ -128,6 +128,7 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         self.placement_tree.setIconSize(QtCore.QSize(64, 36))
         self.placement_tree.header().setStretchLastSection(True)
         self.placement_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self.placement_tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
         self.placement_tree.setMinimumHeight(260)
         root_layout.addWidget(self.placement_tree, 2)
 
@@ -521,7 +522,7 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
             member_by_name = {member.name: member for member in self.cast_members}
             items = {}
             for row in locators:
-                item = QtWidgets.QTreeWidgetItem([row.name, row.category, row.group])
+                item = QtWidgets.QTreeWidgetItem([row.name, row.category, row.group, row.motion])
                 item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable | QtCore.Qt.ItemIsDragEnabled | QtCore.Qt.ItemIsDropEnabled)
                 item.setData(0, QtCore.Qt.UserRole, row.node)
                 item.setData(0, TREE_KIND_ROLE, TREE_KIND_LOCATOR)
@@ -535,6 +536,16 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
                     parent_item.addChild(item)
                 else:
                     self.placement_tree.addTopLevelItem(item)
+                motion_combo = QtWidgets.QComboBox()
+                motion_combo.addItems(["STATIC", "CURVE"])
+                motion_combo.setCurrentText(row.motion)
+                motion_combo.setToolTip(
+                    "STATIC: placement only / CURVE: Animation Curve Data Publish required"
+                )
+                motion_combo.currentTextChanged.connect(
+                    lambda value, node=row.node: self.set_placement_motion(node, value)
+                )
+                self.placement_tree.setItemWidget(item, 3, motion_combo)
                 if row.member:
                     member = member_by_name.get(row.member)
                     if member:
@@ -543,6 +554,18 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         finally:
             self._populating_tree = False
 
+    def set_placement_motion(self, node: str, motion: str) -> None:
+        if self._populating_tree:
+            return
+        from smartlib.dcc.maya import placement
+
+        try:
+            value = placement.set_placement_motion(node, motion)
+            self.status_label.setText(f"{node}: Motion = {value}")
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            self.refresh()
+
     def _asset_tree_item(self, member) -> QtWidgets.QTreeWidgetItem:
         asset = self._asset_for_member(member)
         label = member.asset or member.name
@@ -550,7 +573,7 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
             label = f"{label}  ({member.name})"
         variant = getattr(member, "variant", "default") or "default"
         path_text = "/".join(part for part in (member.category, member.group, variant if variant != "default" else "") if part)
-        item = QtWidgets.QTreeWidgetItem([label, member.category, member.group])
+        item = QtWidgets.QTreeWidgetItem([label, member.category, member.group, ""])
         item.setData(0, QtCore.Qt.UserRole, "")
         item.setData(0, TREE_KIND_ROLE, TREE_KIND_ASSET)
         item.setData(0, TREE_MEMBER_ROLE, member.name)

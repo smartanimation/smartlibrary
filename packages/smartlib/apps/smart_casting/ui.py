@@ -195,6 +195,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         sequence_buttons.addWidget(self.publish_asset_sequence_cast_btn)
         self.asset_table = QtWidgets.QTableWidget(0, len(ASSET_HEADERS))
         self.asset_table.setHorizontalHeaderLabels(ASSET_HEADERS)
+        self._hide_vertical_header(self.asset_table)
         self.asset_table.horizontalHeader().setStretchLastSection(True)
         self.asset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.asset_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -203,6 +204,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.available_asset_label = QtWidgets.QLabel("Asset List")
         self.available_asset_table = QtWidgets.QTableWidget(0, len(AVAILABLE_ASSET_HEADERS))
         self.available_asset_table.setHorizontalHeaderLabels(AVAILABLE_ASSET_HEADERS)
+        self._hide_vertical_header(self.available_asset_table)
         self.available_asset_table.horizontalHeader().setStretchLastSection(True)
         self.available_asset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.available_asset_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -225,10 +227,12 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.asset_info.setWordWrap(True)
         self.asset_cast_info_table = QtWidgets.QTableWidget(0, 2)
         self.asset_cast_info_table.setHorizontalHeaderLabels(["Key", "Value"])
+        self._hide_vertical_header(self.asset_cast_info_table)
         self.asset_cast_info_table.horizontalHeader().setStretchLastSection(True)
         self.asset_cast_info_table.itemChanged.connect(self._on_asset_cast_detail_changed)
         self.metadata_table = QtWidgets.QTableWidget(0, 2)
         self.metadata_table.setHorizontalHeaderLabels(["Key", "Value"])
+        self._hide_vertical_header(self.metadata_table)
         self.metadata_table.horizontalHeader().setStretchLastSection(True)
         meta_buttons = QtWidgets.QHBoxLayout()
         self.add_meta_btn = QtWidgets.QPushButton("+")
@@ -315,6 +319,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.cast_thumb.setStyleSheet("background:#30363d; border:1px solid #4a4a4a;")
         self.cast_info_table = QtWidgets.QTableWidget(0, 2)
         self.cast_info_table.setHorizontalHeaderLabels(["Key", "Value"])
+        self._hide_vertical_header(self.cast_info_table)
         self.cast_info_table.horizontalHeader().setStretchLastSection(True)
         self.cast_info_table.itemChanged.connect(self._on_cast_detail_changed)
         right.addWidget(self.cast_thumb, 0, QtCore.Qt.AlignHCenter)
@@ -338,6 +343,10 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.save_shot_cast_btn.clicked.connect(self.save_shot_cast)
         self.publish_shot_cast_btn.clicked.connect(self.publish_shot_cast)
         self.auto_selection_btn.clicked.connect(self.auto_selection)
+
+    @staticmethod
+    def _hide_vertical_header(table) -> None:
+        table.verticalHeader().setVisible(False)
 
     def refresh(self) -> None:
         self.asset_rows = self.service.list_assets()
@@ -457,7 +466,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.available_asset_table.setVisible(True)
         self.sequence_cast_label.setVisible(True)
         self._update_sequence_cast_save_label((episode, sequence))
-        selected_categories = self.selected_categories()
         query = self.asset_search.text().strip().lower()
         rows = self._sequence_cast_draft((episode, sequence))
         self._populating_asset_table = True
@@ -475,8 +483,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                     str(data.get("note") or ""),
                 ]
             ).lower()
-            if selected_categories and category not in selected_categories:
-                continue
             if query and query not in haystack:
                 continue
             row = self.asset_table.rowCount()
@@ -502,12 +508,15 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
 
     def populate_available_asset_table(self) -> None:
         query = self.asset_search.text().strip().lower()
+        selected_categories = self.selected_categories()
         if self.available_asset_table.columnCount() != len(AVAILABLE_ASSET_HEADERS):
             self.available_asset_table.setColumnCount(len(AVAILABLE_ASSET_HEADERS))
         self.available_asset_table.setHorizontalHeaderLabels(AVAILABLE_ASSET_HEADERS)
         self.available_asset_table.blockSignals(True)
         self.available_asset_table.setRowCount(0)
         for asset in self.asset_rows:
+            if selected_categories and asset.category not in selected_categories:
+                continue
             haystack = " ".join(
                 [asset.category, asset.group, asset.asset, asset.variant, asset.status, asset.description]
             ).lower()

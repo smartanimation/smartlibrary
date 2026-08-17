@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.folder_structure import copy_entity_folder_structure, folder_structure_source
 from smartlib.core.metadata import write_json
 from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
 
@@ -75,11 +76,12 @@ class AssetManagerService:
         paths = [
             asset_root,
             variant_root,
-            variant_root / "data",
-            variant_root / "publish",
+            self.paths.asset_data_root(identity),
+            self.paths.asset_publish_root(identity),
+            self.paths.asset_reference_root(identity),
         ]
         for department in self.asset_departments:
-            work_root = variant_root / "work" / department
+            work_root = self.paths.asset_work_dir(identity, department)
             paths.append(work_root)
             for tool_name in DEFAULT_WORK_TOOLS:
                 paths.append(work_root / tool_name)
@@ -98,12 +100,27 @@ class AssetManagerService:
         created_paths = self._mkdirs(self.planned_asset_paths(default_request))
         asset_root = self.paths.asset_root(request.identity)
         default_variant_root = self.paths.asset_variant_root(default_request.identity)
+        structure_source = folder_structure_source(self.project_config, "asset")
+        if structure_source is not None:
+            created_paths.extend(copy_entity_folder_structure(
+                structure_source,
+                default_variant_root,
+                self.paths.asset_work_root(default_request.identity),
+                self.paths.asset_work_root(default_request.identity).parent,
+            ))
         self._ensure_asset_json(default_request, asset_root)
         self._ensure_variant_json(default_request, default_variant_root)
         variant_root = default_variant_root
         if request.variant and request.variant != "default":
             created_paths.extend(self._mkdirs(self.planned_asset_paths(request)[1:]))
             variant_root = self.paths.asset_variant_root(request.identity)
+            if structure_source is not None:
+                created_paths.extend(copy_entity_folder_structure(
+                    structure_source,
+                    variant_root,
+                    self.paths.asset_work_root(request.identity),
+                    self.paths.asset_work_root(request.identity).parent,
+                ))
             self._ensure_variant_json(request, variant_root)
         return CreatedAsset(request.identity, asset_root, variant_root, created_paths)
 
@@ -124,6 +141,14 @@ class AssetManagerService:
             raise FileNotFoundError(f"Asset does not exist: {asset_root}")
         created_paths = self._mkdirs(self.planned_asset_paths(request)[1:])
         variant_root = self.paths.asset_variant_root(request.identity)
+        structure_source = folder_structure_source(self.project_config, "asset")
+        if structure_source is not None:
+            created_paths.extend(copy_entity_folder_structure(
+                structure_source,
+                variant_root,
+                self.paths.asset_work_root(request.identity),
+                self.paths.asset_work_root(request.identity).parent,
+            ))
         self._ensure_variant_json(request, variant_root)
         return CreatedAsset(request.identity, asset_root, variant_root, created_paths)
 

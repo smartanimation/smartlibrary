@@ -14,6 +14,15 @@ DEFAULT_DIR = os.path.join(PIPELINE_ROOT, "config", "default")
 GLOBAL_SOFT_PATH = os.path.join(DEFAULT_DIR, "software_settings.yml")
 ASSET_LIST_URL_LABEL = "Asset List URL"
 SHOT_LIST_URL_LABEL = "Shot List URL"
+SHOT_PATH_TEMPLATE_KEYS = {
+    "shot_root", "shot_work_root", "shot_work", "shot_data_root",
+    "shot_publish_root", "shot_output_root", "shot_render_root",
+    "shot_build_root", "shot_build", "sequence_build_root", "sequence_build",
+}
+ASSET_PATH_TEMPLATE_KEYS = {
+    "asset_root", "asset_work_root", "asset_work", "asset_data_root",
+    "asset_publish_root", "asset_reference_root",
+}
 PACKAGES_DIR = os.path.join(PIPELINE_ROOT, "packages")
 if PACKAGES_DIR not in sys.path:
     sys.path.insert(0, PACKAGES_DIR)
@@ -145,6 +154,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.preflight_tab = self.setup_preflight_tab()
         self.context_tab = self.setup_context_tab()
         self.resolvers_tab = self.setup_resolvers_tab()
+        self.review_tab = self.setup_review_tab()
 
         self.tabs.addTab(self.soft_tab, "Softwares")
         self.tabs.addTab(self.anchors_table["widget"], "Anchors")
@@ -156,6 +166,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs.addTab(self.preflight_tab, "Preflight")
         self.tabs.addTab(self.context_tab, "Contexts")
         self.tabs.addTab(self.resolvers_tab, "Resolvers")
+        self.tabs.addTab(self.review_tab, "Review")
         self.tabs.currentChanged.connect(self._refresh_template_files_table)
         self.name_input.textChanged.connect(self._refresh_template_files_table)
         self.path_input.textChanged.connect(self._refresh_template_files_table)
@@ -218,6 +229,114 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         note.setWordWrap(True)
         layout.addRow(note)
         return page
+
+    def setup_review_tab(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        note = QtWidgets.QLabel(
+            "Review Profiles control generated pixels and Layer cache invalidation. "
+            "Delivery Profiles control codec, naming and the final Shot destination."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        editors = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        review_group = QtWidgets.QGroupBox("Review Profiles")
+        review_layout = QtWidgets.QVBoxLayout(review_group)
+        self.review_profiles_edit = QtWidgets.QPlainTextEdit()
+        self.review_profiles_edit.setPlaceholderText(
+            "work_default:\n  stage: WORK\n  image_format: png"
+        )
+        review_layout.addWidget(self.review_profiles_edit)
+        delivery_group = QtWidgets.QGroupBox("Delivery Profiles")
+        delivery_layout = QtWidgets.QVBoxLayout(delivery_group)
+        self.delivery_profiles_edit = QtWidgets.QPlainTextEdit()
+        self.delivery_profiles_edit.setPlaceholderText(
+            "internal:\n  review_profile: work_default\n  container: mov"
+        )
+        delivery_layout.addWidget(self.delivery_profiles_edit)
+        editors.addWidget(review_group)
+        editors.addWidget(delivery_group)
+        layout.addWidget(editors, 1)
+        policy = QtWidgets.QFormLayout()
+        self.missing_precomp_policy_combo = QtWidgets.QComboBox()
+        self.missing_precomp_policy_combo.addItems(
+            ["allow_project_default", "block", "auto_create_candidate"]
+        )
+        self.default_precomp_edit = QtWidgets.QLineEdit()
+        self.default_precomp_edit.setPlaceholderText(
+            "{project_root}/templates/review/base_comp.aep"
+        )
+        self.review_success_days = QtWidgets.QSpinBox()
+        self.review_success_days.setRange(0, 3650)
+        self.review_failed_days = QtWidgets.QSpinBox()
+        self.review_failed_days.setRange(0, 3650)
+        self.review_logs_days = QtWidgets.QSpinBox()
+        self.review_logs_days.setRange(0, 3650)
+        policy.addRow("Missing PreComp:", self.missing_precomp_policy_combo)
+        policy.addRow("Default PreComp:", self.default_precomp_edit)
+        policy.addRow("Keep Successful Jobs (days):", self.review_success_days)
+        policy.addRow("Keep Failed Jobs (days):", self.review_failed_days)
+        policy.addRow("Keep Logs (days):", self.review_logs_days)
+        layout.addLayout(policy)
+        return page
+
+    def _load_review_editor(self, project_name=None):
+        default_data = load_yml(os.path.join(DEFAULT_DIR, "review.yml"))
+        project_data = {}
+        if project_name:
+            project_data = load_yml(os.path.join(PROJECTS_ROOT, project_name, "review.yml"))
+        data = merge_dicts(default_data, project_data)
+        self.review_profiles_edit.setPlainText(
+            yaml.dump(data.get("review_profiles") or {}, sort_keys=False, allow_unicode=True)
+        )
+        self.delivery_profiles_edit.setPlainText(
+            yaml.dump(data.get("delivery_profiles") or {}, sort_keys=False, allow_unicode=True)
+        )
+        policy = str(data.get("missing_precomp_policy") or "allow_project_default")
+        index = self.missing_precomp_policy_combo.findText(policy)
+        self.missing_precomp_policy_combo.setCurrentIndex(max(0, index))
+        self.default_precomp_edit.setText(
+            str(data.get("default_precomp") or "{project_root}/templates/review/base_comp.aep")
+        )
+        jobs = data.get("jobs") or {}
+        self.review_success_days.setValue(int(jobs.get("retain_success_days", 3)))
+        self.review_failed_days.setValue(int(jobs.get("retain_failed_days", 30)))
+        self.review_logs_days.setValue(int(jobs.get("retain_logs_days", 90)))
+
+    def _review_config_from_ui(self):
+        review_profiles = yaml.safe_load(self.review_profiles_edit.toPlainText()) or {}
+        delivery_profiles = yaml.safe_load(self.delivery_profiles_edit.toPlainText()) or {}
+        if not isinstance(review_profiles, dict) or not isinstance(delivery_profiles, dict):
+            raise ValueError("Review and Delivery Profiles must be YAML mappings.")
+        for name, profile in review_profiles.items():
+            if not isinstance(profile, dict):
+                raise ValueError(f"Review Profile {name} must be a mapping.")
+            stage = str(profile.get("stage") or "WORK").upper()
+            if stage not in {"WORK", "REND"}:
+                raise ValueError(f"Review Profile {name}: stage must be WORK or REND.")
+            image_format = str(profile.get("image_format") or "png").lower()
+            if image_format not in {"png", "exr", "jpg", "jpeg"}:
+                raise ValueError(f"Review Profile {name}: unsupported image_format {image_format}.")
+        for name, profile in delivery_profiles.items():
+            if not isinstance(profile, dict):
+                raise ValueError(f"Delivery Profile {name} must be a mapping.")
+            review_profile = str(profile.get("review_profile") or "")
+            if review_profile and review_profile not in review_profiles:
+                raise ValueError(
+                    f"Delivery Profile {name}: Review Profile {review_profile} was not found."
+                )
+        return {
+            "schema_version": 1,
+            "review_profiles": review_profiles,
+            "delivery_profiles": delivery_profiles,
+            "missing_precomp_policy": self.missing_precomp_policy_combo.currentText(),
+            "default_precomp": self.default_precomp_edit.text().strip(),
+            "jobs": {
+                "retain_success_days": self.review_success_days.value(),
+                "retain_failed_days": self.review_failed_days.value(),
+                "retain_logs_days": self.review_logs_days.value(),
+            },
+        }
 
     @staticmethod
     def _comma_values(text):
@@ -298,15 +417,24 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
         layout.addWidget(self.template_files_table, 1)
+        structure_help = QtWidgets.QLabel(
+            "Folder Structure convention: put shared/published folders in root/ and "
+            "artist folders in work/. Flat templates copy to the workspace entity root."
+        )
+        structure_help.setWordWrap(True)
+        layout.addWidget(structure_help)
 
         buttons = QtWidgets.QHBoxLayout()
         browse = QtWidgets.QPushButton("Browse Project Template")
+        open_location = QtWidgets.QPushButton("Create / Open Location")
         clear = QtWidgets.QPushButton("Clear Project Template")
         refresh = QtWidgets.QPushButton("Refresh")
         browse.clicked.connect(self._browse_project_template)
+        open_location.clicked.connect(self._open_template_location)
         clear.clicked.connect(self._clear_project_template)
         refresh.clicked.connect(self._refresh_template_files_table)
         buttons.addWidget(browse)
+        buttons.addWidget(open_location)
         buttons.addWidget(clear)
         buttons.addStretch()
         buttons.addWidget(refresh)
@@ -328,6 +456,18 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             if value and value not in departments:
                 departments.append(value)
         rows = [
+            (
+                "folder_structure.shot",
+                "Shot Folder Structure",
+                "settings/templates/folder_structure/shot",
+                "templates/folder_structure/shot",
+            ),
+            (
+                "folder_structure.asset",
+                "Asset Folder Structure",
+                "settings/templates/folder_structure/asset",
+                "templates/folder_structure/asset",
+            ),
             (
                 "maya.asset.model",
                 "Maya Asset / Model Base",
@@ -502,9 +642,18 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             resolved_project = self._resolved_template_path(
                 project_value, project_root
             )
-            if resolved_project and os.path.isfile(resolved_project):
+            expects_directory = key.startswith("folder_structure.")
+            project_exists = (
+                os.path.isdir(resolved_project)
+                if expects_directory else os.path.isfile(resolved_project)
+            )
+            fallback_exists = (
+                os.path.isdir(fallback)
+                if expects_directory else os.path.isfile(fallback)
+            )
+            if resolved_project and project_exists:
                 status, color = "PROJECT", "#80bd72"
-            elif os.path.isfile(fallback):
+            elif fallback_exists:
                 status, color = "FALLBACK", "#f2ae30"
             else:
                 status, color = "MISSING", "#ef665d"
@@ -524,18 +673,27 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         row = self.template_files_table.currentRow()
         if row < 0:
             return
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Select Maya Template",
-            self._template_project_root(),
-            "Maya Scene (*.ma *.mb)",
+        key = str(
+            self.template_files_table.item(row, 0).data(
+                QtCore.Qt.ItemDataRole.UserRole
+            )
         )
+        if key.startswith("folder_structure."):
+            path = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                "Select Physical Folder Structure",
+                self._template_project_root(),
+            )
+        else:
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Select Template File",
+                self._template_project_root(),
+                "Template Files (*.*)",
+            )
         if not path:
             return
-        key = self.template_files_table.item(row, 0).data(
-            QtCore.Qt.ItemDataRole.UserRole
-        )
-        self._set_template_setting(str(key), path.replace("\\", "/"))
+        self._set_template_setting(key, path.replace("\\", "/"))
         self._refresh_template_files_table()
 
     def _clear_project_template(self):
@@ -549,6 +707,30 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         self._set_template_setting(key, "")
         self._refresh_template_files_table()
+
+    def _open_template_location(self):
+        row = self.template_files_table.currentRow()
+        if row < 0:
+            return
+        key_item = self.template_files_table.item(row, 0)
+        path_item = self.template_files_table.item(row, 1)
+        key = str(key_item.data(QtCore.Qt.ItemDataRole.UserRole) or "")
+        configured_path = path_item.text().strip() if path_item else ""
+        path = self._resolved_template_path(
+            configured_path, self._template_project_root()
+        )
+        if not path:
+            return
+        location = path if key.startswith("folder_structure.") else os.path.dirname(path)
+        try:
+            os.makedirs(location, exist_ok=True)
+            os.startfile(os.path.normpath(location))
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Could Not Open Template Location",
+                str(exc),
+            )
 
     def _template_files_from_ui(self):
         result = copy.deepcopy(self.template_file_settings)
@@ -576,7 +758,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def setup_naming_tab(self):
         page = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(page)
+        layout = QtWidgets.QVBoxLayout(page)
+        form = QtWidgets.QFormLayout()
         form.setContentsMargins(12, 12, 12, 12)
         self.playblast_filename_input = QtWidgets.QLineEdit()
         self.playblast_filename_input.setPlaceholderText(
@@ -589,7 +772,75 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         tokens.setWordWrap(True)
         form.addRow("", tokens)
+        layout.addLayout(form)
+        layout.addWidget(QtWidgets.QLabel("Logical Outputs (used by all tools)"))
+        self.output_naming_table = QtWidgets.QTableWidget(0, 3)
+        self.output_naming_table.setHorizontalHeaderLabels(
+            ["Output Key", "Directory", "Filename"]
+        )
+        self.output_naming_table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.Stretch
+        )
+        layout.addWidget(self.output_naming_table, 1)
+        buttons = QtWidgets.QHBoxLayout()
+        add = QtWidgets.QPushButton("+")
+        remove = QtWidgets.QPushButton("-")
+        add.clicked.connect(lambda: self.output_naming_table.insertRow(self.output_naming_table.rowCount()))
+        remove.clicked.connect(lambda: self.output_naming_table.removeRow(self.output_naming_table.currentRow()))
+        buttons.addWidget(add)
+        buttons.addWidget(remove)
+        buttons.addStretch()
+        layout.addLayout(buttons)
         return page
+
+    def _load_output_naming(self, outputs):
+        self.output_naming_table.setRowCount(0)
+        for key, definition in sorted((outputs or {}).items()):
+            row = self.output_naming_table.rowCount()
+            self.output_naming_table.insertRow(row)
+            values = (key, (definition or {}).get("directory", ""), (definition or {}).get("filename", ""))
+            for column, value in enumerate(values):
+                self.output_naming_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
+
+    def _output_naming_from_ui(self):
+        outputs = {}
+        for row in range(self.output_naming_table.rowCount()):
+            values = [
+                self.output_naming_table.item(row, column).text().strip()
+                if self.output_naming_table.item(row, column) else ""
+                for column in range(3)
+            ]
+            if values[0]:
+                outputs[values[0]] = {"directory": values[1], "filename": values[2]}
+        return outputs
+
+    def _validate_output_naming(self):
+        errors = []
+        allowed_tokens = {
+            "project_root", "project_name", "project", "workspace_root",
+            "shot_root", "shot_work_root", "shot_work", "shot_build_root", "shot_build",
+            "sequence_build_root", "sequence_build", "asset_root", "asset_work_root", "asset_work",
+            "episode", "sequence", "seq", "shot", "category", "group",
+            "asset", "asset_name", "variant", "department", "dept",
+            "task", "dcc", "tool", "option", "preview", "layer", "cam",
+            "version", "take", "frame", "ext",
+        }
+        for key, definition in self._output_naming_from_ui().items():
+            directory = definition.get("directory", "")
+            filename = definition.get("filename", "")
+            if not directory:
+                errors.append(f"Output '{key}': directory is required")
+            if not filename:
+                errors.append(f"Output '{key}': filename is required")
+            if re.search(r'[<>:"/\\|?*]', filename):
+                errors.append(f"Output '{key}': filename contains a Windows-forbidden character")
+            unknown = (
+                set(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", directory + filename))
+                - allowed_tokens
+            )
+            if unknown:
+                errors.append(f"Output '{key}': unknown tokens: {', '.join(sorted(unknown))}")
+        return errors
 
     def setup_context_tab(self):
         page = QtWidgets.QWidget()
@@ -917,6 +1168,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             "Maya registration used by Review Build Manager and its mayapy worker."
         )
         review_build_layout.addRow("Review Build Maya:", self.review_build_maya_combo)
+        self.review_build_ae_combo = QtWidgets.QComboBox()
+        self.review_build_ae_combo.setToolTip(
+            "After Effects registration used for Review relink and render workers."
+        )
+        review_build_layout.addRow("Review Build After Effects:", self.review_build_ae_combo)
         left_layout.addLayout(review_build_layout)
         
         sel_btns = QtWidgets.QHBoxLayout()
@@ -1073,6 +1329,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.selected_list.setCurrentRow(self.selected_list.count() - 1)
         self._populate_tree(self.software_configs[sid])
         self._refresh_review_build_maya_combo()
+        self._refresh_review_build_ae_combo()
 
     def add_custom_software(self):
         p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Exe/Bat", "", "Executables (*.exe *.bat *.cmd)")
@@ -1098,6 +1355,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.selected_list.setCurrentRow(self.selected_list.count()-1)
             self._populate_tree(self.software_configs[sid])
             self._refresh_review_build_maya_combo()
+            self._refresh_review_build_ae_combo()
 
     def _context_config_roots(self, project_name=None):
         roots = [DEFAULT_DIR]
@@ -1725,7 +1983,18 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         base = self.path_input.text().strip()
         if not name or not base: return
 
-        config_errors = self._validate_context_configs() + self._validate_resolver_rules()
+        try:
+            review_config = self._review_config_from_ui()
+        except (ValueError, yaml.YAMLError) as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Review Configuration Failed", str(exc)
+            )
+            return
+        config_errors = (
+            self._validate_context_configs()
+            + self._validate_resolver_rules()
+            + self._validate_output_naming()
+        )
         if config_errors:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -1770,8 +2039,15 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         review_build_maya = str(
             self.review_build_maya_combo.currentData() or ""
         ).strip()
-        if review_build_maya:
-            config['review_build'] = {'maya_software': review_build_maya}
+        review_build_ae = str(
+            self.review_build_ae_combo.currentData() or ""
+        ).strip()
+        if review_build_maya or review_build_ae:
+            config['review_build'] = {}
+            if review_build_maya:
+                config['review_build']['maya_software'] = review_build_maya
+            if review_build_ae:
+                config['review_build']['after_effects_software'] = review_build_ae
         google_sheets = dict(existing_config.get('google_sheets') or {})
         for prefix, value in google_inputs.items():
             if value:
@@ -1801,22 +2077,43 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         config['anchors']['resolution'] = res
 
         t_tab = self.template_table["table"]
+        shot_templates = {}
+        asset_templates = {}
         for r in range(t_tab.rowCount()):
             k_item = t_tab.item(r, 0); v_item = t_tab.item(r, 1)
             k = k_item.text() if k_item else ""; v = v_item.text() if v_item else ""
-            if k: config['templates'][k] = v
+            if not k:
+                continue
+            if k in SHOT_PATH_TEMPLATE_KEYS:
+                shot_templates[k] = v
+            elif k in ASSET_PATH_TEMPLATE_KEYS:
+                asset_templates[k] = v
+            else:
+                config['templates'][k] = v
 
         save_yml(os.path.join(proj_dir, "templates_base.yml"), config)
+        for filename, templates in (
+            ("templates_shots.yml", shot_templates),
+            ("templates_assets.yml", asset_templates),
+        ):
+            domain_path = os.path.join(proj_dir, filename)
+            domain_data = load_yml(domain_path)
+            merged_templates = dict(domain_data.get("templates") or {})
+            merged_templates.update(templates)
+            domain_data["templates"] = merged_templates
+            save_yml(domain_path, domain_data)
         naming_path = os.path.join(proj_dir, "naming.yml")
         naming_data = load_yml(naming_path)
         naming_data["smart_playblast"] = {
             "filename": self.playblast_filename_input.text().strip()
-            or "{project}*{episode}*{sequence}*{shot}*{dept}_{preview}_v{version}*t{take}*####.{ext}"
+            or "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
         }
+        naming_data["outputs"] = self._output_naming_from_ui()
         save_yml(naming_path, naming_data)
         self._save_preflight_config(proj_dir)
         self._save_context_configs(proj_dir)
         self._save_resolver_rules(proj_dir)
+        save_yml(os.path.join(proj_dir, "review.yml"), review_config)
         self.config_saved.emit()
         QtWidgets.QMessageBox.information(self, "Saved", "Success")
         self.close()
@@ -1844,6 +2141,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.software_configs[sid] = conf
             
         self._apply_data_to_ui(data)
+        self._append_domain_path_templates(proj_dir)
         naming = merge_dicts(
             load_yml(os.path.join(DEFAULT_DIR, "naming.yml")),
             load_yml(os.path.join(proj_dir, "naming.yml")),
@@ -1851,9 +2149,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.playblast_filename_input.setText(
             str((naming.get("smart_playblast") or {}).get("filename") or "")
         )
+        self._load_output_naming(naming.get("outputs") or {})
         self._load_preflight_editor(project_name)
         self._load_context_editor(project_name)
         self._load_resolver_editor(project_name)
+        self._load_review_editor(project_name)
 
     def init_ui_from_default(self):
         master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
@@ -1862,19 +2162,23 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         for sid in sorted(master.keys()):
             self._add_item_with_icon(self.global_list, sid, master[sid].get('icon', ""), master[sid].get('path', ""))
         self._apply_data_to_ui(load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")))
+        self._append_domain_path_templates()
         naming = load_yml(os.path.join(DEFAULT_DIR, "naming.yml"))
         self.playblast_filename_input.setText(
             str((naming.get("smart_playblast") or {}).get("filename") or "")
         )
+        self._load_output_naming(naming.get("outputs") or {})
         self._load_preflight_editor()
         self._load_context_editor()
         self._load_resolver_editor()
+        self._load_review_editor()
 
     def remove_from_selected(self):
         row = self.selected_list.currentRow()
         if row >= 0:
             self.selected_list.takeItem(row)
             self._refresh_review_build_maya_combo()
+            self._refresh_review_build_ae_combo()
 
     def _refresh_review_build_maya_combo(self, selected_id=None):
         """List enabled Maya registrations while preserving the current choice."""
@@ -1896,6 +2200,25 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.review_build_maya_combo.count() > 0
         )
         self.review_build_maya_combo.blockSignals(False)
+
+    def _refresh_review_build_ae_combo(self, selected_id=None):
+        """List enabled After Effects registrations for review rendering."""
+
+        if selected_id is None:
+            selected_id = self.review_build_ae_combo.currentData()
+        self.review_build_ae_combo.blockSignals(True)
+        self.review_build_ae_combo.clear()
+        for index in range(self.selected_list.count()):
+            sid = self.selected_list.item(index).text()
+            config = self.software_configs.get(sid) or {}
+            source_id = source_software_id(sid, config).lower()
+            if source_id.startswith("aftereffects") or source_id.startswith("after_effects"):
+                self.review_build_ae_combo.addItem(sid, sid)
+        selected_index = self.review_build_ae_combo.findData(str(selected_id or ""))
+        if selected_index >= 0:
+            self.review_build_ae_combo.setCurrentIndex(selected_index)
+        self.review_build_ae_combo.setEnabled(self.review_build_ae_combo.count() > 0)
+        self.review_build_ae_combo.blockSignals(False)
 
     def _save_tree_to_memory(self, soft_id=None):
         if not soft_id:
@@ -2209,6 +2532,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def _apply_data_to_ui(self, data):
         review_build = data.get("review_build") or {}
         self._refresh_review_build_maya_combo(review_build.get("maya_software"))
+        self._refresh_review_build_ae_combo(
+            review_build.get("after_effects_software")
+        )
         self.template_file_settings = copy.deepcopy(
             data.get("template_files") or {}
         )
@@ -2260,6 +2586,29 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             r = tab.rowCount(); tab.insertRow(r)
             tab.setItem(r, 0, QtWidgets.QTableWidgetItem(k)); tab.setItem(r, 1, QtWidgets.QTableWidgetItem(v))
         self._refresh_template_files_table()
+
+    def _append_domain_path_templates(self, project_dir=""):
+        table = self.template_table["table"]
+        existing = {
+            table.item(row, 0).text().strip()
+            for row in range(table.rowCount())
+            if table.item(row, 0)
+        }
+        for filename, allowed in (
+            ("templates_shots.yml", SHOT_PATH_TEMPLATE_KEYS),
+            ("templates_assets.yml", ASSET_PATH_TEMPLATE_KEYS),
+        ):
+            data = load_yml(os.path.join(DEFAULT_DIR, filename))
+            if project_dir:
+                data = merge_dicts(data, load_yml(os.path.join(project_dir, filename)))
+            for key, value in (data.get("templates") or {}).items():
+                if key not in allowed or key in existing:
+                    continue
+                row = table.rowCount()
+                table.insertRow(row)
+                table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(key)))
+                table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
+                existing.add(key)
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)

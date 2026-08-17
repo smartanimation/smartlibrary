@@ -577,6 +577,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
             "The schema and retarget tool are shared; ANM/MCR dependencies and offsets are stored per asset."
         )
         self.retarget_profile_browse_btn = QtWidgets.QPushButton("Browse")
+        self.retarget_template_edit = QtWidgets.QLineEdit()
+        self.retarget_template_edit.setReadOnly(True)
+        self.retarget_template_edit.setPlaceholderText("Project Retarget template (created automatically)")
+        self.generate_retarget_profile_btn = QtWidgets.QPushButton("Generate Profile")
+        self.retarget_anm_edit = QtWidgets.QLineEdit()
+        self.retarget_anm_edit.setReadOnly(True)
+        self.retarget_anm_edit.setPlaceholderText("ANM from Context Pack")
+        self.retarget_mcr_edit = QtWidgets.QLineEdit()
+        self.retarget_mcr_edit.setReadOnly(True)
+        self.retarget_mcr_edit.setPlaceholderText("MCR from Context Pack")
         self.retarget_test_motion_check = QtWidgets.QCheckBox("Test Motion Check")
         self.retarget_test_motion_check.setChecked(True)
         self.retarget_test_motion_path_label = QtWidgets.QLabel("")
@@ -589,20 +599,27 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.retarget_data_version_combo.setMinimumWidth(90)
         self.load_retarget_data_btn = QtWidgets.QPushButton("Load")
         self.save_retarget_data_btn = QtWidgets.QPushButton("Save New Version")
-        retarget_options_layout.addWidget(QtWidgets.QLabel("Profile"), 0, 0)
-        retarget_options_layout.addWidget(self.retarget_profile_edit, 0, 1)
-        retarget_options_layout.addWidget(self.retarget_profile_browse_btn, 0, 2)
-        retarget_options_layout.addWidget(self.retarget_test_motion_check, 1, 0)
-        retarget_options_layout.addWidget(self.retarget_test_motion_path_label, 1, 1)
-        retarget_options_layout.addWidget(self.validate_retarget_btn, 1, 2)
-        retarget_options_layout.addWidget(self.retarget_validation_label, 2, 0, 1, 3)
-        retarget_options_layout.addWidget(QtWidgets.QLabel("Data Version"), 3, 0)
-        retarget_options_layout.addWidget(self.retarget_data_version_combo, 3, 1)
+        retarget_options_layout.addWidget(QtWidgets.QLabel("Template"), 0, 0)
+        retarget_options_layout.addWidget(self.retarget_template_edit, 0, 1)
+        retarget_options_layout.addWidget(self.generate_retarget_profile_btn, 0, 2)
+        retarget_options_layout.addWidget(QtWidgets.QLabel("ANM"), 1, 0)
+        retarget_options_layout.addWidget(self.retarget_anm_edit, 1, 1, 1, 2)
+        retarget_options_layout.addWidget(QtWidgets.QLabel("MCR"), 2, 0)
+        retarget_options_layout.addWidget(self.retarget_mcr_edit, 2, 1, 1, 2)
+        retarget_options_layout.addWidget(QtWidgets.QLabel("Profile"), 3, 0)
+        retarget_options_layout.addWidget(self.retarget_profile_edit, 3, 1)
+        retarget_options_layout.addWidget(self.retarget_profile_browse_btn, 3, 2)
+        retarget_options_layout.addWidget(self.retarget_test_motion_check, 4, 0)
+        retarget_options_layout.addWidget(self.retarget_test_motion_path_label, 4, 1)
+        retarget_options_layout.addWidget(self.validate_retarget_btn, 4, 2)
+        retarget_options_layout.addWidget(self.retarget_validation_label, 5, 0, 1, 3)
+        retarget_options_layout.addWidget(QtWidgets.QLabel("Data Version"), 6, 0)
+        retarget_options_layout.addWidget(self.retarget_data_version_combo, 6, 1)
         data_version_actions = QtWidgets.QHBoxLayout()
         data_version_actions.setContentsMargins(0, 0, 0, 0)
         data_version_actions.addWidget(self.load_retarget_data_btn)
         data_version_actions.addWidget(self.save_retarget_data_btn)
-        retarget_options_layout.addLayout(data_version_actions, 3, 2)
+        retarget_options_layout.addLayout(data_version_actions, 6, 2)
         self.retarget_publish_options.setVisible(False)
 
         publish_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -894,6 +911,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.refresh_publish_btn.clicked.connect(self._populate_asset_publish_tree)
         self.publish_selected_btn.clicked.connect(self._publish_selected_work)
         self.retarget_profile_browse_btn.clicked.connect(self._browse_retarget_profile)
+        self.generate_retarget_profile_btn.clicked.connect(self._generate_retarget_profile)
         self.validate_retarget_btn.clicked.connect(self._validate_retarget_publish)
         self.retarget_profile_edit.textChanged.connect(lambda _text: self._update_publish_selected_state())
         self.load_retarget_data_btn.clicked.connect(self._load_retarget_data_version)
@@ -2025,6 +2043,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not asset:
             self.status_label.setText("Select an asset first")
             return
+        if not self._save_modified_maya_scene("registering the current scene"):
+            return
         try:
             import maya.cmds as cmds
 
@@ -2311,6 +2331,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _pack_selected_asset_context(self) -> None:
         if not self.context_assembly:
             self.status_label.setText("Assemble a context first")
+            return
+        if not self._save_modified_maya_scene("packing the Context"):
             return
         try:
             service = _asset_context_service(self.manager.config_dir)
@@ -3294,6 +3316,51 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return None
         return comment
 
+    def _save_modified_maya_scene(self, action: str) -> bool:
+        """Save a named, modified Maya scene before a disk-based operation."""
+        try:
+            import maya.cmds as cmds
+        except ImportError:
+            return True
+
+        if not bool(cmds.file(query=True, modified=True)):
+            return True
+
+        scene_path = str(cmds.file(query=True, sceneName=True) or "").strip()
+        if not scene_path:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Unsaved Maya Scene",
+                "The current Maya scene has not been saved yet.\n"
+                "Use Save As in Maya, then run this action again.",
+            )
+            return False
+
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setWindowTitle("Unsaved Maya Scene")
+        dialog.setIcon(QtWidgets.QMessageBox.Warning)
+        dialog.setText("The current Maya scene has unsaved changes.")
+        dialog.setInformativeText(f"Save the scene before {action}?")
+        save_button = dialog.addButton("Save and Continue", QtWidgets.QMessageBox.AcceptRole)
+        dialog.addButton(QtWidgets.QMessageBox.Cancel)
+        dialog.setDefaultButton(save_button)
+        dialog.exec_()
+        if dialog.clickedButton() is not save_button:
+            return False
+
+        try:
+            # Omitting the type preserves the current .ma/.mb format and avoids
+            # Maya attempting a format conversion for scenes with unknown data.
+            cmds.file(save=True, force=True)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Save Maya Scene Failed",
+                f"The current scene could not be saved.\n{exc}",
+            )
+            return False
+        return True
+
     def _save_scene(self) -> None:
         asset = self._current_asset()
         if not asset:
@@ -3636,21 +3703,27 @@ class AssetManagerWindow(QtWidgets.QDialog):
     def _retarget_publish_api():
         _ensure_smartlib_on_path()
         from smartlib.apps.asset_manager.retarget_publish import (
+            generate_retarget_asset_profile,
             latest_retarget_data_profile,
             list_retarget_data_versions,
             list_retarget_versions,
+            list_project_retarget_templates,
             publish_retarget_profile,
             retarget_data_root,
+            resolve_retarget_context_rigs,
             save_retarget_data_version,
             standard_test_motion,
             validate_retarget_profile,
         )
         return {
+            "generate": generate_retarget_asset_profile,
             "latest_data": latest_retarget_data_profile,
             "list_data": list_retarget_data_versions,
             "list_publish": list_retarget_versions,
+            "list_templates": list_project_retarget_templates,
             "publish": publish_retarget_profile,
             "data_root": retarget_data_root,
+            "resolve_rigs": resolve_retarget_context_rigs,
             "save_data": save_retarget_data_version,
             "test_motion": standard_test_motion,
             "validate": validate_retarget_profile,
@@ -3676,6 +3749,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         api = self._retarget_publish_api()
         test_path = api["test_motion"](self.manager.project_root)
         self.retarget_test_motion_path_label.setText(test_path.as_posix())
+        templates = api["list_templates"](self.manager.project_root)
+        bundled = Path(__file__).resolve().parents[1] / "config" / "maya" / "retarget" / "templates" / "elcd_humanoid_v001.json"
+        self.retarget_template_edit.setText(str(templates[0] if templates else bundled))
+        rigs = api["resolve_rigs"](asset.root, self._current_asset_variant())
+        self.retarget_anm_edit.setText(str(rigs.get("animation_rig_scene") or "Not found in Context Pack"))
+        self.retarget_mcr_edit.setText(str(rigs.get("mcr_scene") or "Not found in Context Pack"))
         asset_key = (asset.root.as_posix(), self._current_asset_variant())
         if getattr(self, "_retarget_profile_asset_key", None) != asset_key:
             default_profile = api["latest_data"](asset.root, self._current_asset_variant()) or self._default_retarget_profile(asset)
@@ -3692,6 +3771,46 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 self.retarget_data_version_combo.setCurrentIndex(index)
         self.retarget_data_version_combo.blockSignals(False)
         self._update_publish_selected_state()
+
+    def _generate_retarget_profile(self) -> None:
+        asset = self._current_asset()
+        if not asset:
+            self.status_label.setText("Select an asset first")
+            return
+        api = self._retarget_publish_api()
+        bundled = Path(__file__).resolve().parents[1] / "config" / "maya" / "retarget" / "templates" / "elcd_humanoid_v001.json"
+        target = asset.variant_root(self._current_asset_variant()) / "work" / "rig" / "retarget" / f"{asset.name}_retarget.json"
+        overwrite = False
+        if target.exists():
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Replace Retarget Work Profile",
+                f"The editable Retarget profile already exists. Replace it?\n\n{target}",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            overwrite = True
+        try:
+            result = api["generate"](
+                asset.root,
+                self._current_asset_variant(),
+                project_root=self.manager.project_root,
+                bundled_template=bundled,
+                output_path=target,
+                overwrite=overwrite,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Generate Retarget Profile Failed", str(exc))
+            self.status_label.setText(str(exc))
+            return
+        self.retarget_profile_edit.setText(str(result["profile"]))
+        self.retarget_template_edit.setText(str(result["template"]))
+        self.retarget_anm_edit.setText(str(result["animation_rig_scene"]))
+        self.retarget_mcr_edit.setText(str(result["mcr_scene"]))
+        self._validate_retarget_publish()
+        self.status_label.setText(f"Generated Retarget profile: {result['profile']}")
 
     def _load_retarget_data_version(self) -> None:
         path = self.retarget_data_version_combo.currentData()

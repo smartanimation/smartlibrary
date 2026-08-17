@@ -1,0 +1,40 @@
+schema_version: 1
+
+review_profiles:
+  work_default:
+    stage: WORK
+    dcc: maya
+    renderer: maya_playblast
+    image_format: png
+    bit_depth: 8
+    alpha: true
+    resolution: [1280, 720]
+    fps: project
+    frame_range: shot
+    overscan: 1.0
+    precomp: latest_approved
+
+  rend_default:
+    extends: work_default
+    stage: REND
+    renderer: maya_render
+    image_format: exr
+    bit_depth: 16
+    compression: zip
+
+delivery_profiles:
+  internal:
+    review_profile: work_default
+    container: mov
+    codec: prores_422_proxy
+    filename: "{shot}_{department}_review_{version}.mov"
+    target_template: "{shot_root}/review/{department}/{profile}/{version}"
+    include: [movie, thumbnail, review_metadata, source_manifest]
+
+missing_precomp_policy: allow_project_default
+default_precomp: "{project_root}/templates/review/base_comp.aep"
+
+jobs:
+  retain_success_days: 3
+  retain_failed_days: 30
+  retain_logs_days: 90

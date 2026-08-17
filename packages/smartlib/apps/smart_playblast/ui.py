@@ -819,8 +819,11 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         from smartlib.review.package import latest_review_version, next_review_take
         department = self.department.currentText() or "anim"
         shot_root = self.service.shot_root(self.identity)
-        version = latest_review_version(shot_root, department) or 1
-        version_dir = shot_root / "publish" / "review" / department / f"v{version:03d}"
+        publish_root = self.service.shot_publish_root(self.identity)
+        version = latest_review_version(
+            shot_root, department, publish_root=publish_root
+        ) or 1
+        version_dir = publish_root / "review" / department / f"v{version:03d}"
         return version, next_review_take(version_dir)
 
     def _apply_suggested_version_take(self):
@@ -1233,6 +1236,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             comment="Smart Playblast from Maya display layers",
             project_root=self.service.paths.project_root,
             pipeline_root=_pipeline_root(),
+            publish_root=self.service.shot_publish_root(self.identity),
         )
         plan.review_data["project"] = self.project_config.project_name
         for key, row in zip(review_layers, rows):
@@ -1245,9 +1249,8 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         return plan, node_map
 
     def _output_filename(self, row):
-        template = (
-            str(row.get("output_override") or "").strip()
-            or str(
+        override = str(row.get("output_override") or "").strip()
+        legacy_template = str(
                 (
                     self.project_config.load("naming.yml").get(
                         "smart_playblast"
@@ -1255,29 +1258,35 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                 ).get("filename")
                 or ""
             )
-            or (
+        template = override or legacy_template or (
                 "{project}_{episode}_{sequence}_{shot}_{dept}_"
                 "{preview}_v{version}_t{take}_####.{ext}"
             )
-        )
         values = {
-            "project": self.project_config.project_name,
             "episode": self.identity.episode,
             "sequence": self.identity.sequence,
             "shot": self.identity.shot,
-            "dept": self.department.currentText() or "anim",
+            "department": self.department.currentText() or "anim",
             "preview": _layer_key(row.get("layer", ""), {}),
             "cam": _dag_leaf(row.get("camera", "")),
             "version": f"{int(row.get('version', 1)):03d}",
             "take": f"{int(row.get('take', 1)):03d}",
+            "frame": "####",
             "ext": "png",
+            "shot_root": self.service.shot_root(self.identity).as_posix(),
         }
         try:
-            filename = template.format(**values).replace("*", "_")
-            return re.sub(r"\.[^./\\]+$", ".png", filename)
-        except KeyError as exc:
+            from smartlib.core.output_resolver import OutputPathResolver
+            output = OutputPathResolver(self.project_config).resolve(
+                "__smart_playblast_override__" if override else "smart_playblast",
+                values,
+                default_directory="{shot_root}",
+                default_filename=template.replace("*", "_"),
+            )
+            return re.sub(r"\.[^./\\]+$", ".png", output.filename)
+        except (KeyError, ValueError) as exc:
             raise RuntimeError(
-                f"Unknown Smart Playblast filename token: {exc}"
+                f"Invalid Smart Playblast output rule: {exc}"
             ) from exc
 
     def _scene_settings(self):

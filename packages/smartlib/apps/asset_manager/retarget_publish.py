@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+
+from smartlib.retarget.profile import ProfileError, load_retarget_profile
 
 
 REQUIRED_PROFILE_KEYS = (
@@ -15,6 +18,9 @@ REQUIRED_PROFILE_KEYS = (
     "source_skeleton",
     "transfer_nodes",
 )
+
+ANIMATION_RIG_SUBSETS = ("anim", "anm", "animation")
+MOCAP_RIG_SUBSETS = ("mcp", "mcr", "mocap")
 
 
 def read_json(path: Path, default=None):
@@ -30,6 +36,119 @@ def write_json(path: Path, payload) -> Path:
         json.dump(payload, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
     return path
+
+
+def _version_number(path: Path) -> int:
+    match = re.fullmatch(r"v(\d+)", path.name, re.IGNORECASE)
+    return int(match.group(1)) if match else -1
+
+
+def _published_maya_scene(asset_root: Path, variant: str, subsets: tuple[str, ...]) -> Path | None:
+    publish_root = Path(asset_root) / variant / "publish" / "asset"
+    for subset in subsets:
+        subset_root = publish_root / subset
+        versions = sorted(
+            (path for path in subset_root.glob("v*") if path.is_dir() and _version_number(path) >= 0),
+            key=_version_number,
+            reverse=True,
+        )
+        for version_dir in versions:
+            manifest = read_json(version_dir / "publish.json", {}) or {}
+            files = manifest.get("files") or {}
+            for key in ("mb", "ma"):
+                value = str(files.get(key) or "").strip()
+                candidate = Path(value) if value else None
+                if candidate and not candidate.is_absolute():
+                    candidate = version_dir / candidate
+                if candidate and candidate.is_file():
+                    return candidate
+            candidates = sorted(version_dir.glob("*.mb")) + sorted(version_dir.glob("*.ma"))
+            if candidates:
+                return candidates[0]
+    return None
+
+
+def resolve_retarget_context_rigs(asset_root: Path, variant: str = "default") -> dict:
+    """Resolve ANM and MCR scenes from the latest packed asset representations."""
+    return {
+        "animation_rig_scene": _published_maya_scene(asset_root, variant, ANIMATION_RIG_SUBSETS),
+        "mcr_scene": _published_maya_scene(asset_root, variant, MOCAP_RIG_SUBSETS),
+    }
+
+
+def project_retarget_template_root(project_root: Path) -> Path:
+    return Path(project_root) / "library" / "anim" / "retarget" / "templates"
+
+
+def list_project_retarget_templates(project_root: Path) -> list[Path]:
+    root = project_retarget_template_root(project_root)
+    return sorted(root.glob("*_v[0-9][0-9][0-9].json"), reverse=True) if root.is_dir() else []
+
+
+def ensure_project_retarget_template(project_root: Path, bundled_template: Path) -> Path:
+    """Return the latest project template, seeding it from the bundled default once."""
+    templates = list_project_retarget_templates(project_root)
+    if templates:
+        return templates[0]
+    bundled_template = Path(bundled_template)
+    if not bundled_template.is_file():
+        raise FileNotFoundError(f"Bundled Retarget template was not found: {bundled_template}")
+    target = project_retarget_template_root(project_root) / bundled_template.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(bundled_template, target)
+    return target
+
+
+def generate_retarget_asset_profile(
+    asset_root: Path,
+    variant: str,
+    *,
+    project_root: Path,
+    bundled_template: Path,
+    output_path: Path | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Generate an editable asset profile from Context Pack ANM/MCR publishes."""
+    asset_root = Path(asset_root)
+    rigs = resolve_retarget_context_rigs(asset_root, variant)
+    missing = [key for key, value in rigs.items() if value is None]
+    if missing:
+        raise FileNotFoundError(
+            "Context Pack is missing required Retarget representation(s): " + ", ".join(missing)
+        )
+    template_path = ensure_project_retarget_template(project_root, bundled_template)
+    template = load_retarget_profile(template_path)
+    template_id = str(template.get("template_id") or template_path.stem)
+    template_version = str(template.get("template_version") or "v001")
+    target = Path(output_path) if output_path else (
+        asset_root / variant / "work" / "rig" / "retarget" / f"{asset_root.name}_retarget.json"
+    )
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"Retarget work profile already exists: {target}")
+    payload = {
+        "schema_version": 1,
+        "profile_kind": "asset_profile",
+        "asset": asset_root.name,
+        "variant": variant,
+        "template": {
+            "id": template_id,
+            "version": template_version,
+            "path": template_path.resolve().as_posix(),
+        },
+        "mcr_scene": rigs["mcr_scene"].resolve().as_posix(),
+        "animation_rig_scene": rigs["animation_rig_scene"].resolve().as_posix(),
+    }
+    write_json(target, payload)
+    return {"profile": target, "template": template_path, **rigs}
+
+
+def materialized_profile(profile_path: Path) -> dict:
+    """Resolve inheritance and detach the snapshot from its template file."""
+    profile = load_retarget_profile(profile_path)
+    template = profile.get("template")
+    if isinstance(template, dict):
+        profile["template"] = {key: value for key, value in template.items() if key != "path"}
+    return profile
 
 
 def retarget_publish_root(asset_root: Path, variant: str = "default") -> Path:
@@ -64,9 +183,10 @@ def save_retarget_data_version(
     comment: str = "",
 ) -> dict:
     profile_path = Path(profile_path)
-    profile = read_json(profile_path, None)
-    if not isinstance(profile, dict):
-        raise ValueError(f"Retarget profile is not a readable JSON object: {profile_path}")
+    try:
+        profile = materialized_profile(profile_path)
+    except ProfileError as exc:
+        raise ValueError(str(exc)) from exc
     root = retarget_data_root(asset_root, variant)
     versions = list_retarget_data_versions(asset_root, variant)
     next_number = max([int(item["version"][1:]) for item in versions] or [0]) + 1
@@ -123,8 +243,8 @@ def validate_retarget_profile(profile_path: Path, *, project_root: Path, test_mo
         errors.append(f"Retarget profile was not found: {profile_path}")
     else:
         try:
-            profile = read_json(profile_path, {}) or {}
-        except (OSError, ValueError) as exc:
+            profile = load_retarget_profile(profile_path)
+        except (OSError, ValueError, ProfileError) as exc:
             errors.append(f"Could not read Retarget profile: {exc}")
     for key in REQUIRED_PROFILE_KEYS:
         if not profile.get(key):
@@ -197,7 +317,8 @@ def publish_retarget_profile(
         raise FileExistsError(f"Retarget publish already exists: {version_dir}")
     version_dir.mkdir(parents=True)
     target_profile = version_dir / f"{Path(asset_root).name}_retarget.json"
-    shutil.copy2(profile_path, target_profile)
+    # Publish a self-contained snapshot so a later template update cannot alter it.
+    write_json(target_profile, materialized_profile(profile_path))
     write_json(version_dir / "validation.json", validation)
     manifest = {
         "schema_version": 1,

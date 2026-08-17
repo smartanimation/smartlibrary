@@ -15,6 +15,8 @@ CAST_ID_ATTR = "smartPlacementCastId"
 ATTACH_ROOT_ATTR = "smartPlacementAttachRoot"
 CATEGORY_ATTR = "smartPlacementCategory"
 GROUP_ATTR = "smartPlacementGroup"
+MOTION_ATTR = "smartPlacementMotion"
+MOTION_MODES = ("STATIC", "CURVE")
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class PlacementLocator:
     member: str = ""
     attach_root: str = ""
     parent: str = ""
+    motion: str = "STATIC"
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,7 @@ def list_placement_locators() -> list[PlacementLocator]:
                 member=_get_string_attr(cmds, transform, MEMBER_ATTR),
                 attach_root=_get_string_attr(cmds, transform, ATTACH_ROOT_ATTR),
                 parent=parent,
+                motion=_placement_motion(cmds, transform),
             )
         )
     return locators
@@ -117,6 +121,8 @@ def create_placement_locator(
     _set_string_attr(cmds, node, CAST_ID_ATTR, cast_id)
     _set_string_attr(cmds, node, CATEGORY_ATTR, category)
     _set_string_attr(cmds, node, GROUP_ATTR, group)
+    if not _get_string_attr(cmds, node, MOTION_ATTR):
+        _set_string_attr(cmds, node, MOTION_ATTR, "STATIC")
     try:
         cmds.setAttr(f"{node}.localScaleX", 2.0)
         cmds.setAttr(f"{node}.localScaleY", 2.0)
@@ -144,9 +150,25 @@ def assign_member_to_placement(locator: str, member: CastMember, attach_root: st
     _set_string_attr(cmds, locator, MEMBER_ATTR, member.name)
     _set_string_attr(cmds, locator, CATEGORY_ATTR, member.category)
     _set_string_attr(cmds, locator, GROUP_ATTR, member.group)
+    if not _get_string_attr(cmds, locator, MOTION_ATTR):
+        _set_string_attr(cmds, locator, MOTION_ATTR, "STATIC")
     if attach_root:
         _set_string_attr(cmds, locator, ATTACH_ROOT_ATTR, attach_root)
     return locator
+
+
+def set_placement_motion(locator: str, motion: str) -> str:
+    """Declare whether this placement instance requires animation curves."""
+
+    cmds = _maya_cmds()
+    if not locator or not cmds.objExists(locator) or not _is_placement_locator(cmds, locator):
+        raise RuntimeError("Select a placement locator.")
+    clean_motion = str(motion or "").strip().upper()
+    if clean_motion not in MOTION_MODES:
+        raise ValueError(f"Unsupported placement motion: {motion}")
+    _tag_placement_locator(cmds, locator)
+    _set_string_attr(cmds, locator, MOTION_ATTR, clean_motion)
+    return clean_motion
 
 
 def add_assets_to_context_cast(project_config: ProjectConfig, assets: list[Any]) -> tuple[Path, list[dict[str, Any]]]:
@@ -401,6 +423,7 @@ def _collect_placement_metadata() -> tuple[dict[str, Any], dict[str, Any]]:
                 "translate": translate,
                 "rotate": rotate,
                 "scale": scale,
+                "motion": row.motion,
             }
         )
         member = _get_string_attr(cmds, row.node, MEMBER_ATTR)
@@ -411,6 +434,7 @@ def _collect_placement_metadata() -> tuple[dict[str, Any], dict[str, Any]]:
                     "member": member,
                     "attach_root": _get_string_attr(cmds, row.node, ATTACH_ROOT_ATTR),
                     "attach_mode": "parentConstraint",
+                    "motion": row.motion,
                 }
             )
     return {"placements": placements}, {"placements": members}
@@ -705,9 +729,14 @@ def _tag_placement_locator(cmds: Any, node: str) -> None:
         cmds.setAttr(f"{node}.{PLACEMENT_ATTR}", True)
     except Exception:
         pass
-    for attr in (CAST_ID_ATTR, MEMBER_ATTR, ATTACH_ROOT_ATTR, CATEGORY_ATTR, GROUP_ATTR):
+    for attr in (CAST_ID_ATTR, MEMBER_ATTR, ATTACH_ROOT_ATTR, CATEGORY_ATTR, GROUP_ATTR, MOTION_ATTR):
         if not cmds.objExists(f"{node}.{attr}"):
             cmds.addAttr(node, longName=attr, dataType="string")
+
+
+def _placement_motion(cmds: Any, node: str) -> str:
+    motion = _get_string_attr(cmds, node, MOTION_ATTR).strip().upper()
+    return motion if motion in MOTION_MODES else "STATIC"
 
 
 def _is_placement_locator(cmds: Any, node: str) -> bool:

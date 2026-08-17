@@ -111,7 +111,7 @@ def stage_anim_from_input(
         component
         for component in _enabled_construct_components(construct_data, "camera")
         if str((component.get("source") or {}).get("kind") or "")
-        == "published_camera"
+        in {"published_camera", "scene_data"}
     ]
     if not direct_cameras and _construct_enabled(construct_data, "camera", "camera", "camera") and camera_path and camera_path.exists():
         if camera_path.name == "camera.json":
@@ -142,6 +142,8 @@ def stage_anim_from_input(
         if layout_overlay:
             referenced.append(layout_overlay)
     _apply_construct_cameras(cmds, root, anim_input, construct_data, frame_offset)
+    _apply_construct_lights(cmds, root, construct_data)
+    _apply_construct_playblast_settings(cmds, root, construct_data)
     _apply_construct_set_dress(root, construct_data)
     _apply_construct_animation_curves(root, construct_data)
     _apply_shot_timing(cmds, anim_shot_data)
@@ -210,6 +212,10 @@ def update_anim_construct(
     frame_offset = _anim_frame_offset(anim_input)
     if "camera" in selected_types:
         _apply_construct_cameras(cmds, root, anim_input, construct_data, frame_offset)
+    if "light" in selected_types:
+        _apply_construct_lights(cmds, root, construct_data)
+    if "playblast_settings" in selected_types:
+        _apply_construct_playblast_settings(cmds, root, construct_data)
     if "set_dress" in selected_types:
         _apply_construct_set_dress(root, construct_data)
     if "animation_curve" in selected_types:
@@ -1114,7 +1120,7 @@ def _apply_construct_cameras(
         component
         for component in _enabled_construct_components(construct_data, "camera")
         if str((component.get("source") or {}).get("kind") or "")
-        == "published_camera"
+        in {"published_camera", "scene_data"}
     ]
     primary_enabled = _construct_enabled(
         construct_data, "camera", "camera", "camera"
@@ -1165,6 +1171,76 @@ def _apply_construct_cameras(
             pass
         cameras.append(camera)
     return cameras
+
+
+def _apply_construct_lights(cmds, project_root: Path, construct_data: dict | None) -> list[str]:
+    """Import versioned lights below the template ``lights_grp`` container."""
+
+    from smartlib.dcc.maya.shot_scene_data import import_scene_component_package
+
+    components = _enabled_construct_components(construct_data, "light")
+    if not components:
+        return []
+    imported = []
+    container = "lights_grp"
+    if not cmds.objExists(container):
+        container = cmds.group(empty=True, name=container)
+    for component in components:
+        data_path = _project_path(project_root, str(component.get("path") or ""))
+        if not data_path or not data_path.exists():
+            continue
+        package_data = (read_json(data_path, {}) or {}) if data_path.is_file() else {}
+        package_root = str(package_data.get("root") or component.get("name") or "light").split("|")[-1]
+        if package_root != "lights_grp":
+            existing = cmds.ls(f"|{container}|{package_root}", long=True) or []
+            if existing:
+                cmds.delete(existing)
+        created = import_scene_component_package(data_path)
+        if package_root == "lights_grp":
+            imported_container = next(
+                (node for node in created if node.rsplit("|", 1)[-1].startswith("lights_grp")),
+                "",
+            )
+            if imported_container and cmds.objExists(imported_container):
+                for child in cmds.listRelatives(imported_container, children=True, fullPath=True) or []:
+                    child_name = child.rsplit("|", 1)[-1]
+                    existing = cmds.ls(f"|{container}|{child_name}", long=True) or []
+                    if existing:
+                        cmds.delete(existing)
+                    parented = cmds.parent(child, container) or []
+                    imported.extend(str(node) for node in parented)
+                if cmds.objExists(imported_container):
+                    cmds.delete(imported_container)
+            continue
+        imported_root = next(
+            (node for node in created if node.rsplit("|", 1)[-1].startswith(package_root)),
+            created[0] if created else "",
+        )
+        if imported_root and cmds.objExists(imported_root):
+            parented = cmds.parent(imported_root, container) or []
+            imported.extend(str(node) for node in parented)
+    return imported
+
+
+def _apply_construct_playblast_settings(cmds, project_root: Path, construct_data: dict | None) -> str:
+    """Restore the latest enabled Smart Playblast settings Data Publish."""
+
+    from smartlib.dcc.maya.review_playblast import save_scene_playblast_settings
+
+    components = _enabled_construct_components(construct_data, "playblast_settings")
+    if not components:
+        return ""
+    path = _project_path(project_root, str(components[-1].get("path") or ""))
+    if not path or not path.is_file():
+        return ""
+    data = read_json(path, {}) or {}
+    for key in (
+        "episode", "sequence", "shot", "scope", "department", "data_type",
+        "target", "subset", "version", "comment", "source_workfile", "files",
+    ):
+        data.pop(key, None)
+    save_scene_playblast_settings(data, cmds)
+    return str(path)
 
 
 def _apply_construct_set_dress(project_root: Path, construct_data: dict | None) -> list[str]:

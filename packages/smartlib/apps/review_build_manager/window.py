@@ -45,6 +45,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.job_counter = 0
         self.build_content_settings: dict[tuple[str, str, str], dict] = {}
         self.sequence_input_settings: dict[tuple[str, str], dict] = {}
+        self._review_submission_profiles: dict[tuple[str, str, str], dict] = {}
         self.current_build_content_rows: list[dict] = []
         self._open_after_build_identity: tuple[str, str, str] | None = None
         self._startup_context_applied = False
@@ -77,8 +78,11 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             "WORK STAGE builds an editable scene; REND STAGE builds render outputs; "
             "UPDATE applies Construct differences."
         )
-        self.generate_review_check = QtWidgets.QCheckBox("Generate Review")
+        # Kept as an internal compatibility flag for the current worker CLI.
+        # Review submission is exposed through the dedicated Review tab.
+        self.generate_review_check = QtWidgets.QCheckBox()
         self.generate_review_check.setChecked(False)
+        self.generate_review_check.setVisible(False)
         self.scope_combo = QtWidgets.QComboBox()
         self.scope_combo.addItems(["Shot", "Sequence"])
         self.department_combo = QtWidgets.QComboBox()
@@ -99,7 +103,6 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         toolbar.addStretch(1)
         toolbar.addWidget(QtWidgets.QLabel("Mode"))
         toolbar.addWidget(self.mode_combo)
-        toolbar.addWidget(self.generate_review_check)
         toolbar.addWidget(QtWidgets.QLabel("Scope"))
         toolbar.addWidget(self.scope_combo)
         toolbar.addWidget(QtWidgets.QLabel("Dept"))
@@ -112,14 +115,20 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(self.build_all_changes_btn)
         root.addLayout(toolbar)
 
+        self.main_tabs = QtWidgets.QTabWidget()
+        root.addWidget(self.main_tabs, 1)
+        build_page = QtWidgets.QWidget()
+        build_page_layout = QtWidgets.QVBoxLayout(build_page)
+        build_page_layout.setContentsMargins(0, 0, 0, 0)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        root.addWidget(splitter, 1)
+        build_page_layout.addWidget(splitter)
         splitter.addWidget(self._build_left_panel())
         splitter.addWidget(self._build_center_panel())
-        splitter.addWidget(self._build_right_panel())
-        splitter.setSizes([220, 820, 390])
+        splitter.setSizes([220, 1210])
         splitter.setChildrenCollapsible(False)
         self.main_splitter = splitter
+        self.main_tabs.addTab(build_page, "Build")
+        self.main_tabs.addTab(self._build_job_queue_page(), "Job Queue")
 
         self.footer_label = QtWidgets.QLabel("Ready")
         self.footer_label.setObjectName("footerLabel")
@@ -128,10 +137,29 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
 
     def _build_stage_inputs_panel(self) -> QtWidgets.QWidget:
         self.stage_inputs_panel = QtWidgets.QGroupBox("Stage Inputs")
-        layout = QtWidgets.QGridLayout(self.stage_inputs_panel)
+        layout = QtWidgets.QHBoxLayout(self.stage_inputs_panel)
         layout.setContentsMargins(8, 7, 8, 7)
+        self.stage_inputs_summary = QtWidgets.QLabel()
+        self.stage_inputs_summary.setWordWrap(True)
+        self.stage_inputs_settings_btn = QtWidgets.QPushButton("Settings...")
+        self.stage_inputs_settings_btn.setToolTip(
+            "Open Stage Input settings only when overrides or regeneration are needed."
+        )
+        layout.addWidget(self.stage_inputs_summary, 1)
+        layout.addWidget(self.stage_inputs_settings_btn)
+        self._build_stage_inputs_dialog()
+        self._update_stage_inputs_summary()
+        return self.stage_inputs_panel
+
+    def _build_stage_inputs_dialog(self) -> None:
+        self.stage_inputs_dialog = QtWidgets.QDialog(self)
+        self.stage_inputs_dialog.setWindowTitle("Stage Input Settings")
+        self.stage_inputs_dialog.setModal(False)
+        self.stage_inputs_dialog.resize(540, 330)
+        root = QtWidgets.QVBoxLayout(self.stage_inputs_dialog)
+        layout = QtWidgets.QGridLayout()
         layout.setHorizontalSpacing(8)
-        layout.setVerticalSpacing(5)
+        layout.setVerticalSpacing(7)
         self.input_policy_combo = QtWidgets.QComboBox()
         self.input_policy_combo.addItems(
             ["Generate Missing", "Regenerate Selected", "Use Existing"]
@@ -154,7 +182,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         )
         self.input_comment_edit = QtWidgets.QLineEdit()
         self.input_comment_edit.setPlaceholderText("Batch input comment")
-        self.generate_inputs_btn = QtWidgets.QPushButton("Generate Inputs")
+        self.generate_inputs_btn = QtWidgets.QPushButton("Regenerate Input Snapshot")
         layout.addWidget(QtWidgets.QLabel("Policy"), 0, 0)
         layout.addWidget(self.input_policy_combo, 0, 1)
         layout.addWidget(QtWidgets.QLabel("Context"), 1, 0)
@@ -171,9 +199,41 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.input_exclude_cast_edit, 5, 1)
         layout.addWidget(QtWidgets.QLabel("Comment"), 6, 0)
         layout.addWidget(self.input_comment_edit, 6, 1)
-        layout.addWidget(self.generate_inputs_btn, 7, 0, 1, 2)
         layout.setColumnStretch(1, 1)
-        return self.stage_inputs_panel
+        root.addLayout(layout)
+        help_label = QtWidgets.QLabel(
+            "These settings are optional overrides. Normal builds reuse or generate "
+            "the required input snapshot automatically."
+        )
+        help_label.setWordWrap(True)
+        root.addWidget(help_label)
+        actions = QtWidgets.QHBoxLayout()
+        actions.addStretch(1)
+        close_btn = QtWidgets.QPushButton("Close")
+        actions.addWidget(close_btn)
+        actions.addWidget(self.generate_inputs_btn)
+        root.addLayout(actions)
+        close_btn.clicked.connect(self.stage_inputs_dialog.close)
+
+    def open_stage_inputs_dialog(self) -> None:
+        self.stage_inputs_dialog.show()
+        self.stage_inputs_dialog.raise_()
+        self.stage_inputs_dialog.activateWindow()
+
+    def _update_stage_inputs_summary(self, *_args) -> None:
+        if not hasattr(self, "stage_inputs_summary"):
+            return
+        representation = self.input_representation_combo.currentText() or "Project Default"
+        options = []
+        if self.input_placements_check.isChecked():
+            options.append("Placements")
+        if self.input_overlay_check.isChecked():
+            options.append("Layout Overlay")
+        option_text = ", ".join(options) if options else "No optional inputs"
+        self.stage_inputs_summary.setText(
+            f"{self.input_policy_combo.currentText()} · "
+            f"{self.input_context_combo.currentText()} · {representation}\n{option_text}"
+        )
 
     def _build_sequence_inputs_panel(self) -> QtWidgets.QWidget:
         self.sequence_inputs_panel = QtWidgets.QGroupBox("Sequence Recipe Inputs")
@@ -216,7 +276,14 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
 
     def _build_center_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(panel)
+        outer_layout = QtWidgets.QVBoxLayout(panel)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        self.center_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.center_splitter.setChildrenCollapsible(False)
+        outer_layout.addWidget(self.center_splitter)
+        top_panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(top_panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         table_tools = QtWidgets.QHBoxLayout()
@@ -265,6 +332,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         header.setSectionResizeMode(8, QtWidgets.QHeaderView.Stretch)
         self.shot_table.setMinimumHeight(190)
         layout.addWidget(self.shot_table, 1)
+        self.center_splitter.addWidget(top_panel)
+
+        lower_panel = QtWidgets.QWidget()
+        lower_layout = QtWidgets.QVBoxLayout(lower_panel)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
+        lower_layout.setSpacing(0)
 
         self.build_contents_group = QtWidgets.QGroupBox("Build Contents")
         contents_layout = QtWidgets.QVBoxLayout(self.build_contents_group)
@@ -306,9 +379,26 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         contents_header.setSectionResizeMode(9, QtWidgets.QHeaderView.Stretch)
         self.build_contents_table.setMinimumHeight(205)
         contents_layout.addWidget(self.build_contents_table)
-        layout.addWidget(self.build_contents_group, 1)
-        layout.addWidget(self._build_sequence_inputs_panel(), 1)
+        self.workflow_tabs = QtWidgets.QTabWidget()
+        build_page = QtWidgets.QWidget()
+        build_layout = QtWidgets.QVBoxLayout(build_page)
+        build_layout.setContentsMargins(0, 0, 0, 0)
+        build_layout.addWidget(self.build_contents_group, 1)
+        build_layout.addWidget(self._build_sequence_inputs_panel(), 1)
+        self.workflow_tabs.addTab(build_page, "Build")
+        self.review_page = self._build_review_tab()
+        self.workflow_tabs.addTab(self.review_page, "Review")
+        self.workflow_tabs.addTab(self._build_right_panel(), "Output")
+        lower_layout.addWidget(self.workflow_tabs)
+        self.center_splitter.addWidget(lower_panel)
+        self.center_splitter.setSizes([330, 430])
+        return panel
 
+    def _build_job_queue_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         layout.addWidget(self._section_label("Job Queue"))
         self.queue_table = QtWidgets.QTableWidget(0, 6)
         self.queue_table.setHorizontalHeaderLabels(
@@ -319,15 +409,100 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.queue_table.setShowGrid(False)
         self.queue_table.verticalHeader().setVisible(False)
         self.queue_table.horizontalHeader().setStretchLastSection(True)
-        self.queue_table.setFixedHeight(155)
-        layout.addWidget(self.queue_table)
-        return panel
+        layout.addWidget(self.queue_table, 1)
+        return page
+
+    def _build_review_tab(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        root = QtWidgets.QVBoxLayout(page)
+        root.setContentsMargins(6, 6, 6, 6)
+        settings = QtWidgets.QHBoxLayout()
+        self.review_profile_combo = QtWidgets.QComboBox()
+        self.review_profile_combo.addItems(self.service.review_profile_ids())
+        self.delivery_profile_combo = QtWidgets.QComboBox()
+        self.delivery_profile_combo.addItems(self.service.delivery_profile_ids())
+        self.precomp_combo = QtWidgets.QComboBox()
+        self.precomp_combo.addItem("Latest Approved", "latest_approved")
+        self.layer_definition_label = QtWidgets.QLabel("Layer Definition: draft")
+        settings.addWidget(QtWidgets.QLabel("Review Profile"))
+        settings.addWidget(self.review_profile_combo)
+        settings.addWidget(QtWidgets.QLabel("Delivery Profile"))
+        settings.addWidget(self.delivery_profile_combo)
+        settings.addWidget(QtWidgets.QLabel("PreComp"))
+        settings.addWidget(self.precomp_combo)
+        settings.addStretch(1)
+        settings.addWidget(self.layer_definition_label)
+        root.addLayout(settings)
+
+        editors = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        assembly_group = QtWidgets.QGroupBox("Shot Assembly")
+        assembly_layout = QtWidgets.QVBoxLayout(assembly_group)
+        self.assembly_table = QtWidgets.QTableWidget(0, 8)
+        self.assembly_table.setHorizontalHeaderLabels(
+            ["Use", "Member", "Asset", "Variant", "Behavior", "Context", "Version", "State"]
+        )
+        self.assembly_table.verticalHeader().setVisible(False)
+        self.assembly_table.horizontalHeader().setStretchLastSection(True)
+        assembly_layout.addWidget(self.assembly_table)
+        assembly_actions = QtWidgets.QHBoxLayout()
+        self.assembly_add_btn = QtWidgets.QPushButton("Add Placement")
+        self.assembly_remove_btn = QtWidgets.QPushButton("Remove")
+        self.assembly_publish_btn = QtWidgets.QPushButton("Publish Assembly")
+        assembly_actions.addWidget(self.assembly_add_btn)
+        assembly_actions.addWidget(self.assembly_remove_btn)
+        assembly_actions.addStretch(1)
+        assembly_actions.addWidget(self.assembly_publish_btn)
+        assembly_layout.addLayout(assembly_actions)
+        editors.addWidget(assembly_group)
+
+        layers_group = QtWidgets.QGroupBox("Review Layer Definition")
+        layers_layout = QtWidgets.QVBoxLayout(layers_group)
+        self.review_layers_table = QtWidgets.QTableWidget(0, 6)
+        self.review_layers_table.setHorizontalHeaderLabels(
+            ["Use", "Layer", "Members", "Camera", "Placeholder", "Cache"]
+        )
+        self.review_layers_table.verticalHeader().setVisible(False)
+        self.review_layers_table.horizontalHeader().setStretchLastSection(True)
+        layers_layout.addWidget(self.review_layers_table)
+        layer_actions = QtWidgets.QHBoxLayout()
+        self.layer_add_btn = QtWidgets.QPushButton("Add Layer")
+        self.layer_remove_btn = QtWidgets.QPushButton("Remove")
+        self.layer_publish_btn = QtWidgets.QPushButton("Publish Layer Definition")
+        layer_actions.addWidget(self.layer_add_btn)
+        layer_actions.addWidget(self.layer_remove_btn)
+        layer_actions.addStretch(1)
+        layer_actions.addWidget(self.layer_publish_btn)
+        layers_layout.addLayout(layer_actions)
+        editors.addWidget(layers_group)
+        root.addWidget(editors, 1)
+
+        actions = QtWidgets.QHBoxLayout()
+        self.review_changes_btn = QtWidgets.QPushButton("Review Changes")
+        self.submit_review_btn = QtWidgets.QPushButton("Submit for Review")
+        self.submit_review_btn.setProperty("primary", True)
+        self.review_actions_btn = QtWidgets.QToolButton()
+        self.review_actions_btn.setText("Review Actions")
+        self.review_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        menu = QtWidgets.QMenu(self.review_actions_btn)
+        menu.addAction("Rebuild Selected Layers")
+        menu.addAction("Rebuild All Layers")
+        menu.addAction("Ignore Cache and Submit")
+        menu.addSeparator()
+        menu.addAction("View Source Manifest")
+        self.review_actions_btn.setMenu(menu)
+        self.review_status_label = QtWidgets.QLabel("Select a shot")
+        actions.addWidget(self.review_actions_btn)
+        actions.addStretch(1)
+        actions.addWidget(self.review_status_label)
+        actions.addWidget(self.review_changes_btn)
+        actions.addWidget(self.submit_review_btn)
+        root.addLayout(actions)
+        return page
 
     def _build_right_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
-        panel.setMinimumWidth(330)
         layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
         self.detail_title = self._section_label("Output History")
         layout.addWidget(self.detail_title)
@@ -376,9 +551,14 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.mode_combo.currentTextChanged.connect(self._update_stage_inputs_visibility)
         self.scope_combo.currentTextChanged.connect(self._scope_changed)
         self.input_policy_combo.currentTextChanged.connect(self._refresh_plan_columns)
+        self.input_policy_combo.currentTextChanged.connect(self._update_stage_inputs_summary)
         self.input_context_combo.currentTextChanged.connect(self._refresh_plan_columns)
+        self.input_context_combo.currentTextChanged.connect(self._update_stage_inputs_summary)
         self.input_representation_combo.currentIndexChanged.connect(
             self._refresh_plan_columns
+        )
+        self.input_representation_combo.currentIndexChanged.connect(
+            self._update_stage_inputs_summary
         )
         self.input_representation_combo.currentIndexChanged.connect(
             self._status_basis_changed
@@ -386,9 +566,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.generate_review_check.toggled.connect(self._generate_review_toggled)
         self.input_camera_edit.textChanged.connect(self._refresh_plan_columns)
         self.input_placements_check.toggled.connect(self._refresh_plan_columns)
+        self.input_placements_check.toggled.connect(self._update_stage_inputs_summary)
         self.input_overlay_check.toggled.connect(self._refresh_plan_columns)
+        self.input_overlay_check.toggled.connect(self._update_stage_inputs_summary)
         self.input_exclude_cast_edit.textChanged.connect(self._refresh_plan_columns)
         self.generate_inputs_btn.clicked.connect(self.generate_stage_inputs)
+        self.stage_inputs_settings_btn.clicked.connect(self.open_stage_inputs_dialog)
         self.search_edit.textChanged.connect(self._apply_filters)
         self.filter_list.currentItemChanged.connect(self._filter_changed)
         self.shot_tree.itemSelectionChanged.connect(self._tree_selection_changed)
@@ -409,6 +592,14 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.sequence_inputs_tree.itemSelectionChanged.connect(
             self._sequence_take_selected
         )
+        self.assembly_add_btn.clicked.connect(self._add_assembly_row)
+        self.assembly_remove_btn.clicked.connect(self._remove_assembly_rows)
+        self.assembly_publish_btn.clicked.connect(self._publish_assembly)
+        self.layer_add_btn.clicked.connect(self._add_review_layer_row)
+        self.layer_remove_btn.clicked.connect(self._remove_review_layer_rows)
+        self.layer_publish_btn.clicked.connect(self._publish_review_layers)
+        self.review_changes_btn.clicked.connect(self._review_submission_changes)
+        self.submit_review_btn.clicked.connect(self._submit_for_review)
         self._update_stage_inputs_visibility()
 
     def scan_updates(self) -> None:
@@ -685,6 +876,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self.detail_title.setText("Output History")
             self.detail_summary.setText("Select a shot.")
             self._populate_build_contents(None)
+            self._populate_review_tab(None)
             return
         identity = row_data.identity
         if self.scope_combo.currentText() == "Sequence":
@@ -720,6 +912,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 item.setToolTip(0, "Shots: " + ", ".join(shots) if shots else "All shots")
                 self.construct_list.addTopLevelItem(item)
             self._populate_build_contents(None)
+            self._populate_review_tab(None)
             return
         self.detail_title.setText(
             f"Output History - {identity.episode}/{identity.sequence}/{identity.shot}"
@@ -742,6 +935,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self.output_table.setItem(row, 3, movie)
         self.open_output_btn.setEnabled(bool(row_data.outputs))
         self._populate_build_contents(row_data)
+        self._populate_review_tab(row_data)
         constructs = self.service.list_constructs(
             identity,
             self.department_combo.currentText(),
@@ -992,6 +1186,246 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         layout.addWidget(buttons)
         return dialog.exec() == QtWidgets.QDialog.Accepted
 
+    def _populate_review_tab(self, row_data: ReviewShotStatus | None) -> None:
+        self.assembly_table.setRowCount(0)
+        self.review_layers_table.setRowCount(0)
+        enabled = bool(row_data and self.scope_combo.currentText() == "Shot")
+        for widget in (
+            self.assembly_table, self.review_layers_table, self.assembly_add_btn,
+            self.assembly_remove_btn, self.assembly_publish_btn, self.layer_add_btn,
+            self.layer_remove_btn, self.layer_publish_btn, self.review_changes_btn,
+            self.submit_review_btn,
+        ):
+            widget.setEnabled(enabled)
+        if not enabled:
+            self.review_status_label.setText("Select a shot")
+            return
+        identity = row_data.identity
+        assembly = self.service.assembly_definition(identity)
+        self._assembly_member_uid_by_name = {
+            str(member.get("name")): str(member.get("uid"))
+            for member in assembly.get("members") or []
+        }
+        self._assembly_member_name_by_uid = {
+            value: key for key, value in self._assembly_member_uid_by_name.items()
+        }
+        for member in assembly.get("members") or []:
+            self._append_assembly_row(member)
+        layers = self.service.layer_definition(
+            identity, self.department_combo.currentText()
+        )
+        for layer in sorted(
+            layers.get("layers") or [], key=lambda value: int(value.get("order", 0))
+        ):
+            self._append_review_layer_row(layer)
+        workflow = self.service.review_workflow(identity)
+        _assembly_data, assembly_path = workflow.latest_assembly()
+        _layers_data, layers_path = workflow.latest_layer_definition()
+        self.layer_definition_label.setText(
+            "Layer Definition: " + (layers_path.parent.name if layers_path else "draft")
+        )
+        precomp = workflow.latest_precomp()
+        self.precomp_combo.clear()
+        self.precomp_combo.addItem(
+            precomp.parent.parent.name if precomp else "Project Default",
+            str(precomp or "project_default"),
+        )
+        self.review_status_label.setText(
+            f"Assembly {assembly_path.parent.name if assembly_path else 'draft'} / "
+            f"{len(layers.get('layers') or [])} layers"
+        )
+
+    def _append_assembly_row(self, member: dict | None = None) -> None:
+        member = dict(member or {})
+        row = self.assembly_table.rowCount()
+        self.assembly_table.insertRow(row)
+        use = QtWidgets.QTableWidgetItem()
+        use.setFlags(use.flags() | QtCore.Qt.ItemIsUserCheckable)
+        use.setCheckState(QtCore.Qt.Checked if member.get("enabled", True) else QtCore.Qt.Unchecked)
+        use.setData(QtCore.Qt.UserRole, str(member.get("uid") or ""))
+        self.assembly_table.setItem(row, 0, use)
+        values = [member.get("name", "new_member"), member.get("asset", "")]
+        for column, value in enumerate(values, 1):
+            self.assembly_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
+        variant = QtWidgets.QComboBox()
+        variant.setEditable(True)
+        variant.addItems(self.service.asset_variants(str(member.get("asset") or "")))
+        variant.setCurrentText(str(member.get("variant") or "default"))
+        self.assembly_table.setCellWidget(row, 3, variant)
+        behavior = QtWidgets.QComboBox()
+        behavior.addItems(["STATIC", "CURVE"])
+        behavior.setCurrentText(str(member.get("behavior") or "STATIC").upper())
+        self.assembly_table.setCellWidget(row, 4, behavior)
+        context = QtWidgets.QComboBox()
+        context.addItems(self.service.asset_context_profiles())
+        context.setCurrentText(str(member.get("context") or "WORK"))
+        self.assembly_table.setCellWidget(row, 5, context)
+        self.assembly_table.setItem(
+            row, 6, QtWidgets.QTableWidgetItem(str(member.get("asset_version") or "latest"))
+        )
+        self.assembly_table.setItem(row, 7, QtWidgets.QTableWidgetItem("READY"))
+
+    def _assembly_payload_from_ui(self) -> dict:
+        members = []
+        for row in range(self.assembly_table.rowCount()):
+            use = self.assembly_table.item(row, 0)
+            behavior = self.assembly_table.cellWidget(row, 4)
+            context = self.assembly_table.cellWidget(row, 5)
+            variant = self.assembly_table.cellWidget(row, 3)
+            value = lambda column: str(
+                self.assembly_table.item(row, column).text()
+                if self.assembly_table.item(row, column) else ""
+            ).strip()
+            members.append({
+                "uid": str(use.data(QtCore.Qt.UserRole) or ""),
+                "enabled": use.checkState() == QtCore.Qt.Checked,
+                "name": value(1), "asset": value(2), "variant": variant.currentText() or "default",
+                "behavior": behavior.currentText(), "context": context.currentText(),
+                "asset_version": value(6) or "latest",
+                "version_policy": "latest_approved" if value(6).lower() == "latest" else "locked",
+                "animation_curve": {"required": behavior.currentText() == "CURVE"},
+            })
+        return {"members": members}
+
+    def _add_assembly_row(self) -> None:
+        self._append_assembly_row()
+
+    def _remove_assembly_rows(self) -> None:
+        rows = sorted({index.row() for index in self.assembly_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.assembly_table.removeRow(row)
+
+    def _publish_assembly(self) -> None:
+        status = self._selected_status()
+        if not status:
+            return
+        try:
+            path = self.service.publish_assembly_definition(
+                status.identity, self._assembly_payload_from_ui(), comment="Review Build Manager"
+            )
+            self.review_status_label.setText(f"Published Assembly: {path.parent.name}")
+            self._populate_review_tab(status)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Publish Assembly Failed", str(exc))
+
+    def _append_review_layer_row(self, layer: dict | None = None) -> None:
+        layer = dict(layer or {})
+        row = self.review_layers_table.rowCount()
+        self.review_layers_table.insertRow(row)
+        use = QtWidgets.QTableWidgetItem()
+        use.setFlags(use.flags() | QtCore.Qt.ItemIsUserCheckable)
+        use.setCheckState(QtCore.Qt.Checked if layer.get("enabled", True) else QtCore.Qt.Unchecked)
+        use.setData(QtCore.Qt.UserRole, str(layer.get("uid") or ""))
+        self.review_layers_table.setItem(row, 0, use)
+        members = [
+            getattr(self, "_assembly_member_name_by_uid", {}).get(str(uid), str(uid))
+            for uid in layer.get("members") or []
+        ]
+        values = [
+            layer.get("name", "new_layer"), ", ".join(map(str, members)),
+            (layer.get("camera") or {}).get("name", "") if isinstance(layer.get("camera"), dict) else layer.get("camera", ""),
+            layer.get("precomp_placeholder", ""), "PENDING",
+        ]
+        for column, value in enumerate(values, 1):
+            self.review_layers_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
+
+    def _layer_payload_from_ui(self) -> dict:
+        layers = []
+        for row in range(self.review_layers_table.rowCount()):
+            use = self.review_layers_table.item(row, 0)
+            value = lambda column: str(
+                self.review_layers_table.item(row, column).text()
+                if self.review_layers_table.item(row, column) else ""
+            ).strip()
+            name = value(1) or f"Layer {row + 1}"
+            layers.append({
+                "uid": str(use.data(QtCore.Qt.UserRole) or ""),
+                "enabled": use.checkState() == QtCore.Qt.Checked,
+                "name": name,
+                "slug": name,
+                "members": [
+                    getattr(self, "_assembly_member_uid_by_name", {}).get(item.strip(), item.strip())
+                    for item in value(2).split(",") if item.strip()
+                ],
+                "camera": {"name": value(3)} if value(3) else {},
+                "precomp_placeholder": value(4),
+                "order": row * 10,
+            })
+        return {"layers": layers}
+
+    def _add_review_layer_row(self) -> None:
+        self._append_review_layer_row()
+
+    def _remove_review_layer_rows(self) -> None:
+        rows = sorted({index.row() for index in self.review_layers_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.review_layers_table.removeRow(row)
+
+    def _publish_review_layers(self) -> None:
+        status = self._selected_status()
+        if not status:
+            return
+        try:
+            path = self.service.publish_layer_definition(
+                status.identity, self._layer_payload_from_ui(), comment="Review Build Manager"
+            )
+            self.review_status_label.setText(f"Published Layers: {path.parent.name}")
+            self._populate_review_tab(status)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Publish Layer Definition Failed", str(exc))
+
+    def _review_submission_changes(self) -> None:
+        status = self._selected_status()
+        if not status:
+            return
+        profile = self.service.review_profiles.review_profile(
+            self.review_profile_combo.currentText()
+        )
+        delivery = self.service.review_profiles.delivery_profile(
+            self.delivery_profile_combo.currentText()
+        )
+        message = (
+            f"Review Profile: {profile['id']} ({profile.get('image_format', 'png').upper()})\n"
+            f"Delivery Profile: {delivery['id']} ({delivery.get('codec', '-')})\n"
+            f"Layers: {self.review_layers_table.rowCount()}\n"
+            "Exact HIT/MISS results are calculated from JSON snapshots when the job starts."
+        )
+        QtWidgets.QMessageBox.information(self, "Review Changes", message)
+
+    def _submit_for_review(self) -> None:
+        status = self._selected_status()
+        if not status:
+            return
+        if self.scope_combo.currentText() != "Shot":
+            QtWidgets.QMessageBox.information(self, "Submit for Review", "Select Shot scope.")
+            return
+        try:
+            workflow = self.service.review_workflow(status.identity)
+            _assembly, assembly_path = workflow.latest_assembly()
+            _layers, layers_path = workflow.latest_layer_definition()
+            if not assembly_path:
+                self.service.publish_assembly_definition(
+                    status.identity, self._assembly_payload_from_ui(), comment="Initial Review Assembly"
+                )
+            if not layers_path:
+                self.service.publish_layer_definition(
+                    status.identity, self._layer_payload_from_ui(), comment="Initial Review Layers"
+                )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Submit for Review Failed", str(exc))
+            return
+        identity = status.identity
+        self.generate_review_check.setChecked(True)
+        self._review_submission_profiles = {
+            (identity.episode, identity.sequence, identity.shot): {
+                "review_profile": self.review_profile_combo.currentText(),
+                "delivery_profile": self.delivery_profile_combo.currentText(),
+                "precomp": self.precomp_combo.currentData(),
+            }
+        }
+        self._enqueue_builds([(identity.episode, identity.sequence, identity.shot)])
+        self.generate_review_check.setChecked(False)
+
     def _selected_status(self) -> ReviewShotStatus | None:
         selected = self.shot_table.selectionModel().selectedRows()
         if not selected:
@@ -1229,20 +1663,25 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     identity, plan.department, plan.task
                 )
                 job_root = (
-                    self.service.shots.sequence_workspace_root(
-                        identity.episode, identity.sequence
-                    )
-                    / "output" / "scene_build" / "_jobs"
+                    self.service.shots.sequence_build_root(identity)
+                    / plan.department / "maya" / plan.task / "_jobs"
                 )
                 label = identity.sequence
             else:
-                output_version = self.service.next_construct_version(
-                    identity, plan.department, plan.task
-                )
-                job_root = (
-                    self.service.shots.shot_root(identity)
-                    / "output" / "scene_build" / "_jobs"
-                )
+                if self.generate_review_check.isChecked():
+                    workflow = self.service.review_workflow(identity)
+                    output_version = workflow.next_construct_version(
+                        plan.department, "maya", plan.task
+                    )
+                    job_root = workflow.jobs_root
+                else:
+                    output_version = self.service.next_construct_version(
+                        identity, plan.department, plan.task
+                    )
+                    job_root = (
+                        self.service.shots.shot_build_root(identity)
+                        / plan.department / "maya" / plan.task / "_jobs"
+                    )
                 label = identity.shot
             status_file = job_root / (
                 f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
@@ -1250,6 +1689,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             )
             construct_snapshot = {}
             construct_changes = []
+            canonical_fingerprint = ""
+            reuse_construct = ""
             if scope != "sequence":
                 overrides = self._stage_input_overrides(identity)
                 previous_construct = self.service.shots.load_construct(identity)
@@ -1268,6 +1709,21 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     current=previous_construct,
                     desired=construct_data,
                 )
+                if self.generate_review_check.isChecked():
+                    workflow = self.service.review_workflow(identity)
+                    canonical_fingerprint = workflow.canonical_construct_fingerprint(
+                        construct_snapshot=construct_snapshot,
+                        assembly_definition=self.service.assembly_definition(identity),
+                        layer_definition=self.service.layer_definition(
+                            identity, plan.department
+                        ),
+                    )
+                    cached_construct = workflow.find_canonical_construct(
+                        plan.department, "maya", plan.task, canonical_fingerprint
+                    )
+                    if cached_construct:
+                        output_version = cached_construct["version"]
+                        reuse_construct = cached_construct["scene"]
             job = {
                 "id": f"#{self.job_counter:04d}",
                 "identity": raw_identity,
@@ -1278,9 +1734,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 ),
                 "construct": construct_snapshot,
                 "construct_changes": construct_changes,
+                "canonical_fingerprint": canonical_fingerprint,
+                "reuse_construct": reuse_construct,
                 "version": output_version,
                 "mode": plan.resolved_mode,
                 "generate_review": self.generate_review_check.isChecked(),
+                **self._review_submission_profiles.get(tuple(raw_identity), {}),
                 "department": plan.department,
                 "task_name": plan.task,
                 "status_file": str(status_file),
@@ -1322,6 +1781,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             ]
         ):
             self.queue_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
+        self.main_tabs.setTabText(1, f"Job Queue ({self.queue_table.rowCount()})")
+        self.main_tabs.setCurrentIndex(1)
 
     def _start_next_job(self) -> None:
         if self.active_job or not self.pending_jobs:
@@ -1387,10 +1848,20 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 json.dumps(job.get("construct") or {}),
                 "--construct-diff-json",
                 json.dumps(job.get("construct_changes") or []),
+                "--canonical-fingerprint",
+                str(job.get("canonical_fingerprint") or ""),
+                "--reuse-construct",
+                str(job.get("reuse_construct") or ""),
                 "--operation",
                 job["mode"],
                 "--generate-review",
                 "1" if job.get("generate_review") else "0",
+                "--review-profile",
+                str(job.get("review_profile") or "work_default"),
+                "--delivery-profile",
+                str(job.get("delivery_profile") or "internal"),
+                "--precomp",
+                str(job.get("precomp") or "latest_approved"),
                 "--department",
                 job["department"],
                 "--task-name",
@@ -2005,6 +2476,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         splitter = settings.value("splitter")
         if splitter:
             self.main_splitter.restoreState(splitter)
+        center_splitter = settings.value("center_splitter")
+        if center_splitter:
+            self.center_splitter.restoreState(center_splitter)
+        self.main_tabs.setCurrentIndex(
+            max(0, min(self.main_tabs.count() - 1, int(settings.value("main_tab", 0))))
+        )
         saved_mode = str(settings.value("mode", "WORK STAGE"))
         saved_mode = {"AUTO": "WORK STAGE", "STAGE": "WORK STAGE", "REBUILD": "WORK STAGE", "REVIEW ONLY": "WORK STAGE"}.get(saved_mode, saved_mode)
         self.mode_combo.setCurrentText(saved_mode)
@@ -2043,6 +2520,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         settings = self._settings()
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("splitter", self.main_splitter.saveState())
+        settings.setValue("center_splitter", self.center_splitter.saveState())
+        settings.setValue("main_tab", self.main_tabs.currentIndex())
         settings.setValue("mode", self.mode_combo.currentText())
         settings.setValue("scope", self.scope_combo.currentText())
         settings.setValue("department", self.department_combo.currentText())

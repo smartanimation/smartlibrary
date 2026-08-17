@@ -251,9 +251,30 @@ def find_after_effects_executable(project_config: ProjectConfig | None = None) -
 
 def _after_effects_config_paths(project_config: ProjectConfig) -> list[Path]:
     pipeline_root = project_config.config_dir.parent.parent
-    paths = []
-    paths.extend(sorted(project_config.config_dir.glob("software_AfterEffects*.yml"), reverse=True))
-    paths.extend(sorted((pipeline_root / "config" / "default").glob("software_AfterEffects*.yml"), reverse=True))
+    project_paths = {
+        path.stem.removeprefix("software_"): path
+        for path in project_config.config_dir.glob("software_AfterEffects*.yml")
+    }
+    base = project_config.load("templates_base.yml") or {}
+    review_build = base.get("review_build") or {}
+    configured = str(review_build.get("after_effects_software") or "").strip()
+    enabled = [str(value) for value in (base.get("enabled_softwares") or [])]
+    paths: list[Path] = []
+
+    def add(path: Path | None) -> None:
+        if path and path.is_file() and path not in paths:
+            paths.append(path)
+
+    add(project_paths.get(configured))
+    for software_id in enabled:
+        add(project_paths.get(software_id))
+    for path in sorted(project_paths.values(), reverse=True):
+        add(path)
+    for path in sorted(
+        (pipeline_root / "config" / "default").glob("software_AfterEffects*.yml"),
+        reverse=True,
+    ):
+        add(path)
     return paths
 
 

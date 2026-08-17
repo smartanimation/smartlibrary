@@ -6,8 +6,13 @@ import argparse
 import json
 import math
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPOSITORY_ROOT / "packages"))
+from smartlib.retarget.profile import load_retarget_profile  # noqa: E402
 
 import maya.standalone
 
@@ -353,8 +358,7 @@ def main() -> None:
     parser.add_argument("output")
     parser.add_argument("--report")
     args = parser.parse_args()
-    with open(args.profile, encoding="utf-8") as stream:
-        profile = json.load(stream)
+    profile = load_retarget_profile(args.profile)
     load_plugins(profile)
     samples, report, solver_samples = sample_mcr(profile)
     report.update(apply_to_animation_rig(profile, samples, solver_samples, args.output))

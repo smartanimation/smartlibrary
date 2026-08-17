@@ -30,9 +30,31 @@ smart_ingest:
         extensions: [mov, mp4]
 
 smart_playblast:
-  filename: "{project}*{episode}*{sequence}*{shot}*{dept}*{preview}*v{version}*t{take}*####.{ext}"
+  filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
 
 smart_aftereffects:
   task: compTemp
   aep_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"
   output_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"
+
+# Logical output contracts shared by Shot Manager, Build Manager and DCC tools.
+# Projects may override individual entries without changing tool code.
+outputs:
+  shot_work_scene:
+    directory: "{shot_work}/{task}/{option}"
+    filename: "{project_name}_{episode}_{sequence}_{shot}_{task}_v{version}_t{take}.{ext}"
+  asset_work_scene:
+    directory: "{asset_work}/{dcc}/{task}"
+    filename: "{project_name}_{asset}_{variant}_{department}_{task}_v{version}_t{take}.{ext}"
+  smart_playblast:
+    directory: "{shot_root}/publish/review/{department}/v{version}/t{take}/{preview}"
+    filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
+  preview_render:
+    directory: "{shot_root}/output/preview_render/{department}/layers/{preview}/v{version}/t{take}"
+    filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
+  animation_review_scene:
+    directory: "{shot_root}/output/review/{department}/{version}"
+    filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_review_{version}.{ext}"
+  animation_review_movie:
+    directory: "{shot_root}/output/review/{department}/{version}"
+    filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_review_{version}.{ext}"

@@ -2052,84 +2052,133 @@
     setStatus("Saved AEP: " + basename(next.path));
   }
 
-  function handlePublishButton() {
+  async function handlePublishButton() {
     var context = currentWorkContext();
     var fs = nodeRequire("fs");
     var pathModule = nodeRequire("path");
+    var os = nodeRequire("os");
+    var childProcess = nodeRequire("child_process");
     var source = state.selectedAepPath;
-    var publishRoot;
-    var versions;
-    var version;
-    var versionLabel;
-    var versionDir;
-    var destination;
-    var publishedAt;
+    var project = selectedProject();
+    var renderConfig = currentAeRenderConfig();
     var selectedManifest = getSelectedManifest();
+    var expectedLayerIds = [];
+    var inspectionText;
+    var inspection;
+    var saveText;
+    var saveResult;
+    var metadataPath;
+    var pipelineRoot;
+    var scriptPath;
+    var python;
+    var candidates;
+    var args;
+    var processResult;
+    var outputLines;
+    var result;
+    var i;
     if (!context) {
       setStatus("Select a shot before publishing");
       return;
     }
-    if (!fs || !pathModule) {
-      setStatus("Publish failed: Node file system is unavailable");
+    if (!fs || !pathModule || !os || !childProcess) {
+      setStatus("PreComp Publish failed: CEP Node runtime is unavailable");
       return;
     }
     if (!source || !fs.existsSync(source)) {
       setStatus("Select and Save an AEP before publishing");
       return;
     }
-    publishRoot = joinPath(context.shotRoot, "publish/review_project/" + context.department);
+    setStatus("Inspecting PreComp structure in After Effects...");
+    (selectedManifest ? selectedManifest.items || [] : []).forEach(function (item) {
+      var layerId = String(item.layer || item.id || item.name || "").trim();
+      if (layerId && layerId.toLowerCase() !== "slate" && expectedLayerIds.indexOf(layerId) < 0) {
+        expectedLayerIds.push(layerId);
+      }
+    });
+    inspectionText = await window.SmartCEPBridge.callHost("inspectPrecompProject", {
+      final_comp: renderConfig.final_comp || {},
+      stage_comp: "stage",
+      expected_layer_ids: expectedLayerIds
+    }, "");
     try {
-      fs.mkdirSync(publishRoot, { recursive: true });
-      versions = fs.readdirSync(publishRoot, { withFileTypes: true })
-        .filter(function (entry) { return entry.isDirectory() && /^v\d{3,5}$/i.test(entry.name); })
-        .map(function (entry) { return Number(entry.name.slice(1)); });
-      version = versions.length ? Math.max.apply(Math, versions) + 1 : 1;
-      versionLabel = "v" + String(version).padStart(3, "0");
-      versionDir = joinPath(publishRoot, versionLabel);
-      fs.mkdirSync(versionDir, { recursive: false });
-      destination = joinPath(versionDir, "review_project.aep");
-      fs.copyFileSync(source, destination);
-      publishedAt = new Date().toISOString();
-      fs.writeFileSync(
-        joinPath(versionDir, "publish.json"),
-        JSON.stringify({
-          publish_type: "review_project",
-          department: context.department,
-          version: versionLabel,
-          files: { aep: "review_project.aep" },
-          source_workfile: source,
-          render_manifest: selectedManifest ? {
-            path: selectedManifest.path || "",
-            version: selectedManifest.version || ""
-          } : {},
-          published_at: publishedAt
-        }, null, 2),
-        "utf8"
-      );
-      fs.writeFileSync(
-        joinPath(publishRoot, "latest.json"),
-        JSON.stringify({
-          version: versionLabel,
-          path: versionLabel + "/review_project.aep"
-        }, null, 2),
-        "utf8"
-      );
-      fs.writeFileSync(
-        joinPath(publishRoot, "versions.json"),
-        JSON.stringify(
-          versions.concat([version]).sort(function (a, b) { return a - b; }).map(function (value) {
-            return {
-              version: "v" + String(value).padStart(3, "0"),
-              status: value === version ? "latest" : "published"
-            };
-          }),
-          null,
-          2
-        ),
-        "utf8"
-      );
+      inspection = inspectionText ? JSON.parse(inspectionText) : {};
     } catch (error) {
-      setStatus("Publish failed: " + error.message);
+      setStatus("PreComp inspection failed: " + error.message);
+      return;
+    }
+    if (!inspection.validation || inspection.validation.status === "failed") {
+      result = ((inspection.validation || {}).results || []).filter(function (row) {
+        return String(row.severity || "").toUpperCase() === "ERROR";
+      }).map(function (row) { return row.message; }).join("; ");
+      setStatus("PreComp validation failed: " + (result || "Unknown structural error"));
+      return;
+    }
+    setStatus("Saving inspected AEP before PreComp Publish...");
+    saveText = await window.SmartCEPBridge.callHost("saveAepProject", { path: source }, "");
+    try {
+      saveResult = saveText ? JSON.parse(saveText) : {};
+    } catch (saveError) {
+      saveResult = { error: saveError.message };
+    }
+    if (saveResult.error) {
+      setStatus("PreComp Publish save failed: " + saveResult.error);
+      return;
+    }
+    pipelineRoot = pathModule.dirname(DEFAULT_CONFIG_ROOT);
+    scriptPath = pathModule.join(pipelineRoot, "scripts", "publish_precomp.py");
+    if (!fs.existsSync(scriptPath)) {
+      setStatus("PreComp Publish failed: backend script was not found: " + scriptPath);
+      return;
+    }
+    candidates = [
+      (typeof process !== "undefined" && process.env) ? process.env.SMARTPIPELINE_PYTHON : "",
+      pathModule.join(pathModule.dirname(pipelineRoot), "smarttools", "python", "python.exe"),
+      pathModule.join(pipelineRoot, "runtime", "python", "python.exe"),
+      pathModule.join(pipelineRoot, ".venv", "Scripts", "python.exe"),
+      "python"
+    ];
+    python = "python";
+    for (i = 0; i < candidates.length; i += 1) {
+      if (candidates[i] && (candidates[i] === "python" || fs.existsSync(candidates[i]))) {
+        python = candidates[i];
+        break;
+      }
+    }
+    metadataPath = pathModule.join(
+      os.tmpdir(),
+      "smart_precomp_" + Date.now() + "_" + Math.floor(Math.random() * 100000) + ".json"
+    );
+    fs.writeFileSync(metadataPath, JSON.stringify(inspection, null, 2), "utf8");
+    args = [
+      scriptPath,
+      "--config-dir", (project && project.configDir) || state.launchContext.configDir || "",
+      "--episode", context.episode,
+      "--sequence", context.sequence,
+      "--shot", context.shot,
+      "--source", source,
+      "--metadata-json", metadataPath,
+      "--author", (typeof process !== "undefined" && process.env) ? (process.env.USERNAME || process.env.USER || "") : "",
+      "--comment", "Published from Smart AE Browser"
+    ];
+    setStatus("Publishing validated PreComp...");
+    try {
+      processResult = childProcess.spawnSync(python, args, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+    } catch (processError) {
+      processResult = { status: 1, stdout: "", stderr: processError.message };
+    } finally {
+      try { fs.unlinkSync(metadataPath); } catch (cleanupError) {}
+    }
+    outputLines = String(processResult.stdout || "").trim().split(/\r?\n/);
+    result = {};
+    for (i = outputLines.length - 1; i >= 0; i -= 1) {
+      try {
+        result = JSON.parse(outputLines[i]);
+        break;
+      } catch (parseError) {}
+    }
+    if (processResult.status !== 0 || !result.ok) {
+      setStatus("PreComp Publish failed: " + (result.error || String(processResult.stderr || processResult.stdout || "Unknown backend error").trim()));
       return;
     }
     state.nextSaveVersions[workContextKey(context)] = Math.max(
@@ -2140,7 +2189,7 @@
     clearAepCache();
     persistState();
     renderRows();
-    setStatus("Published AEP: " + destination);
+    setStatus("Published PreComp " + result.version + ": " + result.project);
   }
 
   function nextWorkSavePath() {

@@ -1,15 +1,25 @@
 templates:
   # ショットのルート定義
   shot_root: "{project_root}/shots/{episode}/{seq}/{shot}"
+  shot_data_root: "{shot_root}/data"
+  shot_publish_root: "{shot_root}/publish"
+  shot_output_root: "{shot_root}/output"
+  shot_render_root: "{shot_root}/render"
+  shot_work_root: "{workspace_root}/{episode}/{sequence}/{shot}/work"
+  shot_work: "{shot_work_root}/{department}/{dcc}"
+  shot_build_root: "{workspace_root}/{episode}/{sequence}/{shot}/build"
+  shot_build: "{shot_build_root}/{department}/{dcc}/{task}/{version}"
+  sequence_build_root: "{workspace_root}/{episode}/{sequence}/build"
+  sequence_build: "{sequence_build_root}/{department}/{dcc}/{task}/{version}"
 
   # work の下に各部署（anim, lighting等）を展開
   dept_work: "{shot_root}/work/{dept}"
 
   # ショット直下の共通フォルダ
-  dept_data: "{shot_root}/data"
-  dept_output: "{shot_root}/output"
-  dept_publish: "{shot_root}/publish"
-  dept_render: "{shot_root}/render"
+  dept_data: "{shot_data_root}"
+  dept_output: "{shot_output_root}"
+  dept_publish: "{shot_publish_root}"
+  dept_render: "{shot_render_root}"
   output_review: "{shot_root}/output/review/{dept}/{layer}/{version}/{take}"
   publish_review: "{shot_root}/publish/review/{dept}/{layer}/{version}/{take}"
   output_review_build: "{shot_root}/output/review/{dept}/review_build/{version}/{take}"

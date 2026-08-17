@@ -1,11 +1,16 @@
 templates:
   asset_root: "{project_root}/assets/{category}/{group}/{asset_name}"
+  asset_data_root: "{asset_root}/{variant}/data"
+  asset_publish_root: "{asset_root}/{variant}/publish"
+  asset_reference_root: "{asset_root}/{variant}/reference"
+  asset_work_root: "{workspace_root}/assets/{category}/{group}/{asset_name}/{variant}/work"
+  asset_work: "{asset_work_root}/{department}"
 
   # main areas
   dept_work: "{asset_root}/work"
-  dept_data: "{asset_root}/data"
-  dept_publish: "{asset_root}/publish"
-  dept_reference: "{asset_root}/reference"
+  dept_data: "{asset_data_root}"
+  dept_publish: "{asset_publish_root}"
+  dept_reference: "{asset_reference_root}"
 
   # work is DCC-first and keeps take numbers in file names.
   work_scene_dir: "{asset_root}/{variant}/work/{department}/{dcc}/{subset}"

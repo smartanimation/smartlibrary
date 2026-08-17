@@ -99,5 +99,25 @@ Restart After Effects, then open `Window > Extensions > smart AE browser`.
 - `Save`: saves browser state as JSON.
 - `Refresh`: polls output paths through ExtendScript file snapshots.
 - `Replace All`: replaces AE footage whose current source path or item name matches the manifest row.
+- `Publish`: saves the active AEP, validates the final and `stage`
+  compositions in After Effects, snapshots footage/font dependencies, and calls
+  the shared Review Workflow backend. The immutable package is written to:
+
+  ```text
+  {shot_root}/publish/precomp/v###/
+    aftereffects/precomp.aep
+    metadata/input_schema.json
+    metadata/composition.json
+    metadata/validation.json
+    metadata/dependency_snapshot.json
+    metadata/publish.json
+  ```
+
+  Stage input IDs come from the selected Preview Render manifest (Playblast
+  Settings) and match layer names such as `CHA` or `BGA`; no `INPUT_*` prefix is
+  required. Layer order and duplicate uses are preserved as metadata. A missing
+  required Stage layer blocks publish, while the same layer ID pointing at
+  different sources is a warning. The final comp must contain exactly one layer
+  and no layer effects, but its source comp is recorded rather than fixed.
 
 The browser preview outside AE uses the bundled demo data and stores panel state in `localStorage`.

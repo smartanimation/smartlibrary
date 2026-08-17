@@ -80,7 +80,7 @@ class SmartSequenceBuilderService:
         return {
             "Mocap + Virtual Camera": {
                 "version": "v001",
-                "inputs": ["editorial", "mocap", "virtual_camera", "cast", "storyreel", "audio"],
+                "inputs": ["editorial", "mocap", "virtual_camera", "cast", "storyreel", "audio", "light"],
             }
         }
 
@@ -101,7 +101,7 @@ class SmartSequenceBuilderService:
         }
         enabled_map = (
             {key: key in recipe_inputs for key in (
-                "editorial", "mocap", "virtual_camera", "cast", "storyreel", "audio"
+                "editorial", "mocap", "virtual_camera", "cast", "storyreel", "audio", "light"
             )}
             if recipe_inputs
             else {}
@@ -189,7 +189,13 @@ class SmartSequenceBuilderService:
         cast_path = self.shots.sequence_cast_path(identity.episode, identity.sequence)
         storyreel = self._resolve_storyreel(identity)
         audio = self._first_file(workspace / "data" / "audio", sequence_root / "data" / "audio")
+        light_root = self._first_existing(
+            workspace / "layout" / "data" / "light",
+            workspace / "data" / "light",
+            sequence_root / "data" / "light",
+        )
         mocap_children = self._directory_children(mocap_root, "Maya Mocap")
+        light_children = self._directory_children(light_root, "Maya Import")
         rows = (
             self._input("editorial", "Editorial", editorial_path, False, enabled, "Sequence JSON"),
             ResolvedInput(
@@ -205,6 +211,11 @@ class SmartSequenceBuilderService:
             self._input("cast", "Sequence Cast", cast_path, True, enabled, "Maya Reference"),
             self._input("storyreel", "Storyreel", storyreel, False, enabled, "Image Plane"),
             self._input("audio", "Audio", audio, False, enabled, "Maya Audio"),
+            ResolvedInput(
+                "light", "Light Data", False, enabled.get("light", True),
+                "READY" if light_children else "MISSING", self._latest_version(light_root),
+                str(light_root or ""), "Maya Import", tuple(light_children),
+            ),
         )
         return rows
 

@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 import math
 import sys
+from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPOSITORY_ROOT / "packages"))
+from smartlib.retarget.profile import load_retarget_profile  # noqa: E402
 
 import maya.standalone
 
@@ -36,8 +41,7 @@ def capture(path: str, names: list[str], frames: list[int], plugin: str) -> dict
 
 def main() -> None:
     profile_path, expected_path, actual_path, output_path = sys.argv[1:5]
-    with open(profile_path, encoding="utf-8") as stream:
-        profile = json.load(stream)
+    profile = load_retarget_profile(profile_path)
     names = [name for group in profile["transfer_nodes"].values() for name in group]
     start, end = profile["frame_range"]
     frames = [start, 250, 500, 750, end]

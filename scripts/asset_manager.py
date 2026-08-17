@@ -21,6 +21,9 @@ CREDENTIALS_ENV_VARS = ("CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "C
 WORK_SCENE_RE = re.compile(
     r"^(?:(?P<prefix>.+?)_)?(?P<asset>.+?)_(?P<department>[^_]+)_(?P<variant>[^_]+)_v(?P<version>\d+)_(?P<take>\d+)\.(?P<ext>[^.]+)$"
 )
+GENERIC_WORK_VERSION_RE = re.compile(
+    r"^.+?_v(?P<version>\d+)_t?(?P<take>\d+)\.(?P<ext>[^.]+)$"
+)
 WORK_DCC_LAYOUT = {
     "maya": {
         "model": ["hires", "proxy", "render", "guide"],
@@ -366,6 +369,33 @@ class AssetManager:
         )
         self.publish_outputs = asset_cfg.get("publish_outputs", {}) or {}
         self.staging_dependencies = asset_cfg.get("staging_dependencies", {}) or {}
+        from smartlib.core.config_loader import ProjectConfig
+        from smartlib.core.output_resolver import OutputPathResolver
+        from smartlib.core.path_resolver import ProjectPaths
+
+        project_config = ProjectConfig(self.config_dir)
+        self.output_resolver = OutputPathResolver(project_config)
+        self.paths = ProjectPaths(
+            project_config.project_root,
+            templates=project_config.templates,
+            project_name=project_config.project_name,
+        )
+
+    @staticmethod
+    def _asset_identity(asset: Asset, variant: str):
+        from smartlib.core.path_resolver import AssetIdentity
+
+        return AssetIdentity(asset.category, asset.group, asset.name, variant or "default")
+
+    def asset_data_root(self, asset: Asset, variant: str = "") -> Path:
+        if variant and asset.uses_variant_structure(variant):
+            return self.paths.asset_data_root(self._asset_identity(asset, variant))
+        return asset.data_dir
+
+    def asset_publish_root(self, asset: Asset, variant: str = "") -> Path:
+        if variant and asset.uses_variant_structure(variant):
+            return self.paths.asset_publish_root(self._asset_identity(asset, variant))
+        return asset.publish_dir
 
     @staticmethod
     def _resolve_config_dir(config_dir: str | os.PathLike[str] | None) -> Path:
@@ -843,20 +873,18 @@ class AssetManager:
             "version": version_label,
             "take": take_label,
             "ext": clean_ext,
+            "asset": asset.name,
+            "task": subset,
+            "asset_root": str(asset.root).replace("\\", "/"),
         }
         if asset.uses_variant_structure(variant):
-            file_pattern = self.templates.get(
-                "work_scene_file",
-                "{project_name}_{asset_name}_{department}_{variant}_{version}_{take}.{ext}",
+            output = self.output_resolver.resolve(
+                "asset_work_scene",
+                data,
+                default_directory="{asset_root}/{variant}/work/{department}/{dcc}/{subset}",
+                default_filename="{project_name}_{asset_name}_{department}_{variant}_v{version}_t{take}.{ext}",
             )
-            data["asset_root"] = str(asset.root).replace("\\", "/")
-            return self.work_root_dir(
-                asset,
-                dcc=dcc,
-                department=department,
-                variant=variant,
-                subset=subset,
-            ) / file_pattern.format(**data)
+            return output.path
         dir_pattern = self.templates.get(
             "work_scene_dir",
             "{asset_root}/work/{dcc}/{department}/{variant}",
@@ -872,8 +900,13 @@ class AssetManager:
         source = _norm(path)
         match = WORK_SCENE_RE.match(source.name)
         if not match:
-            return None
-        data = match.groupdict()
+            generic = GENERIC_WORK_VERSION_RE.match(source.name)
+            if not generic:
+                return None
+            data = generic.groupdict()
+            data.update({"asset": "", "department": "", "variant": "", "generic": True})
+        else:
+            data = match.groupdict()
         path_context = _work_context_from_path(source)
         if path_context:
             data.update(path_context)
@@ -1008,7 +1041,7 @@ class AssetManager:
         publish_format: str = "",
     ) -> Path:
         if variant and asset.uses_variant_structure(variant):
-            return asset.variant_root(variant) / "publish" / department / (subset or variant)
+            return self.asset_publish_root(asset, variant) / department / (subset or variant)
         path = asset.publish_dir / department
         if variant:
             path = path / variant
@@ -1434,7 +1467,7 @@ class AssetManager:
     def list_data_files(self, asset: Asset) -> list[Path]:
         files = self._list_files(asset.data_dir)
         for variant in self.asset_variants(asset):
-            files.extend(self._list_files(asset.variant_root(variant) / "data"))
+            files.extend(self._list_files(self.asset_data_root(asset, variant)))
         return sorted(set(files), key=lambda path: path.as_posix().lower())
 
     def file_comment(self, path: str | os.PathLike[str]) -> str:
@@ -1614,7 +1647,7 @@ class AssetManager:
         data_format: str | None = None,
     ) -> Path:
         if variant and asset.uses_variant_structure(variant):
-            path = asset.variant_root(variant) / "data" / department / (subset or variant)
+            path = self.asset_data_root(asset, variant) / department / (subset or variant)
             if data_format:
                 path = path / data_format.lower().lstrip(".")
             return path
@@ -1777,14 +1810,14 @@ class AssetManager:
     def list_publish_files(self, asset: Asset) -> list[Path]:
         files = self._list_files(asset.publish_dir)
         for variant in self.asset_variants(asset):
-            files.extend(self._list_files(asset.variant_root(variant) / "publish"))
+            files.extend(self._list_files(self.asset_publish_root(asset, variant)))
         return sorted(set(files), key=lambda path: path.as_posix().lower())
 
     def list_latest_publishes(self, asset: Asset) -> list[Path]:
         latest_files = []
         latest_json_paths = list(asset.publish_dir.rglob("latest.json")) if asset.publish_dir.exists() else []
         for variant in self.asset_variants(asset):
-            root = asset.variant_root(variant) / "publish"
+            root = self.asset_publish_root(asset, variant)
             if root.exists():
                 latest_json_paths.extend(root.rglob("latest.json"))
         for latest_json in latest_json_paths:

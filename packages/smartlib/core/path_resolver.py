@@ -63,13 +63,60 @@ class ProjectPaths:
         return self.asset_root(identity) / identity.variant
 
     def asset_work_dir(self, identity: AssetIdentity, department: str) -> Path:
+        template = self._template("asset_work")
+        if template:
+            return self._path_from_template(
+                template,
+                category=identity.category,
+                group=identity.group,
+                asset=identity.name,
+                asset_name=identity.name,
+                variant=identity.variant,
+                department=department,
+                dept=department,
+            )
         return self.asset_variant_root(identity) / "work" / department
 
+    def asset_work_root(self, identity: AssetIdentity) -> Path:
+        template = self._template("asset_work_root")
+        if template:
+            return self._path_from_template(
+                template,
+                category=identity.category,
+                group=identity.group,
+                asset=identity.name,
+                asset_name=identity.name,
+                variant=identity.variant,
+            )
+        return self.asset_variant_root(identity) / "work"
+
+    def asset_data_root(self, identity: AssetIdentity) -> Path:
+        return self._asset_area_root("asset_data_root", identity, "data")
+
+    def asset_publish_root(self, identity: AssetIdentity) -> Path:
+        return self._asset_area_root("asset_publish_root", identity, "publish")
+
+    def asset_reference_root(self, identity: AssetIdentity) -> Path:
+        return self._asset_area_root("asset_reference_root", identity, "reference")
+
+    def _asset_area_root(self, template_name: str, identity: AssetIdentity, fallback: str) -> Path:
+        template = self._template(template_name)
+        if template:
+            return self._path_from_template(
+                template,
+                category=identity.category,
+                group=identity.group,
+                asset=identity.name,
+                asset_name=identity.name,
+                variant=identity.variant,
+            )
+        return self.asset_variant_root(identity) / fallback
+
     def asset_data_dir(self, identity: AssetIdentity, data_type: str, subset: str) -> Path:
-        return self.asset_variant_root(identity) / "data" / data_type / subset
+        return self.asset_data_root(identity) / data_type / subset
 
     def asset_publish_dir(self, identity: AssetIdentity, publish_type: str, subset: str) -> Path:
-        return self.asset_variant_root(identity) / "publish" / publish_type / subset
+        return self.asset_publish_root(identity) / publish_type / subset
 
     def asset_work_scene_dir(self, identity: AssetIdentity, department: str) -> Path:
         return self.asset_variant_root(identity) / "work" / department
@@ -115,6 +162,25 @@ class ProjectPaths:
     def sequence_workspace_root(self, episode: str, sequence: str) -> Path:
         return self.sequences_root() / episode / sequence
 
+    def sequence_build_root(self, episode: str, sequence: str) -> Path:
+        template = self._template("sequence_build_root")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence
+            )
+        return self.project_root / "workspace" / episode / sequence / "build"
+
+    def sequence_build_dir(
+        self, episode: str, sequence: str, department: str, dcc: str, task: str, version: str
+    ) -> Path:
+        template = self._template("sequence_build")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence,
+                department=department, dept=department, dcc=dcc, task=task, version=version,
+            )
+        return self.sequence_build_root(episode, sequence) / department / dcc / task / version
+
     def sequence_work_dir(self, episode: str, sequence: str, department: str, dcc: str) -> Path:
         return self.sequence_workspace_root(episode, sequence) / department / "work" / dcc
 
@@ -125,7 +191,70 @@ class ProjectPaths:
         return self.sequence_publish_dir(episode, sequence, publish_type) / version
 
     def shot_work_dir(self, episode: str, sequence: str, shot: str, department: str, tool_name: str = "maya") -> Path:
+        template = self._template("shot_work")
+        if template:
+            return self._path_from_template(
+                template,
+                episode=episode,
+                sequence=sequence,
+                seq=sequence,
+                shot=shot,
+                department=department,
+                dept=department,
+                dcc=tool_name,
+                tool=tool_name,
+            )
         return self.shot_root(episode, sequence, shot) / "work" / department / tool_name
+
+    def shot_work_root(self, episode: str, sequence: str, shot: str) -> Path:
+        template = self._template("shot_work_root")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot
+            )
+        return self.shot_root(episode, sequence, shot) / "work"
+
+    def shot_build_root(self, episode: str, sequence: str, shot: str) -> Path:
+        template = self._template("shot_build_root")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot
+            )
+        return self.project_root / "workspace" / episode / sequence / shot / "build"
+
+    def shot_build_dir(
+        self, episode: str, sequence: str, shot: str, department: str,
+        dcc: str, task: str, version: str,
+    ) -> Path:
+        template = self._template("shot_build")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=department, dept=department, dcc=dcc, task=task, version=version,
+            )
+        return self.shot_build_root(episode, sequence, shot) / department / dcc / task / version
+
+    def shot_data_root(self, episode: str, sequence: str, shot: str) -> Path:
+        return self._shot_area_root("shot_data_root", episode, sequence, shot, "data")
+
+    def shot_publish_root(self, episode: str, sequence: str, shot: str) -> Path:
+        return self._shot_area_root("shot_publish_root", episode, sequence, shot, "publish")
+
+    def shot_output_root(self, episode: str, sequence: str, shot: str) -> Path:
+        return self._shot_area_root("shot_output_root", episode, sequence, shot, "output")
+
+    def shot_render_root(self, episode: str, sequence: str, shot: str) -> Path:
+        return self._shot_area_root("shot_render_root", episode, sequence, shot, "render")
+
+    def _shot_area_root(
+        self, template_name: str, episode: str, sequence: str, shot: str, fallback: str
+    ) -> Path:
+        template = self._template(template_name)
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot
+            )
+        return self.shot_root(episode, sequence, shot) / fallback
 
     def legacy_shot_work_dir(self, episode: str, sequence: str, shot: str, department: str) -> Path:
         return self.shot_root(episode, sequence, shot) / department / "work"
@@ -141,7 +270,7 @@ class ProjectPaths:
         return self.legacy_shot_work_dir(episode, sequence, shot, department) / tool_name
 
     def shot_data_dir(self, episode: str, sequence: str, shot: str, data_type: str, target: str, subset: str) -> Path:
-        return self.shot_root(episode, sequence, shot) / "data" / data_type / target / subset
+        return self.shot_data_root(episode, sequence, shot) / data_type / target / subset
 
     def shot_data_version_dir(
         self,
@@ -156,7 +285,7 @@ class ProjectPaths:
         return self.shot_data_dir(episode, sequence, shot, data_type, target, subset) / version
 
     def shot_publish_dir(self, episode: str, sequence: str, shot: str, publish_type: str, subset: str) -> Path:
-        return self.shot_root(episode, sequence, shot) / "publish" / publish_type / subset
+        return self.shot_publish_root(episode, sequence, shot) / publish_type / subset
 
     def shot_publish_version_dir(
         self,

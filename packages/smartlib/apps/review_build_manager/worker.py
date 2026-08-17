@@ -250,7 +250,8 @@ def _render_camera_sequence(
     output_dir.mkdir(parents=True, exist_ok=True)
     extension = Path(output_pattern).suffix.lower()
     if cmds.objExists("defaultRenderGlobals.imageFormat"):
-        cmds.setAttr("defaultRenderGlobals.imageFormat", 32 if extension == ".png" else 8)
+        image_format = 32 if extension == ".png" else 51 if extension == ".exr" else 8
+        cmds.setAttr("defaultRenderGlobals.imageFormat", image_format)
     count = max(1, end - start + 1)
     for index, frame in enumerate(range(start, end + 1)):
         cmds.currentTime(frame, edit=True)
@@ -276,6 +277,43 @@ def _render_camera_sequence(
     return str(output_dir / output_pattern.replace("####", "%04d"))
 
 
+def _render_review_thumbnail(
+    cmds, *, camera: str, frame: int, width: int, height: int, target: Path
+) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cmds.currentTime(frame, edit=True)
+    rendered = Path(
+        cmds.ogsRender(
+            camera=camera,
+            currentFrame=True,
+            width=max(1, int(width)),
+            height=max(1, int(height)),
+            noRenderView=True,
+        )
+    )
+    # ogsRender may return PNG regardless of the requested Review Layer format.
+    # Maya's imgcvt converts it to an actual JPEG without adding a Python image
+    # dependency to mayapy.
+    try:
+        maya_location = Path(str(cmds.about(installDirectory=True)))
+        imgcvt = maya_location / "bin" / "imgcvt.exe"
+        if imgcvt.is_file():
+            completed = subprocess.run(
+                [str(imgcvt), "-f", "jpg", str(rendered), str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode == 0 and target.is_file():
+                return target
+    except Exception:
+        pass
+    # Last-resort copy is kept only for Maya installations without imgcvt.
+    # Validation records the actual source in source_manifest.json.
+    shutil.copy2(rendered, target)
+    return target
+
+
 def _latest_preview_render_contract(shot_service, identity, department: str) -> dict:
     packages_root = (
         shot_service.shot_root(identity)
@@ -296,7 +334,22 @@ def _latest_preview_render_contract(shot_service, identity, department: str) -> 
 
 
 def _latest_review_project(shot_service, identity, department: str) -> Path | None:
-    root = shot_service.shot_root(identity) / "publish" / "review_project" / department
+    # New shot-wide PreComp publish.  Department remains metadata, not a path
+    # axis, so a compositor can publish the next version for the whole shot.
+    precomp_root = shot_service.shot_publish_root(identity) / "precomp"
+    precomp_candidates = sorted(
+        precomp_root.glob("v*/aftereffects/precomp.aep"),
+        key=lambda path: int(path.parents[1].name[1:])
+        if path.parents[1].name[1:].isdigit() else -1,
+        reverse=True,
+    )
+    for candidate in precomp_candidates:
+        metadata = candidate.parents[1] / "metadata" / "publish.json"
+        publish = json.loads(metadata.read_text(encoding="utf-8-sig")) if metadata.is_file() else {}
+        if str(publish.get("status") or "published").lower() in {"approved", "published"}:
+            return candidate
+    # Legacy department-scoped review_project remains readable.
+    root = shot_service.shot_publish_root(identity) / "review_project" / department
     candidates = sorted(
         root.glob("v*/review_project.aep"),
         key=lambda path: int(path.parent.name[1:]) if path.parent.name[1:].isdigit() else -1,
@@ -328,6 +381,18 @@ def _prepare_review_project_copy(
     except Exception:
         ae_render = {}
     queue_config = ae_render.get("render_queue") or {}
+    final_comp_config = ae_render.get("final_comp") or {}
+    final_comp_name = str(final_comp_config.get("name") or "final")
+    fallback_value = final_comp_config.get("fallback_names") or "render_final,anim_final"
+    final_comp_fallbacks = [
+        value.strip()
+        for value in (
+            fallback_value
+            if isinstance(fallback_value, list)
+            else str(fallback_value).split(",")
+        )
+        if value.strip()
+    ]
     render_template = str(queue_config.get("render_settings_template") or "Best Settings")
     render_aliases = [
         value.strip()
@@ -354,6 +419,7 @@ def _prepare_review_project_copy(
     mappings = [
         {
             "layer": layer,
+            "placeholder": str(data.get("placeholder") or layer),
             "file": str(data["first_file"]).replace("\\", "/"),
             "sequence": int(data.get("file_count") or 0) > 1,
         }
@@ -372,16 +438,23 @@ def _prepare_review_project_copy(
                 f"  var renderAliases = {json.dumps(render_aliases)};",
                 f"  var outputTemplate = {json.dumps(output_template)};",
                 f"  var outputAliases = {json.dumps(output_aliases)};",
+                f"  var finalCompNames = {json.dumps([final_comp_name, *final_comp_fallbacks])};",
                 f"  var audioOutput = {'true' if audio_output else 'false'};",
                 "  try {",
                 "  app.open(projectFile);",
                 "  function norm(value) { return String(value || '').replace(/\\\\/g, '/').toUpperCase(); }",
                 "  function normalizedName(value) { return String(value || '').replace(/[\\u200B-\\u200D\\uFEFF]/g, '').replace(/\\s+/g, ' ').replace(/^\\s+|\\s+$/g, '').toLowerCase(); }",
-                "  function applyNamedTemplate(target, preferred, aliases, available, label) {",
+                "  function applyNamedTemplate(target, preferred, aliases, available, label, allowCurrent) {",
                 "    var requested = [preferred].concat(aliases || []);",
                 "    for (var r = 0; r < requested.length; r++) {",
                 "      for (var a = 0; a < available.length; a++) {",
                 "        if (normalizedName(available[a]) === normalizedName(requested[r])) { target.applyTemplate(available[a]); return available[a]; }",
+                "      }",
+                "    }",
+                "    if (allowCurrent) {",
+                "      var currentName = normalizedName(target.name);",
+                "      for (var n = 0; n < requested.length; n++) {",
+                "        if (currentName === normalizedName(requested[n])) return target.name;",
                 "      }",
                 "    }",
                 "    throw new Error(label + ' template not found: ' + requested.join(', ') + '. Available: ' + available.join(', '));",
@@ -390,10 +463,12 @@ def _prepare_review_project_copy(
                 "    var item = app.project.item(i);",
                 "    if (!(item instanceof FootageItem) || !item.file) continue;",
                 "    var source = norm(item.file.fsName);",
+                "    var itemName = normalizedName(item.name);",
                 "    for (var m = 0; m < mappings.length; m++) {",
                 "      var mapping = mappings[m];",
                 "      var token = '/LAYERS/' + String(mapping.layer).toUpperCase() + '/';",
-                "      if (source.indexOf(token) < 0) continue;",
+                "      var placeholderMatch = itemName === normalizedName(mapping.placeholder);",
+                "      if (source.indexOf(token) < 0 && !placeholderMatch) continue;",
                 "      var replacement = new File(mapping.file);",
                 "      if (!replacement.exists) throw new Error('Footage not found: ' + mapping.file);",
                 "      if (mapping.sequence) item.replaceWithSequence(replacement, false);",
@@ -402,15 +477,30 @@ def _prepare_review_project_copy(
                 "    }",
                 "  }",
                 "  var queue = app.project.renderQueue;",
-                "  if (queue.numItems < 1) throw new Error('Published project has no Render Queue item.');",
-                "  var sourceQueueItem = queue.item(1);",
-                "  var outputComp = sourceQueueItem.comp;",
-                "  if (!outputComp) throw new Error('Render Queue item 1 has no output comp.');",
-                "  while (queue.numItems > 0) queue.item(queue.numItems).remove();",
-                "  var freshQueueItem = queue.items.add(outputComp);",
+                "  var outputComp = null;",
+                "  for (var c = 0; c < finalCompNames.length && !outputComp; c++) {",
+                "    for (var p = 1; p <= app.project.numItems; p++) {",
+                "      var projectItem = app.project.item(p);",
+                "      if (projectItem instanceof CompItem && normalizedName(projectItem.name) === normalizedName(finalCompNames[c])) { outputComp = projectItem; break; }",
+                "    }",
+                "  }",
+                "  if (!outputComp && queue.numItems > 0) outputComp = queue.item(1).comp;",
+                "  if (!outputComp) throw new Error('Final comp was not found: ' + finalCompNames.join(', '));",
+                "  var freshQueueItem = null;",
+                "  for (var q = 1; q <= queue.numItems; q++) {",
+                "    if (queue.item(q).comp === outputComp) { freshQueueItem = queue.item(q); break; }",
+                "  }",
+                "  if (freshQueueItem) {",
+                "    for (var removeIndex = queue.numItems; removeIndex >= 1; removeIndex--) {",
+                "      if (queue.item(removeIndex) !== freshQueueItem) queue.item(removeIndex).remove();",
+                "    }",
+                "  } else {",
+                "    while (queue.numItems > 0) queue.item(queue.numItems).remove();",
+                "    freshQueueItem = queue.items.add(outputComp);",
+                "  }",
                 "  applyNamedTemplate(freshQueueItem, renderTemplate, renderAliases, freshQueueItem.templates || [], 'Render settings');",
                 "  var freshOutputModule = freshQueueItem.outputModule(1);",
-                "  applyNamedTemplate(freshOutputModule, outputTemplate, outputAliases, freshOutputModule.templates || [], 'Output module');",
+                "  applyNamedTemplate(freshOutputModule, outputTemplate, outputAliases, freshOutputModule.templates || [], 'Output module', true);",
                 "  try { freshOutputModule.setSettings({'Audio Output': audioOutput ? 'On' : 'Off'}); } catch (ignored) {}",
                 "  app.project.save(projectFile);",
                 "  markerFile.open('w'); markerFile.write('ok'); markerFile.close();",
@@ -739,7 +829,20 @@ def _run_scene_construction(
     _write_status(status_path, state="BUILDING", progress=20, task=plan.resolved_mode.title())
     shot_data = shot_service.load_shot(identity)
     update_source_scene = ""
-    if plan.resolved_mode == "UPDATE" and plan.department == "anim":
+    reuse_construct = Path(str(args.reuse_construct or ""))
+    canonical_reused = reuse_construct.is_file()
+    if canonical_reused:
+        _write_status(
+            status_path,
+            state="BUILDING",
+            progress=20,
+            task="Reuse Canonical Construct",
+            message=str(reuse_construct),
+        )
+        cmds.file(str(reuse_construct), open=True, force=True, prompt=False)
+        update_source_scene = str(reuse_construct)
+        referenced = list(cmds.file(query=True, reference=True) or [])
+    elif plan.resolved_mode == "UPDATE" and plan.department == "anim":
         previous = next(
             (
                 row for row in manager.list_constructs(
@@ -787,9 +890,33 @@ def _run_scene_construction(
         )
     from smartlib.dcc.maya.shot_builder import create_review_display_layers
 
+    review_requested = str(args.generate_review).strip().lower() not in {
+        "", "0", "false", "no", "off"
+    }
+    workflow = manager.review_workflow(identity)
+    layer_definition = manager.layer_definition(identity, plan.department)
+    assembly_definition = manager.assembly_definition(identity)
+    assembly_by_uid = {
+        str(member.get("uid")): member
+        for member in assembly_definition.get("members") or []
+    }
+    dynamic_layers = {
+        str(layer.get("slug") or layer.get("name")): {
+            **layer,
+            "members": [
+                str((assembly_by_uid.get(str(uid)) or {}).get("name") or uid)
+                for uid in layer.get("members") or []
+            ],
+            "ae": {"template_slot": layer.get("precomp_placeholder")},
+        }
+        for layer in layer_definition.get("layers") or []
+        if layer.get("enabled", True)
+    }
     review_contract = shot_service.load_cast(identity)
-    review_contract["review_layers"] = shot_service.review_layers(
-        identity, plan.department
+    review_contract["review_layers"] = (
+        dynamic_layers
+        if dynamic_layers
+        else shot_service.review_layers(identity, plan.department)
     )
     review_display_layers = create_review_display_layers(review_contract)
     try:
@@ -800,25 +927,28 @@ def _run_scene_construction(
     except Exception:
         referenced = list(dict.fromkeys(referenced))
     build_root = (
-        shot_service.shot_root(identity)
-        / "output"
-        / "scene_build"
-        / plan.department
-        / plan.task
+        workflow.construct_root(plan.department, "maya", plan.task)
         / args.output_version
+        if review_requested
+        else shot_service.shot_build_dir(
+            identity, plan.department, "maya", plan.task, args.output_version
+        )
     )
-    if build_root.exists() and any(build_root.iterdir()):
+    if not canonical_reused and build_root.exists() and any(build_root.iterdir()):
         raise RuntimeError(
             f"Construct version already exists and cannot be overwritten: {build_root}"
         )
-    build_root.mkdir(parents=True, exist_ok=True)
-    scene_extension, scene_type = _current_maya_scene_format(cmds)
-    scene_path = build_root / (
-        f"{identity.shot}_{plan.department}_{plan.task}_{args.output_version}"
-        f"{scene_extension}"
-    )
-    cmds.file(rename=str(scene_path))
-    cmds.file(save=True, type=scene_type, force=True)
+    if canonical_reused:
+        scene_path = reuse_construct
+    else:
+        build_root.mkdir(parents=True, exist_ok=True)
+        scene_extension, scene_type = _current_maya_scene_format(cmds)
+        scene_path = build_root / (
+            f"{identity.shot}_{plan.department}_{plan.task}_{args.output_version}"
+            f"{scene_extension}"
+        )
+        cmds.file(rename=str(scene_path))
+        cmds.file(save=True, type=scene_type, force=True)
     usd_path = None
     usd_error = ""
     if plan.resolved_mode == "REND STAGE":
@@ -848,6 +978,20 @@ def _run_scene_construction(
             "message": usd_error or "Render USD was not generated.",
         })
         validation["status"] = "failed"
+    if review_requested and not canonical_reused and validation["status"] != "failed":
+        write_json(
+            build_root / "input_snapshot.json",
+            {
+                "schema": "smartpipeline.canonical_review_snapshot.v1",
+                "canonical_fingerprint": str(args.canonical_fingerprint or ""),
+                "scene": str(scene_path),
+                "status": "validated",
+                "construct": construct_data,
+                "assembly": assembly_definition,
+                "layer_definition": layer_definition,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
 
     editorial = shot_data.get("editorial") or {}
     start = int(editorial.get("cut_in") or shot_data.get("cut_in") or 1001)
@@ -868,11 +1012,13 @@ def _run_scene_construction(
     review_movie = None
     review_project = None
     review_spec_path = None
-    review_requested = str(args.generate_review).strip().lower() not in {
-        "", "0", "false", "no", "off"
-    }
     if review_requested:
-        layer_contracts = shot_service.review_layers(identity, plan.department)
+        review_profile = manager.review_profiles.review_profile(args.review_profile)
+        delivery_profile = manager.review_profiles.delivery_profile(args.delivery_profile)
+        profile_resolution = review_profile.get("resolution") or [width, height]
+        if isinstance(profile_resolution, (list, tuple)) and len(profile_resolution) >= 2:
+            width, height = int(profile_resolution[0]), int(profile_resolution[1])
+        layer_contracts = dynamic_layers or shot_service.review_layers(identity, plan.department)
         specs = []
         for layer_name, contract in sorted(
             layer_contracts.items(),
@@ -895,6 +1041,8 @@ def _run_scene_construction(
                 "name": layer_name,
                 "display_layer": layer_name,
                 "camera": layer_camera,
+                "contract": contract,
+                "members": list(contract.get("members") or []),
                 "frame_range": [int(layer_range[0]), int(layer_range[1])],
                 "resolution": [
                     int(resolution_contract.get("width") or width),
@@ -905,61 +1053,148 @@ def _run_scene_construction(
             raise RuntimeError(
                 "No populated Review Layer could be reconstructed from review_spec.json."
             )
+        from smartlib.review.workflow import content_fingerprint
+        construct_components = construct_data.get("components") or []
+        member_snapshots = {}
+        for uid, member in assembly_by_uid.items():
+            member_name = str(member.get("name") or "")
+            resolved_component = next(
+                (
+                    component for component in construct_components
+                    if str(component.get("name") or "") == member_name
+                ),
+                {},
+            )
+            snapshot = {**member, "resolved_component": resolved_component}
+            snapshot["fingerprint"] = content_fingerprint(snapshot)
+            member_snapshots[uid] = snapshot
+        light_snapshot = {
+            "components": [
+                component for component in construct_data.get("components") or []
+                if str(component.get("component_type") or "") == "light"
+            ]
+        }
+        layer_cache_states = {}
         for index, spec in enumerate(specs):
             _activate_review_layer(cmds, specs, spec["name"])
             layer_start, layer_end = spec["frame_range"]
             layer_width, layer_height = spec["resolution"]
+            contract = spec.get("contract") or {}
+            layer_uid_members = list(contract.get("members") or [])
+            fingerprint, dependencies = workflow.layer_fingerprint(
+                contract,
+                member_snapshots=member_snapshots,
+                camera_snapshot={
+                    "name": spec["camera"],
+                    "contract": contract.get("camera") or {},
+                    "components": [
+                        component for component in construct_components
+                        if str(component.get("component_type") or "") == "camera"
+                    ],
+                },
+                light_snapshot=light_snapshot,
+                frame_range=[layer_start, layer_end],
+                review_profile=review_profile,
+                builder_version="review_builder_v2",
+            )
+            cache = workflow.find_layer_cache(
+                plan.department, str(contract.get("slug") or spec["name"]), fingerprint
+            )
+            cache, cache_lock = workflow.reserve_layer_cache(cache)
+            layer_cache_states[spec["name"]] = cache.state
+            extension = str(review_profile.get("image_format") or "png").lower()
             pattern = (
-                f"{identity.shot}_{plan.department}_{_clean_name(spec['name'])}_"
-                f"{args.output_version}_####.png"
+                f"{_clean_name(str(contract.get('slug') or spec['name']))}.####.{extension}"
             )
-            sequence = _render_camera_sequence(
-                cmds,
-                camera=spec["camera"],
-                output_dir=build_root / "review" / _clean_name(spec["name"]),
-                start=layer_start,
-                end=layer_end,
-                width=layer_width,
-                height=layer_height,
-                status_path=status_path,
-                progress_start=65 + int(index / max(1, len(specs)) * 25),
-                progress_end=65 + int((index + 1) / max(1, len(specs)) * 25),
-                output_pattern=pattern,
-            )
+            layer_dir = cache.directory
+            if cache.state == "HIT":
+                cache_manifest = json.loads(cache.manifest.read_text(encoding="utf-8-sig"))
+                cached_pattern = str((cache_manifest.get("frames") or {}).get("pattern") or "")
+                pattern_path = cache.directory / cached_pattern
+                sequence = str(pattern_path).replace("####", "%04d")
+                pattern = Path(cached_pattern).name
+                frames_dir = pattern_path.parent
+            else:
+                frames_dir = layer_dir / "frames"
+                sequence = _render_camera_sequence(
+                    cmds,
+                    camera=spec["camera"],
+                    output_dir=frames_dir,
+                    start=layer_start,
+                    end=layer_end,
+                    width=layer_width,
+                    height=layer_height,
+                    status_path=status_path,
+                    progress_start=65 + int(index / max(1, len(specs)) * 25),
+                    progress_end=65 + int((index + 1) / max(1, len(specs)) * 25),
+                    output_pattern=pattern,
+                )
+                workflow.write_layer_cache_manifest(
+                    cache,
+                    layer=contract,
+                    dependencies=dependencies,
+                    frame_pattern=f"frames/{pattern}",
+                    frame_count=max(1, layer_end - layer_start + 1),
+                )
+                workflow.release_layer_cache(cache_lock)
             review_sequences[spec["name"]] = sequence
-            layer_dir = build_root / "review" / _clean_name(spec["name"])
-            first_file = layer_dir / pattern.replace("####", f"{layer_start:04d}")
-            last_file = layer_dir / pattern.replace("####", f"{layer_end:04d}")
+            first_file = frames_dir / pattern.replace("####", f"{layer_start:04d}")
+            last_file = frames_dir / pattern.replace("####", f"{layer_end:04d}")
             review_output_records[spec["name"]] = {
                 "first_file": str(first_file),
                 "last_file": str(last_file),
                 "file_count": max(1, layer_end - layer_start + 1),
                 "members": list(spec.get("members") or []),
+                "placeholder": str(
+                    (spec.get("contract") or {}).get("precomp_placeholder")
+                    or spec["name"]
+                ),
             }
             review_layers[spec["name"]] = {
                 **spec,
                 "sequence": sequence,
-                "version": args.output_version,
+                "version": cache.version,
+                "fingerprint": fingerprint,
+                "cache": cache.state,
             }
 
         if review_sequences:
-            review_output_root = (
-                shot_service.shot_root(identity)
-                / "output" / "review" / "animation"
+            workflow.cleanup_jobs(
+                (manager.review_profiles.config().get("jobs") or {})
             )
-            review_output_dir = review_output_root / args.output_version
-            review_movie = review_output_dir / (
-                f"{identity.shot}_animation_review_{args.output_version}.mov"
-            )
+            job_id, review_output_dir = workflow.create_job({
+                "operation": "SUBMIT_REVIEW",
+                "construct": str(scene_path),
+                "review_profile": args.review_profile,
+                "delivery_profile": args.delivery_profile,
+                "layer_cache": layer_cache_states,
+            })
+            review_movie = review_output_dir / "output" / "review.mov"
             published_review_project = _latest_review_project(
                 shot_service, identity, plan.department
             )
             if not published_review_project:
-                raise RuntimeError(
-                    "Published Review Project was not found. Publish "
-                    f"review_project/{plan.department} before Generate Review."
+                review_config = manager.review_profiles.config()
+                policy = str(
+                    review_config.get("missing_precomp_policy")
+                    or "allow_project_default"
                 )
-            review_project = review_output_dir / "review_project.aep"
+                if policy == "allow_project_default":
+                    from smartlib.core.config_loader import expand_config_tokens
+                    default_precomp = Path(
+                        expand_config_tokens(
+                            str(review_config.get("default_precomp") or ""),
+                            manager.project_config,
+                        )
+                    )
+                    if default_precomp.is_file():
+                        published_review_project = default_precomp
+            if not published_review_project:
+                raise RuntimeError(
+                    "Published PreComp was not found. Publish precomp/v### or "
+                    "configure the Project Default PreComp before Submit for Review."
+                )
+            review_project = review_output_dir / "runtime.aep"
             _write_status(
                 status_path, state="BUILDING", progress=91,
                 task="Relink AE Footage",
@@ -977,11 +1212,59 @@ def _run_scene_construction(
             _render_review_project(
                 review_project, review_movie, manager.project_config
             )
-            _update_output_history(
-                review_output_root, args.output_version, review_movie
-            )
             _review_spec, review_spec_path = shot_service.resolved_review_spec(
                 identity, department=plan.department
+            )
+            thumbnail = _render_review_thumbnail(
+                cmds,
+                camera=specs[0]["camera"],
+                frame=start,
+                width=min(width, 640),
+                height=min(height, 360),
+                target=review_output_dir / "output" / "thumbnail.jpg",
+            )
+            source_manifest = {
+                "schema": "smartpipeline.review_source_manifest.v1",
+                "construct": str(scene_path),
+                "construct_version": args.output_version,
+                "assembly": assembly_definition,
+                "layer_definition": layer_definition,
+                "layers": review_layers,
+                "precomp": str(published_review_project),
+                "review_profile": review_profile,
+                "delivery_profile": delivery_profile,
+                "job_id": job_id,
+            }
+            submitted_dir = workflow.submit_review(
+                department=plan.department,
+                delivery_profile=args.delivery_profile,
+                movie=review_movie,
+                thumbnail=thumbnail,
+                review_data={
+                    "episode": identity.episode,
+                    "sequence": identity.sequence,
+                    "shot": identity.shot,
+                    "department": plan.department,
+                    "frame_range": [start, end],
+                    "resolution": [width, height],
+                    "fps": float(shot_data.get("fps") or shot_service.project_fps),
+                },
+                source_manifest=source_manifest,
+                delivery_settings=delivery_profile,
+            )
+            job_data = json.loads(
+                (review_output_dir / "job.json").read_text(encoding="utf-8-sig")
+            )
+            job_data.update({
+                "state": "SUBMITTED",
+                "review": str(submitted_dir),
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            from smartlib.core.metadata import write_json
+            write_json(review_output_dir / "job.json", job_data)
+            review_movie = next(
+                path for path in submitted_dir.glob("review.*")
+                if path.suffix.lower() in {".mov", ".mp4"}
             )
             review_plan = {
                 "schema": "smartpipeline.construct_review_build.v1",
@@ -991,13 +1274,13 @@ def _run_scene_construction(
                 "construct_version": args.output_version,
                 "source_construct": str(scene_path),
                 "review_spec": str(review_spec_path),
-                "output_dir": str(review_output_dir),
+                "output_dir": str(submitted_dir),
                 "scene": str(scene_path),
                 "scene_path": str(scene_path),
             }
-            shot_service.write_animation_review_build_manifest(
-                review_plan,
-                {
+            write_json(
+                review_output_dir / "review_build_manifest.json",
+                {**review_plan,
                     "playblast_sequences": review_sequences,
                     "review_layers": review_layers,
                     "published_review_project": str(published_review_project),
@@ -1017,6 +1300,7 @@ def _run_scene_construction(
         "sequence": identity.sequence,
         "operation": plan.resolved_mode,
         "department": plan.department,
+        "dcc": "maya",
         "task": plan.task,
         "source_workfile": plan.source_scene,
         "update_source_construct": update_source_scene,
@@ -1037,11 +1321,15 @@ def _run_scene_construction(
         "review_movie": str(review_movie) if review_movie and review_movie.is_file() else "",
         "review_spec": str(review_spec_path) if review_spec_path else "",
         "build_overrides": build_overrides,
+        "canonical_fingerprint": str(args.canonical_fingerprint or ""),
+        "canonical_reused": canonical_reused,
         "status": "validated" if validation["status"] != "failed" else "blocked",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
-    manifest_path = write_json(build_root / "build_manifest.json", manifest)
-    write_json(build_root / "validation.json", validation)
+    manifest_path = build_root / "build_manifest.json"
+    if not canonical_reused:
+        write_json(manifest_path, manifest)
+        write_json(build_root / "validation.json", validation)
     _write_status(
         status_path,
         state="COMPLETE",
@@ -1122,13 +1410,27 @@ def _run_sequence_construction(
         project_root=manager.project_config.project_root,
         shot_names=selected_shots,
     )
-    scene_root = (
-        shot_service.sequence_workspace_root(identity.episode, identity.sequence)
-        / "output"
-        / "scene_build"
-        / plan.department
-        / plan.task
-        / args.output_version
+    enabled_recipe_inputs = {
+        item.key for item in recipe_plan.inputs if item.enabled
+    }
+    if "light" in enabled_recipe_inputs:
+        from smartlib.dcc.maya.shot_scene_data import import_scene_component_package
+
+        for row in shot_service.list_sequence_data_versions(
+            identity, department=plan.department
+        ):
+            if not row.latest or not str(row.name or "").startswith("light/"):
+                continue
+            version_dir = Path(row.path)
+            manifest = version_dir / "light.json" if version_dir.is_dir() else version_dir
+            if manifest.is_file():
+                import_scene_component_package(manifest)
+    scene_root = shot_service.sequence_build_dir(
+        identity,
+        plan.department,
+        "maya",
+        plan.task,
+        args.output_version,
     )
     if scene_root.exists() and any(scene_root.iterdir()):
         raise RuntimeError(
@@ -1163,6 +1465,7 @@ def _run_sequence_construction(
         "scope": "sequence",
         "operation": plan.resolved_mode,
         "department": plan.department,
+        "dcc": "maya",
         "task": plan.task,
         "sequence_input": plan.anim_input,
         "recipe": {
@@ -1272,7 +1575,7 @@ def run(args) -> int:
     _write_status(status_path, state="BUILDING", progress=8, task="Resolve")
     plan = shot_service.animation_review_build_plan(identity)
     source_version = str(plan.get("package_version") or "")
-    output_root = shot_service.shot_root(identity) / "output" / "review" / "animation"
+    output_root = shot_service.shot_output_root(identity) / "review" / "animation"
     output_dir = output_root / args.output_version
     plan["source_package_version"] = source_version
     plan["output_version"] = args.output_version
@@ -1469,8 +1772,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sequence-options-json", default="{}")
     parser.add_argument("--construct-json", default="{}")
     parser.add_argument("--construct-diff-json", default="[]")
+    parser.add_argument("--canonical-fingerprint", default="")
+    parser.add_argument("--reuse-construct", default="")
     parser.add_argument("--overrides-json", default="{}")
     parser.add_argument("--generate-review", default="1")
+    parser.add_argument("--review-profile", default="work_default")
+    parser.add_argument("--delivery-profile", default="internal")
+    parser.add_argument("--precomp", default="latest_approved")
     args = parser.parse_args(argv)
     try:
         return run(args)

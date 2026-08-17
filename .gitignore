@@ -8,6 +8,9 @@ delete
 old
 tests
 *.*
+!scripts/publish_scene_data.py
+!scripts/publish_precomp.py
+!scripts/validate_scene_data.py
 !packages/smartlib/dcc/maya/shot_scene_data.py
 !packages/smartlib/setdress/
 !packages/smartlib/setdress/*.py
@@ -25,8 +28,16 @@ tests
 !packages/smartlib/dcc/maya/usd_skel.py
 !packages/smartlib/dcc/maya/set_dress_usd.py
 !packages/smartlib/core/asset_load_policy.py
+!packages/smartlib/core/folder_structure.py
+!packages/smartlib/core/output_resolver.py
+!packages/smartlib/review/workflow.py
 !config/default/preflight.yml
+!config/default/review.yml
 !config/maya/retarget/dli.json
+!config/maya/retarget/templates/
+!config/maya/retarget/templates/*.json
+!packages/smartlib/retarget/
+!packages/smartlib/retarget/*.py
 !bat/run_review_build_manager.bat
 !tools/maya/bake_mocap_to_rig.py
 !tools/maya/compare_retarget_scenes.py
@@ -43,6 +54,10 @@ tests/*
 !tests/test_retarget_publish.py
 !tests/test_asset_construct.py
 !tests/test_asset_load_policy.py
+!tests/test_folder_structure.py
+!tests/test_output_resolver.py
+!tests/test_review_workflow.py
+!tests/test_review_build_worker.py
 
 tools/ffmpeg/*
 !tools/ffmpeg/README.md

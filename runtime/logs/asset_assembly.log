@@ -240,3 +240,33 @@
 [2026-08-13T16:31:39] reference loaded new_nodes=37
 [2026-08-13T16:31:39] reference roots=['|trashcan2:trashcan']
 [2026-08-13T16:31:39] reference complete group=trashcan1_REF_GRP
+[2026-08-14T17:19:10] reference start locator=cup_place_LOC workfile=D:\Projects\ELCD\assets\prop\bp\cup\default\publish\model\proxy\v001\model.mb
+[2026-08-14T17:19:10] reference group created cup_REF_GRP namespace=cup
+[2026-08-14T17:19:30] reference loaded new_nodes=8
+[2026-08-14T17:19:30] reference roots=['|cup:cup']
+[2026-08-14T17:19:30] reference complete group=cup_REF_GRP
+[2026-08-14T17:20:51] reference start locator=trashcan_place_LOC workfile=D:\Projects\ELCD\assets\prop\bp\trashcan\default\publish\model\proxy\v004\model.mb
+[2026-08-14T17:20:51] reference group created trashcan_REF_GRP namespace=trashcan
+[2026-08-14T17:20:52] reference loaded new_nodes=16
+[2026-08-14T17:20:52] reference roots=['|trashcan:trashcan']
+[2026-08-14T17:20:52] reference complete group=trashcan_REF_GRP
+[2026-08-14T17:21:06] reference start locator=trashcan_place_LOC1 workfile=D:\Projects\ELCD\assets\prop\bp\trashcan\default\publish\model\proxy\v004\model.mb
+[2026-08-14T17:21:06] reference group created trashcan1_REF_GRP namespace=trashcan1
+[2026-08-14T17:21:06] reference loaded new_nodes=16
+[2026-08-14T17:21:06] reference roots=['|trashcan1:trashcan']
+[2026-08-14T17:21:06] reference complete group=trashcan1_REF_GRP
+[2026-08-14T17:21:40] reference start locator=workdesk_place_LOC workfile=D:\Projects\ELCD\assets\prop\bp\workdesk\default\publish\model\proxy\v001\model.ma
+[2026-08-14T17:21:40] reference group created workdesk_REF_GRP namespace=workdesk
+[2026-08-14T17:21:40] reference loaded new_nodes=43
+[2026-08-14T17:21:40] reference roots=['|workdesk:workdesk']
+[2026-08-14T17:21:40] reference complete group=workdesk_REF_GRP
+[2026-08-14T17:22:52] reference start locator=workdesk_place_LOC1 workfile=D:\Projects\ELCD\assets\prop\bp\workdesk\default\publish\model\proxy\v002\model.ma
+[2026-08-14T17:22:52] reference group created workdesk1_REF_GRP namespace=workdesk1
+[2026-08-14T17:22:53] reference loaded new_nodes=33
+[2026-08-14T17:22:53] reference roots=['|workdesk1:workdesk1']
+[2026-08-14T17:22:53] reference complete group=workdesk1_REF_GRP
+[2026-08-14T17:24:42] reference start locator=workdesk_place_LOC2 workfile=D:\Projects\ELCD\assets\prop\bp\workdesk\fullset\publish\model\proxy\v001\model.ma
+[2026-08-14T17:24:43] reference group created workdesk2_REF_GRP namespace=workdesk2
+[2026-08-14T17:24:43] reference loaded new_nodes=347
+[2026-08-14T17:24:43] reference roots=['|workdesk2:workdesk2']
+[2026-08-14T17:24:43] reference complete group=workdesk2_REF_GRP

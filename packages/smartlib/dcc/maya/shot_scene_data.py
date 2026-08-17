@@ -20,6 +20,11 @@ CAMERA_SHAPE_ATTRS = (
     "orthographic",
     "orthographicWidth",
 )
+LIGHT_TYPES = {
+    "ambientLight", "areaLight", "directionalLight", "pointLight",
+    "spotLight", "volumeLight", "aiAreaLight", "aiMeshLight",
+    "aiPhotometricLight", "VRayLightRectShape", "VRayLightDomeShape",
+}
 
 
 def list_scene_cameras() -> list[str]:
@@ -34,6 +39,170 @@ def list_scene_cameras() -> list[str]:
             continue
         cameras.append(transform)
     return sorted(set(cameras), key=str.lower)
+
+
+def list_scene_component_roots(data_type: str) -> list[str]:
+    """Return useful DAG roots for Camera/Light Data Publish."""
+
+    cmds = _maya_cmds()
+    clean_type = str(data_type or "").strip().lower()
+    selected = cmds.ls(selection=True, long=True, type="transform") or []
+    selected = [node for node in selected if _root_contains_component(cmds, node, clean_type)]
+    if selected:
+        return sorted(set(selected), key=str.lower)
+    candidates = []
+    for transform in cmds.ls(type="transform", long=True) or []:
+        if _root_contains_component(cmds, transform, clean_type):
+            candidates.append(transform)
+    tagged = [
+        node for node in candidates
+        if cmds.objExists(f"{node}.smartpipelineDataType")
+        and str(cmds.getAttr(f"{node}.smartpipelineDataType") or "").strip().lower() == clean_type
+    ]
+    if tagged:
+        return sorted(set(tagged), key=str.lower)
+    preferred = []
+    for node in candidates:
+        leaf = node.rsplit("|", 1)[-1].split(":")[-1].lower()
+        if clean_type == "camera" and (
+            leaf.startswith(("cam", "camera", "vcam", "virtual_camera", "shot_camera"))
+            and not leaf.startswith(("light", "lights"))
+            and (
+                leaf.endswith(("_grp", "_rig"))
+                or leaf in {"camera", "vcam", "virtual_camera", "shot_camera"}
+                or any(
+                    cmds.nodeType(shape) == "camera"
+                    for shape in (cmds.listRelatives(node, shapes=True, fullPath=True) or [])
+                )
+            )
+        ):
+            preferred.append(node)
+        elif clean_type == "light":
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            parent_leaf = parents[0].rsplit("|", 1)[-1].split(":")[-1].lower() if parents else ""
+            # Publish each light/rig below the template container separately.
+            if parent_leaf == "lights_grp":
+                preferred.append(node)
+    if preferred:
+        return sorted(set(preferred), key=str.lower)
+    # Prefer top-most matching roots so a rig appears once instead of once per child.
+    candidate_set = set(candidates)
+    roots = [node for node in candidates if not any(parent in candidate_set for parent in _dag_parents(node))]
+    return sorted(set(roots), key=str.lower)
+
+
+def _root_contains_component(cmds, root: str, data_type: str) -> bool:
+    shapes = cmds.listRelatives(root, allDescendents=True, fullPath=True, shapes=True) or []
+    shapes.extend(cmds.listRelatives(root, shapes=True, fullPath=True) or [])
+    node_types = {str(cmds.nodeType(shape)) for shape in shapes}
+    return "camera" in node_types if data_type == "camera" else bool(node_types & LIGHT_TYPES)
+
+
+def collect_scene_component_data(root: str, data_type: str) -> dict[str, Any]:
+    """Collect a root-based Maya Camera or Light data-package manifest."""
+
+    cmds = _maya_cmds()
+    clean_type = str(data_type or "").strip().lower()
+    if clean_type not in {"camera", "light"}:
+        raise ValueError(f"Unsupported scene component data type: {data_type}")
+    if not cmds.objExists(root) or cmds.nodeType(root) != "transform":
+        raise RuntimeError(f"{clean_type.title()} root was not found: {root}")
+    root = (cmds.ls(root, long=True) or [root])[0]
+    descendants = cmds.listRelatives(root, allDescendents=True, fullPath=True) or []
+    dag_nodes = {root, *descendants}
+    shapes = [node for node in descendants if cmds.nodeType(node) != "transform"]
+    component_shapes = [
+        node for node in shapes
+        if (cmds.nodeType(node) == "camera" if clean_type == "camera" else cmds.nodeType(node) in LIGHT_TYPES)
+    ]
+    if not component_shapes:
+        raise RuntimeError(f"No {clean_type} shapes were found below: {root}")
+    external_constraints = []
+    for node in dag_nodes:
+        for constraint in cmds.listConnections(node, source=True, destination=False, type="constraint") or []:
+            constraint_long = (cmds.ls(constraint, long=True) or [constraint])[0]
+            if constraint_long not in dag_nodes:
+                external_constraints.append(str(constraint))
+    if external_constraints:
+        raise RuntimeError(
+            f"{clean_type.title()} Data Publish is blocked by constraints outside '{root}': "
+            + ", ".join(sorted(set(external_constraints)))
+        )
+    start = int(round(cmds.playbackOptions(query=True, minTime=True)))
+    end = int(round(cmds.playbackOptions(query=True, maxTime=True)))
+    return {
+        "schema": f"maya_{clean_type}_package/v1",
+        "data_type": clean_type,
+        "root": root.rsplit("|", 1)[-1],
+        "frame_range": [start, end],
+        "nodes": [node.rsplit("|", 1)[-1] for node in sorted(dag_nodes)],
+        "shapes": [
+            {"name": node.rsplit("|", 1)[-1], "type": str(cmds.nodeType(node))}
+            for node in sorted(component_shapes)
+        ],
+        "external_constraints": [],
+    }
+
+
+def export_scene_component_selection(root: str, data_type: str, output_dir: str | Path) -> dict[str, Any]:
+    """Export a complete root hierarchy as the native Data Publish payload."""
+
+    cmds = _maya_cmds()
+    clean_type = str(data_type or "").strip().lower()
+    collect_scene_component_data(root, clean_type)  # preflight before writing
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    scene_path = output / f"{clean_type}.ma"
+    selection = cmds.ls(selection=True, long=True) or []
+    root_long = (cmds.ls(root, long=True) or [root])[0]
+    parents = cmds.listRelatives(root_long, parent=True, fullPath=True) or []
+    original_parent = parents[0] if parents else ""
+    try:
+        # Export Selected writes the parent chain as well. Temporarily detach
+        # the package root so only that root and its descendants are emitted.
+        if original_parent:
+            root_long = (cmds.parent(root_long, world=True) or [root_long])[0]
+        cmds.select(root_long, replace=True)
+        cmds.file(
+            str(scene_path), force=True, options="v=0;", type="mayaAscii",
+            preserveReferences=True, exportSelected=True, channels=True,
+            constraints=False, expressions=False, constructionHistory=False,
+        )
+    finally:
+        if original_parent and cmds.objExists(root_long) and cmds.objExists(original_parent):
+            try:
+                cmds.parent(root_long, original_parent)
+            except Exception:
+                pass
+        cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
+    return {"files": {"ma": scene_path.name}, "errors": {}}
+
+
+def import_scene_component_package(path: str | Path) -> list[str]:
+    """Import a Camera/Light native data package into the current Maya scene."""
+
+    cmds = _maya_cmds()
+    source = Path(path)
+    if source.suffix.lower() == ".json":
+        data = _read_json(source)
+        filename = str((data.get("files") or {}).get("ma") or f"{data.get('data_type', source.stem)}.ma")
+        source = source.parent / filename
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    before = set(cmds.ls(assemblies=True, long=True) or [])
+    cmds.file(str(source), i=True, type="mayaAscii", ignoreVersion=True, mergeNamespacesOnClash=False, namespace=":")
+    after = set(cmds.ls(assemblies=True, long=True) or [])
+    return sorted(after - before)
+
+
+def _dag_parents(node: str) -> list[str]:
+    parts = [part for part in str(node).split("|") if part]
+    return ["|" + "|".join(parts[:index]) for index in range(1, len(parts))]
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    import json
+    return json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
 
 
 def collect_camera_data(camera: str) -> dict[str, Any]:

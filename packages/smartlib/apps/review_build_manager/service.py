@@ -14,6 +14,7 @@ from smartlib.core.metadata import read_json
 from smartlib.core.versioning import format_version, parse_version
 from smartlib.apps.review_build_manager.orchestrator import SceneBuildOrchestrator
 from smartlib.apps.smart_sequence_builder.service import SmartSequenceBuilderService
+from smartlib.review.workflow import ReviewProfileService, ReviewWorkflowService
 
 
 MOV_EXTENSIONS = {".mov", ".mp4"}
@@ -51,6 +52,92 @@ class ReviewBuildManagerService:
         self.shots = ShotManagerService(project_config)
         self.orchestrator = SceneBuildOrchestrator(self.shots)
         self.sequence_builder = SmartSequenceBuilderService(project_config)
+        self.review_profiles = ReviewProfileService(project_config)
+
+    def review_workflow(self, identity: ShotIdentity) -> ReviewWorkflowService:
+        return ReviewWorkflowService(
+            self.shots.shot_root(identity),
+            self.shots.shot_build_root(identity).parent,
+        )
+
+    def review_profile_ids(self) -> list[str]:
+        return self.review_profiles.review_profile_ids()
+
+    def delivery_profile_ids(self) -> list[str]:
+        return self.review_profiles.delivery_profile_ids()
+
+    def asset_variants(self, asset: str) -> list[str]:
+        root = self.shots.find_asset_root(str(asset or ""))
+        if not root or not root.is_dir():
+            return ["default"]
+        variants = sorted(path.name for path in root.iterdir() if path.is_dir())
+        return variants or ["default"]
+
+    def assembly_definition(self, identity: ShotIdentity) -> dict:
+        workflow = self.review_workflow(identity)
+        current, _path = workflow.latest_assembly()
+        if current.get("members"):
+            return current
+        # Seed the declarative recipe from current Construct rows.  This does
+        # not publish until the artist explicitly saves it.
+        members = []
+        for row in self.build_contents(identity):
+            if str(row.get("type") or "") not in {"rig", "usd"}:
+                continue
+            name = str(row.get("cast_key") or row.get("name") or "")
+            component = row.get("component") or {}
+            source = component.get("source") or {}
+            members.append({
+                "uid": f"member-{name}",
+                "name": name,
+                "asset": str(source.get("asset") or row.get("asset") or name),
+                "variant": str(row.get("variant") or "default"),
+                "role": str(row.get("role") or "CHA"),
+                "context": str(row.get("context") or "WORK"),
+                "asset_version": str(row.get("official") or "latest"),
+                "version_policy": "locked" if row.get("official") else "latest_approved",
+                "behavior": "CURVE" if str(row.get("role") or "").upper() == "CHA" else "STATIC",
+                "namespace": name,
+                "enabled": bool(row.get("use", True)),
+            })
+        return workflow.normalize_assembly({"members": members})
+
+    def publish_assembly_definition(
+        self, identity: ShotIdentity, payload: dict, *, comment: str = ""
+    ) -> Path:
+        return self.review_workflow(identity).publish_assembly(payload, comment)
+
+    def layer_definition(self, identity: ShotIdentity, department: str = "anim") -> dict:
+        workflow = self.review_workflow(identity)
+        current, _path = workflow.latest_layer_definition()
+        if current.get("layers"):
+            return current
+        # Convert the existing versioned review_spec to the dynamic schema.
+        assembly = self.assembly_definition(identity)
+        uid_by_name = {
+            str(member.get("name")): str(member.get("uid"))
+            for member in assembly.get("members") or []
+        }
+        layers = []
+        for name, data in self.shots.review_layers(identity, department).items():
+            layers.append({
+                "name": name,
+                "slug": name,
+                "members": [uid_by_name.get(value, value) for value in data.get("members") or []],
+                "camera": data.get("camera") or {},
+                "order": data.get("order", len(layers) * 10),
+                "precomp_placeholder": (data.get("ae") or {}).get("template_slot") or str(name).upper(),
+                "enabled": True,
+            })
+        return workflow.normalize_layers(
+            {"layers": layers},
+            [str(row.get("uid")) for row in assembly.get("members") or []],
+        )
+
+    def publish_layer_definition(
+        self, identity: ShotIdentity, payload: dict, *, comment: str = ""
+    ) -> Path:
+        return self.review_workflow(identity).publish_layer_definition(payload, comment)
 
     def asset_context_profiles(self) -> list[str]:
         try:
@@ -436,53 +523,61 @@ class ReviewBuildManagerService:
         variant_data = read_json(asset_root / variant / "variant.json", {}) or {}
         return str(variant_data.get("status") or metadata.get("status") or "").strip().lower()
 
-    def list_constructs(self, identity: ShotIdentity, department: str, task: str) -> list[dict]:
-        root = (
-            self.shots.shot_root(identity)
-            / "output"
-            / "scene_build"
-            / str(department or "main").strip().lower()
-            / str(task or "main").strip().lower()
-        )
+    def list_constructs(
+        self, identity: ShotIdentity, department: str, task: str, dcc: str = "maya"
+    ) -> list[dict]:
         rows = []
-        if not root.is_dir():
-            return rows
-        for version_dir in sorted(root.glob("v*"), reverse=True):
-            if not version_dir.is_dir():
-                continue
-            manifest = read_json(version_dir / "build_manifest.json", {}) or {}
-            validation = read_json(version_dir / "validation.json", {}) or {}
-            scene = next(iter(sorted(version_dir.glob("*.m[ab]"))), None)
-            state = str(validation.get("state") or validation.get("status") or "VERIFYING").upper()
-            validation_results = [
-                dict(item)
-                for item in (validation.get("results") or [])
-                if isinstance(item, dict)
-            ]
-            rows.append(
-                {
-                    "version": version_dir.name,
-                    "directory": str(version_dir),
-                    "state": state,
-                    "scene": str(scene or ""),
-                    "updated": datetime.fromtimestamp(version_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
-                    "components": len(manifest.get("components") or manifest.get("resolved_assets") or []),
-                    "validation_results": validation_results,
-                }
-            )
-        return rows
+        department_name = str(department or "main").strip().lower()
+        task_name = str(task or "main").strip().lower()
+        dcc_name = str(dcc or "maya").strip().lower()
+        roots = [
+            self.shots.shot_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.shot_build_root(identity) / department_name / task_name,
+            self.shots.legacy_shot_build_root(identity) / department_name / task_name,
+        ]
+        for root in roots:
+            for version_dir in sorted(root.glob("v*"), reverse=True) if root.is_dir() else []:
+                if not version_dir.is_dir():
+                    continue
+                manifest = read_json(version_dir / "build_manifest.json", {}) or {}
+                validation = read_json(version_dir / "validation.json", {}) or {}
+                scene = next(iter(sorted(version_dir.glob("*.m[ab]"))), None)
+                state = str(validation.get("state") or validation.get("status") or "VERIFYING").upper()
+                validation_results = [
+                    dict(item)
+                    for item in (validation.get("results") or [])
+                    if isinstance(item, dict)
+                ]
+                rows.append(
+                    {
+                        "version": version_dir.name,
+                        "directory": str(version_dir),
+                        "state": state,
+                        "scene": str(scene or ""),
+                        "updated": datetime.fromtimestamp(version_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+                        "components": len(manifest.get("components") or manifest.get("resolved_assets") or []),
+                        "validation_results": validation_results,
+                    }
+                )
+        return sorted(rows, key=lambda row: parse_version(row["version"]) or 0, reverse=True)
 
     def list_sequence_constructs(
-        self, identity: SequenceIdentity, department: str, task: str
+        self, identity: SequenceIdentity, department: str, task: str, dcc: str = "maya"
     ) -> list[dict]:
-        root = (
-            self.shots.sequence_workspace_root(identity.episode, identity.sequence)
-            / "output" / "scene_build"
-            / str(department or "main").strip().lower()
-            / str(task or "main").strip().lower()
-        )
         rows = []
-        for version_dir in sorted(root.glob("v*"), reverse=True) if root.is_dir() else []:
+        department_name = str(department or "main").strip().lower()
+        task_name = str(task or "main").strip().lower()
+        dcc_name = str(dcc or "maya").strip().lower()
+        roots = [
+            self.shots.sequence_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.sequence_build_root(identity) / department_name / task_name,
+            self.shots.legacy_sequence_build_root(identity) / department_name / task_name,
+        ]
+        for version_dir in (
+            version_dir
+            for root in roots
+            for version_dir in (sorted(root.glob("v*"), reverse=True) if root.is_dir() else [])
+        ):
             if not version_dir.is_dir():
                 continue
             manifest = read_json(version_dir / "build_manifest.json", {}) or {}
@@ -495,7 +590,7 @@ class ReviewBuildManagerService:
                 "updated": datetime.fromtimestamp(version_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
                 "shots": list(manifest.get("shots") or []),
             })
-        return rows
+        return sorted(rows, key=lambda row: parse_version(row["version"]) or 0, reverse=True)
 
     def next_output_version(self, identity: ShotIdentity) -> str:
         versions = self.list_outputs(identity)
@@ -507,19 +602,22 @@ class ReviewBuildManagerService:
         identity: ShotIdentity,
         department: str,
         task: str,
+        dcc: str = "maya",
     ) -> str:
-        root = (
-            self.shots.shot_root(identity)
-            / "output"
-            / "scene_build"
-            / str(department or "main").strip().lower()
-            / str(task or "main").strip().lower()
+        department_name = str(department or "main").strip().lower()
+        task_name = str(task or "main").strip().lower()
+        dcc_name = str(dcc or "maya").strip().lower()
+        roots = (
+            self.shots.shot_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.shot_build_root(identity) / department_name / task_name,
+            self.shots.legacy_shot_build_root(identity) / department_name / task_name,
         )
         numbers = [
             parse_version(path.name) or 0
+            for root in roots
             for path in root.glob("v*")
             if path.is_dir()
-        ] if root.is_dir() else []
+        ]
         return format_version(max(numbers, default=0) + 1)
 
     def next_sequence_output_version(self, identity: SequenceIdentity) -> str:
@@ -541,19 +639,22 @@ class ReviewBuildManagerService:
         identity: SequenceIdentity,
         department: str,
         task: str,
+        dcc: str = "maya",
     ) -> str:
-        root = (
-            self.shots.sequence_workspace_root(identity.episode, identity.sequence)
-            / "output"
-            / "scene_build"
-            / str(department or "main").strip().lower()
-            / str(task or "main").strip().lower()
+        department_name = str(department or "main").strip().lower()
+        task_name = str(task or "main").strip().lower()
+        dcc_name = str(dcc or "maya").strip().lower()
+        roots = (
+            self.shots.sequence_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.sequence_build_root(identity) / department_name / task_name,
+            self.shots.legacy_sequence_build_root(identity) / department_name / task_name,
         )
         numbers = [
             parse_version(path.name) or 0
+            for root in roots
             for path in root.glob("v*")
             if path.is_dir()
-        ] if root.is_dir() else []
+        ]
         return format_version(max(numbers, default=0) + 1)
 
     def maya_software_config_name(self) -> str:
@@ -759,6 +860,35 @@ class ReviewBuildManagerService:
                     identity.episode, identity.sequence
                 )
             excluded = {str(value) for value in overrides.get("exclude_cast") or []}
+            placement_motion: dict[str, set[str]] = {}
+            placement_paths = [
+                Path(str(component.get("path") or ""))
+                for component in components
+                if str(component.get("component_type") or "").lower() == "placement"
+                and str(component.get("path") or "").strip()
+            ]
+            # Motion intent belongs to the published Placement instance, not
+            # to the transient "Use Placements" build toggle. Consult the
+            # latest declaration even when placement application is disabled.
+            list_placement_versions = getattr(self.shots, "list_placement_publish_versions", None)
+            if callable(list_placement_versions):
+                for row in list_placement_versions(identity):
+                    if row.latest:
+                        path = Path(str(row.path or ""))
+                        if path not in placement_paths:
+                            placement_paths.append(path)
+            for placements_path in placement_paths:
+                members = read_json(placements_path.parent / "placement_members.json", {}) or {}
+                for row in members.get("placements") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    member = str(row.get("member") or "").strip()
+                    if not member:
+                        continue
+                    motion = str(row.get("motion") or "STATIC").strip().upper()
+                    placement_motion.setdefault(member, set()).add(
+                        motion if motion in {"STATIC", "CURVE"} else "STATIC"
+                    )
             missing_curves = [
                 str(cast_key)
                 for cast_key, entry in (cast_data.get("cast") or {}).items()
@@ -767,6 +897,10 @@ class ReviewBuildManagerService:
                 not in {"BG", "BGA", "ENV", "BACKGROUND", "SET"}
                 and str(cast_key) not in excluded
                 and str(cast_key) not in curve_names
+                and (
+                    str(cast_key) not in placement_motion
+                    or "CURVE" in placement_motion[str(cast_key)]
+                )
             ]
 
         constructs = self.list_constructs(identity, department, task)
@@ -842,13 +976,36 @@ class ReviewBuildManagerService:
         )
 
     def list_outputs(self, identity: ShotIdentity) -> list[ReviewOutput]:
+        rows: list[ReviewOutput] = []
+        formal_root = self.shots.shot_root(identity) / "review"
+        for review_json in formal_root.glob("*/*/v*/review.json") if formal_root.is_dir() else []:
+            version_dir = review_json.parent
+            data = read_json(review_json, {}) or {}
+            movie = self._first_file(version_dir, MOV_EXTENSIONS)
+            timestamps = [
+                path.stat().st_mtime
+                for path in (movie, review_json)
+                if path and path.is_file()
+            ]
+            profile = version_dir.parent.name
+            rows.append(
+                ReviewOutput(
+                    version=f"{profile}/{version_dir.name}",
+                    directory=str(version_dir),
+                    movie=str(movie) if movie else "",
+                    updated=(
+                        datetime.fromtimestamp(max(timestamps)).strftime("%Y-%m-%d %H:%M")
+                        if timestamps else ""
+                    ),
+                    state=str(data.get("state") or "SUBMITTED"),
+                )
+            )
         root = (
             self.shots.shot_root(identity)
             / "output"
             / "review"
             / "animation"
         )
-        rows: list[ReviewOutput] = []
         for version_dir in root.glob("v*") if root.is_dir() else []:
             if not version_dir.is_dir() or parse_version(version_dir.name) is None:
                 continue
@@ -880,11 +1037,7 @@ class ReviewBuildManagerService:
                     state=state,
                 )
             )
-        return sorted(
-            rows,
-            key=lambda row: parse_version(row.version) or 0,
-            reverse=True,
-        )
+        return sorted(rows, key=lambda row: (row.updated, row.version), reverse=True)
 
     def accept_output_to_work(
         self,

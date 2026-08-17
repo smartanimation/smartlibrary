@@ -32,8 +32,10 @@ class ReviewPackagePlan:
     review_data: dict[str, Any] = field(default_factory=dict)
 
 
-def next_review_version(shot_root: str | Path, department: str) -> int:
-    base_dir = Path(shot_root) / "publish" / "review" / department
+def next_review_version(
+    shot_root: str | Path, department: str, *, publish_root: str | Path | None = None
+) -> int:
+    base_dir = Path(publish_root) / "review" / department if publish_root else Path(shot_root) / "publish" / "review" / department
     versions = []
     if base_dir.exists():
         versions = [
@@ -44,8 +46,10 @@ def next_review_version(shot_root: str | Path, department: str) -> int:
     return next_version(versions)
 
 
-def latest_review_version(shot_root: str | Path, department: str) -> int | None:
-    base_dir = Path(shot_root) / "publish" / "review" / department
+def latest_review_version(
+    shot_root: str | Path, department: str, *, publish_root: str | Path | None = None
+) -> int | None:
+    base_dir = Path(publish_root) / "review" / department if publish_root else Path(shot_root) / "publish" / "review" / department
     latest = read_json(base_dir / "latest.json", {})
     if isinstance(latest, dict) and latest.get("version"):
         parsed = parse_version(str(latest["version"]))
@@ -93,13 +97,17 @@ def build_review_package_plan(
     comment: str = "",
     project_root: str | Path | None = None,
     pipeline_root: str | Path | None = None,
+    publish_root: str | Path | None = None,
 ) -> ReviewPackagePlan:
     shot_root = Path(shot_root)
-    version = version or next_review_version(shot_root, department)
+    resolved_publish_root = Path(publish_root) if publish_root else shot_root / "publish"
+    version = version or next_review_version(
+        shot_root, department, publish_root=resolved_publish_root
+    )
     version_label = format_version(version)
     take_label = _take_label(take if take is not None else 1)
     shot_name = str(shot_data.get("shot") or shot_root.name)
-    version_dir = shot_root / "publish" / "review" / department / version_label / take_label
+    version_dir = resolved_publish_root / "review" / department / version_label / take_label
     editorial = shot_data.get("editorial") or {}
     frame_range = [
         int(editorial.get("cut_in", 1001)),

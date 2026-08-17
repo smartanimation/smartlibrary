@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -417,7 +418,13 @@ class AssetContextService:
                 continue
             profiles = recipe.get("profiles") or {}
             if isinstance(profiles, dict) and profiles:
-                return str(asset_class), profiles
+                # Recipes specialize common profiles. Keep project-level profiles
+                # such as MCP and ANIM when a matching asset recipe does not
+                # explicitly override them.
+                common_profiles = context.get("quality_profiles") or {}
+                merged_profiles = dict(common_profiles) if isinstance(common_profiles, dict) else {}
+                merged_profiles.update(profiles)
+                return str(asset_class), merged_profiles
         return "default", context.get("quality_profiles") or {}
 
     @staticmethod
@@ -547,6 +554,7 @@ class AssetContextService:
         ]
         manifest["source_policy"] = "current_scene"
         manifest["source_scene"] = str(source_scene.as_posix())
+        manifest["source_scene_fingerprint"] = self._file_fingerprint(source_scene)
         manifest["validation"] = {
             "status": "OK",
             "errors": [],
@@ -581,6 +589,7 @@ class AssetContextService:
                 "composition": {
                     "source": str(source_scene.as_posix()),
                     "maya_scene_source": str(source_scene.as_posix()),
+                    "source_scene_fingerprint": manifest["source_scene_fingerprint"],
                     "mode": "current_scene_snapshot",
                     "maya_snapshot_revision": self.MAYA_SNAPSHOT_REVISION,
                     "comment": comment,
@@ -673,7 +682,25 @@ class AssetContextService:
             if int(composition.get("maya_snapshot_revision") or 0) != self.MAYA_SNAPSHOT_REVISION:
                 return True
         latest_manifest = packs[0]["manifest"]
+        if assembly.manifest.get("source_policy") == "current_scene":
+            current_fingerprint = assembly.manifest.get("source_scene_fingerprint") or {}
+            packed_fingerprint = latest_manifest.get("source_scene_fingerprint") or {}
+            if current_fingerprint != packed_fingerprint:
+                return True
         return self._representation_signature(assembly.manifest) != self._representation_signature(latest_manifest)
+
+    @staticmethod
+    def _file_fingerprint(path: Path) -> dict[str, Any]:
+        stat = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "sha256": digest.hexdigest(),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
 
     def _pack_maya_scene_entry(
         self,

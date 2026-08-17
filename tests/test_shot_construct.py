@@ -31,6 +31,7 @@ def write_config(config_dir: Path, project_root: Path) -> None:
                 "  assets_root: '{project_root}/library/assets'",
                 "  shots_root: '{project_root}/production/shots'",
                 "  sequences_root: '{project_root}/production/sequences'",
+                "  workspace_root: '{project_root}/workspace'",
             ]
         ),
         encoding="utf-8",
@@ -49,6 +50,10 @@ def write_config(config_dir: Path, project_root: Path) -> None:
             [
                 "templates:",
                 "  shot_root: '{shots_root}/episodes/{episode}/sequences/{seq}/shots/{shot}'",
+                "  shot_build_root: '{workspace_root}/{episode}/{sequence}/{shot}/build'",
+                "  shot_build: '{shot_build_root}/{department}/{dcc}/{task}/{version}'",
+                "  sequence_build_root: '{workspace_root}/{episode}/{sequence}/build'",
+                "  sequence_build: '{sequence_build_root}/{department}/{dcc}/{task}/{version}'",
             ]
         ),
         encoding="utf-8",
@@ -234,6 +239,7 @@ def test_missing_background_asset_usd_is_visible_but_not_required(tmp_path: Path
         publish_path=str(variant_root / "publish" / "asset" / "work" / "v001" / "Room.ma"),
     )
     service.latest_anim_input = lambda _identity: None
+    service.list_shot_data_versions = lambda _identity: []
     service._latest_review_camera_paths = lambda _identity: []
     service.list_set_dress_publish_versions = lambda _identity: []
     service.list_preview_render_versions = lambda _identity: []
@@ -462,6 +468,122 @@ def test_work_stage_status_reports_missing_required_animation_curve(
     assert "Animation Curves: hero" in status.message
 
 
+def test_work_stage_static_placement_does_not_require_animation_curve(
+    tmp_path: Path,
+) -> None:
+    manager = object.__new__(ReviewBuildManagerService)
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+    rig = tmp_path / "chair.ma"
+    rig.write_text("// Maya ASCII", encoding="utf-8")
+    placement_dir = tmp_path / "placements" / "v001"
+    placements_path = placement_dir / "placements.json"
+    write_json(placements_path, {"placements": []})
+    write_json(
+        placement_dir / "placement_members.json",
+        {"placements": [{"locator": "chair_place_loc", "member": "chair", "motion": "STATIC"}]},
+    )
+    manager.shots = SimpleNamespace(
+        resolved_construct=lambda *_args, **_kwargs: {
+            "components": [
+                {"component_type": "rig", "name": "chair", "path": str(rig), "required": True, "enabled": True},
+                {"component_type": "placement", "name": "placements", "path": str(placements_path), "required": True, "enabled": True},
+            ]
+        },
+        load_cast=lambda _identity: {"cast": {"chair": {"required": True, "role": "CHA"}}},
+        load_sequence_cast=lambda *_args: {"cast": {}},
+        load_shot=lambda _identity: {},
+        shot_root=lambda _identity: tmp_path,
+    )
+    manager.list_constructs = lambda *_args: []
+    manager.construct_diff = lambda *_args, **_kwargs: []
+
+    status = manager.shot_status(identity, mode="WORK STAGE")
+
+    assert status.state == "READY"
+    assert "Animation Curves: chair" not in status.message
+
+
+def test_work_stage_curve_placement_requires_animation_curve(tmp_path: Path) -> None:
+    manager = object.__new__(ReviewBuildManagerService)
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+    rig = tmp_path / "chair.ma"
+    rig.write_text("// Maya ASCII", encoding="utf-8")
+    placement_dir = tmp_path / "placements" / "v001"
+    placements_path = placement_dir / "placements.json"
+    write_json(placements_path, {"placements": []})
+    write_json(
+        placement_dir / "placement_members.json",
+        {"placements": [{"locator": "chair_place_loc", "member": "chair", "motion": "CURVE"}]},
+    )
+    manager.shots = SimpleNamespace(
+        resolved_construct=lambda *_args, **_kwargs: {
+            "components": [
+                {"component_type": "rig", "name": "chair", "path": str(rig), "required": True, "enabled": True},
+                {"component_type": "placement", "name": "placements", "path": str(placements_path), "required": True, "enabled": True},
+            ]
+        },
+        load_cast=lambda _identity: {"cast": {"chair": {"required": True, "role": "CHA"}}},
+        load_sequence_cast=lambda *_args: {"cast": {}},
+        load_shot=lambda _identity: {},
+        shot_root=lambda _identity: tmp_path,
+    )
+    manager.list_constructs = lambda *_args: []
+    manager.construct_diff = lambda *_args, **_kwargs: []
+
+    status = manager.shot_status(identity, mode="WORK STAGE")
+
+    assert status.state == "MISSING"
+    assert "Animation Curves: chair" in status.message
+
+
+def test_work_stage_input_resolves_shot_data_camera_and_placements(tmp_path: Path) -> None:
+    service = object.__new__(ShotManagerService)
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+    camera_dir = tmp_path / "data" / "camera" / "cam" / "main" / "v003"
+    camera = camera_dir / "camera.json"
+    write_json(camera, {"data_type": "camera"})
+    placements = tmp_path / "publish" / "layout" / "placements" / "v002" / "placements.json"
+    write_json(placements, {"placements": []})
+    service.list_shot_data_versions = lambda _identity: [
+        SimpleNamespace(name="camera/cam/main", version="v003", path=str(camera_dir), latest=True)
+    ]
+    service.list_placement_publish_versions = lambda _identity: [
+        SimpleNamespace(version="v002", path=str(placements), latest=True)
+    ]
+    service._latest_shot_camera_publish = lambda _identity: None
+
+    assert service._latest_work_stage_camera(identity) == camera
+    assert service._latest_work_stage_placements(identity) == placements
+
+
+def test_construct_output_uses_workspace_and_reads_legacy_history(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    project_root = tmp_path / "project"
+    write_config(config_dir, project_root)
+    manager = ReviewBuildManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep01", "sq01", "sh010")
+    new_root = manager.shots.shot_build_dir(identity, "anim", "maya", "main", "v003")
+    legacy_root = manager.shots.legacy_shot_build_root(identity) / "anim" / "main" / "v002"
+    for root in (new_root, legacy_root):
+        root.mkdir(parents=True)
+        scene = root / f"sh010_anim_main_{root.name}.ma"
+        scene.write_text("// Maya ASCII", encoding="utf-8")
+        write_json(root / "build_manifest.json", {"scene": str(scene), "components": []})
+        write_json(root / "validation.json", {"state": "COMPLETE"})
+
+    assert manager.shots.shot_build_root(identity) == (
+        project_root / "workspace" / "ep01" / "sq01" / "sh010" / "build"
+    )
+    assert manager.shots.shot_build_dir(identity, "layout", "houdini", "main", "v001") == (
+        project_root / "workspace" / "ep01" / "sq01" / "sh010"
+        / "build" / "layout" / "houdini" / "main" / "v001"
+    )
+    assert manager.next_construct_version(identity, "anim", "main") == "v004"
+    assert [row["version"] for row in manager.list_constructs(identity, "anim", "main")] == [
+        "v003", "v002"
+    ]
+
+
 def test_generate_review_toggle_uses_cached_construct_and_output(tmp_path: Path) -> None:
     movie = tmp_path / "review.mov"
     base = ReviewShotStatus(
@@ -511,6 +633,7 @@ def test_construct_discovers_publishes_without_anim_input(tmp_path: Path) -> Non
     for path in (camera, set_dress, preview, animation):
         write_json(path, {"ok": True})
     service.latest_anim_input = lambda _identity: None
+    service.list_shot_data_versions = lambda _identity: []
     service._latest_review_camera_paths = lambda _identity: [str(camera)]
     service.list_set_dress_publish_versions = lambda _identity: [
         SimpleNamespace(name="set_dress/main", version="v002", path=str(set_dress), latest=True)
