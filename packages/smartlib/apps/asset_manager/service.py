@@ -62,6 +62,10 @@ class AssetManagerService:
             project_root,
             templates=project_config.templates,
             project_name=project_config.project_name,
+            shot_dept_partitions={
+                str(key): str(value)
+                for key, value in (project_config.base.get("shot_dept_partitions") or {}).items()
+            },
         )
 
     @property

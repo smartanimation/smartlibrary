@@ -15,6 +15,7 @@ from smartlib.dcc.resolve.export_timeline_csv import (
     editorial_work_sequence_dir,
     editorial_work_versions,
     export_marker_events_to_work,
+    ingested_editorial_episode_sequences,
     ingested_editorial_files,
     latest_editorial_work_version_dir,
     latest_ingested_offline_movie,
@@ -44,8 +45,8 @@ class ResolveTimelineExportWindow:
         self.root.resizable(True, True)
         self._build_menu()
 
-        self.episode_var = tk.StringVar(value="ep001")
-        self.sequence_var = tk.StringVar(value="sq010")
+        self.episode_var = tk.StringVar(value="")
+        self.sequence_var = tk.StringVar(value="")
         self.version_var = tk.StringVar(value="Latest")
         self.handle_head_var = tk.IntVar(value=12)
         self.handle_tail_var = tk.IntVar(value=12)
@@ -56,6 +57,9 @@ class ResolveTimelineExportWindow:
         self.storyreel_var = tk.BooleanVar(value=True)
         self.dry_run_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="")
+        self.episode_ingest_var = tk.StringVar(value="")
+        self.sequence_ingest_var = tk.StringVar(value="")
+        self.ingest_available_var = tk.StringVar(value="")
         self.media_vars = {
             "Video Codec": tk.StringVar(value="-"),
             "Audio Codec": tk.StringVar(value="-"),
@@ -79,8 +83,16 @@ class ResolveTimelineExportWindow:
         form = ttk.Frame(frame)
         form.pack(fill=tk.X)
         self._labeled_combo(form, "episode", self.episode_var, 0, "episode_combo", self._episode_changed)
+        ttk.Label(form, textvariable=self.episode_ingest_var, foreground="#16803a").grid(row=0, column=2, padx=(8, 0))
         self._labeled_combo(form, "sequence", self.sequence_var, 1, "sequence_combo", self._sequence_changed)
+        ttk.Label(form, textvariable=self.sequence_ingest_var, foreground="#16803a").grid(row=1, column=2, padx=(8, 0))
         self._labeled_version(form, 2)
+        ttk.Label(
+            form,
+            textvariable=self.ingest_available_var,
+            foreground="#16803a",
+            wraplength=260,
+        ).grid(row=3, column=1, columnspan=2, sticky=tk.W, pady=(2, 0))
 
         movie_row = ttk.Frame(frame)
         movie_row.pack(fill=tk.X, pady=(10, 4))
@@ -489,6 +501,7 @@ class ResolveTimelineExportWindow:
         current_episode = self.episode_var.get().strip()
         current_sequence = self.sequence_var.get().strip()
         try:
+            ingested = self._ingested_identities()
             episodes = self._episode_values()
             self.episode_combo["values"] = episodes
             if keep_current and current_episode in episodes:
@@ -496,7 +509,11 @@ class ResolveTimelineExportWindow:
             elif current_episode in episodes:
                 self.episode_var.set(current_episode)
             else:
-                self.episode_var.set(episodes[0])
+                preferred_episode = next(
+                    (episode for episode, _sequence in sorted(ingested) if episode in episodes),
+                    episodes[0],
+                )
+                self.episode_var.set(preferred_episode)
 
             sequences = self._sequence_values(self.episode_var.get().strip())
             self.sequence_combo["values"] = sequences
@@ -505,7 +522,17 @@ class ResolveTimelineExportWindow:
             elif current_sequence in sequences:
                 self.sequence_var.set(current_sequence)
             else:
-                self.sequence_var.set(sequences[0])
+                selected_episode = self.episode_var.get().strip()
+                preferred_sequence = next(
+                    (
+                        sequence
+                        for episode, sequence in sorted(ingested)
+                        if episode == selected_episode and sequence in sequences
+                    ),
+                    sequences[0],
+                )
+                self.sequence_var.set(preferred_sequence)
+            self._refresh_ingest_indicators()
         finally:
             self._updating_episode_sequence = False
 
@@ -516,23 +543,39 @@ class ResolveTimelineExportWindow:
         self._refresh_versions()
 
     def _sequence_changed(self, _event=None) -> None:
+        self._refresh_ingest_indicators()
         self._refresh_versions()
 
     def _episode_values(self) -> list[str]:
         root = editorial_work_sequence_dir(self.project_config, "episode", "sequence").parents[1]
-        if root.exists():
-            values = sorted(path.name for path in root.iterdir() if path.is_dir())
-            if values:
-                return values
+        values = {path.name for path in root.iterdir() if path.is_dir()} if root.exists() else set()
+        values.update(episode for episode, _sequence in self._ingested_identities())
+        if values:
+            return sorted(values)
         return ["ep001"]
 
     def _sequence_values(self, episode: str) -> list[str]:
         root = editorial_work_sequence_dir(self.project_config, episode or "episode", "sequence").parent
-        if root.exists():
-            values = sorted(path.name for path in root.iterdir() if path.is_dir())
-            if values:
-                return values
+        values = {path.name for path in root.iterdir() if path.is_dir()} if root.exists() else set()
+        values.update(sequence for ingest_episode, sequence in self._ingested_identities() if ingest_episode == episode)
+        if values:
+            return sorted(values)
         return ["sq010"]
+
+    def _ingested_identities(self) -> set[tuple[str, str]]:
+        try:
+            return set(ingested_editorial_episode_sequences(self.project_config))
+        except (OSError, RuntimeError):
+            return set()
+
+    def _refresh_ingest_indicators(self) -> None:
+        identities = self._ingested_identities()
+        episode = self.episode_var.get().strip()
+        sequence = self.sequence_var.get().strip()
+        self.episode_ingest_var.set("INGEST" if any(item[0] == episode for item in identities) else "")
+        self.sequence_ingest_var.set("INGEST" if (episode, sequence) in identities else "")
+        available = ", ".join(f"{item[0]}/{item[1]}" for item in sorted(identities))
+        self.ingest_available_var.set(f"Ingest available: {available}" if available else "Ingest available: none")
 
     def _refresh_versions(self, keep_current: bool = False) -> None:
         if not hasattr(self, "version_combo"):

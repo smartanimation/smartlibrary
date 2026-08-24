@@ -8,7 +8,7 @@ review_profiles:
     image_format: png
     bit_depth: 8
     alpha: true
-    resolution: [1280, 720]
+    resolution_scale: 0.5
     fps: project
     frame_range: shot
     overscan: 1.0

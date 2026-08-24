@@ -47,6 +47,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.sequence_input_settings: dict[tuple[str, str], dict] = {}
         self._review_submission_profiles: dict[tuple[str, str, str], dict] = {}
         self.current_build_content_rows: list[dict] = []
+        self._build_plan_cache: dict[tuple[str, str, str], object] = {}
         self._open_after_build_identity: tuple[str, str, str] | None = None
         self._startup_context_applied = False
         self.job_timer = QtCore.QTimer(self)
@@ -165,7 +166,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             ["Generate Missing", "Regenerate Selected", "Use Existing"]
         )
         self.input_context_combo = QtWidgets.QComboBox()
-        self.input_context_combo.addItems(self.service.asset_context_profiles())
+        self.input_context_combo.addItems(self.service.stage_profiles())
         self.input_representation_combo = QtWidgets.QComboBox()
         self.input_representation_combo.addItem("Project Default", "project")
         self.input_representation_combo.addItem("Maya", "maya")
@@ -185,7 +186,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.generate_inputs_btn = QtWidgets.QPushButton("Regenerate Input Snapshot")
         layout.addWidget(QtWidgets.QLabel("Policy"), 0, 0)
         layout.addWidget(self.input_policy_combo, 0, 1)
-        layout.addWidget(QtWidgets.QLabel("Context"), 1, 0)
+        layout.addWidget(QtWidgets.QLabel("Stage Profile"), 1, 0)
         layout.addWidget(self.input_context_combo, 1, 1)
         layout.addWidget(QtWidgets.QLabel("Representation"), 2, 0)
         layout.addWidget(self.input_representation_combo, 2, 1)
@@ -385,9 +386,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         build_layout.setContentsMargins(0, 0, 0, 0)
         build_layout.addWidget(self.build_contents_group, 1)
         build_layout.addWidget(self._build_sequence_inputs_panel(), 1)
-        self.workflow_tabs.addTab(build_page, "Build")
         self.review_page = self._build_review_tab()
-        self.workflow_tabs.addTab(self.review_page, "Review")
+        build_layout.addWidget(self.review_page)
+        self.workflow_tabs.addTab(build_page, "Build")
         self.workflow_tabs.addTab(self._build_right_panel(), "Output")
         lower_layout.addWidget(self.workflow_tabs)
         self.center_splitter.addWidget(lower_panel)
@@ -395,20 +396,24 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         return panel
 
     def _build_job_queue_page(self) -> QtWidgets.QWidget:
-        page = QtWidgets.QWidget()
+        page = QtWidgets.QGroupBox("Review Submission")
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
         layout.addWidget(self._section_label("Job Queue"))
-        self.queue_table = QtWidgets.QTableWidget(0, 6)
+        self.queue_table = QtWidgets.QTableWidget(0, 7)
         self.queue_table.setHorizontalHeaderLabels(
-            ["Job", "Shot", "Task", "Status", "Progress", "Elapsed"]
+            ["Job", "Shot", "Task", "Status", "Progress", "Elapsed", "File Name"]
         )
         self.queue_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.queue_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.queue_table.setShowGrid(False)
         self.queue_table.verticalHeader().setVisible(False)
-        self.queue_table.horizontalHeader().setStretchLastSection(True)
+        queue_header = self.queue_table.horizontalHeader()
+        for column in (0, 1, 3, 4, 5):
+            queue_header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeToContents)
+        queue_header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        queue_header.setSectionResizeMode(6, QtWidgets.QHeaderView.Stretch)
         layout.addWidget(self.queue_table, 1)
         return page
 
@@ -433,48 +438,6 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         settings.addStretch(1)
         settings.addWidget(self.layer_definition_label)
         root.addLayout(settings)
-
-        editors = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        assembly_group = QtWidgets.QGroupBox("Shot Assembly")
-        assembly_layout = QtWidgets.QVBoxLayout(assembly_group)
-        self.assembly_table = QtWidgets.QTableWidget(0, 8)
-        self.assembly_table.setHorizontalHeaderLabels(
-            ["Use", "Member", "Asset", "Variant", "Behavior", "Context", "Version", "State"]
-        )
-        self.assembly_table.verticalHeader().setVisible(False)
-        self.assembly_table.horizontalHeader().setStretchLastSection(True)
-        assembly_layout.addWidget(self.assembly_table)
-        assembly_actions = QtWidgets.QHBoxLayout()
-        self.assembly_add_btn = QtWidgets.QPushButton("Add Placement")
-        self.assembly_remove_btn = QtWidgets.QPushButton("Remove")
-        self.assembly_publish_btn = QtWidgets.QPushButton("Publish Assembly")
-        assembly_actions.addWidget(self.assembly_add_btn)
-        assembly_actions.addWidget(self.assembly_remove_btn)
-        assembly_actions.addStretch(1)
-        assembly_actions.addWidget(self.assembly_publish_btn)
-        assembly_layout.addLayout(assembly_actions)
-        editors.addWidget(assembly_group)
-
-        layers_group = QtWidgets.QGroupBox("Review Layer Definition")
-        layers_layout = QtWidgets.QVBoxLayout(layers_group)
-        self.review_layers_table = QtWidgets.QTableWidget(0, 6)
-        self.review_layers_table.setHorizontalHeaderLabels(
-            ["Use", "Layer", "Members", "Camera", "Placeholder", "Cache"]
-        )
-        self.review_layers_table.verticalHeader().setVisible(False)
-        self.review_layers_table.horizontalHeader().setStretchLastSection(True)
-        layers_layout.addWidget(self.review_layers_table)
-        layer_actions = QtWidgets.QHBoxLayout()
-        self.layer_add_btn = QtWidgets.QPushButton("Add Layer")
-        self.layer_remove_btn = QtWidgets.QPushButton("Remove")
-        self.layer_publish_btn = QtWidgets.QPushButton("Publish Layer Definition")
-        layer_actions.addWidget(self.layer_add_btn)
-        layer_actions.addWidget(self.layer_remove_btn)
-        layer_actions.addStretch(1)
-        layer_actions.addWidget(self.layer_publish_btn)
-        layers_layout.addLayout(layer_actions)
-        editors.addWidget(layers_group)
-        root.addWidget(editors, 1)
 
         actions = QtWidgets.QHBoxLayout()
         self.review_changes_btn = QtWidgets.QPushButton("Review Changes")
@@ -592,12 +555,6 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.sequence_inputs_tree.itemSelectionChanged.connect(
             self._sequence_take_selected
         )
-        self.assembly_add_btn.clicked.connect(self._add_assembly_row)
-        self.assembly_remove_btn.clicked.connect(self._remove_assembly_rows)
-        self.assembly_publish_btn.clicked.connect(self._publish_assembly)
-        self.layer_add_btn.clicked.connect(self._add_review_layer_row)
-        self.layer_remove_btn.clicked.connect(self._remove_review_layer_rows)
-        self.layer_publish_btn.clicked.connect(self._publish_review_layers)
         self.review_changes_btn.clicked.connect(self._review_submission_changes)
         self.submit_review_btn.clicked.connect(self._submit_for_review)
         self._update_stage_inputs_visibility()
@@ -610,6 +567,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.footer_label.setText("Scanning shots...")
         QtWidgets.QApplication.processEvents()
         try:
+            self._build_plan_cache.clear()
             self.rows = [
                 self.service.shot_status(
                     identity,
@@ -811,7 +769,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             shot = QtWidgets.QTableWidgetItem(identity.shot)
             shot.setData(QtCore.Qt.UserRole, (identity.episode, identity.sequence, identity.shot))
             self.shot_table.setItem(row, 2, shot)
-            plan = self._build_plan(identity)
+            plan = self._cached_build_plan(identity)
             mode_item = QtWidgets.QTableWidgetItem(plan.resolved_mode)
             mode_item.setToolTip(plan.summary)
             self.shot_table.setItem(row, 3, mode_item)
@@ -1009,9 +967,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             values = [data["type"], data["cast_key"], data["role"], data["variant"]]
             for column, value in enumerate(values, start=1):
                 self.build_contents_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
-            if data["type"] == "rig":
+            context_options = list(data.get("context_options") or [])
+            if context_options:
                 context_combo = QtWidgets.QComboBox()
-                context_combo.addItems(self.service.asset_context_profiles())
+                context_combo.addItems(context_options)
+                if data["context"] not in context_options:
+                    context_combo.addItem(data["context"])
                 context_combo.setCurrentText(data["context"])
                 context_combo.setProperty("content_row", row_index)
                 context_combo.currentTextChanged.connect(self._content_context_changed)
@@ -1038,7 +999,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if status is None or row_index is None:
             return
         data = self.current_build_content_rows[int(row_index)]
-        data["component"]["enabled"] = item.checkState() == QtCore.Qt.Checked
+        enabled = item.checkState() == QtCore.Qt.Checked
+        data["component"]["enabled"] = enabled
+        data["enabled"] = enabled
         excluded = self._content_settings(status)["excluded"]
         name = str(data["cast_key"])
         if data["component"]["enabled"]:
@@ -1046,7 +1009,22 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         else:
             excluded.add(name)
         self.service.save_build_contents(status.identity, self.current_build_content_rows)
-        self._populate_build_contents(status)
+        state = self._local_content_state(data, enabled)
+        data["state"] = state
+        state_item = self.build_contents_table.item(item.row(), 8)
+        if state_item:
+            state_item.setText(state)
+            state_item.setForeground(
+                QtGui.QColor(
+                    "#80bd72" if state == "READY"
+                    else "#999999" if state == "EXCLUDED"
+                    else "#ef665d"
+                )
+            )
+        enabled_count = sum(bool(row.get("enabled")) for row in self.current_build_content_rows)
+        self.contents_summary_label.setText(
+            f"{enabled_count} of {len(self.current_build_content_rows)} items enabled"
+        )
 
     def _content_context_changed(self, context: str) -> None:
         status = self._selected_status()
@@ -1094,7 +1072,38 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self.service.save_build_contents(
                 status.identity, self.current_build_content_rows
             )
-            self._populate_build_contents(status)
+            for row, data in enumerate(self.current_build_content_rows):
+                enabled = bool(data["component"].get("enabled", True))
+                data["enabled"] = enabled
+                state = self._local_content_state(data, enabled)
+                data["state"] = state
+                state_item = self.build_contents_table.item(row, 8)
+                if state_item:
+                    state_item.setText(state)
+                    state_item.setForeground(
+                        QtGui.QColor(
+                            "#80bd72" if state == "READY"
+                            else "#999999" if state == "EXCLUDED"
+                            else "#ef665d"
+                        )
+                    )
+            enabled_count = sum(
+                bool(row.get("enabled")) for row in self.current_build_content_rows
+            )
+            self.contents_summary_label.setText(
+                f"{enabled_count} of {len(self.current_build_content_rows)} items enabled"
+            )
+
+    @staticmethod
+    def _local_content_state(data: dict, enabled: bool) -> str:
+        if not enabled:
+            return "EXCLUDED"
+        component_path = str((data.get("component") or {}).get("path") or "")
+        if not component_path or not Path(component_path).exists():
+            return "MISSING"
+        official = str(data.get("official") or "")
+        latest = str(data.get("latest") or "")
+        return "UPDATE AVAILABLE" if latest and latest != official else "READY"
 
     def _apply_context_to_contents(self) -> None:
         status = self._selected_status()
@@ -1108,6 +1117,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             item = self.build_contents_table.item(row, 0)
             context_widget = self.build_contents_table.cellWidget(row, 5)
             if not item or not isinstance(context_widget, QtWidgets.QComboBox):
+                continue
+            if context_widget.findText(context) < 0:
                 continue
             current_context = (
                 context_widget.currentText()
@@ -1187,42 +1198,31 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         return dialog.exec() == QtWidgets.QDialog.Accepted
 
     def _populate_review_tab(self, row_data: ReviewShotStatus | None) -> None:
-        self.assembly_table.setRowCount(0)
-        self.review_layers_table.setRowCount(0)
         enabled = bool(row_data and self.scope_combo.currentText() == "Shot")
         for widget in (
-            self.assembly_table, self.review_layers_table, self.assembly_add_btn,
-            self.assembly_remove_btn, self.assembly_publish_btn, self.layer_add_btn,
-            self.layer_remove_btn, self.layer_publish_btn, self.review_changes_btn,
-            self.submit_review_btn,
+            self.review_profile_combo,
+            self.delivery_profile_combo,
+            self.precomp_combo,
+            self.review_changes_btn,
+            self.review_actions_btn,
         ):
             widget.setEnabled(enabled)
+        self.submit_review_btn.setEnabled(False)
         if not enabled:
+            self.layer_definition_label.setText("Definitions: -")
             self.review_status_label.setText("Select a shot")
             return
         identity = row_data.identity
-        assembly = self.service.assembly_definition(identity)
-        self._assembly_member_uid_by_name = {
-            str(member.get("name")): str(member.get("uid"))
-            for member in assembly.get("members") or []
-        }
-        self._assembly_member_name_by_uid = {
-            value: key for key, value in self._assembly_member_uid_by_name.items()
-        }
-        for member in assembly.get("members") or []:
-            self._append_assembly_row(member)
         layers = self.service.layer_definition(
             identity, self.department_combo.currentText()
         )
-        for layer in sorted(
-            layers.get("layers") or [], key=lambda value: int(value.get("order", 0))
-        ):
-            self._append_review_layer_row(layer)
+        layer_count = len(layers.get("layers") or [])
         workflow = self.service.review_workflow(identity)
         _assembly_data, assembly_path = workflow.latest_assembly()
         _layers_data, layers_path = workflow.latest_layer_definition()
         self.layer_definition_label.setText(
-            "Layer Definition: " + (layers_path.parent.name if layers_path else "draft")
+            f"Definitions: Shot Composition {assembly_path.parent.name if assembly_path else 'draft'} / "
+            f"Layers {layers_path.parent.name if layers_path else 'draft'}"
         )
         precomp = workflow.latest_precomp()
         self.precomp_combo.clear()
@@ -1231,148 +1231,20 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             str(precomp or "project_default"),
         )
         self.review_status_label.setText(
-            f"Assembly {assembly_path.parent.name if assembly_path else 'draft'} / "
-            f"{len(layers.get('layers') or [])} layers"
+            f"Shot Composition {assembly_path.parent.name if assembly_path else 'draft'} / "
+            f"{layer_count} layers"
         )
-
-    def _append_assembly_row(self, member: dict | None = None) -> None:
-        member = dict(member or {})
-        row = self.assembly_table.rowCount()
-        self.assembly_table.insertRow(row)
-        use = QtWidgets.QTableWidgetItem()
-        use.setFlags(use.flags() | QtCore.Qt.ItemIsUserCheckable)
-        use.setCheckState(QtCore.Qt.Checked if member.get("enabled", True) else QtCore.Qt.Unchecked)
-        use.setData(QtCore.Qt.UserRole, str(member.get("uid") or ""))
-        self.assembly_table.setItem(row, 0, use)
-        values = [member.get("name", "new_member"), member.get("asset", "")]
-        for column, value in enumerate(values, 1):
-            self.assembly_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
-        variant = QtWidgets.QComboBox()
-        variant.setEditable(True)
-        variant.addItems(self.service.asset_variants(str(member.get("asset") or "")))
-        variant.setCurrentText(str(member.get("variant") or "default"))
-        self.assembly_table.setCellWidget(row, 3, variant)
-        behavior = QtWidgets.QComboBox()
-        behavior.addItems(["STATIC", "CURVE"])
-        behavior.setCurrentText(str(member.get("behavior") or "STATIC").upper())
-        self.assembly_table.setCellWidget(row, 4, behavior)
-        context = QtWidgets.QComboBox()
-        context.addItems(self.service.asset_context_profiles())
-        context.setCurrentText(str(member.get("context") or "WORK"))
-        self.assembly_table.setCellWidget(row, 5, context)
-        self.assembly_table.setItem(
-            row, 6, QtWidgets.QTableWidgetItem(str(member.get("asset_version") or "latest"))
-        )
-        self.assembly_table.setItem(row, 7, QtWidgets.QTableWidgetItem("READY"))
-
-    def _assembly_payload_from_ui(self) -> dict:
-        members = []
-        for row in range(self.assembly_table.rowCount()):
-            use = self.assembly_table.item(row, 0)
-            behavior = self.assembly_table.cellWidget(row, 4)
-            context = self.assembly_table.cellWidget(row, 5)
-            variant = self.assembly_table.cellWidget(row, 3)
-            value = lambda column: str(
-                self.assembly_table.item(row, column).text()
-                if self.assembly_table.item(row, column) else ""
-            ).strip()
-            members.append({
-                "uid": str(use.data(QtCore.Qt.UserRole) or ""),
-                "enabled": use.checkState() == QtCore.Qt.Checked,
-                "name": value(1), "asset": value(2), "variant": variant.currentText() or "default",
-                "behavior": behavior.currentText(), "context": context.currentText(),
-                "asset_version": value(6) or "latest",
-                "version_policy": "latest_approved" if value(6).lower() == "latest" else "locked",
-                "animation_curve": {"required": behavior.currentText() == "CURVE"},
-            })
-        return {"members": members}
-
-    def _add_assembly_row(self) -> None:
-        self._append_assembly_row()
-
-    def _remove_assembly_rows(self) -> None:
-        rows = sorted({index.row() for index in self.assembly_table.selectedIndexes()}, reverse=True)
-        for row in rows:
-            self.assembly_table.removeRow(row)
-
-    def _publish_assembly(self) -> None:
-        status = self._selected_status()
-        if not status:
-            return
-        try:
-            path = self.service.publish_assembly_definition(
-                status.identity, self._assembly_payload_from_ui(), comment="Review Build Manager"
+        definitions_ready = bool(assembly_path and layers_path)
+        self.submit_review_btn.setEnabled(enabled and definitions_ready)
+        if not definitions_ready:
+            missing = []
+            if not assembly_path:
+                missing.append("Shot Composition")
+            if not layers_path:
+                missing.append("Review Layer Definition")
+            self.review_status_label.setText(
+                "Publish in Shot Manager: " + ", ".join(missing)
             )
-            self.review_status_label.setText(f"Published Assembly: {path.parent.name}")
-            self._populate_review_tab(status)
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Publish Assembly Failed", str(exc))
-
-    def _append_review_layer_row(self, layer: dict | None = None) -> None:
-        layer = dict(layer or {})
-        row = self.review_layers_table.rowCount()
-        self.review_layers_table.insertRow(row)
-        use = QtWidgets.QTableWidgetItem()
-        use.setFlags(use.flags() | QtCore.Qt.ItemIsUserCheckable)
-        use.setCheckState(QtCore.Qt.Checked if layer.get("enabled", True) else QtCore.Qt.Unchecked)
-        use.setData(QtCore.Qt.UserRole, str(layer.get("uid") or ""))
-        self.review_layers_table.setItem(row, 0, use)
-        members = [
-            getattr(self, "_assembly_member_name_by_uid", {}).get(str(uid), str(uid))
-            for uid in layer.get("members") or []
-        ]
-        values = [
-            layer.get("name", "new_layer"), ", ".join(map(str, members)),
-            (layer.get("camera") or {}).get("name", "") if isinstance(layer.get("camera"), dict) else layer.get("camera", ""),
-            layer.get("precomp_placeholder", ""), "PENDING",
-        ]
-        for column, value in enumerate(values, 1):
-            self.review_layers_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
-
-    def _layer_payload_from_ui(self) -> dict:
-        layers = []
-        for row in range(self.review_layers_table.rowCount()):
-            use = self.review_layers_table.item(row, 0)
-            value = lambda column: str(
-                self.review_layers_table.item(row, column).text()
-                if self.review_layers_table.item(row, column) else ""
-            ).strip()
-            name = value(1) or f"Layer {row + 1}"
-            layers.append({
-                "uid": str(use.data(QtCore.Qt.UserRole) or ""),
-                "enabled": use.checkState() == QtCore.Qt.Checked,
-                "name": name,
-                "slug": name,
-                "members": [
-                    getattr(self, "_assembly_member_uid_by_name", {}).get(item.strip(), item.strip())
-                    for item in value(2).split(",") if item.strip()
-                ],
-                "camera": {"name": value(3)} if value(3) else {},
-                "precomp_placeholder": value(4),
-                "order": row * 10,
-            })
-        return {"layers": layers}
-
-    def _add_review_layer_row(self) -> None:
-        self._append_review_layer_row()
-
-    def _remove_review_layer_rows(self) -> None:
-        rows = sorted({index.row() for index in self.review_layers_table.selectedIndexes()}, reverse=True)
-        for row in rows:
-            self.review_layers_table.removeRow(row)
-
-    def _publish_review_layers(self) -> None:
-        status = self._selected_status()
-        if not status:
-            return
-        try:
-            path = self.service.publish_layer_definition(
-                status.identity, self._layer_payload_from_ui(), comment="Review Build Manager"
-            )
-            self.review_status_label.setText(f"Published Layers: {path.parent.name}")
-            self._populate_review_tab(status)
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Publish Layer Definition Failed", str(exc))
 
     def _review_submission_changes(self) -> None:
         status = self._selected_status()
@@ -1384,10 +1256,13 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         delivery = self.service.review_profiles.delivery_profile(
             self.delivery_profile_combo.currentText()
         )
+        layers = self.service.layer_definition(
+            status.identity, self.department_combo.currentText()
+        )
         message = (
             f"Review Profile: {profile['id']} ({profile.get('image_format', 'png').upper()})\n"
             f"Delivery Profile: {delivery['id']} ({delivery.get('codec', '-')})\n"
-            f"Layers: {self.review_layers_table.rowCount()}\n"
+            f"Layers: {len(layers.get('layers') or [])}\n"
             "Exact HIT/MISS results are calculated from JSON snapshots when the job starts."
         )
         QtWidgets.QMessageBox.information(self, "Review Changes", message)
@@ -1399,20 +1274,21 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if self.scope_combo.currentText() != "Shot":
             QtWidgets.QMessageBox.information(self, "Submit for Review", "Select Shot scope.")
             return
-        try:
-            workflow = self.service.review_workflow(status.identity)
-            _assembly, assembly_path = workflow.latest_assembly()
-            _layers, layers_path = workflow.latest_layer_definition()
+        workflow = self.service.review_workflow(status.identity)
+        _assembly, assembly_path = workflow.latest_assembly()
+        _layers, layers_path = workflow.latest_layer_definition()
+        if not assembly_path or not layers_path:
+            missing = []
             if not assembly_path:
-                self.service.publish_assembly_definition(
-                    status.identity, self._assembly_payload_from_ui(), comment="Initial Review Assembly"
-                )
+                missing.append("Shot Composition")
             if not layers_path:
-                self.service.publish_layer_definition(
-                    status.identity, self._layer_payload_from_ui(), comment="Initial Review Layers"
-                )
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Submit for Review Failed", str(exc))
+                missing.append("Review Layer Definition")
+            QtWidgets.QMessageBox.information(
+                self,
+                "Submit for Review",
+                "Publish the following in Shot Manager before submitting:\n\n"
+                + "\n".join(f"- {name}" for name in missing),
+            )
             return
         identity = status.identity
         self.generate_review_check.setChecked(True)
@@ -1663,7 +1539,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     identity, plan.department, plan.task
                 )
                 job_root = (
-                    self.service.shots.sequence_build_root(identity)
+                    self.service.shots.sequence_build_root(identity, plan.department)
                     / plan.department / "maya" / plan.task / "_jobs"
                 )
                 label = identity.sequence
@@ -1679,7 +1555,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                         identity, plan.department, plan.task
                     )
                     job_root = (
-                        self.service.shots.shot_build_root(identity)
+                        self.service.shots.shot_build_root(identity, plan.department)
                         / plan.department / "maya" / plan.task / "_jobs"
                     )
                 label = identity.shot
@@ -1778,6 +1654,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 job["state"],
                 "0%",
                 "00:00",
+                "",
             ]
         ):
             self.queue_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
@@ -1976,6 +1853,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             job.get("state") or "",
             f"{int(job.get('progress') or 0)}%",
             elapsed,
+            self._job_file_name(job),
         ]
         for column, value in enumerate(values):
             item = self.queue_table.item(row, column)
@@ -1993,6 +1871,21 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 item = self.queue_table.item(row, column)
                 if item is not None:
                     item.setToolTip(message)
+
+    @staticmethod
+    def _job_file_name(job: dict) -> str:
+        """Return the generated artifact name once a job completes."""
+        if str(job.get("state") or "").upper() != "COMPLETE":
+            return ""
+        message = str(job.get("message") or "").strip()
+        if not message or "\n" in message or "\r" in message:
+            return ""
+        candidate = Path(message)
+        if candidate.suffix.lower() not in {
+            ".ma", ".mb", ".usd", ".usda", ".usdc", ".mov", ".mp4", ".aep"
+        }:
+            return ""
+        return candidate.name
 
     @staticmethod
     def _failure_summary(message: str | None) -> str:
@@ -2031,7 +1924,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         checked = self._checked_identities()
         selected = self._selected_status()
         selected_plan = (
-            self._build_plan(selected.identity)
+            self._cached_build_plan(selected.identity)
             if selected
             else None
         )
@@ -2046,9 +1939,17 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             )
             not in busy_identities
         )
-        checked_valid = any(identity not in busy_identities for identity in checked)
+        status_by_key = {
+            self._identity_key(row): row for row in self.rows
+        }
+        checked_valid = any(
+            identity not in busy_identities
+            and identity in status_by_key
+            and self._cached_plan_buildable(status_by_key[identity])
+            for identity in checked
+        )
         changes_available = any(
-            self._build_plan(row.identity).buildable
+            self._cached_plan_buildable(row)
             and row.state != "UP TO DATE"
             and (row.identity.episode, row.identity.sequence, row.identity.shot)
             not in busy_identities
@@ -2098,10 +1999,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             excluded = set(settings.get("excluded") or set())
             construct = self.service.shots.load_construct(identity)
             for component in construct.get("components") or []:
-                if str(component.get("component_type") or "").lower() != "rig":
-                    continue
                 name = str(component.get("name") or "")
                 source = component.get("source") or {}
+                if not str(source.get("asset") or ""):
+                    continue
                 saved_context = str(source.get("context") or "")
                 if name and saved_context and name not in contexts:
                     contexts[name] = saved_context
@@ -2110,13 +2011,13 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             if contexts:
                 overrides["cast_contexts"] = contexts
             if self.mode_combo.currentText() == "REND STAGE":
-                rig_names = {
+                asset_names = {
                     str(component.get("name") or "")
                     for component in construct.get("components") or []
-                    if str(component.get("component_type") or "").lower() == "rig"
+                    if str((component.get("source") or {}).get("asset") or "")
                 }
                 overrides["cast_contexts"] = {
-                    name: "REND" for name in rig_names | set(contexts) if name
+                    name: "REND" for name in asset_names | set(contexts) if name
                 }
             if excluded:
                 overrides["exclude_cast"] = sorted(
@@ -2158,6 +2059,30 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             input_policy=self._input_policy(),
             overrides=self._stage_input_overrides(identity),
         )
+
+    def _cached_build_plan(self, identity):
+        """Return the plan resolved during the last UI refresh.
+
+        Toggle handlers must not traverse project publishes on the Qt main
+        thread. Build submission still calls ``_build_plan`` and therefore
+        performs an authoritative validation immediately before queueing.
+        """
+
+        key = (identity.episode, identity.sequence, getattr(identity, "shot", ""))
+        plan = self._build_plan_cache.get(key)
+        if plan is None:
+            plan = self._build_plan(identity)
+            self._build_plan_cache[key] = plan
+        return plan
+
+    def _cached_plan_buildable(self, status: ReviewShotStatus) -> bool:
+        """Check cached validation without resolving files from a toggle."""
+
+        key = self._identity_key(status)
+        plan = self._build_plan_cache.get(key)
+        if plan is not None:
+            return bool(plan.buildable)
+        return status.state in BUILDABLE_STATES
 
     def _sequence_settings(self, identity) -> dict:
         key = (identity.episode, identity.sequence)
@@ -2494,8 +2419,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.input_policy_combo.setCurrentText(
             str(settings.value("input_policy", "Generate Missing"))
         )
+        saved_stage_profile = str(settings.value("input_context", "WORK")).upper()
         self.input_context_combo.setCurrentText(
-            str(settings.value("input_context", "WORK"))
+            "REND" if saved_stage_profile == "FINAL" else saved_stage_profile
         )
         representation = str(settings.value("input_representation", "project"))
         representation_index = self.input_representation_combo.findData(representation)

@@ -16,8 +16,8 @@ from smartlib.apps.common.asset_cards import (
 from smartlib.core.config_loader import ProjectConfig
 
 
-ASSET_HEADERS = ["", "Category", "Group", "Asset Name", "Variant", "Status"]
-AVAILABLE_ASSET_HEADERS = ["", "Category", "Group", "Asset Name", "Variant", "FAST", "WORK", "FINAL", "Status"]
+ASSET_HEADERS = ["", "Category", "Group", "Asset Name", "Variant", "Description"]
+AVAILABLE_ASSET_HEADERS = ["", "Category", "Group", "Asset Name", "Variant", "FAST", "WORK", "FINAL", "Description"]
 SEQUENCE_CAST_HEADERS = ["Category", "Group", "Asset Name", "Variant"]
 CAST_DETAIL_KEYS = ["cast_key", "asset", "variant", "role", "namespace", "asset_publish", "required", "note"]
 EDITABLE_CAST_DETAIL_KEYS = {"asset", "variant", "role", "namespace", "asset_publish", "required", "note"}
@@ -442,7 +442,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 continue
             row = self.asset_table.rowCount()
             self.asset_table.insertRow(row)
-            values = ["", asset.category, asset.group, asset.asset, asset.variant, asset.status]
+            values = ["", asset.category, asset.group, asset.asset, asset.variant, asset.description]
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 item.setData(QtCore.Qt.UserRole, asset)
@@ -536,7 +536,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 str(contexts.get("FAST") or "Missing"),
                 str(contexts.get("WORK") or "Missing"),
                 str(contexts.get("FINAL") or "Missing"),
-                asset.status,
+                asset.description,
             ]
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(str(value))

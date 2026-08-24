@@ -8,6 +8,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig, current_project_config
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import configured_project_paths
 from smartlib.core.versioning import format_version, next_version, parse_version
 
 
@@ -313,15 +314,16 @@ def official_editorial_shots(project_config: ProjectConfig) -> list[EditorialSho
 def scene_episode_sequence(project_root: Path) -> tuple[str, str]:
     cmds = _maya_cmds()
     scene = Path(cmds.file(query=True, sceneName=True) or "")
+    paths = configured_project_paths(project_root)
     if scene:
         try:
-            relative = scene.resolve().relative_to((project_root / "sequences").resolve())
+            relative = scene.resolve().relative_to(paths.sequences_root().resolve())
             if len(relative.parts) >= 2:
                 return relative.parts[0], relative.parts[1]
         except Exception:
             pass
         try:
-            relative = scene.resolve().relative_to((project_root / "shots").resolve())
+            relative = scene.resolve().relative_to(paths.shots_root().resolve())
             if len(relative.parts) >= 2:
                 return relative.parts[0], relative.parts[1]
         except Exception:
@@ -511,7 +513,8 @@ def export_all_layout_preview(
         raise RuntimeError("project_root is not set in templates_base.yml")
     episode, sequence = scene_episode_sequence(project_root)
     project_name = project_config.project_name
-    sequence_review_root = project_root / "sequences" / episode / sequence / "output" / "review" / dept
+    paths = configured_project_paths(project_root, project_config)
+    sequence_review_root = paths.sequence_workspace_root(episode, sequence) / "output" / "review" / dept
     main_version_dir = _next_all_review_version(sequence_review_root)
     version_label = main_version_dir.name
     main_version_dir.mkdir(parents=True, exist_ok=True)
@@ -628,7 +631,7 @@ def export_all_layout_preview(
 
 
 def _next_review_version(project_root: Path, episode: str, sequence: str, shot: str, dept: str) -> Path:
-    base = project_root / "shots" / episode / sequence / shot / "output" / "review" / dept / "cam"
+    base = configured_project_paths(project_root).shot_output_root(episode, sequence, shot) / "review" / dept / "cam"
     versions = [version for version in (parse_version(path.name) for path in base.glob("v*") if path.is_dir()) if version]
     return base / format_version(next_version(versions))
 
@@ -646,13 +649,13 @@ def _next_all_review_shot_version(all_review_root: Path, shot: str, camera: str 
 
 
 def _next_sequence_camera_version(project_root: Path, episode: str, sequence: str, shot: str, camera_variant: str) -> Path:
-    base = project_root / "sequences" / episode / sequence / "publish" / "camera" / shot / camera_variant
+    base = configured_project_paths(project_root).sequence_publish_dir(episode, sequence, "camera") / shot / camera_variant
     versions = [version for version in (parse_version(path.name) for path in base.glob("v*") if path.is_dir()) if version]
     return base / format_version(next_version(versions))
 
 
 def _preview_lock_path(project_root: Path, episode: str, sequence: str) -> Path:
-    return project_root / "sequences" / episode / sequence / "publish" / "review" / "layout" / "preview_locks.json"
+    return configured_project_paths(project_root).sequence_publish_dir(episode, sequence, "review") / "layout" / "preview_locks.json"
 
 
 def _preview_locks(project_root: Path, episode: str, sequence: str) -> dict[str, Any]:
@@ -704,7 +707,7 @@ def scene_shot_name(project_root: Path) -> str:
     scene = Path(cmds.file(query=True, sceneName=True) or "")
     if scene:
         try:
-            relative = scene.resolve().relative_to((project_root / "shots").resolve())
+            relative = scene.resolve().relative_to(configured_project_paths(project_root).shots_root().resolve())
             if len(relative.parts) >= 3:
                 return relative.parts[2]
         except Exception:
@@ -718,7 +721,7 @@ def scene_is_sequence_workspace(project_root: Path) -> bool:
     if not scene:
         return False
     try:
-        relative = scene.resolve().relative_to((project_root / "sequences").resolve())
+        relative = scene.resolve().relative_to(configured_project_paths(project_root).sequences_root().resolve())
     except Exception:
         return False
     return len(relative.parts) >= 2

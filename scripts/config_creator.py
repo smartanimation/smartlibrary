@@ -142,7 +142,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
         self.tabs = QtWidgets.QTabWidget()
         self.soft_tab = self.setup_software_tab()
-        self.anchors_table = self.create_table_page("Anchors", ["Key", "Value"])
+        self.anchors_table = self.create_anchors_page()
         self.shot_depts_list = self.create_shot_departments_page()
         self.asset_depts_list = self.create_list_page("Asset Depts")
         self.template_table = self.create_table_page(
@@ -286,8 +286,12 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         if project_name:
             project_data = load_yml(os.path.join(PROJECTS_ROOT, project_name, "review.yml"))
         data = merge_dicts(default_data, project_data)
+        review_profiles = copy.deepcopy(data.get("review_profiles") or {})
+        for profile in review_profiles.values():
+            if isinstance(profile, dict) and profile.get("resolution_scale") is not None:
+                profile.pop("resolution", None)
         self.review_profiles_edit.setPlainText(
-            yaml.dump(data.get("review_profiles") or {}, sort_keys=False, allow_unicode=True)
+            yaml.dump(review_profiles, sort_keys=False, allow_unicode=True)
         )
         self.delivery_profiles_edit.setPlainText(
             yaml.dump(data.get("delivery_profiles") or {}, sort_keys=False, allow_unicode=True)
@@ -317,6 +321,17 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             image_format = str(profile.get("image_format") or "png").lower()
             if image_format not in {"png", "exr", "jpg", "jpeg"}:
                 raise ValueError(f"Review Profile {name}: unsupported image_format {image_format}.")
+            if profile.get("resolution_scale") is not None:
+                try:
+                    resolution_scale = float(profile["resolution_scale"])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Review Profile {name}: resolution_scale must be a number."
+                    ) from exc
+                if resolution_scale <= 0:
+                    raise ValueError(
+                        f"Review Profile {name}: resolution_scale must be positive."
+                    )
         for name, profile in delivery_profiles.items():
             if not isinstance(profile, dict):
                 raise ValueError(f"Delivery Profile {name} must be a mapping.")
@@ -759,20 +774,12 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def setup_naming_tab(self):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
-        form = QtWidgets.QFormLayout()
-        form.setContentsMargins(12, 12, 12, 12)
-        self.playblast_filename_input = QtWidgets.QLineEdit()
-        self.playblast_filename_input.setPlaceholderText(
-            "{project}*{episode}*{sequence}*{shot}*{dept}_{preview}_v{version}*t{take}*####.{ext}"
-        )
-        form.addRow("Smart Playblast File Name:", self.playblast_filename_input)
         tokens = QtWidgets.QLabel(
-            "Tokens: {project} {episode} {sequence} {shot} {dept} "
-            "{preview} {version} {take} {ext}"
+            "Tokens: {project_name} {episode} {sequence} {shot} {department} "
+            "{preview} {version} {take} {frame} {ext}"
         )
         tokens.setWordWrap(True)
-        form.addRow("", tokens)
-        layout.addLayout(form)
+        layout.addWidget(tokens)
         layout.addWidget(QtWidgets.QLabel("Logical Outputs (used by all tools)"))
         self.output_naming_table = QtWidgets.QTableWidget(0, 3)
         self.output_naming_table.setHorizontalHeaderLabels(
@@ -890,8 +897,29 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(8)
 
-        profile_group = QtWidgets.QGroupBox("Quality Profiles")
-        profile_layout = QtWidgets.QVBoxLayout(profile_group)
+        self.context_editor_tabs = QtWidgets.QTabWidget()
+        self.context_editor_tabs.setDocumentMode(True)
+
+        stage_page = QtWidgets.QWidget()
+        stage_layout = QtWidgets.QVBoxLayout(stage_page)
+        stage_layout.setContentsMargins(8, 8, 8, 8)
+        stage_help = QtWidgets.QLabel(
+            "Stage Profiles select an Asset Context by asset class. Purpose and load flags "
+            "control the Maya USD viewport policy."
+        )
+        stage_help.setWordWrap(True)
+        stage_layout.addWidget(stage_help)
+        self.context_stage_table = QtWidgets.QTableWidget(0, 7)
+        self.context_stage_table.setHorizontalHeaderLabels(
+            ["Stage", "Character", "Environment", "Prop", "USD Purpose", "Payloads", "Crowds"]
+        )
+        self._configure_context_table(self.context_stage_table)
+        stage_layout.addWidget(self.context_stage_table)
+        self.context_editor_tabs.addTab(stage_page, "Stage Profiles")
+
+        profile_page = QtWidgets.QWidget()
+        profile_layout = QtWidgets.QVBoxLayout(profile_page)
+        profile_layout.setContentsMargins(8, 8, 8, 8)
         class_actions = QtWidgets.QHBoxLayout()
         class_actions.addWidget(QtWidgets.QLabel("Asset Class"))
         self.context_asset_class_combo = QtWidgets.QComboBox()
@@ -922,11 +950,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         self._configure_context_table(self.context_profile_table)
         profile_layout.addWidget(self.context_profile_table)
-        main_layout.addWidget(profile_group, 1)
+        self.context_editor_tabs.addTab(profile_page, "Quality Profiles")
 
-        lower_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        representation_group = QtWidgets.QGroupBox("Representations")
-        representation_layout = QtWidgets.QVBoxLayout(representation_group)
+        representation_page = QtWidgets.QWidget()
+        representation_layout = QtWidgets.QVBoxLayout(representation_page)
+        representation_layout.setContentsMargins(8, 8, 8, 8)
         representation_actions = QtWidgets.QHBoxLayout()
         representation_actions.addStretch()
         self.context_add_representation_btn = QtWidgets.QPushButton("+ Add")
@@ -938,10 +966,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.context_representation_table.setHorizontalHeaderLabels(["Type", "Name"])
         self._configure_context_table(self.context_representation_table)
         representation_layout.addWidget(self.context_representation_table)
-        lower_splitter.addWidget(representation_group)
+        self.context_editor_tabs.addTab(representation_page, "Representations")
 
-        output_group = QtWidgets.QGroupBox("Output Formats")
-        output_layout = QtWidgets.QVBoxLayout(output_group)
+        output_page = QtWidgets.QWidget()
+        output_layout = QtWidgets.QVBoxLayout(output_page)
+        output_layout.setContentsMargins(8, 8, 8, 8)
         output_header = QtWidgets.QHBoxLayout()
         self.context_output_target_label = QtWidgets.QLabel("Select a representation")
         self.context_output_target_label.setStyleSheet("color: #aeb7c2;")
@@ -976,10 +1005,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         details.addRow("Axis", self.context_output_axis)
         details.addRow("Unit", self.context_output_unit)
         output_layout.addLayout(details)
-        lower_splitter.addWidget(output_group)
-        lower_splitter.setStretchFactor(0, 1)
-        lower_splitter.setStretchFactor(1, 1)
-        main_layout.addWidget(lower_splitter, 2)
+        self.context_editor_tabs.addTab(output_page, "Output Formats")
+        main_layout.addWidget(self.context_editor_tabs, 1)
 
         root.addWidget(left)
         root.addWidget(main, 1)
@@ -1030,7 +1057,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             [
                 "Consumer",
                 "Department",
-                "Asset Context",
+                "Stage / Asset Context",
                 "Version",
                 "Formats",
                 "Fallback Contexts",
@@ -1049,7 +1076,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         return page
 
     def _add_resolver_row(self, values=None):
-        values = values or ["shot", "default", "work", "approved", "ma, mb", "asset_work", "latest"]
+        values = values or ["shot", "default", "WORK", "approved", "ma, mb, usd", "FAST", "latest"]
         row = self.resolver_table.rowCount()
         self.resolver_table.insertRow(row)
         for column, value in enumerate(values):
@@ -1079,10 +1106,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 [
                     rule.get("consumer", "shot"),
                     rule.get("department", "default"),
-                    rule.get("context", "work"),
+                    str(rule.get("context", "WORK")).upper(),
                     rule.get("version", "approved"),
                     ", ".join(str(value) for value in formats),
-                    ", ".join(str(value) for value in fallback_contexts),
+                    ", ".join(str(value).upper() for value in fallback_contexts),
                     rule.get("fallback_version", "latest"),
                 ]
             )
@@ -1523,6 +1550,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.context_asset_class_combo.clear()
         self.context_asset_class_match.clear()
         self.context_profile_table.setRowCount(0)
+        self.context_stage_table.setRowCount(0)
         self.context_representation_table.setRowCount(0)
         self.context_output_table.setRowCount(0)
         self.context_output_target_label.setText("Select a representation")
@@ -1540,6 +1568,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         for asset_class in sorted((data.get("asset_context_recipes") or {}).keys()):
             self.context_asset_class_combo.addItem(asset_class, asset_class)
         self._current_asset_class_key = "default"
+        self._populate_stage_profiles(data)
         representations = self.asset_subset_catalog
         for publish_type in sorted(representations):
             for name in representations[publish_type]:
@@ -1570,6 +1599,57 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             combo.setCurrentText(value or "none")
             self.context_profile_table.setCellWidget(row, column, combo)
 
+    def _populate_stage_profiles(self, data):
+        self.context_stage_table.setRowCount(0)
+        defaults = {
+            "FAST": {"character": "LO", "environment": "PROXY", "prop": "LO", "purpose": "proxy", "load_payloads": False, "load_crowds": False},
+            "WORK": {"character": "ANIM", "environment": "PROXY", "prop": "LO", "purpose": "proxy", "load_payloads": True, "load_crowds": True},
+            "REND": {"character": "REND", "environment": "REND", "prop": "REND", "purpose": "render", "load_payloads": True, "load_crowds": True},
+        }
+        policies = data.get("stage_profiles") or defaults
+        for stage in ("FAST", "WORK", "REND"):
+            policy = dict(defaults[stage])
+            policy.update(policies.get(stage) or policies.get(stage.lower()) or {})
+            row = self.context_stage_table.rowCount()
+            self.context_stage_table.insertRow(row)
+            self.context_stage_table.setItem(row, 0, QtWidgets.QTableWidgetItem(stage))
+            for column, key in enumerate(("character", "environment", "prop"), 1):
+                self.context_stage_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(policy[key]).upper()))
+            purpose = QtWidgets.QComboBox()
+            purpose.addItems(["proxy", "render", "bbox"])
+            purpose.setCurrentText(str(policy.get("purpose") or "proxy").lower())
+            self.context_stage_table.setCellWidget(row, 4, purpose)
+            for column, key in ((5, "load_payloads"), (6, "load_crowds")):
+                item = QtWidgets.QTableWidgetItem()
+                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked if bool(policy.get(key, True))
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+                self.context_stage_table.setItem(row, column, item)
+
+    def _stage_profiles_from_table(self):
+        result = {}
+        for row in range(self.context_stage_table.rowCount()):
+            stage_item = self.context_stage_table.item(row, 0)
+            stage = stage_item.text().strip().upper() if stage_item else ""
+            if not stage:
+                continue
+            values = []
+            for column in (1, 2, 3):
+                item = self.context_stage_table.item(row, column)
+                values.append(item.text().strip().upper() if item else "")
+            purpose = self.context_stage_table.cellWidget(row, 4)
+            result[stage] = {
+                "character": values[0],
+                "environment": values[1],
+                "prop": values[2],
+                "purpose": purpose.currentText().strip().lower() if purpose else "proxy",
+                "load_payloads": self.context_stage_table.item(row, 5).checkState() == QtCore.Qt.CheckState.Checked,
+                "load_crowds": self.context_stage_table.item(row, 6).checkState() == QtCore.Qt.CheckState.Checked,
+            }
+        return result
+
     def _representations_from_table(self):
         result = {}
         for row in range(self.context_representation_table.rowCount()):
@@ -1599,6 +1679,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 profile[publish_type] = combo.currentText().strip() if combo else "none"
             profiles[name] = profile
         self.asset_subset_catalog = representations
+        data["stage_profiles"] = self._stage_profiles_from_table()
         data.pop("representations", None)
         if self._current_asset_class_key == "default":
             data["quality_profiles"] = profiles
@@ -1606,6 +1687,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             recipe = data.setdefault("asset_context_recipes", {}).setdefault(
                 self._current_asset_class_key, {}
             )
+            recipe.setdefault("inherit_common_profiles", False)
             recipe["profiles"] = profiles
             matches = [
                 value.strip()
@@ -1948,6 +2030,27 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                                     f"{context_name}/{version}/{asset_class}/{profile_name}: "
                                     f"{publish_type}/{value} is not registered"
                                 )
+                if str(context_name).lower() == "asset":
+                    stage_profiles = data.get("stage_profiles") or {}
+                    for required_stage in ("FAST", "WORK", "REND"):
+                        if required_stage not in {str(value).upper() for value in stage_profiles}:
+                            errors.append(f"{context_name}/{version}: Stage Profile {required_stage} is required")
+                    recipes = data.get("asset_context_recipes") or {}
+                    for stage_name, policy in stage_profiles.items():
+                        if not isinstance(policy, dict):
+                            errors.append(f"{context_name}/{version}/{stage_name}: policy must be a mapping")
+                            continue
+                        for asset_class in ("character", "environment", "prop"):
+                            selected = str(policy.get(asset_class) or "").upper()
+                            available = {
+                                str(value).upper()
+                                for value in ((recipes.get(asset_class) or {}).get("profiles") or {})
+                            }
+                            if selected and available and selected not in available:
+                                errors.append(
+                                    f"{context_name}/{version}/{stage_name}: "
+                                    f"{asset_class} context {selected} is not registered"
+                                )
                 for publish_type, by_representation in (data.get("output_formats") or {}).items():
                     for representation, formats in (by_representation or {}).items():
                         if representation not in representations.get(publish_type, []):
@@ -2032,6 +2135,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             'enabled_softwares': [],
             'shot_depts': [self.shot_depts_list["list"].item(i).text() for i in range(self.shot_depts_list["list"].count())],
             'shot_tasks': self._shot_tasks_from_ui(),
+            'shot_dept_partitions': self._shot_dept_partitions_from_ui(),
             'asset_depts': [self.asset_depts_list["list"].item(i).text() for i in range(self.asset_depts_list["list"].count())],
             'templates': {},
             'template_files': self._template_files_from_ui(),
@@ -2104,10 +2208,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             save_yml(domain_path, domain_data)
         naming_path = os.path.join(proj_dir, "naming.yml")
         naming_data = load_yml(naming_path)
-        naming_data["smart_playblast"] = {
-            "filename": self.playblast_filename_input.text().strip()
-            or "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
-        }
         naming_data["outputs"] = self._output_naming_from_ui()
         save_yml(naming_path, naming_data)
         self._save_preflight_config(proj_dir)
@@ -2146,9 +2246,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             load_yml(os.path.join(DEFAULT_DIR, "naming.yml")),
             load_yml(os.path.join(proj_dir, "naming.yml")),
         )
-        self.playblast_filename_input.setText(
-            str((naming.get("smart_playblast") or {}).get("filename") or "")
-        )
         self._load_output_naming(naming.get("outputs") or {})
         self._load_preflight_editor(project_name)
         self._load_context_editor(project_name)
@@ -2164,9 +2261,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._apply_data_to_ui(load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")))
         self._append_domain_path_templates()
         naming = load_yml(os.path.join(DEFAULT_DIR, "naming.yml"))
-        self.playblast_filename_input.setText(
-            str((naming.get("smart_playblast") or {}).get("filename") or "")
-        )
         self._load_output_naming(naming.get("outputs") or {})
         self._load_preflight_editor()
         self._load_context_editor()
@@ -2377,6 +2471,74 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         bl.addWidget(add); bl.addWidget(rem); l.addLayout(bl)
         return {"widget": w, "table": t}
 
+    def create_anchors_page(self):
+        page = self.create_table_page("Anchors", ["Key", "Value"])
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.addWidget(QtWidgets.QLabel("Resolution Preset"))
+        self.anchor_resolution_preset = QtWidgets.QComboBox()
+        self.anchor_resolution_preset.addItem("Custom", "")
+        self.anchor_resolution_preset.addItem(
+            "1920 x 1080 (Full HD / 1080p)", "1920x1080"
+        )
+        self.anchor_resolution_preset.addItem(
+            "2048 x 858 (DCP / 2K)", "2048x858"
+        )
+        preset_row.addWidget(self.anchor_resolution_preset)
+        preset_row.addStretch()
+        page["widget"].layout().insertLayout(0, preset_row)
+        self.anchor_resolution_preset.currentIndexChanged.connect(
+            self._apply_anchor_resolution_preset
+        )
+        page["table"].itemChanged.connect(self._sync_anchor_resolution_preset)
+        return page
+
+    def _apply_anchor_resolution_preset(self, _index):
+        preset = str(self.anchor_resolution_preset.currentData() or "")
+        if not preset:
+            return
+        width, height = preset.split("x", 1)
+        table = self.anchors_table["table"]
+        rows = {}
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            key = item.text().strip().lower() if item else ""
+            if key in {"resolution x", "resolution y"}:
+                rows[key] = row
+        table.blockSignals(True)
+        try:
+            for key, value in (("resolution x", width), ("resolution y", height)):
+                row = rows.get(key)
+                if row is None:
+                    row = table.rowCount()
+                    table.insertRow(row)
+                    table.setItem(
+                        row,
+                        0,
+                        QtWidgets.QTableWidgetItem(
+                            "resolution X" if key.endswith("x") else "resolution Y"
+                        ),
+                    )
+                table.setItem(row, 1, QtWidgets.QTableWidgetItem(value))
+        finally:
+            table.blockSignals(False)
+
+    def _sync_anchor_resolution_preset(self, _item=None):
+        table = self.anchors_table["table"]
+        values = {}
+        for row in range(table.rowCount()):
+            key_item = table.item(row, 0)
+            value_item = table.item(row, 1)
+            key = key_item.text().strip().lower() if key_item else ""
+            if key in {"resolution x", "resolution y"}:
+                values[key] = value_item.text().strip() if value_item else ""
+        preset = f"{values.get('resolution x', '')}x{values.get('resolution y', '')}"
+        index = self.anchor_resolution_preset.findData(preset)
+        self.anchor_resolution_preset.blockSignals(True)
+        try:
+            self.anchor_resolution_preset.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.anchor_resolution_preset.blockSignals(False)
+
     def create_list_page(self, title):
         w = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(w)
         lw = QtWidgets.QListWidget(); lw.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked)
@@ -2419,11 +2581,39 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         task_buttons.addWidget(remove_task)
         task_layout.addLayout(task_buttons)
 
+        partition_widget = QtWidgets.QWidget()
+        partition_layout = QtWidgets.QVBoxLayout(partition_widget)
+        partition_layout.setContentsMargins(0, 0, 0, 0)
+        partition_layout.addWidget(QtWidgets.QLabel("Default workspace partition"))
+        default_partition_edit = QtWidgets.QLineEdit("cg")
+        default_partition_edit.setPlaceholderText("cg")
+        default_partition_edit.setToolTip(
+            "Used by Asset departments and any Shot department without an override."
+        )
+        partition_layout.addWidget(default_partition_edit)
+        partition_layout.addSpacing(12)
+        partition_layout.addWidget(QtWidgets.QLabel("Selected department override"))
+        partition_edit = QtWidgets.QLineEdit("cg")
+        partition_edit.setPlaceholderText("cg, drawing, editorial ...")
+        partition_layout.addWidget(partition_edit)
+        partition_help = QtWidgets.QLabel(
+            "Top-level workspace group for the selected department."
+        )
+        partition_help.setWordWrap(True)
+        partition_layout.addWidget(partition_help)
+        partition_layout.addStretch(1)
+
         layout.addWidget(department_widget, 1)
         layout.addWidget(task_widget, 1)
+        layout.addWidget(partition_widget, 1)
 
         add_department.clicked.connect(
-            lambda: self._add_editable_list_item(department_list, "new_department", ["main"])
+            lambda: self._add_editable_list_item(
+                department_list,
+                "new_department",
+                ["main"],
+                default_partition_edit.text().strip() or "cg",
+            )
         )
         remove_department.clicked.connect(
             lambda: department_list.takeItem(department_list.currentRow())
@@ -2431,9 +2621,15 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         add_task.clicked.connect(lambda: self._add_editable_list_item(task_list, "new_task"))
         remove_task.clicked.connect(lambda: task_list.takeItem(task_list.currentRow()))
         department_list.currentItemChanged.connect(self._on_shot_department_editor_changed)
-        return {"widget": widget, "list": department_list, "tasks": task_list}
+        return {
+            "widget": widget,
+            "list": department_list,
+            "tasks": task_list,
+            "partition": partition_edit,
+            "default_partition": default_partition_edit,
+        }
 
-    def _add_editable_list_item(self, list_widget, text, data=None):
+    def _add_editable_list_item(self, list_widget, text, data=None, partition=None):
         item = QtWidgets.QListWidgetItem(text)
         item.setFlags(
             item.flags()
@@ -2443,6 +2639,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         if data is not None:
             item.setData(QtCore.Qt.ItemDataRole.UserRole, list(data))
+        if partition is not None:
+            item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, str(partition))
         list_widget.addItem(item)
         list_widget.setCurrentItem(item)
         list_widget.editItem(item)
@@ -2450,17 +2648,48 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def _on_shot_department_editor_changed(self, current, previous):
         task_list = self.shot_depts_list["tasks"]
+        partition_edit = self.shot_depts_list["partition"]
         if previous is not None:
             previous.setData(
                 QtCore.Qt.ItemDataRole.UserRole,
                 [task_list.item(index).text().strip() for index in range(task_list.count()) if task_list.item(index).text().strip()],
             )
+            previous.setData(
+                QtCore.Qt.ItemDataRole.UserRole + 1,
+                partition_edit.text().strip() or "cg",
+            )
         task_list.clear()
         if current is None:
+            partition_edit.clear()
             return
         tasks = current.data(QtCore.Qt.ItemDataRole.UserRole) or ["main"]
         for task in tasks:
             self._add_editable_list_item(task_list, str(task))
+        partition_edit.setText(
+            str(current.data(QtCore.Qt.ItemDataRole.UserRole + 1) or "cg")
+        )
+
+    def _shot_dept_partitions_from_ui(self):
+        department_list = self.shot_depts_list["list"]
+        current = department_list.currentItem()
+        if current is not None:
+            current.setData(
+                QtCore.Qt.ItemDataRole.UserRole + 1,
+                self.shot_depts_list["partition"].text().strip() or "cg",
+            )
+        default_partition = (
+            self.shot_depts_list["default_partition"].text().strip() or "cg"
+        )
+        result = {"default": default_partition}
+        for index in range(department_list.count()):
+            item = department_list.item(index)
+            department = item.text().strip()
+            if department:
+                result[department] = str(
+                    item.data(QtCore.Qt.ItemDataRole.UserRole + 1)
+                    or default_partition
+                ).strip() or default_partition
+        return result
 
     def _shot_tasks_from_ui(self):
         department_list = self.shot_depts_list["list"]
@@ -2570,11 +2799,15 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             or {}
         )
         shot_tasks = merge_dicts(default_shot_tasks, data.get("shot_tasks") or {})
+        partitions = data.get("shot_dept_partitions") or {}
+        default_partition = str(partitions.get("default") or "cg")
+        self.shot_depts_list["default_partition"].setText(default_partition)
         for department in data.get("shot_depts", []):
             self._add_editable_list_item(
                 self.shot_depts_list["list"],
                 str(department),
                 shot_tasks.get(str(department)) or ["main"],
+                partitions.get(str(department)) or default_partition,
             )
         if self.shot_depts_list["list"].count():
             self.shot_depts_list["list"].setCurrentRow(0)

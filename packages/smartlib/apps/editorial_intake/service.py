@@ -127,15 +127,61 @@ class SmartEditorialIntakeService:
         elif source.work_dir:
             report.append("manifest - WARNING: missing")
 
+        has_audio = False
         if source.mov_path and source.mov_path.exists():
             report.append("movie - OK")
+            try:
+                has_audio = self.intake_service._source_has_audio(source.mov_path)
+            except (OSError, RuntimeError):
+                has_audio = False
         else:
             report.append("movie - WARNING: not set")
 
         report.append(f"fps check - OK ({self.intake_service.fps} fps)")
-        report.append("audio - SKIP")
-        report.append("resolution - SKIP")
-        report.append("black frame - SKIP")
+        if has_audio:
+            report.append(f"audio - READY ({events_count} shots)")
+        else:
+            report.append("audio - SKIP: no audio stream")
+        if source.mov_path and source.mov_path.exists():
+            try:
+                resolution = self.intake_service.source_resolution(source.mov_path)
+                expected = (self.project_config.base.get("anchors") or {}).get("resolution") or []
+                expected_resolution = (
+                    (int(expected[0]), int(expected[1]))
+                    if isinstance(expected, (list, tuple)) and len(expected) >= 2
+                    else None
+                )
+                if resolution and expected_resolution and resolution == expected_resolution:
+                    report.append(f"resolution - OK: {resolution[0]}x{resolution[1]}")
+                elif resolution and expected_resolution:
+                    report.append(
+                        f"resolution - WARNING: {resolution[0]}x{resolution[1]} "
+                        f"(expected {expected_resolution[0]}x{expected_resolution[1]})"
+                    )
+                elif resolution:
+                    report.append(f"resolution - INFO: {resolution[0]}x{resolution[1]} (no project target)")
+                else:
+                    report.append("resolution - UNAVAILABLE: video stream could not be inspected")
+            except (OSError, RuntimeError, ValueError) as exc:
+                report.append(f"resolution - UNAVAILABLE: {exc}")
+            try:
+                black_ranges = self.intake_service.detect_black_frames(source.mov_path)
+                if black_ranges:
+                    positions = ", ".join(
+                        f"{row['start']:.3f}-{row['end']:.3f}s"
+                        for row in black_ranges[:5]
+                    )
+                    suffix = " ..." if len(black_ranges) > 5 else ""
+                    report.append(
+                        f"black frame - WARNING: {len(black_ranges)} range(s): {positions}{suffix}"
+                    )
+                else:
+                    report.append("black frame - OK: none detected")
+            except (OSError, RuntimeError, ValueError) as exc:
+                report.append(f"black frame - UNAVAILABLE: {exc}")
+        else:
+            report.append("resolution - UNAVAILABLE: movie missing")
+            report.append("black frame - UNAVAILABLE: movie missing")
         return IntakePreview(source, report, events_count)
 
     def run(
@@ -193,6 +239,20 @@ class SmartEditorialIntakeService:
         )
         report.append(f"publish - OK: {result.publish_dir}")
         report.append(f"registered shots - {len(result.registered_shots)}")
+        timing_versions = [
+            f"{path.parents[4].name}:{path.parent.name}"
+            for path in result.editorial_timings
+        ]
+        if timing_versions:
+            report.append("editorial timing - " + ", ".join(timing_versions))
+        elif result.events:
+            report.append(
+                "editorial timing - SKIP: no registered shot.json was found"
+            )
+        if result.shot_audio:
+            report.append(f"audio - OK: {len(result.shot_audio)} shots")
+        elif source.mov_path:
+            report.append("audio - SKIP: no audio stream or registered shot.json")
 
         storyreel_publish_dir = None
         storyreel_shots = 0

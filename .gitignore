@@ -22,6 +22,8 @@ tests
 !packages/smartlib/preflight/*.py
 !packages/smartlib/apps/smart_preflight/
 !packages/smartlib/apps/smart_preflight/*.py
+!packages/smartlib/apps/smart_delivery/
+!packages/smartlib/apps/smart_delivery/*.py
 !packages/smartlib/apps/asset_manager/retarget_publish.py
 !packages/smartlib/apps/asset_manager/construct.py
 !packages/smartlib/dcc/maya/preflight.py
@@ -31,6 +33,12 @@ tests
 !packages/smartlib/core/folder_structure.py
 !packages/smartlib/core/output_resolver.py
 !packages/smartlib/review/workflow.py
+!packages/smartlib/review/decisions.py
+!packages/smartlib/delivery/
+!packages/smartlib/delivery/*.py
+!config/delivery/
+!config/delivery/clients/
+!config/delivery/clients/*.yml
 !config/default/preflight.yml
 !config/default/review.yml
 !config/maya/retarget/dli.json
@@ -58,6 +66,12 @@ tests/*
 !tests/test_output_resolver.py
 !tests/test_review_workflow.py
 !tests/test_review_build_worker.py
+!tests/test_delivery_engine.py
+!tests/test_smart_delivery.py
+!tests/test_review_decisions.py
+!tests/test_delivery_after_effects.py
+!tests/fixtures/
+!tests/fixtures/dandelione_v003.yml
 
 tools/ffmpeg/*
 !tools/ffmpeg/README.md

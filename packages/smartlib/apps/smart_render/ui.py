@@ -8,6 +8,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
+from smartlib.core.path_resolver import configured_project_paths
 from smartlib.dcc.maya.render_graph import (
     AE_SLOT_MAX_COUNT,
     AE_SLOT_MIN_COUNT,
@@ -2039,7 +2040,8 @@ def _editorial_frame_range(project_config: ProjectConfig | None) -> tuple[int, i
     sequence = ""
     shot = ""
     try:
-        relative = scene.resolve().relative_to((project_root / "shots").resolve())
+        paths = configured_project_paths(project_root, project_config)
+        relative = scene.resolve().relative_to(paths.shots_root().resolve())
         if len(relative.parts) >= 3:
             episode, sequence, shot = relative.parts[0], relative.parts[1], relative.parts[2]
     except Exception:
@@ -2047,7 +2049,7 @@ def _editorial_frame_range(project_config: ProjectConfig | None) -> tuple[int, i
     if not (episode and sequence and shot):
         return None
     try:
-        data = read_json(project_root / "shots" / episode / sequence / shot / "shot.json", default={}) or {}
+        data = read_json(paths.shot_root(episode, sequence, shot) / "shot.json", default={}) or {}
     except Exception:
         return None
     editorial = data.get("editorial") if isinstance(data, dict) else {}

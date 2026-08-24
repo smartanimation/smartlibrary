@@ -13,7 +13,7 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def write_config(config_dir: Path, project_root: Path) -> None:
+def write_config(config_dir: Path, project_root: Path, extra_base_lines: list[str] | None = None) -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
     config_dir.joinpath("templates_base.yml").write_text(
         "\n".join(
@@ -25,6 +25,7 @@ def write_config(config_dir: Path, project_root: Path) -> None:
                 "  assets_root: '{project_root}/library/assets'",
                 "  shots_root: '{project_root}/production/shots'",
                 "  sequences_root: '{project_root}/production/sequences'",
+                *(extra_base_lines or []),
             ]
         ),
         encoding="utf-8",
@@ -90,6 +91,66 @@ def test_smart_casting_lists_assets_and_shots_from_configured_roots(tmp_path: Pa
     assert [(shot.episode, shot.sequence, shot.shot) for shot in service.shots_for_sequence("ep001", "sq010")] == [
         ("ep001", "sq010", "sh020")
     ]
+
+
+def test_smart_casting_uses_spreadsheet_asset_list_cache(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(
+        config_dir,
+        project_root,
+        [
+            "google_sheets:",
+            "  asset_list_url: 'https://docs.google.com/spreadsheets/d/test-sheet/edit#gid=123'",
+            "  asset_list_id: 'test-sheet'",
+        ],
+    )
+    write_json(
+        config_dir / ".cache" / "asset_list.json",
+        [
+            {
+                "category": "BG",
+                "group": "main",
+                "asset": "DeleinRoomB",
+                "variant": "default",
+                "status": "Wait",
+                "description": "main room",
+            },
+            {
+                "category": "BP",
+                "group": "main",
+                "asset": "DeleinChair",
+                "variant": "default",
+                "status": "Wait",
+                "description": "chair blueprint",
+            },
+            {
+                "category": "prop",
+                "group": "bp",
+                "asset": "Cup",
+                "variant": "default",
+                "status": "Wait",
+                "description": "assembly only",
+            },
+        ],
+    )
+    unlisted_root = project_root / "library" / "assets" / "CH" / "main" / "JIN"
+    write_json(unlisted_root / "asset.json", {"category": "CH", "group": "main", "asset": "JIN"})
+    write_json(unlisted_root / "default" / "variant.json", {"variant": "default"})
+
+    service = SmartCastingService(ProjectConfig(config_dir))
+    monkeypatch.setattr(
+        service,
+        "_read_asset_sheet_records",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    assets = service.list_assets()
+    assert [(row.category, row.group, row.asset, row.variant, row.status, row.description) for row in assets] == [
+        ("BG", "main", "DeleinRoomB", "default", "Wait", "main room"),
+        ("BP", "main", "DeleinChair", "default", "Wait", "chair blueprint"),
+    ]
+    assert service.last_asset_source == "spreadsheet cache"
 
 
 def test_smart_casting_saves_edited_namespace(tmp_path: Path) -> None:

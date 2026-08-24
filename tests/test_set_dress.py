@@ -147,7 +147,7 @@ def test_suggested_paths_are_under_project_data(monkeypatch, tmp_path):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
     context = {"episode": "ep001", "sequence": "sq010", "shot": "sh020", "package": "main"}
     assert suggested_path("shot", context) == (
-        tmp_path / "shots" / "ep001" / "sq010" / "sh020" / "data" / "setdress" / "main.setdress.json"
+        tmp_path / "production" / "shots" / "ep001" / "sq010" / "sh020" / "data" / "setdress" / "main.setdress.json"
     )
     assert suggested_path("sequence", context) == (
         tmp_path / "data" / "setdress" / "sequence" / "sq010.setdress.json"

@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from smartlib.core.path_resolver import configured_project_paths
+
 
 FORMAT = "smart-set-dress"
 VERSION = 1
@@ -310,7 +312,7 @@ def suggested_path(scope: str, context: dict[str, str] | None = None) -> Path:
     episode = _safe_name(context.get("episode") or "episode")
     if scope == "sequence":
         return root / "data" / "setdress" / "sequence" / f"{sequence}.setdress.json"
-    return root / "shots" / episode / sequence / shot / "data" / "setdress" / f"{package}.setdress.json"
+    return configured_project_paths(root).shot_data_root(episode, sequence, shot) / "setdress" / f"{package}.setdress.json"
 
 
 def capture_scene(selection_only: bool = True, cmds=None) -> list[NodeState]:

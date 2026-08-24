@@ -53,6 +53,53 @@ def test_rejects_unresolved_tokens(tmp_path):
         OutputPathResolver(_Config(tmp_path)).resolve("review", {"shot": "c001"})
 
 
+def test_output_resolver_uses_configured_default_workspace_partition(tmp_path):
+    class Config(_Config):
+        def __init__(self, root):
+            super().__init__(root)
+            self.templates.update({
+                "asset_work_root": "{workspace_root}/{workspace_partition}/assets/{category}/{group}/{asset_name}/{variant}/work",
+                "asset_work": "{asset_work_root}/{department}",
+            })
+
+        def load(self, name):
+            if name == "templates_base.yml":
+                return {"shot_dept_partitions": {"default": "cg"}}
+            if name == "naming.yml":
+                return {
+                    "outputs": {
+                        "asset_work_scene": {
+                            "directory": "{asset_work}/{dcc}/{task}",
+                            "filename": "{project_name}_{asset}_{task}_v{version}_t{take}.{ext}",
+                        }
+                    }
+                }
+            return {}
+
+    output = OutputPathResolver(Config(tmp_path)).resolve(
+        "asset_work_scene",
+        {
+            "asset": "OBN",
+            "asset_name": "OBN",
+            "category": "characters",
+            "group": "main",
+            "variant": "default",
+            "department": "rig",
+            "dcc": "maya",
+            "task": "layout",
+            "version": "001",
+            "take": "01",
+            "ext": "mb",
+        },
+    )
+
+    assert output.path == (
+        tmp_path
+        / "workspace/cg/assets/characters/main/OBN/default/work/rig/maya/layout"
+        / "ELCD_OBN_layout_v001_t01.mb"
+    )
+
+
 def test_project_paths_support_separate_work_roots(tmp_path):
     paths = ProjectPaths(
         tmp_path,
@@ -73,6 +120,62 @@ def test_project_paths_support_separate_work_roots(tmp_path):
         tmp_path / "workspace" / "assets" / "characters" / "hero" / "alice"
         / "winter" / "work" / "model"
     )
+
+
+def test_project_paths_partition_workspace_by_shot_department(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={
+            "workspace_root": "{project_root}/workspace",
+            "shot_work_root": "{workspace_root}/{workspace_partition}/{episode}/{sequence}/{shot}/work",
+            "shot_work": "{shot_work_root}/{department}/{dcc}",
+            "shot_build_root": "{workspace_root}/{workspace_partition}/{episode}/{sequence}/{shot}/build",
+            "shot_build": "{shot_build_root}/{department}/{dcc}/{task}/{version}",
+            "sequence_build_root": "{workspace_root}/{workspace_partition}/{episode}/{sequence}/build",
+            "sequence_build": "{sequence_build_root}/{department}/{dcc}/{task}/{version}",
+        },
+        shot_dept_partitions={"default": "cg", "drawing": "drawing"},
+    )
+
+    assert paths.shot_build_dir(
+        "ep02", "s027", "c001", "layout", "maya", "main", "v001"
+    ) == tmp_path / "workspace/cg/ep02/s027/c001/build/layout/maya/main/v001"
+    assert paths.shot_work_dir(
+        "ep02", "s027", "c001", "drawing", "clipstudio"
+    ) == tmp_path / "workspace/drawing/ep02/s027/c001/work/drawing/clipstudio"
+    assert paths.sequence_build_dir(
+        "ep02", "s027", "drawing", "clipstudio", "main", "v002"
+    ) == tmp_path / "workspace/drawing/ep02/s027/build/drawing/clipstudio/main/v002"
+
+
+def test_project_paths_use_default_workspace_partition_for_asset_root(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={
+            "workspace_root": "{project_root}/workspace",
+            "asset_root": "{project_root}/production/assets/{category}/{group}/{asset_name}",
+            "asset_work_root": "{workspace_root}/{workspace_partition}/assets/{category}/{group}/{asset_name}/{variant}/work",
+            "asset_work": "{asset_work_root}/{department}",
+        },
+        shot_dept_partitions={"default": "cg", "drawing": "drawing"},
+    )
+    identity = AssetIdentity("characters", "main", "OBN")
+
+    assert paths.asset_work_root(identity) == (
+        tmp_path / "workspace/cg/assets/characters/main/OBN/default/work"
+    )
+    assert paths.asset_work_dir(identity, "model") == (
+        tmp_path / "workspace/cg/assets/characters/main/OBN/default/work/model"
+    )
+
+
+def test_project_paths_reject_literal_unresolved_folder_tokens(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={"shot_root": "{project_root}/{unknown}/{shot}"},
+    )
+    with pytest.raises(ValueError, match="Unresolved path template token"):
+        paths.shot_root("ep02", "s027", "c001")
 
 
 def test_project_paths_support_separate_data_and_publish_roots(tmp_path):

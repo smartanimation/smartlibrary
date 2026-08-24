@@ -363,22 +363,26 @@ class AssetManager:
         self.project_name = anchors.get("project_name", self.config_dir.name)
         self.project_root = _norm(anchors.get("project_root", ""))
         self.asset_depts = list(base_cfg.get("asset_depts", []))
-        self.templates = _resolve_templates(
-            asset_cfg.get("templates", {}),
-            str(self.project_root).replace("\\", "/"),
-        )
-        self.publish_outputs = asset_cfg.get("publish_outputs", {}) or {}
-        self.staging_dependencies = asset_cfg.get("staging_dependencies", {}) or {}
         from smartlib.core.config_loader import ProjectConfig
         from smartlib.core.output_resolver import OutputPathResolver
         from smartlib.core.path_resolver import ProjectPaths
 
         project_config = ProjectConfig(self.config_dir)
+        self.templates = _resolve_templates(
+            project_config.templates,
+            str(self.project_root).replace("\\", "/"),
+        )
+        self.publish_outputs = asset_cfg.get("publish_outputs", {}) or {}
+        self.staging_dependencies = asset_cfg.get("staging_dependencies", {}) or {}
         self.output_resolver = OutputPathResolver(project_config)
         self.paths = ProjectPaths(
             project_config.project_root,
             templates=project_config.templates,
             project_name=project_config.project_name,
+            shot_dept_partitions={
+                str(key): str(value)
+                for key, value in (project_config.base.get("shot_dept_partitions") or {}).items()
+            },
         )
 
     @staticmethod
@@ -411,11 +415,7 @@ class AssetManager:
 
     @property
     def assets_root(self) -> Path:
-        template = self.templates.get("asset_root")
-        if template:
-            before_category = template.split("{category}", 1)[0].rstrip("/\\")
-            return _norm(before_category)
-        return self.project_root / "assets"
+        return self.paths.assets_root()
 
     def list_assets(
         self,
@@ -596,9 +596,9 @@ class AssetManager:
         return None
 
     def get_asset(self, category: str, group: str, asset_name: str) -> Asset:
-        data = {"category": category, "group": group, "asset_name": asset_name}
-        pattern = self.templates.get("asset_root", "{project_root}/assets/{category}/{group}/{asset_name}")
-        root = _norm(pattern.format(project_root=self.project_root, **data))
+        from smartlib.core.path_resolver import AssetIdentity
+
+        root = self.paths.asset_root(AssetIdentity(category, group, asset_name))
         return Asset(category=category, group=group, name=asset_name, root=root)
 
     def asset_metadata_paths(self, asset: Asset) -> list[Path]:
@@ -716,7 +716,9 @@ class AssetManager:
         subset: str = "",
     ) -> Path:
         if asset.uses_variant_structure(variant):
-            path = asset.variant_root(variant) / "work" / department / dcc
+            path = self.paths.asset_work_dir(
+                self._asset_identity(asset, variant), department
+            ) / dcc
             if subset:
                 path = path / subset
             return path
@@ -871,6 +873,7 @@ class AssetManager:
             "variant": variant,
             "subset": subset,
             "version": version_label,
+            "version_label": version_label,
             "take": take_label,
             "ext": clean_ext,
             "asset": asset.name,
@@ -878,9 +881,13 @@ class AssetManager:
             "asset_root": str(asset.root).replace("\\", "/"),
         }
         if asset.uses_variant_structure(variant):
+            # Output naming templates use ``v{version}``, so pass the numeric
+            # component and keep the complete label available separately.
+            output_data = dict(data)
+            output_data["version"] = f"{_version_number(version):03d}"
             output = self.output_resolver.resolve(
                 "asset_work_scene",
-                data,
+                output_data,
                 default_directory="{asset_root}/{variant}/work/{department}/{dcc}/{subset}",
                 default_filename="{project_name}_{asset_name}_{department}_{variant}_v{version}_t{take}.{ext}",
             )
@@ -1534,9 +1541,17 @@ class AssetManager:
                 )
             ]
             if asset.uses_variant_structure(variant or "default"):
+                configured_work_root = self.work_root_dir(
+                    asset,
+                    dcc=dcc or "maya",
+                    department=department,
+                    variant=variant or "default",
+                    subset=subset or "",
+                )
                 new_work_root = asset.variant_root(variant or "default") / "work" / department
                 legacy_work_root = asset.variant_root(variant or "default") / department / "work"
-                variant_files = self._list_files(new_work_root)
+                variant_files = self._list_files(configured_work_root)
+                variant_files.extend(self._list_files(new_work_root))
                 variant_files.extend(self._list_files(legacy_work_root))
                 if subset:
                     if dcc:
@@ -1581,6 +1596,7 @@ class AssetManager:
                         )
                     ]
                 files.extend(variant_files)
+        files = sorted(set(files), key=lambda path: path.as_posix().lower())
         if extensions:
             wanted = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
             files = [path for path in files if path.suffix.lower() in wanted]

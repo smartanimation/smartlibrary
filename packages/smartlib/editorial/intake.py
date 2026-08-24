@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import Any
 from smartlib.apps.shot_manager.service import ShotCreateRequest, ShotIdentity, ShotManagerService
 from smartlib.core.config_loader import ProjectConfig, expand_config_tokens, load_config
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import configured_project_paths
 from smartlib.core.versioning import format_version, next_version, parse_version
 
 
@@ -84,6 +86,8 @@ class EditorialIntakeResult:
     offline_mov: Path | None
     registered_shots: list[ShotIdentity]
     events: list[EditorialEvent]
+    editorial_timings: list[Path]
+    shot_audio: list[Path] = field(default_factory=list)
 
 
 class EditorialIntakeService:
@@ -162,6 +166,8 @@ class EditorialIntakeService:
         editorial_json = None
         cut_otio = None
         publish_mov = None
+        editorial_timings: list[Path] = []
+        shot_audio: list[Path] = []
         if request.publish:
             work_manifest = read_json(work_dir / "manifest.json", {}) or {}
             publish_dir = self.publish_cut(
@@ -175,8 +181,12 @@ class EditorialIntakeService:
             editorial_json = publish_dir / "metadata" / "editorial.json"
             cut_otio = publish_dir / "cut.otio"
             publish_mov = publish_dir / "offline.mov" if (publish_dir / "offline.mov").exists() else None
-            if request.register_shots:
-                self.write_shot_editorial_snapshots(events, publish_dir)
+            # Timing Data belongs to the Editorial Publish, not to folder
+            # creation. Existing shots must receive it even when the user
+            # disables "Create Folder Structure".
+            if publish_mov:
+                shot_audio = self.write_shot_audio(events, publish_mov, publish_dir)
+            editorial_timings = self.write_shot_editorial_snapshots(events, publish_dir)
 
         return EditorialIntakeResult(
             work_dir=work_dir,
@@ -186,12 +196,14 @@ class EditorialIntakeService:
             offline_mov=publish_mov or work_mov,
             registered_shots=registered,
             events=events,
+            editorial_timings=editorial_timings,
+            shot_audio=shot_audio,
         )
 
     def ensure_sequence_structures(self, events: list[EditorialEvent]) -> list[Path]:
         written = []
         for (episode, sequence), sequence_events in sorted(_events_by_sequence(events).items()):
-            root = self.project_root / "sequences" / episode / sequence
+            root = configured_project_paths(self.project_root, self.project_config).sequence_workspace_root(episode, sequence)
             for path in _sequence_structure_paths(root):
                 path.mkdir(parents=True, exist_ok=True)
             cut_in = min(event.cut_in for event in sequence_events)
@@ -222,18 +234,38 @@ class EditorialIntakeService:
     def register_shots(self, events: list[EditorialEvent]) -> list[ShotIdentity]:
         registered = []
         for event in events:
-            self.shots.create_shot(
-                ShotCreateRequest(
-                    episode=event.episode,
-                    sequence=event.sequence,
-                    shot=event.shot,
-                    fps=self.fps,
-                    cut_in=event.cut_in,
-                    cut_out=event.cut_out,
-                    status="wip",
-                    create_work_dirs=False,
+            # Existing production shots must not be recreated on every edit.
+            # Their timing is versioned after the Editorial Publish succeeds.
+            if not (self.shots.shot_root(event.identity) / "shot.json").is_file():
+                self.shots.create_shot(
+                    ShotCreateRequest(
+                        episode=event.episode,
+                        sequence=event.sequence,
+                        shot=event.shot,
+                        fps=self.fps,
+                        cut_in=event.cut_in,
+                        cut_out=event.cut_out,
+                        handle_head=event.handle_head,
+                        handle_tail=event.handle_tail,
+                        status="wip",
+                        create_work_dirs=False,
+                        timing_source={
+                            "kind": "smart_editorial_export",
+                            "event_id": event.event_id,
+                            "clip": event.clip,
+                            "source_in": event.source_in,
+                            "source_out": event.source_out,
+                            "retime": event.retime,
+                            "hold": event.hold,
+                            "segments": _event_segments(event),
+                        },
+                        timing_comment=event.note,
+                        # The authoritative v001 is written only after the
+                        # sequence Editorial Publish has succeeded, so its
+                        # source can point at the exact cut version.
+                        publish_timing=False,
+                    )
                 )
-            )
             registered.append(event.identity)
         return registered
 
@@ -329,13 +361,178 @@ class EditorialIntakeService:
             return path
         raise FileNotFoundError(f"ffmpeg.exe was not found: {path}")
 
+    def write_shot_audio(
+        self,
+        events: list[EditorialEvent],
+        source_mov: Path,
+        publish_dir: Path,
+    ) -> list[Path]:
+        """Extract editorial audio into versioned per-shot Data publishes."""
+        if not events or not self._source_has_audio(source_mov):
+            return []
+        ffmpeg = self._ffmpeg_path()
+        sequence_cut_in = min(event.cut_in for event in events)
+        written = []
+        for event in events:
+            shot_root = self.shots.shot_root(event.identity)
+            if not (shot_root / "shot.json").is_file():
+                continue
+            version_dir = shot_root / "data" / "audio" / publish_dir.name
+            output = version_dir / f"{event.shot}.wav"
+            version_dir.mkdir(parents=True, exist_ok=True)
+            command = [
+                str(ffmpeg),
+                "-y",
+                "-ss",
+                _seconds(event.cut_in - sequence_cut_in, self.fps),
+                "-i",
+                str(source_mov),
+                "-t",
+                _seconds(event.duration, self.fps),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-c:a",
+                "pcm_s16le",
+                str(output),
+            ]
+            subprocess.run(command, check=True, capture_output=True)
+            relative = _relative_to_project(output, self.project_root)
+            write_json(
+                shot_root / "data" / "audio" / "latest.json",
+                {
+                    "version": publish_dir.name,
+                    "path": relative,
+                    "fps": self.fps,
+                    "cut_in": event.cut_in,
+                    "cut_out": event.cut_out,
+                    "duration": event.duration,
+                    "editorial_publish": _relative_to_project(publish_dir, self.project_root),
+                },
+            )
+            written.append(output)
+        return written
+
+    def _source_has_audio(self, source: Path) -> bool:
+        ffprobe = self._ffmpeg_path().with_name("ffprobe.exe")
+        if not ffprobe.is_file():
+            return False
+        result = subprocess.run(
+            [
+                str(ffprobe),
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    def source_resolution(self, source: Path) -> tuple[int, int] | None:
+        ffprobe = self._ffmpeg_path().with_name("ffprobe.exe")
+        if not ffprobe.is_file():
+            return None
+        result = subprocess.run(
+            [
+                str(ffprobe),
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "json",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            streams = json.loads(result.stdout).get("streams") or []
+            return (int(streams[0]["width"]), int(streams[0]["height"])) if streams else None
+        except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def detect_black_frames(self, source: Path) -> list[dict[str, float]]:
+        """Return black ranges of at least one project frame."""
+        ffmpeg = self._ffmpeg_path()
+        minimum_duration = 1.0 / max(1, self.fps)
+        result = subprocess.run(
+            [
+                str(ffmpeg),
+                "-hide_banner",
+                "-nostats",
+                "-i",
+                str(source),
+                "-vf",
+                f"blackdetect=d={minimum_duration:.6f}:pix_th=0.10",
+                "-an",
+                "-f",
+                "null",
+                os.devnull,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        pattern = re.compile(
+            r"black_start:(?P<start>[0-9.]+)\s+black_end:(?P<end>[0-9.]+)"
+            r"\s+black_duration:(?P<duration>[0-9.]+)"
+        )
+        return [
+            {key: float(value) for key, value in match.groupdict().items()}
+            for match in pattern.finditer(result.stderr or "")
+        ]
+
     def write_shot_editorial_snapshots(self, events: list[EditorialEvent], publish_dir: Path) -> list[Path]:
         written = []
         for event in events:
             shot_root = self.shots.shot_root(event.identity)
+            # With folder creation disabled, only already registered shots are
+            # updated. Do not silently create a partial production shot here.
+            if not (shot_root / "shot.json").is_file():
+                continue
             data = self._shot_editorial_json(event, publish_dir)
-            written.append(write_json(shot_root / "editorial.json", data))
+            write_json(shot_root / "editorial.json", data)
+            timing_path = self.shots.publish_editorial_timing(
+                event.identity,
+                {
+                    "fps": self.fps,
+                    "cut_in": event.cut_in,
+                    "cut_out": event.cut_out,
+                    "handles": {
+                        "head": event.handle_head,
+                        "tail": event.handle_tail,
+                    },
+                },
+                source={
+                    "kind": "smart_editorial_export",
+                    "editorial_publish": _relative_to_project(publish_dir, self.project_root),
+                    "editorial_version": publish_dir.name,
+                    "cut_otio": _relative_to_project(publish_dir / "cut.otio", self.project_root),
+                    "event_id": event.event_id,
+                    "clip": event.clip,
+                    "source_in": event.source_in,
+                    "source_out": event.source_out,
+                    "retime": event.retime,
+                    "hold": event.hold,
+                    "segments": _event_segments(event),
+                },
+                comment=event.note,
+            )
             shot_json = read_json(shot_root / "shot.json", {}) or {}
+            # Keep the legacy summary for older tools while making the
+            # versioned Data Publish the authoritative timing source.
             shot_json["editorial"] = {
                 "source": _relative_to_project(publish_dir / "cut.otio", self.project_root),
                 "fps": self.fps,
@@ -344,7 +541,23 @@ class EditorialIntakeService:
                 "duration": event.duration,
                 "handles": {"head": event.handle_head, "tail": event.handle_tail},
             }
+            shot_json["editorial_timing"] = {
+                "policy": "latest",
+                "version": timing_path.parent.name,
+                "path": _relative_to_project(timing_path, self.project_root),
+            }
+            audio_manifest = read_json(shot_root / "data" / "audio" / "latest.json", {}) or {}
+            audio_path = str(audio_manifest.get("path") or "").strip()
+            if audio_path:
+                shot_json["audio"] = {
+                    "policy": "latest",
+                    "version": str(audio_manifest.get("version") or ""),
+                    "path": audio_path,
+                    "cut_in": int(audio_manifest.get("cut_in") or event.cut_in),
+                    "cut_out": int(audio_manifest.get("cut_out") or event.cut_out),
+                }
             write_json(shot_root / "shot.json", shot_json)
+            written.append(timing_path)
         return written
 
     def _next_work_dir(self) -> Path:

@@ -252,7 +252,7 @@ class ProjectConfig:
         """Merged path templates from base and domain-specific config files."""
 
         merged: dict[str, str] = {}
-        for filename in ("templates_base.yml", "templates_assets.yml", "templates_shots.yml"):
+        for filename in ("templates_base.yml", "templates_assets.yml", "templates_assemblies.yml", "templates_shots.yml"):
             data = self.load(filename)
             templates = data.get("templates") or {}
             if isinstance(templates, dict):

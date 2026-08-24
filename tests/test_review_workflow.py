@@ -19,8 +19,25 @@ def test_profiles_inherit_and_keep_work_png_rend_exr(tmp_path: Path) -> None:
     rend = service.review_profile("rend_default")
     assert work["image_format"] == "png"
     assert rend["image_format"] == "exr"
-    assert rend["resolution"] == [1280, 720]
+    assert work["resolution"] == [960, 540]
+    assert rend["resolution"] == [960, 540]
     assert work["fingerprint"] != rend["fingerprint"]
+
+
+def test_review_resolution_scale_follows_project_anchors(tmp_path: Path) -> None:
+    (tmp_path / "templates_base.yml").write_text(
+        "anchors:\n  resolution: [2048, 858]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "review.yml").write_text(
+        "review_profiles:\n  work_default:\n    resolution: [1280, 720]\n",
+        encoding="utf-8",
+    )
+
+    profile = ReviewProfileService(ProjectConfig(tmp_path)).review_profile("work_default")
+
+    assert profile["resolution_scale"] == 0.5
+    assert profile["resolution"] == [1024, 429]
 
 
 def test_profile_cycle_is_rejected(tmp_path: Path) -> None:
@@ -111,7 +128,7 @@ def test_canonical_construct_can_be_reused_after_downstream_review_failure(tmp_p
 def test_layer_definition_rejects_unknown_assembly_member(tmp_path: Path) -> None:
     workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
     workflow.publish_assembly({"members": [{"uid": "bear", "name": "Bear"}]})
-    with pytest.raises(ValueError, match="Unknown Assembly"):
+    with pytest.raises(ValueError, match="Unknown Shot Composition"):
         workflow.publish_layer_definition(
             {"layers": [{"name": "Character", "members": ["rabbit"]}]}
         )
@@ -191,7 +208,7 @@ def test_formal_review_contains_only_final_artifacts(tmp_path: Path) -> None:
     thumbnail = tmp_path / "job" / "thumbnail.jpg"
     movie.parent.mkdir()
     movie.write_bytes(b"movie")
-    thumbnail.write_bytes(b"jpeg")
+    thumbnail.write_bytes(b"\xff\xd8jpeg\xff\xd9")
     destination = workflow.submit_review(
         department="anim",
         delivery_profile="internal",

@@ -6,6 +6,7 @@ from typing import Iterable
 
 from smartlib.core.config_loader import ProjectConfig, load_config
 from smartlib.core.metadata import read_json
+from smartlib.core.path_resolver import configured_project_paths
 
 
 def stage_shot_from_preview(
@@ -14,6 +15,7 @@ def stage_shot_from_preview(
     *,
     department: str,
     project_root: str | Path | None = None,
+    construct_data: dict | None = None,
 ) -> list[str]:
     """Open a shot work template, then reference resolved cast publishes."""
 
@@ -28,7 +30,16 @@ def stage_shot_from_preview(
     else:
         cmds.file(new=True, force=True)
     _apply_scene_policy(cmds, shot_data or {})
+    _load_shot_audio(cmds, Path(project_root) if project_root else None, shot_data or {})
     referenced = build_shot_from_preview(preview_items, shot_data)
+    if project_root and construct_data:
+        _apply_construct_cameras(
+            cmds,
+            Path(project_root),
+            shot_data or {},
+            construct_data,
+            0.0,
+        )
     if _is_sequence_all_layout(shot_data or {}, department):
         referenced.extend(
             build_layout_sequence_all(
@@ -92,7 +103,10 @@ def stage_anim_from_input(
         cmds.file(str(template), open=True, force=True)
     else:
         cmds.file(new=True, force=True)
-    anim_shot_data = _shot_data_from_anim_input(anim_input)
+    # The versioned Editorial Timing Data is authoritative when supplied by
+    # Review Build Manager. Older Animation Inputs remain the compatibility
+    # fallback for shots that have not migrated yet.
+    anim_shot_data = shot_data or _shot_data_from_anim_input(anim_input)
     _apply_scene_policy(cmds, anim_shot_data)
     referenced = build_shot_from_preview(preview_items, anim_shot_data)
     # Shot Context USD is an alternative cast representation. Loading it next
@@ -111,7 +125,7 @@ def stage_anim_from_input(
         component
         for component in _enabled_construct_components(construct_data, "camera")
         if str((component.get("source") or {}).get("kind") or "")
-        in {"published_camera", "scene_data"}
+        in {"published_camera", "scene_data", "shot_dependency"}
     ]
     if not direct_cameras and _construct_enabled(construct_data, "camera", "camera", "camera") and camera_path and camera_path.exists():
         if camera_path.name == "camera.json":
@@ -147,6 +161,7 @@ def stage_anim_from_input(
     _apply_construct_set_dress(root, construct_data)
     _apply_construct_animation_curves(root, construct_data)
     _apply_shot_timing(cmds, anim_shot_data)
+    _load_shot_audio(cmds, root, anim_shot_data)
     return referenced
 
 
@@ -221,6 +236,7 @@ def update_anim_construct(
     if "animation_curve" in selected_types:
         _apply_construct_animation_curves(root, construct_data)
     _apply_shot_timing(cmds, shot_data or _shot_data_from_anim_input(anim_input))
+    _load_shot_audio(cmds, root, shot_data or _shot_data_from_anim_input(anim_input))
     return referenced
 
 
@@ -829,14 +845,17 @@ def _reference_file(cmds, path: Path, namespace: str) -> str:
 
 def _import_file(cmds, path: Path, namespace: str) -> list[str]:
     before = set(cmds.ls(long=True) or [])
-    cmds.file(
-        str(path),
-        i=True,
-        namespace=namespace,
-        ignoreVersion=True,
-        mergeNamespacesOnClash=False,
-        options="v=0;",
-    )
+    options = {
+        "i": True,
+        "namespace": namespace,
+        "ignoreVersion": True,
+        "mergeNamespacesOnClash": False,
+        "options": "v=0;",
+    }
+    if path.suffix.lower() == ".fbx":
+        cmds.loadPlugin("fbxmaya", quiet=True)
+        options["type"] = "FBX"
+    cmds.file(str(path), **options)
     after = set(cmds.ls(long=True) or [])
     return sorted(after - before)
 
@@ -976,10 +995,32 @@ def _load_context_usd(cmds, project_root: Path, anim_input: dict) -> str:
     transform = cmds.createNode("transform", name=_unique_node_name(cmds, "context_USD"), parent=group)
     shape = cmds.createNode("mayaUsdProxyShape", name=f"{transform}Shape", parent=transform)
     cmds.setAttr(f"{shape}.filePath", str(usd_path).replace("\\", "/"), type="string")
+    stage_profile = str(anim_input.get("context_profile") or "WORK").upper()
+    if stage_profile == "FINAL":
+        stage_profile = "REND"
+    configured_policy = anim_input.get("context_stage_policy") or {}
+    purpose = str(configured_policy.get("purpose") or "").strip().lower()
+    default_policy = {
+        "FAST": {"loadPayloads": False, "drawProxyPurpose": True, "drawRenderPurpose": False},
+        "WORK": {"loadPayloads": True, "drawProxyPurpose": True, "drawRenderPurpose": False},
+        "REND": {"loadPayloads": True, "drawProxyPurpose": False, "drawRenderPurpose": True},
+    }.get(stage_profile, {})
+    purpose_policy = dict(default_policy)
+    if configured_policy:
+        purpose_policy["loadPayloads"] = bool(configured_policy.get("load_payloads", True))
+        purpose_policy["drawProxyPurpose"] = purpose in {"proxy", "bbox"}
+        purpose_policy["drawRenderPurpose"] = purpose == "render"
+    for attr, value in purpose_policy.items():
+        plug = f"{shape}.{attr}"
+        if cmds.objExists(plug):
+            try:
+                cmds.setAttr(plug, value)
+            except Exception:
+                pass
     for attr, value in (
         ("smartpipelineRole", "shot_context"),
         ("smartpipelineContextVersion", str(anim_input.get("context_version") or "")),
-        ("smartpipelineContextProfile", str(anim_input.get("context_profile") or "WORK")),
+        ("smartpipelineContextProfile", stage_profile),
     ):
         try:
             cmds.addAttr(transform, longName=attr, dataType="string")
@@ -999,7 +1040,7 @@ def _construct_uses_usd(construct_data: dict | None) -> bool:
 
 
 def _camera_scene_from_publish(path: Path) -> Path | None:
-    if path.suffix.lower() in {".ma", ".mb"}:
+    if path.suffix.lower() in {".ma", ".mb", ".fbx"}:
         return path
     if path.is_dir():
         for filename in ("camera.ma", "camera.mb"):
@@ -1120,7 +1161,7 @@ def _apply_construct_cameras(
         component
         for component in _enabled_construct_components(construct_data, "camera")
         if str((component.get("source") or {}).get("kind") or "")
-        in {"published_camera", "scene_data"}
+        in {"published_camera", "scene_data", "shot_dependency"}
     ]
     primary_enabled = _construct_enabled(
         construct_data, "camera", "camera", "camera"
@@ -1136,6 +1177,7 @@ def _apply_construct_cameras(
             continue
         seen.add(camera_path.resolve())
         camera_name = str(component.get("name") or "")
+        source_kind = str((component.get("source") or {}).get("kind") or "")
         group = _ensure_group(cmds, "camera_grp")
         try:
             existing = cmds.ls(f"|{group}|{camera_name}", long=True) or []
@@ -1145,12 +1187,24 @@ def _apply_construct_cameras(
             pass
         camera_scene = _camera_scene_from_publish(camera_path)
         if camera_scene and camera_scene.is_file():
+            cameras_before = set(cmds.ls(type="camera", long=True) or [])
             try:
                 imported = _import_file(cmds, camera_scene, ":")
+                cameras_after = set(cmds.ls(type="camera", long=True) or [])
+                if source_kind == "shot_dependency" and not (
+                    cameras_after - cameras_before
+                ):
+                    raise RuntimeError(
+                        f"Virtual Camera FBX did not create a camera: {camera_scene}"
+                    )
                 _parent_imported_top_nodes(cmds, imported, group)
                 cameras.append(camera_name)
                 continue
-            except Exception:
+            except Exception as exc:
+                if source_kind == "shot_dependency":
+                    raise RuntimeError(
+                        f"Virtual Camera FBX import failed: {camera_scene}: {exc}"
+                    ) from exc
                 # Older or incompatible Maya files still have a portable JSON
                 # snapshot beside them, used below as the fallback.
                 pass
@@ -1527,7 +1581,7 @@ def _rule_matches(rule: dict, key: str, value: str) -> bool:
 
 
 def _sequence_shot_rows(project_root: Path, episode: str, sequence: str) -> list[dict]:
-    sequence_root = project_root / "shots" / episode / sequence
+    sequence_root = configured_project_paths(project_root).sequence_root(episode, sequence)
     rows = []
     for shot_json in sequence_root.glob("*/shot.json"):
         if shot_json.parent.name == "all":
@@ -1811,8 +1865,12 @@ def _clean_namespace(namespace: str) -> str:
 
 def _apply_shot_timing(cmds, shot_data: dict) -> None:
     editorial = shot_data.get("editorial") or {}
-    cut_in = editorial.get("cut_in")
-    cut_out = editorial.get("cut_out")
+    work_range = editorial.get("work_range") or []
+    if isinstance(work_range, (list, tuple)) and len(work_range) >= 2:
+        cut_in, cut_out = work_range[0], work_range[1]
+    else:
+        cut_in = editorial.get("cut_in")
+        cut_out = editorial.get("cut_out")
     fps = editorial.get("fps")
     if fps:
         fps_map = {
@@ -1829,13 +1887,45 @@ def _apply_shot_timing(cmds, shot_data: dict) -> None:
         cmds.playbackOptions(maxTime=float(cut_out), animationEndTime=float(cut_out))
 
 
+def _load_shot_audio(cmds, project_root: Path | None, shot_data: dict) -> str:
+    audio = shot_data.get("audio") or {}
+    raw_path = str(audio.get("path") or "").strip()
+    if not raw_path:
+        return ""
+    path = Path(raw_path)
+    if not path.is_absolute() and project_root is not None:
+        path = project_root / path
+    if not path.is_file():
+        return ""
+    node_name = "smartEditorialAudio"
+    try:
+        if cmds.objExists(node_name):
+            cmds.delete(node_name)
+    except Exception:
+        pass
+    offset = int(audio.get("cut_in") or (shot_data.get("editorial") or {}).get("cut_in") or 1001)
+    node = str(cmds.sound(file=str(path), offset=offset, name=node_name))
+    try:
+        import maya.mel as mel
+
+        slider = mel.eval("$tmpVar=$gPlayBackSlider")
+        if slider:
+            cmds.timeControl(slider, edit=True, sound=node, displaySound=True)
+    except Exception:
+        pass
+    return node
+
+
 def _apply_scene_policy(cmds, shot_data: dict) -> None:
     try:
         from smartlib.dcc.maya.scene_policy import apply_scene_policy
 
         editorial = shot_data.get("editorial") or {}
         frame_range = None
-        if editorial.get("cut_in") is not None and editorial.get("cut_out") is not None:
+        work_range = editorial.get("work_range") or []
+        if isinstance(work_range, (list, tuple)) and len(work_range) >= 2:
+            frame_range = (work_range[0], work_range[1])
+        elif editorial.get("cut_in") is not None and editorial.get("cut_out") is not None:
             frame_range = (editorial.get("cut_in"), editorial.get("cut_out"))
         apply_scene_policy(
             cmds,

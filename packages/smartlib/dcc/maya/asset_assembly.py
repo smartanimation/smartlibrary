@@ -1878,7 +1878,9 @@ def _context_from_current_scene(project_config: ProjectConfig) -> AssemblyContex
         return None
     project_root = _project_root(project_config)
     try:
-        relative = scene_path.resolve().relative_to((project_root / "assets").resolve())
+        relative = scene_path.resolve().relative_to(
+            ProjectPaths(project_root, templates=project_config.templates).assets_root().resolve()
+        )
     except Exception:
         return None
     parts = relative.parts

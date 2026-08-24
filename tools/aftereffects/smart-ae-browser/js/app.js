@@ -77,12 +77,14 @@
       var defaultNaming = fs.existsSync(defaultNamingPath) ? parseSimpleYaml(fs.readFileSync(defaultNamingPath, "utf8")) : {};
       var defaultAeRenderPath = path.join(configRoot, "default", "ae_render.yml");
       var defaultAeRender = fs.existsSync(defaultAeRenderPath) ? parseSimpleYaml(fs.readFileSync(defaultAeRenderPath, "utf8")) : {};
+      var defaultTemplates = loadPathTemplates(fs, path, path.join(configRoot, "default"));
       fs.readdirSync(configRoot, { withFileTypes: true }).forEach(function (entry) {
         var templatePath;
         var aeRenderPath;
         var namingPath;
         var data;
         var anchors;
+        var templates;
         if (!entry.isDirectory() || entry.name === "default") {
           return;
         }
@@ -94,11 +96,15 @@
         }
         data = parseSimpleYaml(fs.readFileSync(templatePath, "utf8"));
         anchors = data.anchors || {};
+        templates = mergeObjects(defaultTemplates, loadPathTemplates(fs, path, path.join(configRoot, entry.name)));
+        templates.project_root = String(anchors.project_root || templates.project_root || "");
+        templates.project_name = String(anchors.project_name || templates.project_name || entry.name);
         projects.push({
           id: entry.name,
           name: String(anchors.project_name || entry.name),
           root: String(anchors.project_root || ""),
           configDir: path.join(configRoot, entry.name).replace(/\\/g, "/"),
+          templates: templates,
           aeRender: mergeObjects(defaultAeRender, fs.existsSync(aeRenderPath) ? parseSimpleYaml(fs.readFileSync(aeRenderPath, "utf8")) : {}),
           naming: mergeObjects(defaultNaming, fs.existsSync(namingPath) ? parseSimpleYaml(fs.readFileSync(namingPath, "utf8")) : {}),
           shots: loadShotContexts(String(anchors.project_root || ""), String(anchors.project_name || entry.name))
@@ -111,6 +117,20 @@
     return projects.sort(function (a, b) {
       return naturalCompare(a.name, b.name);
     });
+  }
+
+  function loadPathTemplates(fs, path, configDir) {
+    var templates = {};
+    ["templates_base.yml", "templates_assets.yml", "templates_shots.yml"].forEach(function (filename) {
+      var filePath = path.join(configDir, filename);
+      var data;
+      if (!fs.existsSync(filePath)) {
+        return;
+      }
+      data = parseSimpleYaml(fs.readFileSync(filePath, "utf8"));
+      templates = mergeObjects(templates, data.templates || {});
+    });
+    return templates;
   }
 
   function parseSimpleYaml(text) {
@@ -1271,7 +1291,24 @@
   }
 
   function workAepRoot(shotRoot, department) {
-    return joinPath(shotRoot, "work/" + (department || "anim") + "/ae/main");
+    var project = selectedProject();
+    var templates = project ? project.templates || {} : {};
+    var tokens = shotTokensFromRoot(shotRoot);
+    var values = {
+      project_root: project ? project.root || templates.project_root || "" : "",
+      project_name: project ? project.name || project.id || templates.project_name || "" : "",
+      shot_root: shotRoot,
+      episode: tokens.episode,
+      sequence: tokens.sequence,
+      seq: tokens.sequence,
+      shot: tokens.shot,
+      department: department || "anim",
+      dept: department || "anim",
+      dcc: "ae",
+      tool: "ae"
+    };
+    var shotWork = resolveConfiguredTemplate(templates.shot_work || "{shot_root}/work/{department}/{dcc}", values, templates);
+    return joinPath(shotWork, "main");
   }
 
   function selectedShotRoots() {
@@ -1782,6 +1819,19 @@
       return outputPath;
     }
     return replacePathBasename(outputPath, values.output_filename || afterEffectsFilename("output", values, "mov"));
+  }
+
+  function resolveConfiguredTemplate(template, values, templates) {
+    var merged = mergeObjects(templates || {}, values || {});
+    var previous = "";
+    var resolved = String(template || "");
+    var guard = 0;
+    while (resolved !== previous && guard < 10) {
+      previous = resolved;
+      resolved = formatTemplate(resolved, merged);
+      guard += 1;
+    }
+    return resolved.replace(/\\/g, "/");
   }
 
   function selectedProjectName() {

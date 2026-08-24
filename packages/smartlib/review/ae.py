@@ -11,6 +11,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig, load_config
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import configured_project_paths
 
 _AE_SCRIPT_RUN_DELAY_SECONDS = 6.0
 
@@ -288,7 +289,9 @@ def _normalize_ae_context(project_config: ProjectConfig, shot_root: str | Path, 
 
     if not (episode and sequence and shot) and project_root:
         try:
-            relative = Path(shot_root).resolve().relative_to((project_root / "shots").resolve())
+            relative = Path(shot_root).resolve().relative_to(
+                configured_project_paths(project_root, project_config).shots_root().resolve()
+            )
             if len(relative.parts) >= 3:
                 episode = episode or relative.parts[0]
                 sequence = sequence or relative.parts[1]

@@ -139,6 +139,13 @@ def all_rig_set(adapter, _context: PreflightContext) -> CheckResult:
     return _required_set(adapter, "allRigSet")
 
 
+def skel_export_set(adapter, context: PreflightContext) -> CheckResult:
+    if not _is_rigging_asset(context):
+        task = str(context.task or _asset_profile(context))
+        return _result(Severity.PASS, f"Skipped outside Rigging: {task or 'unspecified'}")
+    return _required_set(adapter, "skel_export_set")
+
+
 def cache_geo_set(adapter, _context: PreflightContext) -> CheckResult:
     asset_profile = _asset_profile(_context)
     if _is_background_asset(_context):
@@ -161,6 +168,12 @@ def _is_background_asset(context: PreflightContext) -> bool:
         for value in context.metadata.get("policy", {}).get("background_categories", ())
     }
     return _asset_profile(context) in background | {"background", "environment", "bg"}
+
+
+def _is_rigging_asset(context: PreflightContext) -> bool:
+    task = str(context.task or "").strip().casefold()
+    profile = _asset_profile(context)
+    return task in {"rig", "rigging"} or profile in {"rig", "rigging", "character_rig"}
 
 
 def no_asset_cameras(adapter, _context: PreflightContext) -> CheckResult:

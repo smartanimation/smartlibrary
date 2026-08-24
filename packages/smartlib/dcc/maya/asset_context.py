@@ -208,6 +208,90 @@ def write_context_asset_usd_snapshot(
     return target
 
 
+def write_context_static_usd_snapshot(
+    source_scene: str | Path,
+    target_usd: str | Path,
+    *,
+    asset_name: str,
+) -> Path:
+    """Export a background/prop Context as a static assembly USD package."""
+
+    try:
+        import maya.cmds as cmds
+    except ImportError as exc:
+        raise RuntimeError("Maya static Context USD snapshots are available inside Maya.") from exc
+
+    from smartlib.dcc.maya.usd_skel import _ensure_maya_usd_plugin
+
+    source = Path(source_scene)
+    target = Path(target_usd)
+    payload = target.with_name("payload.usd")
+    if not source.is_file():
+        raise FileNotFoundError(f"Context source scene was not found: {source}")
+
+    previous_scene = cmds.file(query=True, sceneName=True) or ""
+    previous_modified = bool(cmds.file(query=True, modified=True))
+    if previous_modified and Path(previous_scene) != source:
+        raise RuntimeError("Save or discard the current Maya scene before packing a static Context USD.")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stage = f"open context snapshot: {source}"
+    try:
+        cmds.file(str(source), open=True, force=True)
+        stage = "load Maya USD plug-in"
+        _ensure_maya_usd_plugin(cmds)
+        roots = [
+            node for node in (cmds.ls(assemblies=True, type="transform", long=True) or [])
+            if _leaf_name(node).lower() not in {"persp", "top", "front", "side"}
+        ]
+        if not roots or not _mesh_shapes(cmds):
+            raise RuntimeError("Static Context contains no exportable background geometry.")
+        stage = "prepare static assembly root"
+        identifier = _usd_identifier(asset_name)
+        export_root = cmds.group(empty=True, name=f"__SMART_STATIC_{identifier}_ROOT__")
+        for root in roots:
+            if cmds.objExists(root) and root != export_root:
+                cmds.parent(root, export_root, absolute=True)
+        export_root = (cmds.rename(export_root, identifier) or identifier)
+        stage = f"export static payload: {payload}"
+        previous_selection = cmds.ls(selection=True, long=True) or []
+        try:
+            cmds.select(export_root, replace=True, noExpand=True)
+            cmds.mayaUSDExport(
+                file=str(payload).replace("\\", "/"),
+                selection=True,
+                exportSkels="none",
+                exportSkin="none",
+                exportBlendShapes=False,
+                exportInstances=True,
+                mergeTransformAndShape=True,
+                stripNamespaces=False,
+            )
+        finally:
+            cmds.select(previous_selection, replace=True) if previous_selection else cmds.select(clear=True)
+        if not payload.is_file():
+            raise RuntimeError(f"Static Context USD export did not create a file: {payload}")
+        stage = "write static asset.usda entry layer"
+        _write_asset_entry_layer(
+            target,
+            asset_name=asset_name,
+            payload_name=payload.name,
+            payload_root=f"/{identifier}",
+            root_type="Xform",
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Static Context USD snapshot failed during {stage}.\n{exc}") from exc
+    finally:
+        try:
+            if previous_scene and Path(previous_scene).is_file():
+                cmds.file(previous_scene, open=True, force=True)
+            elif not previous_modified:
+                cmds.file(new=True, force=True)
+        except Exception:
+            pass
+    return target
+
+
 def _prepare_usd_export_root(
     cmds,
     *,
@@ -252,6 +336,7 @@ def _write_asset_entry_layer(
     asset_name: str,
     payload_name: str,
     payload_root: str,
+    root_type: str = "SkelRoot",
 ) -> Path:
     identifier = _usd_identifier(asset_name)
     target.write_text(
@@ -262,7 +347,7 @@ def _write_asset_entry_layer(
                 f'    defaultPrim = "{identifier}"',
                 ")",
                 "",
-                f'def SkelRoot "{identifier}" (',
+                f'def {root_type} "{identifier}" (',
                 f'    references = @{payload_name}@<{payload_root}>',
                 ")",
                 "{",

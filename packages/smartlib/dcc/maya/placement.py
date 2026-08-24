@@ -7,6 +7,7 @@ from typing import Any
 from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import configured_project_paths
 
 
 PLACEMENT_ATTR = "smartPlacementLocator"
@@ -532,7 +533,7 @@ def _latest_metadata_candidates(publish_root: Path) -> list[Path]:
 def _find_asset_root(project_root: Path, asset_name: str) -> Path | None:
     if not asset_name:
         return None
-    assets_root = project_root / "assets"
+    assets_root = configured_project_paths(project_root).assets_root()
     matches = sorted(assets_root.glob(f"*/*/{asset_name}"))
     return matches[0] if matches else None
 
@@ -543,8 +544,9 @@ def _context_root(project_root: Path) -> Path:
     if not scene_text:
         raise RuntimeError("Save or stage the scene inside a shot/sequence workspace first.")
     scene = Path(scene_text).resolve()
-    sequence_root = (project_root / "sequences").resolve()
-    shot_root = (project_root / "shots").resolve()
+    paths = configured_project_paths(project_root)
+    sequence_root = paths.sequences_root().resolve()
+    shot_root = paths.shots_root().resolve()
     try:
         relative = scene.relative_to(sequence_root)
         if len(relative.parts) >= 2:
@@ -624,7 +626,7 @@ def _update_versions(path: Path, version_label: str) -> None:
 def _asset_info(project_root: Path, asset_name: str) -> dict[str, Any]:
     if not asset_name:
         return {}
-    assets_root = project_root / "assets"
+    assets_root = configured_project_paths(project_root).assets_root()
     if not assets_root.exists():
         return {}
     for asset_json in assets_root.glob("*/*/*/asset.json"):

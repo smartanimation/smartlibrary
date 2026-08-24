@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.path_resolver import configured_project_paths
 
 
 def _qt_modules():
@@ -386,7 +387,9 @@ class SmartShotWindow(QtWidgets.QMainWindow):
             if project_root is None:
                 raise RuntimeError("project_root is not set in templates_base.yml")
             episode, sequence = smart_shot.scene_episode_sequence(project_root)
-            latest_json = project_root / "sequences" / episode / sequence / "output" / "review" / "layout" / "main" / "latest.json"
+            latest_json = configured_project_paths(project_root, self.project_config).sequence_workspace_root(
+                episode, sequence
+            ) / "output" / "review" / "layout" / "main" / "latest.json"
             latest = _read_json(latest_json)
             if not latest.get("path"):
                 raise FileNotFoundError(f"Latest review package was not found: {latest_json}")

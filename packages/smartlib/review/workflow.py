@@ -33,7 +33,7 @@ DEFAULT_REVIEW_CONFIG: dict[str, Any] = {
             "image_format": "png",
             "bit_depth": 8,
             "alpha": True,
-            "resolution": [1280, 720],
+            "resolution_scale": 0.5,
             "fps": "project",
             "frame_range": "shot",
             "overscan": 1.0,
@@ -132,7 +132,31 @@ class ReviewProfileService:
         return deep_merge(DEFAULT_REVIEW_CONFIG, self.project_config.load("review.yml"))
 
     def review_profile(self, profile_id: str = "work_default") -> dict[str, Any]:
-        return _resolve_profile(self.config().get("review_profiles") or {}, profile_id)
+        profile = _resolve_profile(
+            self.config().get("review_profiles") or {}, profile_id
+        )
+        scale_value = profile.get("resolution_scale")
+        if scale_value is not None:
+            scale = float(scale_value)
+            if scale <= 0:
+                raise ValueError(
+                    f"Review profile resolution_scale must be positive: {profile_id}"
+                )
+            profile["resolution_scale"] = scale
+            anchors = self.project_config.base.get("anchors") or {}
+            source = anchors.get("resolution") or profile.get("resolution") or [1920, 1080]
+            if not isinstance(source, (list, tuple)) or len(source) < 2:
+                raise ValueError(
+                    f"Project resolution must contain width and height: {source}"
+                )
+            profile["resolution"] = [
+                max(1, int(float(source[0]) * scale + 0.5)),
+                max(1, int(float(source[1]) * scale + 0.5)),
+            ]
+            profile["fingerprint"] = content_fingerprint(
+                {key: value for key, value in profile.items() if key != "fingerprint"}
+            )
+        return profile
 
     def delivery_profile(self, profile_id: str = "internal") -> dict[str, Any]:
         return _resolve_profile(self.config().get("delivery_profiles") or {}, profile_id)
@@ -161,8 +185,13 @@ class ReviewWorkflowService:
         self.workspace_shot_root = Path(workspace_shot_root)
 
     @property
+    def composition_root(self) -> Path:
+        return self.shot_root / "data" / "shot_composition"
+
+    @property
     def assembly_root(self) -> Path:
-        return self.shot_root / "data" / "shot_assembly"
+        """Compatibility API; new data is stored as Shot Composition."""
+        return self.composition_root
 
     @property
     def layer_definition_root(self) -> Path:
@@ -258,7 +287,7 @@ class ReviewWorkflowService:
 
     @staticmethod
     def normalize_assembly(payload: dict[str, Any]) -> dict[str, Any]:
-        result = {"schema": "smartpipeline.shot_assembly.v1", "members": []}
+        result = {"schema": "smartpipeline.shot_composition.v1", "entity_type": "shot", "members": []}
         for index, raw in enumerate(payload.get("members") or []):
             member = dict(raw or {})
             name = str(member.get("name") or member.get("asset") or f"member_{index + 1}")
@@ -294,7 +323,7 @@ class ReviewWorkflowService:
             members = [str(value) for value in (layer.get("members") or [])]
             missing = [value for value in members if known and value not in known]
             if missing:
-                raise ValueError(f"Unknown Assembly members in {name}: {', '.join(missing)}")
+                raise ValueError(f"Unknown Shot Composition members in {name}: {', '.join(missing)}")
             layer["uid"] = str(layer.get("uid") or f"layer-{uuid.uuid4()}")
             layer["name"] = name
             layer["slug"] = slug
@@ -333,15 +362,21 @@ class ReviewWorkflowService:
         path = root / str(latest.get("path") or "")
         return (read_json(path, fallback) or fallback, path) if path.is_file() else (fallback, None)
 
-    def publish_assembly(self, payload: dict[str, Any], comment: str = "") -> Path:
+    def publish_composition(self, payload: dict[str, Any], comment: str = "") -> Path:
         return self._publish_data(
-            self.assembly_root, "shot_assembly.json", self.normalize_assembly(payload), comment
+            self.composition_root, "shot_composition.json", self.normalize_assembly(payload), comment
         )
 
-    def latest_assembly(self) -> tuple[dict[str, Any], Path | None]:
+    def latest_composition(self) -> tuple[dict[str, Any], Path | None]:
         return self._latest(
-            self.assembly_root, {"schema": "smartpipeline.shot_assembly.v1", "members": []}
+            self.composition_root, {"schema": "smartpipeline.shot_composition.v1", "entity_type": "shot", "members": []}
         )
+
+    def publish_assembly(self, payload: dict[str, Any], comment: str = "") -> Path:
+        return self.publish_composition(payload, comment)
+
+    def latest_assembly(self) -> tuple[dict[str, Any], Path | None]:
+        return self.latest_composition()
 
     def publish_layer_definition(self, payload: dict[str, Any], comment: str = "") -> Path:
         assembly, _path = self.latest_assembly()
@@ -626,6 +661,13 @@ class ReviewWorkflowService:
             raise FileNotFoundError(f"Review movie was not generated: {movie}")
         if not thumbnail.is_file():
             raise FileNotFoundError(f"Review thumbnail was not generated: {thumbnail}")
+        if thumbnail.suffix.lower() in {".jpg", ".jpeg"}:
+            with thumbnail.open("rb") as stream:
+                if stream.read(2) != b"\xff\xd8":
+                    raise ValueError(
+                        "Review thumbnail has a JPEG extension but is not JPEG data: "
+                        f"{thumbnail}"
+                    )
         destination_root = self.review_destination_root(
             department, delivery_profile, delivery_settings
         )

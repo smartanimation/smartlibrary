@@ -75,7 +75,7 @@ class ReviewBuildManagerService:
 
     def assembly_definition(self, identity: ShotIdentity) -> dict:
         workflow = self.review_workflow(identity)
-        current, _path = workflow.latest_assembly()
+        current, _path = workflow.latest_composition()
         if current.get("members"):
             return current
         # Seed the declarative recipe from current Construct rows.  This does
@@ -105,7 +105,7 @@ class ReviewBuildManagerService:
     def publish_assembly_definition(
         self, identity: ShotIdentity, payload: dict, *, comment: str = ""
     ) -> Path:
-        return self.review_workflow(identity).publish_assembly(payload, comment)
+        return self.review_workflow(identity).publish_composition(payload, comment)
 
     def layer_definition(self, identity: ShotIdentity, department: str = "anim") -> dict:
         workflow = self.review_workflow(identity)
@@ -147,11 +147,56 @@ class ReviewBuildManagerService:
         except (FileNotFoundError, KeyError, TypeError, ValueError):
             profiles = []
         ordered = []
-        for profile in [*profiles, "WORK", "REND", "FINAL", "FAST"]:
+        for profile in [*profiles, "LO", "ANIM", "PROXY", "REND", "MCP"]:
             value = str(profile).strip().upper()
             if value and value not in ordered:
                 ordered.append(value)
         return ordered
+
+    @staticmethod
+    def stage_profiles() -> list[str]:
+        return ["FAST", "WORK", "REND"]
+
+    def asset_context_profiles_for_root(self, asset_root: Path, variant: str = "default") -> list[str]:
+        try:
+            from smartlib.apps.asset_manager.context import AssetContextService
+            from smartlib.core.path_resolver import AssetIdentity
+
+            metadata = read_json(Path(asset_root) / "asset.json", {}) or {}
+            identity = AssetIdentity(
+                str(metadata.get("category") or Path(asset_root).parents[1].name),
+                str(metadata.get("group") or Path(asset_root).parent.name),
+                str(metadata.get("asset") or metadata.get("name") or Path(asset_root).name),
+                variant or "default",
+            )
+            return [
+                str(value).upper()
+                for value in AssetContextService(self.project_config).quality_profiles_for_asset(identity)
+            ]
+        except (FileNotFoundError, KeyError, TypeError, ValueError, IndexError):
+            return self.asset_context_profiles()
+
+    def default_asset_context(self, stage: str, asset_root: Path) -> str:
+        metadata = read_json(Path(asset_root) / "asset.json", {}) or {}
+        try:
+            from smartlib.apps.asset_manager.context import AssetContextService
+            from smartlib.core.path_resolver import AssetIdentity
+
+            identity = AssetIdentity(
+                str(metadata.get("category") or Path(asset_root).parents[1].name),
+                str(metadata.get("group") or Path(asset_root).parent.name),
+                str(metadata.get("asset") or metadata.get("name") or Path(asset_root).name),
+                "default",
+            )
+            return AssetContextService(self.project_config).stage_context_for_asset(identity, stage)
+        except (AttributeError, FileNotFoundError, KeyError, TypeError, ValueError, IndexError):
+            asset_type = str(metadata.get("asset_type") or metadata.get("category") or "").lower()
+            stage = "REND" if str(stage).upper() == "FINAL" else str(stage).upper()
+            if asset_type in {"bg", "bga", "env", "environment", "set", "background"}:
+                return "REND" if stage == "REND" else "PROXY"
+            if asset_type in {"ch", "character", "characters"}:
+                return "REND" if stage == "REND" else "LO" if stage == "FAST" else "ANIM"
+            return "REND" if stage == "REND" else "LO"
 
     def build_plan(
         self,
@@ -380,6 +425,28 @@ class ReviewBuildManagerService:
             str(key): str(value).upper()
             for key, value in (cast_contexts or {}).items()
         }
+        persisted_construct = self.shots.load_construct(identity)
+        for component in persisted_construct.get("components") or []:
+            if not isinstance(component, dict):
+                continue
+            name = str(component.get("name") or "")
+            saved_context = str((component.get("source") or {}).get("context") or "").upper()
+            if name and saved_context and name not in context_map:
+                context_map[name] = saved_context
+        cast_data = self.shots.load_cast(identity)
+        cast_rows = cast_data.get("cast") or {}
+        if not cast_rows:
+            cast_rows = (self.shots.load_sequence_cast(identity.episode, identity.sequence).get("cast") or {})
+        for cast_key, entry in cast_rows.items():
+            if not isinstance(entry, dict):
+                continue
+            asset_root = self.shots.find_asset_root(str(entry.get("asset") or ""))
+            if asset_root:
+                current = str(context_map.get(str(cast_key)) or "").upper()
+                if current in {"", "FAST", "WORK", "FINAL"}:
+                    context_map[str(cast_key)] = self.default_asset_context(
+                        current or default_context, asset_root
+                    )
         construct = self.shots.resolved_construct(
             identity,
             cast_contexts=context_map,
@@ -391,22 +458,28 @@ class ReviewBuildManagerService:
             source = dict(component.get("source") or {})
             name = str(component.get("name") or "")
             component_type = str(component.get("component_type") or "rig")
+            is_virtual_camera_dependency = (
+                component_type == "camera"
+                and str(source.get("kind") or "") == "shot_dependency"
+                and str(source.get("dependency_type") or "") == "virtual_camera"
+            )
             is_cast = component_type == "rig"
             is_usd = component_type == "usd"
+            asset = str(source.get("asset") or "")
+            variant = str(source.get("variant") or "default")
+            asset_root = self.shots.find_asset_root(asset)
+            variant_root = asset_root / variant if asset_root else None
+            is_asset_component = bool(asset_root and variant_root) and (is_cast or is_usd)
             context = (
                 context_map.get(
                     name,
                     str(source.get("context") or default_context or "WORK").upper(),
                 )
-                if is_cast
+                if is_asset_component
                 else "payload" if is_usd else ""
             )
-            asset = str(source.get("asset") or "")
-            variant = str(source.get("variant") or "default")
-            asset_root = self.shots.find_asset_root(asset)
-            variant_root = asset_root / variant if asset_root else None
             latest_path = None
-            if is_cast and variant_root and variant_root.is_dir():
+            if is_asset_component and variant_root and variant_root.is_dir():
                 latest_path = self.shots.asset_publish_resolver.resolve_context(
                     variant_root,
                     context,
@@ -421,21 +494,36 @@ class ReviewBuildManagerService:
             state = "EXCLUDED" if not enabled else "MISSING"
             if enabled and (path.is_file() or path.is_dir()):
                 state = "UPDATE AVAILABLE" if latest and latest != official else "READY"
+            note = str(component.get("note") or "")
+            if is_virtual_camera_dependency:
+                dependency_note = (
+                    "from dependencies.json: "
+                    + str(source.get("dependency_id") or name)
+                )
+                note = f"{dependency_note}; {note}" if note else dependency_note
             rows.append(
                 {
                     "cast_key": name,
                     "component_key": [component_type, name, str(source.get("field") or "")],
-                    "type": "rig" if is_cast else component_type,
+                    "type": (
+                        "rig" if is_cast
+                        else "virtual_camera" if is_virtual_camera_dependency
+                        else component_type
+                    ),
                     "asset": asset,
                     "role": str(source.get("role") or ""),
                     "variant": variant,
                     "context": context,
+                    "context_options": (
+                        self.asset_context_profiles_for_root(asset_root, variant)
+                        if is_asset_component and asset_root else []
+                    ),
                     "official": official,
                     "latest": latest,
                     "state": state,
                     "required": bool(component.get("required", True)),
                     "enabled": enabled,
-                    "note": str(component.get("note") or ""),
+                    "note": note,
                     "component": dict(component),
                 }
             )
@@ -501,6 +589,11 @@ class ReviewBuildManagerService:
             changes.append({
                 "key": list(component_key),
                 "change": change,
+                "code": (
+                    "TIMING_CHANGED"
+                    if component_key[0] == "editorial_timing" and change != "UNCHANGED"
+                    else ""
+                ),
                 "severity": "ERROR" if asset_status == "omit" else (
                     "INFO" if change == "UNCHANGED" else "WARNING"
                 ),
@@ -531,10 +624,13 @@ class ReviewBuildManagerService:
         task_name = str(task or "main").strip().lower()
         dcc_name = str(dcc or "maya").strip().lower()
         roots = [
-            self.shots.shot_build_root(identity) / department_name / dcc_name / task_name,
-            self.shots.shot_build_root(identity) / department_name / task_name,
+            self.shots.shot_build_root(identity, department_name) / department_name / dcc_name / task_name,
+            self.shots.shot_build_root(identity, department_name) / department_name / task_name,
+            self.shots.unpartitioned_shot_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.unpartitioned_shot_build_root(identity) / department_name / task_name,
             self.shots.legacy_shot_build_root(identity) / department_name / task_name,
         ]
+        roots = list(dict.fromkeys(roots))
         for root in roots:
             for version_dir in sorted(root.glob("v*"), reverse=True) if root.is_dir() else []:
                 if not version_dir.is_dir():
@@ -569,10 +665,13 @@ class ReviewBuildManagerService:
         task_name = str(task or "main").strip().lower()
         dcc_name = str(dcc or "maya").strip().lower()
         roots = [
-            self.shots.sequence_build_root(identity) / department_name / dcc_name / task_name,
-            self.shots.sequence_build_root(identity) / department_name / task_name,
+            self.shots.sequence_build_root(identity, department_name) / department_name / dcc_name / task_name,
+            self.shots.sequence_build_root(identity, department_name) / department_name / task_name,
+            self.shots.unpartitioned_sequence_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.unpartitioned_sequence_build_root(identity) / department_name / task_name,
             self.shots.legacy_sequence_build_root(identity) / department_name / task_name,
         ]
+        roots = list(dict.fromkeys(roots))
         for version_dir in (
             version_dir
             for root in roots
@@ -608,10 +707,13 @@ class ReviewBuildManagerService:
         task_name = str(task or "main").strip().lower()
         dcc_name = str(dcc or "maya").strip().lower()
         roots = (
-            self.shots.shot_build_root(identity) / department_name / dcc_name / task_name,
-            self.shots.shot_build_root(identity) / department_name / task_name,
+            self.shots.shot_build_root(identity, department_name) / department_name / dcc_name / task_name,
+            self.shots.shot_build_root(identity, department_name) / department_name / task_name,
+            self.shots.unpartitioned_shot_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.unpartitioned_shot_build_root(identity) / department_name / task_name,
             self.shots.legacy_shot_build_root(identity) / department_name / task_name,
         )
+        roots = tuple(dict.fromkeys(roots))
         numbers = [
             parse_version(path.name) or 0
             for root in roots
@@ -645,10 +747,13 @@ class ReviewBuildManagerService:
         task_name = str(task or "main").strip().lower()
         dcc_name = str(dcc or "maya").strip().lower()
         roots = (
-            self.shots.sequence_build_root(identity) / department_name / dcc_name / task_name,
-            self.shots.sequence_build_root(identity) / department_name / task_name,
+            self.shots.sequence_build_root(identity, department_name) / department_name / dcc_name / task_name,
+            self.shots.sequence_build_root(identity, department_name) / department_name / task_name,
+            self.shots.unpartitioned_sequence_build_root(identity) / department_name / dcc_name / task_name,
+            self.shots.unpartitioned_sequence_build_root(identity) / department_name / task_name,
             self.shots.legacy_sequence_build_root(identity) / department_name / task_name,
         )
+        roots = tuple(dict.fromkeys(roots))
         numbers = [
             parse_version(path.name) or 0
             for root in roots
@@ -738,9 +843,18 @@ class ReviewBuildManagerService:
         """Resolve scalar and path-list environment values for a Maya worker."""
 
         config = self.maya_software_config()
+        # Older software configs stored Maya process switches as top-level
+        # Software Settings. Keep those projects working while allowing an
+        # explicit Env Variable entry to take precedence.
+        configured_env = {
+            str(key): value
+            for key, value in config.items()
+            if str(key).upper().startswith("MAYA_")
+        }
+        configured_env.update(config.get("env_vars") or {})
         env_vars = {
             str(key): expand_config_tokens(str(value), self.project_config)
-            for key, value in (config.get("env_vars") or {}).items()
+            for key, value in configured_env.items()
             if str(key).strip()
         }
         paths = {}

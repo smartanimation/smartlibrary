@@ -9,6 +9,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig, expand_config_tokens
 from smartlib.core.metadata import read_json
+from smartlib.core.path_resolver import ProjectPaths
 
 
 @dataclass(frozen=True)
@@ -52,17 +53,23 @@ class ViewerService:
         if project_root is None:
             raise RuntimeError("project_root is not set in templates_base.yml")
         self.project_root = Path(project_root)
+        self.paths = ProjectPaths(
+            self.project_root,
+            templates=project_config.templates,
+            project_name=project_config.project_name,
+            shot_dept_partitions=(project_config.base.get("shot_dept_partitions") or {}),
+        )
 
     def list_review_packages(self) -> list[ReviewPackage]:
         reviews = []
-        shots_root = self.project_root / "shots"
+        shots_root = self.paths.shots_root()
         if not shots_root.exists():
             return []
         latest_paths = list(shots_root.glob("*/*/*/publish/review/*/latest.json"))
         latest_paths.extend(shots_root.glob("*/*/*/publish/review/*/*/latest.json"))
         latest_paths.extend(shots_root.glob("*/*/*/output/review/*/latest.json"))
         latest_paths.extend(shots_root.glob("*/*/*/output/review/*/*/latest.json"))
-        sequences_root = self.project_root / "sequences"
+        sequences_root = self.paths.sequences_root()
         latest_paths.extend(sequences_root.glob("*/*/publish/review/*/latest.json"))
         latest_paths.extend(sequences_root.glob("*/*/publish/review/*/*/latest.json"))
         latest_paths.extend(sequences_root.glob("*/*/output/review/*/latest.json"))

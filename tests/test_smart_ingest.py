@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from smartlib.apps.smart_ingest.service import IngestMetadata, SmartIngestService
@@ -18,6 +19,7 @@ def write_config(config_dir: Path, project_root: Path) -> None:
                 "asset_depts:",
                 "- model",
                 "- rig",
+                "- assembly",
                 "shot_depts:",
                 "- layout",
                 "- anim",
@@ -62,6 +64,66 @@ def test_auto_plan_asset_copy(tmp_path: Path) -> None:
     assert record["status"] == "processed"
     assert record["metadata"]["asset"] == "KUMA"
     assert not (source.parent / ".ingest.lock").exists()
+
+
+def test_asset_assembly_ingest_writes_asset_manager_indexes(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "assets" / "20260722_01" / "DLI.mb"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"maya-binary")
+    existing = (
+        project_root
+        / "production"
+        / "assets"
+        / "CH"
+        / "main"
+        / "DLI"
+        / "default"
+        / "data"
+        / "assembly"
+        / "client"
+        / "v002"
+    )
+    existing.mkdir(parents=True)
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    item = service.plan_file(
+        source,
+        IngestMetadata(
+            target_type="Asset",
+            project="TEST",
+            asset="DLI",
+            category="CH",
+            group="main",
+            variant="default",
+            department="assembly",
+            subset="client",
+            format="mb",
+            comment="client assembly ingest",
+        ),
+    )
+
+    assert item.status == "Ready"
+    assert item.target_path == existing.parent / "v003" / "DLI.mb"
+
+    result = service.ingest_selected([item])
+
+    assert result.copied == [item.target_path]
+    assert item.target_path.exists()
+    manifest = read_json(existing.parent / "v003" / "manifest.json")
+    assert manifest["data_type"] == "assembly"
+    assert manifest["subset"] == "client"
+    assert manifest["files"] == {"assembly": "DLI.mb"}
+    assert manifest["source_file"].endswith("/incoming/assets/20260722_01/DLI.mb")
+    assert read_json(existing.parent / "latest.json") == {
+        "version": "v003",
+        "path": "v003/DLI.mb",
+        "manifest": "v003/manifest.json",
+    }
+    assert read_json(existing.parent / "versions.json") == [
+        {"version": "v003", "status": "latest", "comment": "client assembly ingest"}
+    ]
 
 
 def test_fbm_companion_is_hidden_and_ingested_with_parent_fbx(tmp_path: Path) -> None:
@@ -283,6 +345,36 @@ def test_processed_files_are_not_scanned_again(tmp_path: Path) -> None:
     service.ingest_selected(service.auto_plan())
 
     assert service.auto_plan() == []
+
+
+def test_non_cg_file_can_be_ignored_and_retried(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "client" / "20260722_01" / "readme.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("notes for client delivery", encoding="utf-8")
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    item = service.plan_file(source)
+
+    assert item.status == "Reject"
+    assert item.target_type == "Rejected"
+
+    result = service.ignore_items([replace(item, selected=True)])
+    state_path = source.parent / "processed.json"
+
+    assert result.processed_sources == [source]
+    assert state_path in result.manifests
+    record = read_json(state_path)["files"][source.name]
+    assert record["status"] == "ignored"
+    assert record["target_type"] == "Ignored"
+    assert source.exists()
+    assert service.auto_plan() == []
+
+    retried = service.retry_processed_record(state_path, source.name)
+
+    assert retried == source
+    assert service.auto_plan()[0].source_path == source
 
 
 def test_delivery_folder_requires_numbered_receipt_name(tmp_path: Path) -> None:

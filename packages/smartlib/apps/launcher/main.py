@@ -210,6 +210,18 @@ def apply_config_env_vars(env, env_vars, projectroot, *, maya_safe=False):
         env[key] = value
 
 
+def software_process_env_vars(spec_data):
+    """Merge legacy top-level Maya switches with explicit environment data."""
+
+    values = {
+        str(key): value
+        for key, value in (spec_data or {}).items()
+        if str(key).upper().startswith("MAYA_")
+    }
+    values.update((spec_data or {}).get("env_vars", {}) or {})
+    return values
+
+
 def runtime_python_path():
     candidates = [
         os.path.join(SMARTPIPELINE_TOOLS, "python", "python.exe"),
@@ -250,6 +262,19 @@ def format_config_value(value, projectroot):
         .replace("{smarttools_root}", SMARTPIPELINE_TOOLS)
         .replace("{SMARTPIPELINE_TOOLS}", SMARTPIPELINE_TOOLS)
     )
+
+
+def apply_maya_common_pythonpath(env, projectroot=""):
+    """Expose the studio's DCC-safe shared Python packages to Maya."""
+
+    studio_config = load_yml(os.path.join(SMARTPROJECTS_ROOT, "studio.yml"))
+    raw_path = (
+        ((studio_config.get("third_party") or {}).get("python") or {}).get("path")
+        or ""
+    )
+    python_path = os.path.normpath(format_config_value(raw_path, projectroot)) if raw_path else ""
+    if python_path and os.path.isdir(python_path):
+        prepend_env_path(env, "PYTHONPATH", [python_path])
 
 
 def resolve_openrv_executable(config_dir, projectroot):
@@ -684,7 +709,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
         apply_config_env_vars(
             full_env,
-            spec_data.get('env_vars', {}),
+            software_process_env_vars(spec_data),
             self.projectroot,
             maya_safe=maya_safe,
         )
@@ -694,6 +719,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 formatted = [format_config_value(p, self.projectroot) for p in p_list]
                 prepend_env_path(full_env, str(k), formatted)
         if maya_safe:
+            apply_maya_common_pythonpath(full_env, self.projectroot)
             apply_maya_startup_path(full_env, spec_data, self.projectroot)
 
         try:
@@ -727,7 +753,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 # env_vars の反映
                 apply_config_env_vars(
                     full_env,
-                    spec_data.get('env_vars', {}),
+                    software_process_env_vars(spec_data),
                     self.projectroot,
                     maya_safe=maya_safe,
                 )
@@ -738,6 +764,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
                         formatted = [format_config_value(p, self.projectroot) for p in p_list]
                         prepend_env_path(full_env, str(k), formatted)
                 if maya_safe:
+                    apply_maya_common_pythonpath(full_env, self.projectroot)
                     apply_maya_startup_path(full_env, spec_data, self.projectroot)
 
                 launch_args = [exe_p]
@@ -890,6 +917,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
         tool_commands = {
             "asset_manager": [python, os.path.join(SCRIPTS_DIR, "asset_manager_ui.py")],
+            "assembly_manager": [python, "-m", "smartlib.apps.assembly_manager", "--config-dir", cfg_dir],
+            "sequence_manager": [python, "-m", "smartlib.apps.sequence_manager", "--config-dir", cfg_dir],
             "editorial_intake": [python, "-m", "smartlib.apps.editorial_intake"],
             "smart_ingest": [python, "-m", "smartlib.apps.smart_ingest"],
             "smart_casting": [python, "-m", "smartlib.apps.smart_casting", cfg_dir],
@@ -898,6 +927,13 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 python,
                 "-m",
                 "smartlib.apps.review_build_manager",
+                "--config-dir",
+                cfg_dir,
+            ],
+            "smart_delivery": [
+                python,
+                "-m",
+                "smartlib.apps.smart_delivery",
                 "--config-dir",
                 cfg_dir,
             ],
@@ -1038,6 +1074,10 @@ class SmartLauncher(QtWidgets.QMainWindow):
         tools_menu = menubar.addMenu("SmartTools")
         asset_action = tools_menu.addAction("Asset Manager", lambda: self.launch_smart_tool("asset_manager"))
         asset_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirIcon))
+        assembly_action = tools_menu.addAction("Assembly Manager", lambda: self.launch_smart_tool("assembly_manager"))
+        assembly_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogListView))
+        sequence_action = tools_menu.addAction("Sequence Manager", lambda: self.launch_smart_tool("sequence_manager"))
+        sequence_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
         ingest_action = tools_menu.addAction("Smart Ingest", lambda: self.launch_smart_tool("smart_ingest"))
         ingest_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DriveHDIcon))
         casting_action = tools_menu.addAction("Smart Casting", lambda: self.launch_smart_tool("smart_casting"))
@@ -1051,8 +1091,13 @@ class SmartLauncher(QtWidgets.QMainWindow):
         review_build_action.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay)
         )
-        rv_action = tools_menu.addAction("RV Player", self.launch_current_project_openrv)
-        rv_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay))
+        delivery_action = tools_menu.addAction(
+            "Smart Delivery",
+            lambda: self.launch_smart_tool("smart_delivery"),
+        )
+        delivery_action.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton)
+        )
         smart_review_action = tools_menu.addAction("Smart Review", self.launch_current_project_smart_review)
         smart_review_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.usdview_action = tools_menu.addAction("Open USD in usdview", self.launch_current_project_usdview)

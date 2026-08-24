@@ -10,6 +10,7 @@ from typing import Any
 import uuid
 
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import configured_project_paths
 
 
 PORT_OBJECTS = "objects"
@@ -1030,12 +1031,14 @@ def _review_context(project_config: Any, scene: Path | None) -> dict[str, Any]:
     shot = _clean_name(scene.stem if scene else "", "shot")
     if scene:
         try:
-            relative = scene.resolve().relative_to((project_root / "shots").resolve())
+            relative = scene.resolve().relative_to(
+                configured_project_paths(project_root, project_config).shots_root().resolve()
+            )
             if len(relative.parts) >= 3:
                 episode, sequence, shot = relative.parts[0], relative.parts[1], relative.parts[2]
         except Exception:
             pass
-    shot_root = project_root / "shots" / episode / sequence / shot
+    shot_root = configured_project_paths(project_root, project_config).shot_root(episode, sequence, shot)
     return {"episode": episode, "sequence": sequence, "shot": shot, "shot_root": shot_root}
 
 

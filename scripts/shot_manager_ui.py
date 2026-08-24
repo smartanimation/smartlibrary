@@ -1823,7 +1823,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 data = self.service.load_dependencies(shot_identity)
                 entries = list(data.get("dependencies") or [])
                 slots = [(target, "mocap", "body_motion") for target in character_targets]
-                slots.extend((("Camera", "virtual_camera", "camera_reference"), ("Shot", "audio", "editorial_mix")))
+                slots.extend((("Camera", "virtual_camera", "import_fbx"), ("Shot", "audio", "editorial_mix")))
                 existing_slots = {
                     (str(item.get("target") or item.get("asset") or "Shot"), str(item.get("type") or ""), str(item.get("role") or ""))
                     for item in entries
@@ -1840,13 +1840,20 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     group_entries = [
                         item for item in entries
                         if str(item.get("target") or item.get("asset") or "Shot") == target
-                        and item.get("type") == dependency_type and item.get("role") == role
+                        and item.get("type") == dependency_type
+                        and (
+                            item.get("role") == role
+                            or (
+                                dependency_type == "virtual_camera"
+                                and item.get("role") == "camera_reference"
+                            )
+                        )
                     ]
                     dependency = next((item for item in group_entries if item.get("status") == "selected"), None)
                     if dependency is None:
                         missing += 1
                     item = QtWidgets.QTreeWidgetItem([
-                        target, dependency_type.replace("_", " ").title(), role.replace("_", " ").title(),
+                        target, dependency_type.replace("_", " ").title(), self._dependency_role_label(role),
                         str((dependency or {}).get("name") or (dependency or {}).get("id") or "—"),
                         str((dependency or {}).get("representation") or ""),
                         str((dependency or {}).get("status") or "Missing"),
@@ -1872,6 +1879,13 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         item = self.dependencies_tree.currentItem()
         data = item.data(0, QtCore.Qt.UserRole) if item else None
         return dict(data) if isinstance(data, dict) and data.get("kind") == "assignment" else None
+
+    @staticmethod
+    def _dependency_role_label(role) -> str:
+        clean_role = str(role or "").strip().lower()
+        if clean_role in {"import_fbx", "camera_reference"}:
+            return "Import FBX"
+        return clean_role.replace("_", " ").title() if clean_role else "—"
 
     def show_add_assignment_menu(self) -> None:
         current = self.dependencies_tree.currentItem()
@@ -1932,15 +1946,21 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             for candidate in candidates:
                 if candidate.get("type") != assignment.get("type"):
                     continue
+                if assignment.get("type") == "virtual_camera" and candidate.get("representation") != "fbx":
+                    continue
                 if assignment.get("type") == "mocap" and candidate.get("target") != assignment.get("target"):
                     continue
                 row = self.dependency_candidates.rowCount()
                 self.dependency_candidates.insertRow(row)
                 selected = candidate.get("source") == (assignment.get("dependency") or {}).get("source")
-                values = ["●" if selected else "○", candidate.get("name"), candidate.get("target"), candidate.get("type"), candidate.get("representation"), candidate.get("source")]
+                source = str(candidate.get("source") or "")
+                source_name = Path(source).name or source
+                values = ["●" if selected else "○", candidate.get("name"), candidate.get("target"), candidate.get("type"), candidate.get("representation"), source_name]
                 for column, value in enumerate(values):
                     table_item = QtWidgets.QTableWidgetItem(str(value or ""))
                     table_item.setData(QtCore.Qt.UserRole, dict(candidate))
+                    if column == 5:
+                        table_item.setToolTip(source)
                     self.dependency_candidates.setItem(row, column, table_item)
                 if selected:
                     self.dependency_candidates.selectRow(row)
@@ -1960,7 +1980,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         candidate = self._selected_dependency_candidate() or assignment.get("dependency") or {}
         self.dependency_target_value.setText(str(assignment.get("target") or "—"))
         self.dependency_type_value.setText(str(assignment.get("type") or "—"))
-        self.dependency_role_value.setText(str(assignment.get("role") or "—"))
+        self.dependency_role_value.setText(self._dependency_role_label(assignment.get("role")))
         self.dependency_source_value.setText(str(candidate.get("source") or "—"))
         shot = getattr(assignment.get("identity"), "shot", "")
         self.assign_candidate_btn.setText(f"Assign to {assignment.get('target')} ({shot})" if shot else "Assign")
@@ -1976,13 +1996,19 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             entries = list(data.get("dependencies") or [])
             for entry in entries:
                 entry_target = str(entry.get("target") or entry.get("asset") or "Shot")
-                if entry_target == assignment["target"] and entry.get("type") == assignment["type"] and entry.get("role") == assignment["role"]:
+                same_role = entry.get("role") == assignment["role"] or (
+                    assignment["type"] == "virtual_camera"
+                    and entry.get("role") == "camera_reference"
+                )
+                if entry_target == assignment["target"] and entry.get("type") == assignment["type"] and same_role:
                     entry["status"] = "alternate"
             dependency = dict(candidate)
             dependency.update({
                 "target": assignment["target"], "asset": assignment["target"],
                 "type": assignment["type"], "role": assignment["role"], "status": "selected",
             })
+            if assignment["type"] == "virtual_camera":
+                dependency["mode"] = "import"
             existing = next((item for item in entries if item.get("id") == dependency["id"]), None)
             if existing is None:
                 entries.append(dependency)

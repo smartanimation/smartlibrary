@@ -45,6 +45,11 @@ def create_asset_profile() -> PreflightProfile:
             CheckDefinition("no_asset_namespaces", "Asset namespaces", checks.no_asset_namespaces),
             CheckDefinition("all_rig_set", "allRigSet", checks.all_rig_set),
             CheckDefinition(
+                "skel_export_set",
+                "skel_export_set",
+                checks.skel_export_set,
+            ),
+            CheckDefinition(
                 "cache_geo_set",
                 "cache_geo_set",
                 checks.cache_geo_set,

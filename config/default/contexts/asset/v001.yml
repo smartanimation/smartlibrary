@@ -1,59 +1,86 @@
 name: asset
 version: 1
 
-quality_profiles:
+stage_profiles:
   FAST:
-    model:
-      default: proxy
-      characters: low
-      env: proxy
-      prop: proxy
+    character: LO
+    environment: PROXY
+    prop: LO
+    purpose: proxy
+    load_payloads: false
+    load_crowds: false
+  WORK:
+    character: ANIM
+    environment: PROXY
+    prop: LO
+    purpose: proxy
+    load_payloads: true
+    load_crowds: true
+  REND:
+    character: REND
+    environment: REND
+    prop: REND
+    purpose: render
+    load_payloads: true
+    load_crowds: true
+
+quality_profiles:
+  LO:
+    model: low
     look: low
     rig: layout
-
-  WORK:
-    model:
-      default: proxy
-      characters: low
-      env: proxy
-      prop: proxy
+    groom: none
+  ANIM:
+    model: low
     look: low
     rig: anim
-
-  FINAL:
-    model:
-      default: render
-      characters: high
-      env: render
-      prop: render
+    groom: none
+  REND:
+    model: high
     look: high
     rig: anim
+    groom: render
+  MCP:
+    model: low
+    look: none
+    rig: mocap
+    groom: none
+  PROXY:
+    assembly: proxy
+    look: none
 
 asset_context_recipes:
   character:
+    inherit_common_profiles: false
     match:
       asset_type:
         - CH
         - character
         - characters
     profiles:
-      FAST:
+      LO:
         model: low
         look: low
         rig: layout
         groom: none
-      WORK:
+      ANIM:
         model: low
         look: low
         rig: anim
         groom: none
-      FINAL:
+      REND:
         model: high
         look: high
         rig: anim
+        groom: render
+      MCP:
+        model: low
+        look: none
+        rig: mocap
         groom: none
 
   environment:
+    inherit_common_profiles: false
     match:
       asset_type:
         - BG
@@ -61,28 +88,23 @@ asset_context_recipes:
         - environment
         - set
     profiles:
-      FAST:
-        assembly: render
+      PROXY:
+        assembly: proxy
         look: none
-      WORK:
-        assembly: render
-        look: none
-      FINAL:
+      REND:
         assembly: render
         look: high
 
   prop:
+    inherit_common_profiles: false
     match:
       asset_type:
         - prop
     profiles:
-      FAST:
+      LO:
         model: proxy
         look: none
-      WORK:
-        model: proxy
-        look: low
-      FINAL:
+      REND:
         model: render
         look: high
 

@@ -71,6 +71,13 @@ class OutputPathResolver:
             values.setdefault("dept", values["department"])
         if values.get("dcc"):
             values.setdefault("tool", values["dcc"])
+        if not values.get("workspace_partition"):
+            base = self.project_config.load("templates_base.yml") or {}
+            configured = base.get("shot_dept_partitions") or {}
+            department = str(values.get("department") or values.get("dept") or "").strip()
+            values["workspace_partition"] = str(
+                configured.get(department) or configured.get("default") or "cg"
+            ).strip()
         return values
 
     @staticmethod

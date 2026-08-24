@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import json
+import os
+import site
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -246,7 +250,7 @@ def create_cutting_markers_from_timeline(
             ensure_ascii=False,
         )
         frames = _candidate_marker_frames(start, timeline_start)
-        ok = _add_marker_any_frame(timeline, frames, marker_color, sequence_name, "", duration, custom_data)
+        ok = _add_marker_any_frame(timeline, frames, marker_color, shot, sequence_name, duration, custom_data)
         count += 1 if ok else 0
     if count == 0:
         raise RuntimeError(
@@ -326,32 +330,57 @@ def stage_editorial_source(
     version_dir = Path(work_dir) if work_dir else next_editorial_work_version_dir(project_config, episode, sequence)
     version_dir.mkdir(parents=True, exist_ok=True)
     movie = Path(movie_path)
-    _import_media(resolve_app, movie)
+    imported_media = _import_media(resolve_app, movie)
     timeline_import_path = None
     shot_media_links = []
+    marker_count = 0
+    aaf_fallback = False
     if reference_path:
         reference = Path(reference_path)
         if reference_type.lower() in {"aaf", "edl", "xml"}:
-            timeline, timeline_import_path = _import_editorial_timeline(
-                resolve_app,
-                reference,
-                timeline_name=f"{episode}_{sequence}",
-                source_clips_path=movie.parent,
-            )
-            shot_media = latest_ingested_shot_media(project_config, episode, sequence)
-            if shot_media:
-                shot_media_links = _link_timeline_to_shot_media(timeline, shot_media)
+            try:
+                timeline, timeline_import_path = _import_editorial_timeline(
+                    resolve_app,
+                    reference,
+                    timeline_name=f"{episode}_{sequence}",
+                    source_clips_path=movie.parent,
+                )
+                shot_media = latest_ingested_shot_media(project_config, episode, sequence)
+                if shot_media:
+                    shot_media_links = _link_timeline_to_shot_media(timeline, shot_media)
+            except RuntimeError:
+                if reference_type.lower() != "aaf":
+                    raise
+                markers = _parse_aaf_markers(reference)
+                timeline = _create_offline_timeline(
+                    resolve_app,
+                    imported_media,
+                    timeline_name=f"{episode}_{sequence}",
+                )
+                timeline_import_path = reference
+                aaf_fallback = True
         rule = shot_naming_rule(project_config, profile_name=shot_naming_profile)
-        _create_markers_from_reference_or_timeline(
-            resolve_app=resolve_app,
-            reference_path=reference,
-            reference_type=reference_type,
-            sequence_note=sequence,
-            shot_prefix=rule["prefix"],
-            shot_start=rule["start"],
-            shot_step=rule["step"],
-            shot_padding=rule["padding"],
-        )
+        if aaf_fallback:
+            marker_count = _add_reference_markers(
+                resolve_app,
+                markers,
+                sequence,
+                rule["prefix"],
+                rule["start"],
+                rule["step"],
+                rule["padding"],
+            )
+        else:
+            marker_count = _create_markers_from_reference_or_timeline(
+                resolve_app=resolve_app,
+                reference_path=reference,
+                reference_type=reference_type,
+                sequence_note=sequence,
+                shot_prefix=rule["prefix"],
+                shot_start=rule["start"],
+                shot_step=rule["step"],
+                shot_padding=rule["padding"],
+            )
     write_work_manifest(
         version_dir,
         episode=episode,
@@ -366,6 +395,8 @@ def stage_editorial_source(
             "timeline_import_file": timeline_import_path.name if timeline_import_path else "",
             "timeline_import_path": timeline_import_path.as_posix() if timeline_import_path else "",
             "timeline_import_type": timeline_import_path.suffix.lower().lstrip(".") if timeline_import_path else "",
+            "timeline_import_mode": "aaf_markers_on_offline" if aaf_fallback else "resolve_timeline_import",
+            "cutting_markers": marker_count,
             "shot_media_links": shot_media_links,
         },
     )
@@ -407,6 +438,25 @@ def ingested_editorial_files(
         path
         for path in version_dir.iterdir()
         if path.is_file() and (not suffix or path.suffix.lower() == suffix)
+    )
+
+
+def ingested_editorial_episode_sequences(
+    project_config: ProjectConfig,
+) -> list[tuple[str, str]]:
+    """Return episode/sequence pairs created by Smart Ingest."""
+    project_root = project_config.project_root
+    if project_root is None:
+        raise RuntimeError("project_root is not set in templates_base.yml")
+    root = project_root / "editorial" / "data"
+    if not root.exists():
+        return []
+    return sorted(
+        (episode_dir.name, sequence_dir.name)
+        for episode_dir in root.iterdir()
+        if episode_dir.is_dir()
+        for sequence_dir in episode_dir.iterdir()
+        if sequence_dir.is_dir()
     )
 
 
@@ -694,7 +744,7 @@ def _project_file_path(project: Any) -> str:
     return ""
 
 
-def _import_media(resolve_app: Any, movie: Path) -> None:
+def _import_media(resolve_app: Any, movie: Path) -> list[Any]:
     if not movie.exists():
         raise FileNotFoundError(f"Movie was not found: {movie}")
     resolve = _resolve_app(resolve_app)
@@ -702,7 +752,47 @@ def _import_media(resolve_app: Any, movie: Path) -> None:
     media_pool = project.GetMediaPool() if project else None
     if not media_pool:
         raise RuntimeError("No Resolve media pool.")
-    media_pool.ImportMedia([movie.as_posix()])
+    imported = list(media_pool.ImportMedia([movie.as_posix()]) or [])
+    if imported:
+        return imported
+    # Resolve may return an empty list when the clip is already in the pool.
+    folder = _call_or_default(media_pool, "GetCurrentFolder", None)
+    clips = list(_call_or_default(folder, "GetClipList", []) or []) if folder else []
+    target_path = movie.resolve()
+    for clip in clips:
+        properties = _call_or_default(clip, "GetClipProperty", {}) or {}
+        clip_path = str(properties.get("File Path") or properties.get("FilePath") or "").strip()
+        try:
+            if clip_path and Path(clip_path).resolve() == target_path:
+                return [clip]
+        except OSError:
+            pass
+        if str(_call_or_default(clip, "GetName", "") or "").lower() == movie.name.lower():
+            return [clip]
+    return []
+
+
+def _create_offline_timeline(
+    resolve_app: Any,
+    media_items: list[Any],
+    *,
+    timeline_name: str,
+) -> Any:
+    if not media_items:
+        raise RuntimeError("The ingested offline movie could not be imported into the Resolve Media Pool.")
+    resolve = _resolve_app(resolve_app)
+    project = resolve.GetProjectManager().GetCurrentProject()
+    media_pool = project.GetMediaPool() if project else None
+    creator = getattr(media_pool, "CreateTimelineFromClips", None) if media_pool else None
+    if not callable(creator):
+        raise RuntimeError("This Resolve version does not provide CreateTimelineFromClips.")
+    timeline = creator(timeline_name, media_items)
+    if not timeline:
+        raise RuntimeError("Resolve could not create a timeline from the ingested offline movie.")
+    setter = getattr(project, "SetCurrentTimeline", None)
+    if callable(setter):
+        setter(timeline)
+    return timeline
 
 
 def _import_editorial_timeline(
@@ -933,8 +1023,8 @@ def _add_reference_markers(
             timeline,
             _candidate_marker_frames(start, timeline_start),
             "Blue",
+            shot,
             sequence_note,
-            "",
             duration,
             custom_data,
         )
@@ -942,6 +1032,122 @@ def _add_reference_markers(
     if count == 0:
         raise RuntimeError("No reference markers were created.")
     return count
+
+
+def _parse_aaf_markers(path: Path) -> list[dict[str, Any]]:
+    """Read picture edit events without asking Resolve to relink the AAF."""
+    try:
+        import aaf2
+    except ImportError as exc:
+        # Long-running launcher processes can start with a reduced sys.path and
+        # do not notice dependencies installed after launch. Add the active
+        # interpreter's site-packages explicitly before giving up.
+        candidates = {
+            Path(sys.executable).resolve().parent / "Lib" / "site-packages",
+            Path(sys.prefix).resolve() / "Lib" / "site-packages",
+            Path(sys.base_prefix).resolve() / "Lib" / "site-packages",
+        }
+        for candidate in candidates:
+            if candidate.is_dir():
+                site.addsitedir(str(candidate))
+        importlib.invalidate_caches()
+        try:
+            import aaf2
+        except ImportError:
+            return _parse_aaf_markers_external(path, original_error=exc)
+    try:
+        with aaf2.open(str(path), "r") as aaf_file:
+            compositions = list(aaf_file.content.toplevel())
+            picture_slots = [
+                slot
+                for composition in compositions
+                for slot in composition.slots
+                if str(getattr(slot, "media_kind", "")).lower() == "picture"
+                and type(getattr(slot, "segment", None)).__name__ == "Sequence"
+            ]
+            if not picture_slots:
+                raise RuntimeError(f"AAF contains no picture sequence: {path.name}")
+            slot = max(picture_slots, key=lambda value: int(getattr(value.segment, "length", 0) or 0))
+            markers = []
+            record_frame = 0
+            for component in slot.segment.components:
+                duration = int(getattr(component, "length", 0) or 0)
+                component_type = type(component).__name__
+                if duration <= 0:
+                    continue
+                if component_type not in {"Filler", "Transition"}:
+                    selected = component.getvalue("Selected", None) if component_type == "Selector" else component
+                    source_in = int(getattr(selected, "start", 0) or 0)
+                    markers.append(
+                        {
+                            "start": record_frame,
+                            "duration": duration,
+                            "clip": str(getattr(selected, "name", "") or component_type),
+                            "source_in": source_in,
+                            "source_out": source_in + duration - 1,
+                        }
+                    )
+                if component_type != "Transition":
+                    record_frame += duration
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Could not read AAF edit events from {path.name}: {exc}") from exc
+    if not markers:
+        raise RuntimeError(f"AAF contains no usable picture edit events: {path.name}")
+    return markers
+
+
+def _parse_aaf_markers_external(
+    path: Path,
+    *,
+    original_error: Exception,
+) -> list[dict[str, Any]]:
+    """Use the pipeline Python when Resolve's embedded Python has no pyaaf2."""
+    pipeline_python = str(os.environ.get("SMARTPIPELINE_PYTHON") or "").strip()
+    candidates = [Path(pipeline_python)] if pipeline_python else []
+    smartpipeline_root = Path(__file__).resolve().parents[4]
+    candidates.extend(
+        [
+            smartpipeline_root.parent / "smarttools" / "python" / "python.exe",
+            smartpipeline_root / "runtime" / "python" / "python.exe",
+        ]
+    )
+    python_exe = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if python_exe is None:
+        raise RuntimeError(
+            "AAF parser Python was not found. Set SMARTPIPELINE_PYTHON to the pipeline python.exe."
+        ) from original_error
+    package_root = Path(__file__).resolve().parents[3]
+    environment = os.environ.copy()
+    existing_pythonpath = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(package_root), existing_pythonpath) if value
+    )
+    script = (
+        "import json,sys; from pathlib import Path; "
+        "from smartlib.dcc.resolve.export_timeline_csv import _parse_aaf_markers; "
+        "print(json.dumps(_parse_aaf_markers(Path(sys.argv[1]))))"
+    )
+    completed = subprocess.run(
+        [str(python_exe), "-c", script, str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(f"External AAF parser failed: {detail}") from original_error
+    try:
+        markers = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("External AAF parser returned invalid data.") from exc
+    if not isinstance(markers, list) or not markers:
+        raise RuntimeError(f"AAF contains no usable picture edit events: {path.name}")
+    return markers
 
 
 def _parse_edl_markers(path: Path) -> list[dict[str, Any]]:

@@ -15,13 +15,23 @@ shot_depts:
   - light
   - comp
 
+# Workspace上の上位区分。Departmentとは独立して管理する。
+shot_dept_partitions:
+  default: cg
+  layout: cg
+  anim: cg
+  fx: cg
+  light: cg
+  comp: cg
+
 shot_tasks:
   layout:
-    - rough_layout
+    - main
     - final_camera
   anim:
-    - body
-    - facial
+    - main
+    - preComp
+    - animation
     - shot_sculpt
   fx:
     - main
@@ -35,26 +45,30 @@ asset_depts:
   - model
   - rig
   - look
+  - assembly
 
 templates:
   # プロジェクト直下の主要フォルダ
-  art_root: "{project_root}/art"
-  assets_root: "{project_root}/assets"
-  editorial_root: "{project_root}/editorial"
-  previs_root: "{project_root}/previs"
-  sequences_root: "{project_root}/sequences"
-  shots_root: "{project_root}/shots"
-  setting_root: "{project_root}/settings"
+  production_root: "{project_root}/production"
+  assets_root: "{production_root}/assets"
+  assemblies_root: "{production_root}/assemblies"
+  sequences_root: "{production_root}/sequences"
+  shots_root: "{production_root}/shots"
+  art_root: "{workspace_root}/art"
+  editorial_root: "{workspace_root}/editorial"
+  setting_root: "{production_root}/settings"
   delivery_root: "{project_root}/delivery"
   deliveries_vendors_dir: "{delivery_root}/vendors"
   deliveries_client_dir: "{delivery_root}/client"
   deliveries_archive_dir: "{delivery_root}/archive"
   incoming_root: "{project_root}/incoming"
   incoming_editorial_dir: "{incoming_root}/editorial"
+  incoming_client_dir: "{incoming_root}/client"
   incoming_vendors_dir: "{incoming_root}/vendors"
   library_root: "{project_root}/library"
   users_root: "{project_root}/users"
   workspace_root: "{project_root}/workspace"
+  delivery_staging_root: "{workspace_root}/delivery"
 
   # さらにその下の階層も必要なら追加
   tool_dir: "{setting_root}/tools"

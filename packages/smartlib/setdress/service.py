@@ -42,6 +42,12 @@ class SetDressPublishService:
             project_config.project_root,
             templates=_project_templates(project_config),
             project_name=_project_name(project_config),
+            shot_dept_partitions={
+                str(key): str(value)
+                for key, value in (
+                    project_config.base.get("shot_dept_partitions") or {}
+                ).items()
+            },
         )
 
     def identity_from_context(self, context: dict[str, str]) -> SetDressIdentity:

@@ -47,6 +47,7 @@ DEPENDENCY_STATUSES = {"selected", "alternate"}
 CONSTRUCT_TYPES = {
     "rig", "camera", "animation", "animation_curve", "fx", "light", "audio",
     "cast", "placement", "layout_overlay", "set_dress", "preview_render", "playblast_settings", "usd",
+    "editorial_timing",
 }
 CONSTRUCT_MODES = {"reference", "import", "apply", "reference_cache", "file", "payload"}
 FX_CACHE_EXTENSIONS = {".abc", ".usd", ".usda", ".usdc"}
@@ -116,6 +117,8 @@ class SequenceIdentity:
 @dataclass(frozen=True)
 class CastEntry:
     asset: str
+    entity_type: str = "asset"
+    entity_id: str = ""
     variant: str = "default"
     role: str = "CHA"
     namespace: str = ""
@@ -225,8 +228,13 @@ class ShotCreateRequest:
     fps: int = 24
     cut_in: int = 1001
     cut_out: int = 1001
+    handle_head: int = 0
+    handle_tail: int = 0
     status: str = "wip"
     create_work_dirs: bool = True
+    timing_source: dict[str, Any] = field(default_factory=dict)
+    timing_comment: str = ""
+    publish_timing: bool = True
 
     @property
     def identity(self) -> ShotIdentity:
@@ -245,6 +253,12 @@ class ShotManagerService:
             project_root,
             templates=_project_templates(project_config),
             project_name=_project_name(project_config),
+            shot_dept_partitions={
+                str(key): str(value)
+                for key, value in (
+                    project_config.base.get("shot_dept_partitions") or {}
+                ).items()
+            },
         )
         self.asset_publish_resolver = AssetPublishResolver(project_config)
         self.output_resolver = OutputPathResolver(project_config)
@@ -296,8 +310,10 @@ class ShotManagerService:
     def sequence_workspace_root(self, episode: str, sequence: str) -> Path:
         return self.paths.sequence_workspace_root(episode, sequence)
 
-    def sequence_build_root(self, identity: SequenceIdentity) -> Path:
-        return self.paths.sequence_build_root(identity.episode, identity.sequence)
+    def sequence_build_root(
+        self, identity: SequenceIdentity, department: str = ""
+    ) -> Path:
+        return self.paths.sequence_build_root(identity.episode, identity.sequence, department)
 
     def sequence_build_dir(
         self, identity: SequenceIdentity, department: str, dcc: str, task: str, version: str
@@ -309,8 +325,14 @@ class ShotManagerService:
     def legacy_sequence_build_root(self, identity: SequenceIdentity) -> Path:
         return self.sequence_workspace_root(identity.episode, identity.sequence) / "output" / "scene_build"
 
-    def shot_build_root(self, identity: ShotIdentity) -> Path:
-        return self.paths.shot_build_root(identity.episode, identity.sequence, identity.shot)
+    def unpartitioned_sequence_build_root(self, identity: SequenceIdentity) -> Path:
+        """Pre-workspace-partition build root retained for history lookup."""
+        return self.paths.workspace_root() / identity.episode / identity.sequence / "build"
+
+    def shot_build_root(self, identity: ShotIdentity, department: str = "") -> Path:
+        return self.paths.shot_build_root(
+            identity.episode, identity.sequence, identity.shot, department
+        )
 
     def shot_build_dir(
         self, identity: ShotIdentity, department: str, dcc: str, task: str, version: str
@@ -322,6 +344,13 @@ class ShotManagerService:
 
     def legacy_shot_build_root(self, identity: ShotIdentity) -> Path:
         return self.shot_output_root(identity) / "scene_build"
+
+    def unpartitioned_shot_build_root(self, identity: ShotIdentity) -> Path:
+        """Pre-workspace-partition build root retained for history lookup."""
+        return (
+            self.paths.workspace_root()
+            / identity.episode / identity.sequence / identity.shot / "build"
+        )
 
     def list_shots(self) -> list[ShotIdentity]:
         shots_root = self.paths.shots_root()
@@ -402,7 +431,125 @@ class ShotManagerService:
         return {"episode": identity.episode, "sequence": identity.sequence, "shots": [{"shot": shot.shot} for shot in shots]}
 
     def load_shot(self, identity: ShotIdentity) -> dict[str, Any]:
-        return read_json(self.shot_root(identity) / "shot.json", {})
+        data = read_json(self.shot_root(identity) / "shot.json", {}) or {}
+        timing_path = self.latest_editorial_timing_path(identity)
+        if not timing_path:
+            return data
+        timing = read_json(timing_path, {}) or {}
+        editorial = dict(data.get("editorial") or {})
+        for field in (
+            "fps", "cut_in", "cut_out", "duration", "handles", "frame_range",
+            "source_cut_range", "work_range", "cut_range",
+        ):
+            if field in timing:
+                editorial[field] = timing[field]
+        data["editorial"] = editorial
+        data["editorial_timing"] = {
+            "version": str(timing.get("version") or timing_path.parent.name),
+            "path": str(timing_path),
+        }
+        return data
+
+    def editorial_timing_root(self, identity: ShotIdentity) -> Path:
+        return self.shot_data_root(identity) / "editorial_timing" / "main"
+
+    def latest_editorial_timing_path(self, identity: ShotIdentity) -> Path | None:
+        base_dir = self.editorial_timing_root(identity)
+        latest = read_json(base_dir / "latest.json", {}) or {}
+        relative = str(latest.get("path") or "").strip()
+        if relative:
+            path = base_dir / relative
+            if path.is_file():
+                return path
+        version = str(latest.get("version") or "").strip()
+        path = base_dir / version / "editorial_timing.json" if version else None
+        return path if path and path.is_file() else None
+
+    def publish_editorial_timing(
+        self,
+        identity: ShotIdentity,
+        editorial: dict[str, Any],
+        *,
+        source: dict[str, Any] | None = None,
+        comment: str = "",
+        reuse_unchanged: bool = True,
+    ) -> Path:
+        """Publish a versioned editorial timing snapshot for a shot."""
+
+        try:
+            cut_in = int(editorial.get("cut_in"))
+            cut_out = int(editorial.get("cut_out"))
+            fps_value = float(editorial.get("fps", self.project_fps))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Editorial timing requires numeric fps, cut_in and cut_out.") from exc
+        if cut_out < cut_in:
+            raise ValueError(f"Editorial timing cut_out precedes cut_in: {cut_in}-{cut_out}")
+        raw_handles = editorial.get("handles") or {}
+        if isinstance(raw_handles, dict):
+            head = int(raw_handles.get("head", 0) or 0)
+            tail = int(raw_handles.get("tail", 0) or 0)
+        elif isinstance(raw_handles, (list, tuple)) and len(raw_handles) >= 2:
+            head, tail = int(raw_handles[0] or 0), int(raw_handles[1] or 0)
+        else:
+            head = tail = 0
+        handles = {"head": max(0, head), "tail": max(0, tail)}
+        duration = cut_out - cut_in + 1
+        work_range = self._anim_work_range(cut_in, cut_out, [handles["head"], handles["tail"]])
+        cut_range = self._anim_cut_range_in_work(
+            work_range, cut_in, cut_out, [handles["head"], handles["tail"]]
+        )
+        comparable = {
+            "fps": int(fps_value) if fps_value.is_integer() else fps_value,
+            "cut_in": cut_in,
+            "cut_out": cut_out,
+            "duration": duration,
+            "handles": handles,
+            "frame_range": [cut_in, cut_out],
+            "source_cut_range": [cut_in, cut_out],
+            "work_range": work_range,
+            "cut_range": cut_range,
+        }
+        current_path = self.latest_editorial_timing_path(identity)
+        current = read_json(current_path, {}) if current_path else {}
+        if reuse_unchanged and current_path and all(current.get(key) == value for key, value in comparable.items()):
+            return current_path
+
+        base_dir = self.editorial_timing_root(identity)
+        version = self._next_publish_version(base_dir)
+        version_dir = base_dir / version
+        timing_path = version_dir / "editorial_timing.json"
+        created_at = datetime.now().isoformat(timespec="seconds")
+        payload = {
+            "schema": "editorial_timing/v1",
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "version": version,
+            **comparable,
+            "source": dict(source or {}),
+            "comment": str(comment or ""),
+            "created_at": created_at,
+        }
+        write_json(timing_path, payload)
+        write_json(
+            version_dir / "publish.json",
+            {
+                "schema": "shot_data_publish/v1",
+                "publish_type": "editorial_timing",
+                "subset": "main",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version,
+                "files": {"editorial_timing": timing_path.name},
+                "source": dict(source or {}),
+                "comment": str(comment or ""),
+                "created_at": created_at,
+            },
+        )
+        write_json(base_dir / "latest.json", {"version": version, "path": f"{version}/{timing_path.name}"})
+        self._update_versions(base_dir / "versions.json", version)
+        return timing_path
 
     def dependencies_path(self, identity: ShotIdentity | SequenceIdentity) -> Path:
         if isinstance(identity, SequenceIdentity):
@@ -472,6 +619,43 @@ class ShotManagerService:
     def sequence_dependency_assignments(self, identity: SequenceIdentity) -> dict[str, dict[str, Any]]:
         return {shot.shot: self.load_dependencies(shot) for shot in self.sequence_shot_identities(identity)}
 
+    def selected_virtual_camera_dependencies(
+        self, identity: ShotIdentity
+    ) -> list[dict[str, Any]]:
+        """Resolve selected shot Virtual Camera FBX dependencies."""
+
+        resolved = []
+        for raw in self.load_dependencies(identity).get("dependencies") or []:
+            item = dict(raw) if isinstance(raw, dict) else {}
+            if str(item.get("type") or "").strip().lower() != "virtual_camera":
+                continue
+            if str(item.get("status") or "alternate").strip().lower() != "selected":
+                continue
+            source = str(item.get("source") or "").strip()
+            if not source or source.lower().startswith("package://"):
+                continue
+            path = self._project_path_from_text(source)
+            representation = str(item.get("representation") or "").strip().lower()
+            if (
+                not path
+                or not path.is_file()
+                or path.suffix.lower() != ".fbx"
+                or representation not in {"", "fbx"}
+            ):
+                continue
+            item["path"] = str(path)
+            item.setdefault("name", path.stem)
+            item.setdefault("mode", "import")
+            resolved.append(item)
+        return sorted(
+            resolved,
+            key=lambda item: (
+                str(item.get("role") or ""),
+                str(item.get("name") or ""),
+                str(item.get("id") or ""),
+            ),
+        )
+
     def sequence_input_candidates(self, identity: SequenceIdentity) -> list[dict[str, Any]]:
         data_root = self.sequence_workspace_root(identity.episode, identity.sequence) / "data"
         supported = {".fbx", ".abc", ".usd", ".usda", ".usdc", ".wav", ".aif", ".aiff", ".mp3", ".mov", ".mp4"}
@@ -484,6 +668,8 @@ class ShotManagerService:
             relative = path.relative_to(data_root)
             parts = relative.parts
             dependency_type = _dependency_type_from_path(parts, path.suffix)
+            if dependency_type == "virtual_camera" and path.suffix.lower() != ".fbx":
+                continue
             representation = path.suffix.lower().lstrip(".")
             target = "Shot"
             name = path.stem
@@ -496,7 +682,7 @@ class ShotManagerService:
                 name = parts[1]
             role = {
                 "mocap": "body_motion",
-                "virtual_camera": "camera_reference",
+                "virtual_camera": "import_fbx",
                 "audio": "editorial_mix",
                 "reference": "reference",
             }[dependency_type]
@@ -507,6 +693,7 @@ class ShotManagerService:
                     "type": dependency_type,
                     "target": target,
                     "role": role,
+                    "mode": "import" if dependency_type == "virtual_camera" else "",
                     "source": str(path),
                     "representation": representation,
                     "updated": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes"),
@@ -1061,8 +1248,10 @@ class ShotManagerService:
         department_filter = _normalize_work_option(department) if department else ""
         task_filter = _normalize_work_option(task) if task else ""
         roots = [
-            (self.shot_build_root(identity), "*/*/*/v*/build_manifest.json"),
-            (self.shot_build_root(identity), "*/*/v*/build_manifest.json"),
+            (self.shot_build_root(identity, department_filter), "*/*/*/v*/build_manifest.json"),
+            (self.shot_build_root(identity, department_filter), "*/*/v*/build_manifest.json"),
+            (self.unpartitioned_shot_build_root(identity), "*/*/*/v*/build_manifest.json"),
+            (self.unpartitioned_shot_build_root(identity), "*/*/v*/build_manifest.json"),
             (self.legacy_shot_build_root(identity), "*/*/v*/build_manifest.json"),
         ]
         for manifest_path in (
@@ -2237,6 +2426,28 @@ class ShotManagerService:
         representation: str = "project",
     ) -> dict[str, Any]:
         components: list[dict[str, Any]] = []
+        try:
+            timing_path = self.latest_editorial_timing_path(identity)
+        except (AttributeError, OSError):
+            # Lightweight service doubles used by integrations may not expose
+            # project paths. They can continue without the optional component.
+            timing_path = None
+        if timing_path:
+            timing = read_json(timing_path, {}) or {}
+            components.append(
+                asdict(
+                    ConstructComponent(
+                        component_type="editorial_timing",
+                        name="main",
+                        version=str(timing.get("version") or timing_path.parent.name),
+                        mode="apply",
+                        path=str(timing_path),
+                        required=True,
+                        enabled=True,
+                        source={"kind": "shot_data", "data_type": "editorial_timing", "scope": "shot"},
+                    )
+                )
+            )
         anim_input_path = self.latest_anim_input(identity)
         anim_input = read_json(anim_input_path, {}) if anim_input_path else {}
         if anim_input_path:
@@ -2311,6 +2522,23 @@ class ShotManagerService:
             str(row.name or "").split("/")[0] == "camera"
             for row in latest_scene_data_rows
         )
+        for dependency in self.selected_virtual_camera_dependencies(identity):
+            camera_path = Path(str(dependency["path"]))
+            add_published_component(
+                "camera",
+                str(dependency.get("name") or camera_path.stem),
+                str(dependency.get("version") or _version_from_path(camera_path) or "selected"),
+                camera_path,
+                required=True,
+                mode="import",
+                source={
+                    "kind": "shot_dependency",
+                    "dependency_type": "virtual_camera",
+                    "dependency_id": str(dependency.get("id") or ""),
+                    "role": str(dependency.get("role") or "import_fbx"),
+                    "representation": "fbx",
+                },
+            )
         for camera_path_text in ([] if has_camera_data else self._latest_review_camera_paths(identity)):
             camera_path = Path(camera_path_text)
             camera_name = camera_path.parents[2].name if len(camera_path.parents) > 2 else camera_path.stem
@@ -4339,6 +4567,14 @@ class ShotManagerService:
         camera_publish = self._latest_work_stage_camera(identity)
         layout_overlay = self._latest_layout_overlay_usd(identity)
         context_profile = str((overrides or {}).get("context") or "WORK").strip().upper()
+        try:
+            from smartlib.apps.asset_manager.context import AssetContextService
+
+            context_stage_policy = AssetContextService(
+                self.project_config
+            ).stage_profile_policy(context_profile)
+        except (FileNotFoundError, KeyError, TypeError, ValueError):
+            context_stage_policy = {}
         representation = str(
             (overrides or {}).get("representation") or "project"
         ).strip().lower()
@@ -4400,6 +4636,7 @@ class ShotManagerService:
             "context_usd": self._relative_to_project(context_usd) if context_usd else "",
             "context_version": context_version,
             "context_profile": context_profile,
+            "context_stage_policy": context_stage_policy,
             "editorial": self._relative_to_project(self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence / "latest.json"),
             "comment": comment,
         }
@@ -4859,7 +5096,11 @@ class ShotManagerService:
             candidates.append((priority, target, manifest))
         if candidates:
             return sorted(candidates, key=lambda item: (item[0], item[1]))[0][2]
-        return self._latest_shot_camera_publish(identity)
+        published = self._latest_shot_camera_publish(identity)
+        if published:
+            return published
+        virtual_cameras = self.selected_virtual_camera_dependencies(identity)
+        return Path(str(virtual_cameras[0]["path"])) if virtual_cameras else None
 
     def _latest_work_stage_placements(self, identity: ShotIdentity) -> Path | None:
         """Resolve shot-local Placement Publish/Data without sequence dependency."""
@@ -5240,8 +5481,13 @@ class ShotManagerService:
             fps=self.project_fps,
             cut_in=request.cut_in,
             cut_out=request.cut_out,
+            handle_head=request.handle_head,
+            handle_tail=request.handle_tail,
             status=request.status,
             create_work_dirs=request.create_work_dirs,
+            timing_source=dict(request.timing_source or {}),
+            timing_comment=request.timing_comment,
+            publish_timing=request.publish_timing,
         )
         for path in self.planned_shot_paths(request):
             path.mkdir(parents=True, exist_ok=True)
@@ -5259,6 +5505,7 @@ class ShotManagerService:
             )
         self.write_shot_json(request)
         self.ensure_cast_json(request.identity)
+        self.ensure_shot_composition(request.identity)
         self.ensure_dependencies_json(request.identity)
         return shot_root
 
@@ -5288,6 +5535,7 @@ class ShotManagerService:
             )
         self.write_shot_json(request)
         self.ensure_cast_json(identity)
+        self.ensure_shot_composition(identity)
         self.ensure_dependencies_json(identity)
         return shot_root
 
@@ -5300,7 +5548,7 @@ class ShotManagerService:
             shot_name = shot_json.parent.name
             if shot_name == "all":
                 continue
-            data = read_json(shot_json, {}) or {}
+            data = self.load_shot(ShotIdentity(episode, sequence, shot_name))
             editorial = data.get("editorial") or {}
             try:
                 cut_in = int(editorial.get("cut_in"))
@@ -5325,6 +5573,25 @@ class ShotManagerService:
 
     def write_shot_json(self, request: ShotCreateRequest) -> Path:
         duration = max(0, request.cut_out - request.cut_in + 1)
+        identity = request.identity
+        timing_path = (
+            self.publish_editorial_timing(
+                identity,
+                {
+                    "fps": request.fps,
+                    "cut_in": request.cut_in,
+                    "cut_out": request.cut_out,
+                    "handles": {
+                        "head": max(0, int(request.handle_head)),
+                        "tail": max(0, int(request.handle_tail)),
+                    },
+                },
+                source=dict(request.timing_source or {"kind": "shot_create_or_update"}),
+                comment=request.timing_comment,
+            )
+            if request.publish_timing
+            else None
+        )
         data = {
             "episode": request.episode,
             "sequence": request.sequence,
@@ -5335,16 +5602,86 @@ class ShotManagerService:
                 "cut_in": request.cut_in,
                 "cut_out": request.cut_out,
                 "duration": duration,
-                "handles": {"head": 0, "tail": 0},
+                "handles": {
+                    "head": max(0, int(request.handle_head)),
+                    "tail": max(0, int(request.handle_tail)),
+                },
             },
         }
-        return write_json(self.shot_root(request.identity) / "shot.json", data)
+        if timing_path:
+            data["editorial_timing"] = {
+                "policy": "latest",
+                "version": timing_path.parent.name,
+                "path": str(timing_path),
+            }
+        return write_json(self.shot_root(identity) / "shot.json", data)
 
     def ensure_cast_json(self, identity: ShotIdentity) -> Path:
         path = self.shot_root(identity) / "cast.json"
         if path.exists():
             return path
-        return write_json(path, {"cast": {}})
+        return write_json(path, {"schema": "smartpipeline.cast.v2", "cast": {}})
+
+    def shot_composition_path(self, identity: ShotIdentity) -> Path:
+        return self.shot_root(identity) / "shot_composition.json"
+
+    def ensure_shot_composition(self, identity: ShotIdentity) -> Path:
+        path = self.shot_composition_path(identity)
+        if path.exists():
+            return path
+        return self.write_shot_composition(identity, self.composition_from_cast(identity))
+
+    def composition_from_cast(self, identity: ShotIdentity) -> dict[str, Any]:
+        members = []
+        for uid, row in (self.load_cast(identity).get("cast") or {}).items():
+            entity_type = str(row.get("entity_type") or "asset").lower()
+            entity_id = str(row.get("entity_id") or row.get("asset") or "")
+            members.append({
+                "uid": str(uid), "entity_type": entity_type, "entity_id": entity_id,
+                "asset": str(row.get("asset") or ""),
+                "variant": str(row.get("variant") or "default"),
+                "version_policy": str(row.get("asset_publish") or "approved"),
+                "namespace": str(row.get("namespace") or uid),
+                "role": str(row.get("role") or "CHA"),
+                "required": bool(row.get("required", True)),
+            })
+        return {
+            "schema": "smartpipeline.shot_composition.v1", "entity_type": "shot",
+            "entity_id": f"{identity.episode}/{identity.sequence}/{identity.shot}",
+            "members": members,
+        }
+
+    def _sync_composition_from_cast(self, identity: ShotIdentity) -> Path:
+        generated = self.composition_from_cast(identity)
+        current = read_json(self.shot_composition_path(identity), {}) or {}
+        generated["members"].extend(
+            member for member in (current.get("members") or [])
+            if str(member.get("entity_type") or "asset").lower() == "assembly"
+        )
+        return self.write_shot_composition(identity, generated)
+
+    def load_shot_composition(self, identity: ShotIdentity) -> dict[str, Any]:
+        path = self.shot_composition_path(identity)
+        return read_json(path, None) or self.composition_from_cast(identity)
+
+    def write_shot_composition(self, identity: ShotIdentity, data: dict[str, Any]) -> Path:
+        payload = dict(data)
+        payload.update({
+            "schema": "smartpipeline.shot_composition.v1", "entity_type": "shot",
+            "entity_id": f"{identity.episode}/{identity.sequence}/{identity.shot}",
+        })
+        members = list(payload.get("members") or [])
+        seen: set[str] = set()
+        for member in members:
+            uid = str(member.get("uid") or "").strip()
+            entity_type = str(member.get("entity_type") or "asset").lower()
+            if not uid or uid in seen:
+                raise ValueError(f"Missing or duplicate composition UID: {uid or '<empty>'}")
+            if entity_type not in {"asset", "assembly"}:
+                raise ValueError(f"Unsupported referenceable entity type: {entity_type}")
+            seen.add(uid)
+        payload["members"] = members
+        return write_json(self.shot_composition_path(identity), payload)
 
     def ensure_dependencies_json(self, identity: ShotIdentity | SequenceIdentity) -> Path:
         path = self.dependencies_path(identity)
@@ -5365,6 +5702,7 @@ class ShotManagerService:
             messages = ", ".join(issue.message for issue in errors)
             raise ValueError(f"Invalid cast data: {messages}")
         path = write_json(self.shot_root(identity) / "cast.json", clean_data)
+        self._sync_composition_from_cast(identity)
         if legacy_layers is not None:
             self.write_review_layers(identity, legacy_layers)
         return path
@@ -5785,6 +6123,8 @@ class ShotManagerService:
             role = _normalize_role(row.get("role") or row.get("Role") or "CHA")
             entry = CastEntry(
                 asset=str(row.get("asset") or row.get("Asset") or "").strip(),
+                entity_type=str(row.get("entity_type") or row.get("Entity Type") or "asset").strip().lower(),
+                entity_id=str(row.get("entity_id") or row.get("Entity ID") or row.get("asset") or row.get("Asset") or "").strip(),
                 variant=str(row.get("variant") or row.get("Variant") or "default").strip() or "default",
                 role=role,
                 namespace=str(row.get("namespace") or row.get("Namespace") or cast_key).strip(),

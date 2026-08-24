@@ -214,7 +214,7 @@ def test_render_settings_frame_modes_resolve_scene_ranges():
 
 def test_render_settings_editorial_frame_mode_uses_shot_json(tmp_path):
     project_config = _project_config(tmp_path)
-    shot_root = tmp_path / "project" / "shots" / "ep001" / "sq010" / "shot010"
+    shot_root = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010"
     scene = shot_root / "work" / "layout" / "maya" / "scene.ma"
     scene.parent.mkdir(parents=True)
     scene.write_text("scene", encoding="utf-8")
@@ -239,7 +239,7 @@ def test_render_settings_defaults_use_editorial_order():
 
 def test_output_path_resolves_to_output_review_package(tmp_path):
     project_config = _project_config(tmp_path)
-    scene = tmp_path / "project" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
+    scene = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
     scene.parent.mkdir(parents=True)
     scene.write_text("scene", encoding="utf-8")
     graph = RenderGraph()
@@ -263,7 +263,7 @@ def test_playblast_package_paths_are_yaml_driven(tmp_path):
     paths = resolve_playblast_package(
         project_config,
         area="output",
-        shot_root=tmp_path / "project" / "shots" / "ep001" / "sq010" / "shot010",
+        shot_root=tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010",
         shot="shot010",
         dept="layout",
         version="2",
@@ -278,7 +278,7 @@ def test_playblast_package_paths_are_yaml_driven(tmp_path):
 
 
 def test_latest_take_is_layer_scoped(tmp_path):
-    root = tmp_path / "project" / "shots" / "pv01" / "CG" / "c002" / "output" / "review" / "anim"
+    root = tmp_path / "project" / "production" / "shots" / "pv01" / "CG" / "c002" / "output" / "review" / "anim"
     (root / "CHA" / "v001" / "06").mkdir(parents=True)
     (root / "BGA" / "v001" / "01").mkdir(parents=True)
 
@@ -288,7 +288,7 @@ def test_latest_take_is_layer_scoped(tmp_path):
 
 def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
     project_config = _project_config(tmp_path)
-    scene = tmp_path / "project" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
+    scene = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
     scene.parent.mkdir(parents=True)
     scene.write_text("scene", encoding="utf-8")
     monkeypatch.setattr(render_graph, "_maya_cmds_or_none", lambda: _ScenePathCmds(scene))
@@ -351,7 +351,7 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
 
 def test_export_ae_slots_build_data_uses_common_review_build_root(tmp_path, monkeypatch):
     project_config = _project_config(tmp_path)
-    scene = tmp_path / "project" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
+    scene = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
     scene.parent.mkdir(parents=True)
     scene.write_text("scene", encoding="utf-8")
     monkeypatch.setattr(render_graph, "_maya_cmds_or_none", lambda: _ScenePathCmds(scene))
@@ -380,7 +380,7 @@ def test_export_ae_slots_build_data_uses_common_review_build_root(tmp_path, monk
 
 def test_publish_ae_slots_uses_next_take_when_publish_exists(tmp_path, monkeypatch):
     project_config = _project_config(tmp_path)
-    scene = tmp_path / "project" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
+    scene = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
     scene.parent.mkdir(parents=True)
     scene.write_text("scene", encoding="utf-8")
     monkeypatch.setattr(render_graph, "_maya_cmds_or_none", lambda: _ScenePathCmds(scene))
@@ -418,7 +418,7 @@ def test_build_ae_slots_launches_configured_after_effects(tmp_path, monkeypatch)
     fake_afterfx.write_text("", encoding="utf-8")
     (project_config.config_dir / "software_AfterEffects2025.yml").write_text(f"path: {fake_afterfx.as_posix()}\n", encoding="utf-8")
     monkeypatch.setattr(review_ae, "_AE_SCRIPT_RUN_DELAY_SECONDS", 0.0)
-    scene = tmp_path / "project" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
+    scene = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
     scene.parent.mkdir(parents=True)
     scene.write_text("scene", encoding="utf-8")
     monkeypatch.setattr(render_graph, "_maya_cmds_or_none", lambda: _ScenePathCmds(scene))

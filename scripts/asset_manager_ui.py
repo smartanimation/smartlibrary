@@ -685,23 +685,41 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.data_representation_combo = QtWidgets.QComboBox()
         self.data_representation_combo.setEditable(True)
         self.data_representation_combo.addItems(["low", "high"])
-        data_header.addWidget(QtWidgets.QLabel("Type"))
-        data_header.addWidget(self.data_type_combo)
-        data_header.addWidget(QtWidgets.QLabel("Target"))
-        data_header.addWidget(self.data_target_combo, 1)
-        data_header.addWidget(QtWidgets.QLabel("Representation"))
-        data_header.addWidget(self.data_representation_combo)
+        data_header.addStretch(1)
         data_header.addWidget(self.refresh_data_btn)
         data_layout.addLayout(data_header)
+        self.data_browser_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.data_type_list = QtWidgets.QListWidget()
+        self.data_type_list.setMinimumWidth(110)
+        self.data_type_list.setMaximumWidth(180)
+        self.data_target_list = QtWidgets.QListWidget()
+        self.data_target_list.setMinimumWidth(120)
+        self.data_target_list.setMaximumWidth(240)
         self.data_list = QtWidgets.QTreeWidget()
-        self.data_list.setHeaderLabels(["Name", "Version", "Date", "Comment"])
-        self.data_list.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self.data_list.setHeaderLabels(["Version", "File", "Updated", "Comment"])
+        self.data_list.setRootIsDecorated(False)
+        self.data_list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.data_list.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self.data_list.header().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self.data_list.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         self.data_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        data_layout.addWidget(self.data_list)
+        self.data_browser_splitter.addWidget(self.data_type_list)
+        self.data_browser_splitter.addWidget(self.data_target_list)
+        self.data_browser_splitter.addWidget(self.data_list)
+        self.data_browser_splitter.setStretchFactor(0, 0)
+        self.data_browser_splitter.setStretchFactor(1, 0)
+        self.data_browser_splitter.setStretchFactor(2, 1)
+        self.data_browser_splitter.setSizes([130, 170, 620])
+        data_layout.addWidget(self.data_browser_splitter, 1)
         data_buttons = QtWidgets.QHBoxLayout()
         data_buttons.setContentsMargins(0, 0, 0, 0)
         data_buttons.setSpacing(4)
         self.export_mesh_btn = QtWidgets.QPushButton("Export Data")
+        self.open_data_scene_btn = QtWidgets.QPushButton("OPEN SCENE")
+        self.open_data_scene_btn.setEnabled(False)
+        self.open_data_scene_btn.setToolTip(
+            "Open the selected ingested rig/assembly scene, then save it as a Work Scene."
+        )
         self.import_assembly_btn = QtWidgets.QPushButton("Ingest Assembly")
         self.open_assembly_btn = QtWidgets.QPushButton("Open Assembly")
         self.reload_assembly_btn = QtWidgets.QPushButton("Reload ASSEMBLY_USD_PROXY")
@@ -711,6 +729,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.export_guide_btn = QtWidgets.QPushButton("Export Guide")
         self.export_skin_btn = QtWidgets.QPushButton("Export Skin")
         data_buttons.addStretch(1)
+        data_buttons.addWidget(self.open_data_scene_btn)
         data_buttons.addWidget(self.export_mesh_btn)
         data_buttons.addWidget(self.import_assembly_btn)
         data_buttons.addWidget(self.open_assembly_btn)
@@ -718,6 +737,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         data_buttons.addWidget(self.save_assembly_btn)
         data_buttons.addWidget(self.publish_assembly_btn)
         data_buttons.addWidget(self.ingest_fbx_btn)
+        # These legacy assembly-authoring actions belong to the dedicated
+        # assembly workflow, not the versioned Data browser.
+        self.open_assembly_btn.setVisible(False)
+        self.reload_assembly_btn.setVisible(False)
+        self.save_assembly_btn.setVisible(False)
+        self.publish_assembly_btn.setVisible(False)
         self.export_guide_btn.setVisible(False)
         self.export_skin_btn.setVisible(False)
         data_layout.addLayout(data_buttons)
@@ -903,6 +928,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.itemSelectionChanged.connect(self._update_publish_selected_state)
         self.data_list.customContextMenuRequested.connect(self._show_data_context_menu)
         self.data_list.itemSelectionChanged.connect(self._update_selected_file_info)
+        self.data_list.itemSelectionChanged.connect(self._update_open_data_scene_state)
+        self.data_list.itemDoubleClicked.connect(lambda _item, _column: self._open_selected_data_scene())
+        self.data_type_list.currentRowChanged.connect(self._populate_data_targets)
+        self.data_target_list.currentRowChanged.connect(self._populate_data_versions)
         self.preview_list.itemSelectionChanged.connect(self._update_selected_file_info)
         self.preview_list.itemDoubleClicked.connect(lambda _item: self._open_selected_preview_in_rv())
         self.publish_list.customContextMenuRequested.connect(self._show_publish_context_menu)
@@ -932,6 +961,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
         self.refresh_data_btn.clicked.connect(self._refresh_current_data)
         self.export_mesh_btn.clicked.connect(self._export_selected_data_type)
+        self.open_data_scene_btn.clicked.connect(self._open_selected_data_scene)
         self.import_assembly_btn.clicked.connect(self._import_assembly_data)
         self.open_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=False))
         self.reload_assembly_btn.clicked.connect(lambda: self._open_selected_asset_assembly(reload=True))
@@ -1398,6 +1428,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.setRowCount(0)
         self.work_list.blockSignals(False)
         self.data_list.clear()
+        self.data_type_list.clear()
+        self.data_target_list.clear()
+        self._data_catalog = {}
+        self._update_open_data_scene_state()
+        self._update_data_action_visibility("")
         if getattr(self, "construct_tree", None):
             self.construct_tree.clear()
         self.preview_list.setRowCount(0)
@@ -1828,11 +1863,21 @@ class AssetManagerWindow(QtWidgets.QDialog):
         comment = self.manager.file_comment(path)
         if comment:
             return comment
-        publish_json = path.parent / "publish.json"
-        if publish_json.exists():
+        metadata_path = next(
+            (
+                candidate for candidate in (
+                    path.parent / "manifest.json",
+                    path.parent / "data.json",
+                    path.parent / "publish.json",
+                )
+                if candidate.exists()
+            ),
+            None,
+        )
+        if metadata_path is not None:
             try:
                 import json
-                with publish_json.open("r", encoding="utf-8") as f:
+                with metadata_path.open("r", encoding="utf-8") as f:
                     return str((json.load(f) or {}).get("comment", ""))
             except Exception:
                 return ""
@@ -2049,23 +2094,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
             import maya.cmds as cmds
 
             _ensure_smartlib_on_path()
-            from smartlib.core.config_loader import ProjectConfig
-            from smartlib.core.path_resolver import ProjectPaths
 
             scene_text = str(cmds.file(query=True, sceneName=True) or "").strip()
             if not scene_text:
                 raise RuntimeError("Save the current Maya scene before using it as an assembly input.")
 
-            project_config = ProjectConfig(self.manager.config_dir)
-            if project_config.project_root is None:
-                raise RuntimeError("project_root is not set in the project configuration.")
             identity = self._asset_context_identity(asset)
-            variant_root = ProjectPaths(
-                project_config.project_root,
-                project_config.templates,
-                project_config.project_name,
-            ).asset_variant_root(identity)
-            work_root = variant_root / "work"
+            # Use the same configured workspace root as Work Scene save/list.
+            # The previous production-root check rejected valid partitioned
+            # paths such as ``workspace/cg/assets/...``.
+            work_root = self.manager.paths.asset_work_root(identity)
             scene_path = Path(scene_text).resolve()
             try:
                 scene_path.relative_to(work_root.resolve())
@@ -2339,15 +2377,27 @@ class AssetManagerWindow(QtWidgets.QDialog):
             maya_usd_builder = None
             try:
                 import maya.cmds  # noqa: F401
-                from smartlib.dcc.maya.asset_context import write_context_asset_usd_snapshot
-
-                contract = current_usd_skel_contract()
-                maya_usd_builder = lambda source, target, asset_name: write_context_asset_usd_snapshot(
-                    source,
-                    target,
-                    asset_name=asset_name,
-                    contract=contract,
+                from smartlib.dcc.maya.asset_context import (
+                    write_context_asset_usd_snapshot,
+                    write_context_static_usd_snapshot,
                 )
+
+                asset_class = str(
+                    (self.context_assembly.manifest.get("context") or {}).get("asset_class")
+                    or "default"
+                ).lower()
+                if asset_class == "environment":
+                    maya_usd_builder = lambda source, target, asset_name: write_context_static_usd_snapshot(
+                        source, target, asset_name=asset_name
+                    )
+                else:
+                    contract = current_usd_skel_contract()
+                    maya_usd_builder = lambda source, target, asset_name: write_context_asset_usd_snapshot(
+                        source,
+                        target,
+                        asset_name=asset_name,
+                        contract=contract,
+                    )
             except ImportError:
                 maya_usd_builder = None
             packed = service.pack(
@@ -2438,49 +2488,108 @@ class AssetManagerWindow(QtWidgets.QDialog):
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         header.setStretchLastSection(True)
     def _populate_data_tree(self, asset: Asset) -> None:
+        selected_type = str(self.data_type_list.currentItem().data(QtCore.Qt.UserRole) or "") if self.data_type_list.currentItem() else ""
+        selected_target = self.data_target_list.currentItem().data(QtCore.Qt.UserRole) if self.data_target_list.currentItem() else ""
+        self.data_type_list.blockSignals(True)
+        self.data_target_list.blockSignals(True)
+        self.data_type_list.clear()
+        self.data_target_list.clear()
         self.data_list.clear()
-        roots: dict[Path, QtWidgets.QTreeWidgetItem] = {}
-        ignored = {"publish.json", "data.json", "source.json", "latest.json", "versions.json"}
+        self._data_catalog = {}
         selected_asset_variant = self._current_asset_variant()
-        if asset.uses_variant_structure(selected_asset_variant):
-            data_roots = [asset.variant_root(selected_asset_variant) / "data"]
-        else:
-            data_roots = [asset.data_dir]
-        files = []
+        # Ingest can precede Asset initialization, so ``default/data`` may be
+        # valid even when variant.json does not exist yet.
+        data_roots = [asset.variant_root(selected_asset_variant) / "data"]
+        if asset.data_dir not in data_roots:
+            data_roots.append(asset.data_dir)
         for data_root in data_roots:
             if not data_root.exists():
                 continue
-            files.extend(
-                path for path in data_root.rglob("*")
-                if path.is_file() and path.name not in ignored and not path.name.endswith(".json")
-            )
-        files = sorted(set(files), key=lambda path: path.as_posix().lower())
+            for path in data_root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() == ".json":
+                    continue
+                parts = list(path.relative_to(data_root).parts)
+                if len(parts) < 2:
+                    continue
+                data_type = parts[0].lower()
+                version_index = next(
+                    (index for index, part in enumerate(parts[1:-1], start=1)
+                     if part.lower().startswith("v") and part[1:].isdigit()),
+                    None,
+                )
+                target_parts = parts[1:version_index] if version_index is not None else parts[1:-1]
+                target = "/".join(target_parts) or "main"
+                self._data_catalog.setdefault(data_type, {}).setdefault(target, []).append(path)
 
-        def get_dir_item(dir_path: Path) -> QtWidgets.QTreeWidgetItem:
-            if dir_path in roots:
-                return roots[dir_path]
-            if dir_path in data_roots or dir_path.parent == dir_path:
-                item = self.data_list.invisibleRootItem()
-                roots[dir_path] = item
-                return item
-            parent = get_dir_item(dir_path.parent)
-            item = QtWidgets.QTreeWidgetItem([dir_path.name, "", "", ""])
-            parent.addChild(item)
-            item.setExpanded(True)
-            roots[dir_path] = item
-            return item
+        preferred = {"assembly": 0, "geo": 1, "guide": 2, "rig": 3, "skin": 4}
+        known_types = ["assembly", "geo", "guide", "rig", "skin"]
+        data_types = sorted(
+            set(known_types) | set(self._data_catalog),
+            key=lambda value: (preferred.get(value.lower(), 100), value.lower()),
+        )
+        selected_row = 0
+        for index, data_type in enumerate(data_types):
+            item = QtWidgets.QListWidgetItem(data_type.title())
+            item.setData(QtCore.Qt.UserRole, data_type)
+            self.data_type_list.addItem(item)
+            if data_type == selected_type:
+                selected_row = index
+        self.data_type_list.blockSignals(False)
+        self.data_target_list.blockSignals(False)
+        if data_types:
+            self.data_type_list.setCurrentRow(selected_row)
+            self._populate_data_targets(preferred_target=str(selected_target or ""))
+        else:
+            self._update_open_data_scene_state()
 
-        for path in files:
-            parent = get_dir_item(path.parent)
+    def _populate_data_targets(self, _row: int = -1, *, preferred_target: str = "") -> None:
+        current = self.data_type_list.currentItem()
+        data_type = str(current.data(QtCore.Qt.UserRole) or "") if current else ""
+        self._update_data_action_visibility(data_type)
+        export_type_index = self.data_type_combo.findData(data_type)
+        if export_type_index >= 0:
+            self.data_type_combo.setCurrentIndex(export_type_index)
+        self.data_target_list.blockSignals(True)
+        self.data_target_list.clear()
+        targets = sorted((getattr(self, "_data_catalog", {}).get(data_type) or {}), key=str.lower)
+        selected_row = 0
+        for index, target in enumerate(targets):
+            item = QtWidgets.QListWidgetItem(target)
+            item.setData(QtCore.Qt.UserRole, target)
+            self.data_target_list.addItem(item)
+            if target == preferred_target:
+                selected_row = index
+        self.data_target_list.blockSignals(False)
+        if targets:
+            self.data_target_list.setCurrentRow(selected_row)
+            self._populate_data_versions()
+        else:
+            self.data_list.clear()
+            self._update_open_data_scene_state()
+
+    def _populate_data_versions(self, _row: int = -1) -> None:
+        data_type_item = self.data_type_list.currentItem()
+        target_item = self.data_target_list.currentItem()
+        data_type = str(data_type_item.data(QtCore.Qt.UserRole) or "") if data_type_item else ""
+        target = str(target_item.data(QtCore.Qt.UserRole) or "") if target_item else ""
+        paths = list((getattr(self, "_data_catalog", {}).get(data_type) or {}).get(target) or [])
+        paths.sort(
+            key=lambda path: (self._data_version_for_path(path), path.stat().st_mtime),
+            reverse=True,
+        )
+        self.data_list.clear()
+        for path in paths:
             item = QtWidgets.QTreeWidgetItem([
-                path.name,
                 self._data_version_for_path(path),
+                path.name,
                 self._format_updated(path),
                 self._data_comment_for_path(path),
             ])
             item.setData(0, QtCore.Qt.UserRole, str(path))
-            parent.addChild(item)
-        self.data_list.expandAll()
+            self.data_list.addTopLevelItem(item)
+        if self.data_list.topLevelItemCount():
+            self.data_list.setCurrentItem(self.data_list.topLevelItem(0))
+        self._update_open_data_scene_state()
 
     def _construct_service(self, asset: Asset | None = None):
         asset = asset or self._current_asset()
@@ -3206,12 +3315,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
         item = self.data_list.itemAt(pos)
         if not item or not item.data(0, QtCore.Qt.UserRole):
             return
+        self.data_list.setCurrentItem(item)
         path = Path(item.data(0, QtCore.Qt.UserRole))
         menu = QtWidgets.QMenu(self)
+        open_scene = menu.addAction("Open Scene")
+        open_scene.setEnabled(self._can_open_selected_data_scene())
+        menu.addSeparator()
         open_folder = menu.addAction("Open Folder")
         copy_path = menu.addAction("Copy Path")
         action = _exec_menu(menu, self.data_list.mapToGlobal(pos))
-        if action == open_folder:
+        if action == open_scene:
+            self._open_selected_data_scene()
+        elif action == open_folder:
             self.manager.open_in_explorer(path.parent)
         elif action == copy_path:
             self._copy_text(str(path))
@@ -3222,6 +3337,41 @@ class AssetManagerWindow(QtWidgets.QDialog):
             return None
         path = item.data(0, QtCore.Qt.UserRole)
         return Path(path) if path else None
+
+    def _can_open_selected_data_scene(self) -> bool:
+        path = self._selected_data_path()
+        type_item = self.data_type_list.currentItem()
+        data_type = str(type_item.data(QtCore.Qt.UserRole) or "").strip().lower() if type_item else ""
+        return bool(
+            path
+            and path.is_file()
+            and data_type in {"rig", "assembly"}
+            and path.suffix.lower() in {".ma", ".mb", ".hip", ".hiplc", ".hipnc"}
+        )
+
+    def _update_open_data_scene_state(self) -> None:
+        if getattr(self, "open_data_scene_btn", None):
+            self.open_data_scene_btn.setEnabled(self._can_open_selected_data_scene())
+
+    def _update_data_action_visibility(self, data_type: str = "") -> None:
+        data_type = str(data_type or "").strip().lower()
+        scene_type = data_type in {"assembly", "rig"}
+        export_type = data_type in {"geo", "guide", "skin"}
+        self.open_data_scene_btn.setVisible(scene_type)
+        self.export_mesh_btn.setVisible(export_type)
+        self.import_assembly_btn.setVisible(data_type == "assembly")
+        self.ingest_fbx_btn.setVisible(data_type == "geo")
+
+    def _open_selected_data_scene(self) -> None:
+        path = self._selected_data_path()
+        if not self._can_open_selected_data_scene() or path is None:
+            self.status_label.setText("Select an ingested rig or assembly scene")
+            return
+        try:
+            open_scene_in_current_dcc(path)
+            self.status_label.setText(f"Opened Data scene: {path.name}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Open Data Scene Failed", str(exc))
 
     def _import_selected_data(self) -> None:
         path = self._selected_data_path()

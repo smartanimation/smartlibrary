@@ -1,9 +1,9 @@
 templates:
-  asset_root: "{project_root}/assets/{category}/{group}/{asset_name}"
+  asset_root: "{assets_root}/{category}/{group}/{asset_name}"
   asset_data_root: "{asset_root}/{variant}/data"
   asset_publish_root: "{asset_root}/{variant}/publish"
   asset_reference_root: "{asset_root}/{variant}/reference"
-  asset_work_root: "{workspace_root}/assets/{category}/{group}/{asset_name}/{variant}/work"
+  asset_work_root: "{workspace_root}/{workspace_partition}/assets/{category}/{group}/{asset_name}/{variant}/work"
   asset_work: "{asset_work_root}/{department}"
 
   # main areas

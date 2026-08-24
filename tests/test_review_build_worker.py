@@ -70,3 +70,43 @@ def test_after_effects_resolver_prefers_explicit_review_build_registration(
     resolved = ae.find_after_effects_executable(ProjectConfig(config_dir))
 
     assert Path(resolved) == ae_2024
+
+
+def test_review_thumbnail_uses_imgcvt_output_format_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    rendered = tmp_path / "ogs.png"
+    rendered.write_bytes(b"\x89PNG\r\n\x1a\n")
+    maya_root = tmp_path / "Maya2024"
+    imgcvt = maya_root / "bin" / "imgcvt.exe"
+    imgcvt.parent.mkdir(parents=True)
+    imgcvt.write_bytes(b"")
+    target = tmp_path / "thumbnail.jpg"
+
+    class FakeCmds:
+        @staticmethod
+        def currentTime(_frame, edit=True):
+            return edit
+
+        @staticmethod
+        def ogsRender(**_kwargs):
+            return str(rendered)
+
+        @staticmethod
+        def about(installDirectory=True):
+            return str(maya_root) if installDirectory else ""
+
+    def fake_run(command, **_kwargs):
+        assert command[1:5] == ["-t", "jpg", "-q", "90"]
+        Path(command[-1]).write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(worker.subprocess, "run", fake_run)
+
+    result = worker._render_review_thumbnail(
+        FakeCmds(), camera="camera1", frame=1001,
+        width=640, height=360, target=target,
+    )
+
+    assert result == target
+    assert target.read_bytes()[:2] == b"\xff\xd8"

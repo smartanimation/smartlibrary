@@ -173,7 +173,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.history_search.textChanged.connect(self._refresh_history)
         toolbar.addWidget(self.history_search, 1)
         self.history_type_combo = QtWidgets.QComboBox()
-        self.history_type_combo.addItems(["All", "Editorial", "Asset", "Shot", "Sequence", "Vendor"])
+        self.history_type_combo.addItems(["All", "Editorial", "Asset", "Shot", "Sequence", "Vendor", "Ignored"])
         self.history_type_combo.currentTextChanged.connect(self._refresh_history)
         toolbar.addWidget(self.history_type_combo)
         refresh = QtWidgets.QToolButton()
@@ -292,6 +292,11 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         )
         self.apply_metadata_btn.clicked.connect(self.apply_metadata_to_selection)
         layout.addWidget(self.apply_metadata_btn)
+
+        self.ignore_btn = QtWidgets.QPushButton("Mark Not CG / Ignore Selected")
+        self.ignore_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogDiscardButton))
+        self.ignore_btn.clicked.connect(self.ignore_selected)
+        layout.addWidget(self.ignore_btn)
 
         self.ingest_btn = QtWidgets.QPushButton("Ingest Selected")
         self.ingest_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
@@ -421,6 +426,30 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.auto_plan()
         self._refresh_history()
 
+    def ignore_selected(self) -> None:
+        rows = self._selected_rows()
+        if not rows and self.current_row >= 0:
+            rows = [self.current_row]
+        if not rows:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Mark Not CG / Ignore",
+            f"Mark {len(rows)} file(s) as not related to CG ingest?\n\n"
+            "Files stay in incoming, but will be hidden from Auto Plan until retried from History.",
+        )
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        selected_items = [replace(item, selected=index in rows) for index, item in enumerate(self.items)]
+        result = self.service.ignore_items(selected_items)
+        QtWidgets.QMessageBox.information(
+            self,
+            "Mark Not CG / Ignore",
+            f"Ignored: {len(result.processed_sources)}\nSkipped: {len(result.skipped)}",
+        )
+        self.auto_plan()
+        self._refresh_history()
+
     def open_target_folder(self) -> None:
         item = self._current_item()
         if not item or not item.target_path:
@@ -455,11 +484,18 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             "Open Target Folder",
         )
         open_target.setEnabled(item.target_path is not None)
+        menu.addSeparator()
+        ignore = menu.addAction(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogDiscardButton),
+            "Mark Not CG / Ignore Selected",
+        )
         selected = menu.exec(self.table.viewport().mapToGlobal(position))
         if selected == open_source:
             self.open_source_folder()
         elif selected == open_target:
             self.open_target_folder()
+        elif selected == ignore:
+            self.ignore_selected()
 
     def _reveal_in_explorer(self, path: Path, label: str) -> None:
         if not path.exists():
@@ -488,7 +524,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 state = read_json(state_path, {}) or {}
                 files = state.get("files") if isinstance(state.get("files"), dict) else {}
                 for record_key, data in files.items():
-                    if not isinstance(data, dict) or data.get("status") != "processed":
+                    if not isinstance(data, dict) or data.get("status") not in {"processed", "ignored"}:
                         continue
                     target_type = str(data.get("target_type") or "")
                     if target_filter != "All" and target_type != target_filter:

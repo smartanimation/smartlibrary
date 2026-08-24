@@ -102,6 +102,67 @@ def test_construct_from_cast_resolves_rig_publish(tmp_path: Path) -> None:
     assert construct["components"][0]["source"]["asset_publish"] == "approved"
 
 
+def test_editorial_timing_is_versioned_and_overlays_shot_json(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep001", "sq010", "sh0010")
+    write_json(
+        service.shot_root(identity) / "shot.json",
+        {
+            "episode": identity.episode,
+            "sequence": identity.sequence,
+            "shot": identity.shot,
+            "editorial": {"fps": 24, "cut_in": 278, "cut_out": 411},
+        },
+    )
+
+    v001 = service.publish_editorial_timing(
+        identity,
+        {"fps": 24, "cut_in": 278, "cut_out": 411, "handles": {"head": 8, "tail": 8}},
+        source={"kind": "editorial_import", "edit": "edit_v010"},
+    )
+    v002 = service.publish_editorial_timing(
+        identity,
+        {"fps": 24, "cut_in": 278, "cut_out": 419, "handles": {"head": 8, "tail": 8}},
+        source={"kind": "editorial_import", "edit": "edit_v011"},
+    )
+
+    shot = service.load_shot(identity)
+    assert v001.parent.name == "v001"
+    assert v002.parent.name == "v002"
+    assert shot["editorial_timing"]["version"] == "v002"
+    assert shot["editorial"]["cut_out"] == 419
+    assert shot["editorial"]["work_range"] == [1001, 1158]
+    assert service.shot_frame_range(identity) == (278, 419)
+
+
+def test_editorial_timing_is_a_construct_input_and_diff_code(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep001", "sq010", "sh0010")
+    write_json(service.shot_root(identity) / "cast.json", {"cast": {}})
+    timing_v1 = service.publish_editorial_timing(
+        identity, {"fps": 24, "cut_in": 100, "cut_out": 120}
+    )
+    current = service.construct_from_stage_inputs(identity)
+    assert current["components"][0]["component_type"] == "editorial_timing"
+    assert current["components"][0]["path"] == str(timing_v1)
+
+    service.publish_editorial_timing(
+        identity, {"fps": 24, "cut_in": 100, "cut_out": 124}
+    )
+    manager = ReviewBuildManagerService(ProjectConfig(config_dir))
+    diff = manager.construct_diff(identity, current=current)
+    timing_change = next(row for row in diff if row["key"][0] == "editorial_timing")
+    assert timing_change["change"] == "UPDATED"
+    assert timing_change["code"] == "TIMING_CHANGED"
+    assert timing_change["selected"] is True
+
+
 def test_write_construct_normalizes_fx_cache(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
@@ -240,6 +301,7 @@ def test_missing_background_asset_usd_is_visible_but_not_required(tmp_path: Path
     )
     service.latest_anim_input = lambda _identity: None
     service.list_shot_data_versions = lambda _identity: []
+    service.load_dependencies = lambda _identity: {"dependencies": []}
     service._latest_review_camera_paths = lambda _identity: []
     service.list_set_dress_publish_versions = lambda _identity: []
     service.list_preview_render_versions = lambda _identity: []
@@ -347,6 +409,20 @@ def test_build_manager_contents_use_construct_components() -> None:
                     "source": {"field": "camera"},
                 },
                 {
+                    "component_type": "camera",
+                    "name": "take30",
+                    "version": "v001",
+                    "path": "",
+                    "enabled": True,
+                    "required": False,
+                    "source": {
+                        "kind": "shot_dependency",
+                        "dependency_type": "virtual_camera",
+                        "dependency_id": "vcam_take30",
+                        "representation": "fbx",
+                    },
+                },
+                {
                     "component_type": "rig",
                     "name": "hero",
                     "version": "v012",
@@ -363,11 +439,12 @@ def test_build_manager_contents_use_construct_components() -> None:
 
     rows = manager.build_contents(identity)
 
-    assert [row["type"] for row in rows] == ["camera", "rig"]
+    assert [row["type"] for row in rows] == ["camera", "virtual_camera", "rig"]
     assert rows[0]["component"]["source"]["field"] == "camera"
     assert rows[0]["context"] == ""
-    assert rows[1]["context"] == "WORK"
-    assert rows[1]["state"] == "EXCLUDED"
+    assert rows[1]["note"] == "from dependencies.json: vcam_take30"
+    assert rows[2]["context"] == "WORK"
+    assert rows[2]["state"] == "EXCLUDED"
 
 
 def test_work_stage_status_uses_construct_curves_without_animation_package(
@@ -634,6 +711,7 @@ def test_construct_discovers_publishes_without_anim_input(tmp_path: Path) -> Non
         write_json(path, {"ok": True})
     service.latest_anim_input = lambda _identity: None
     service.list_shot_data_versions = lambda _identity: []
+    service.load_dependencies = lambda _identity: {"dependencies": []}
     service._latest_review_camera_paths = lambda _identity: [str(camera)]
     service.list_set_dress_publish_versions = lambda _identity: [
         SimpleNamespace(name="set_dress/main", version="v002", path=str(set_dress), latest=True)

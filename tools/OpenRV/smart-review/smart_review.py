@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import getpass
 from pathlib import Path
 
 from rv import commands, qtutils, rvtypes
@@ -19,6 +20,7 @@ except ImportError:
 
 PROJECT_FALLBACK_ROOT = "P:/dev/smartlibrary"
 SHOT_DEPTS = ("layout", "anim", "fx", "light", "comp")
+SHOT_PROFILES = ("publish", "internal")
 ASSET_DEPTS = ("model", "rig", "look")
 
 
@@ -76,6 +78,28 @@ def _project_config_roots(repo_root):
     return result
 
 
+def _production_root(project_root):
+    project_root = Path(project_root)
+    repo_root = _repo_root()
+    for config_root in _project_config_roots(repo_root):
+        if not config_root.exists():
+            continue
+        for config in config_root.glob("*/templates_base.yml"):
+            text = _read_text(config)
+            root_match = re.search(r"(?m)^\s*project_root:\s*[\"']?([^\"'\r\n]+)", text)
+            if not root_match or Path(root_match.group(1).strip()) != project_root:
+                continue
+            match = re.search(r"(?m)^\s*production_root:\s*[\"']?([^\"'\r\n]+)", text)
+            if match:
+                value = match.group(1).strip().replace("{project_root}", str(project_root))
+                return Path(value)
+    return project_root / "production"
+
+
+def _entity_root(project_root, name):
+    return _production_root(project_root) / name
+
+
 def _read_text(path):
     try:
         return Path(path).read_text(encoding="utf-8")
@@ -96,6 +120,24 @@ def _latest_review_json(base_dir):
     rel = latest.get("path") if isinstance(latest, dict) else ""
     review = Path(base_dir) / rel if rel else None
     return review if review and review.exists() else None
+
+
+def _review_versions(base_dir):
+    base = Path(base_dir)
+    return sorted(
+        [path.name for path in base.glob("v*") if path.is_dir() and (path / "review.json").is_file()],
+        key=_version_number,
+        reverse=True,
+    )
+
+
+def _decision_service():
+    packages = _repo_root() / "packages"
+    if str(packages) not in sys.path:
+        sys.path.insert(0, str(packages))
+    from smartlib.review.decisions import ReviewDecisionService
+
+    return ReviewDecisionService()
 
 
 def _sequence_pattern_from_first_file(path):
@@ -258,14 +300,14 @@ def _launch_selected_shots():
 
 
 def _shot_dirs(project_root, episode, sequence):
-    base = Path(project_root) / "shots" / episode / sequence
+    base = _entity_root(project_root, "shots") / episode / sequence
     if not base.exists():
         return []
     return [path for path in sorted(base.iterdir()) if path.is_dir()]
 
 
 def _adjacent_sequences(project_root, episode, sequence):
-    base = Path(project_root) / "shots" / episode
+    base = _entity_root(project_root, "shots") / episode
     if not base.exists():
         return [sequence]
     sequences = [path.name for path in sorted(base.iterdir()) if path.is_dir()]
@@ -276,7 +318,7 @@ def _adjacent_sequences(project_root, episode, sequence):
 
 
 def _latest_sequence_review(project_root, episode, sequence, dept):
-    base = Path(project_root) / "sequences" / episode / sequence / "output" / "review" / dept / "main"
+    base = _entity_root(project_root, "sequences") / episode / sequence / "output" / "review" / dept / "main"
     review = _latest_review_json(base)
     if review:
         return review
@@ -290,7 +332,7 @@ def _latest_sequence_review(project_root, episode, sequence, dept):
 
 
 def _latest_sequence_shot_output(project_root, episode, sequence, shot, dept):
-    base = Path(project_root) / "sequences" / episode / sequence / "output" / "review" / dept / shot
+    base = _entity_root(project_root, "sequences") / episode / sequence / "output" / "review" / dept / shot
     if not base.exists():
         return None
     for layer_dir in sorted([path for path in base.iterdir() if path.is_dir()]):
@@ -323,7 +365,7 @@ def _sequence_shot_media(project_root, episode, sequence, shot, dept):
 
 
 def _quick_check_media(project_root, episode, sequence, shot, dept):
-    shot_root = Path(project_root) / "shots" / episode / sequence / shot
+    shot_root = _entity_root(project_root, "shots") / episode / sequence / shot
     preview_media = _latest_preview_render_media(shot_root, dept)
     if preview_media:
         return preview_media
@@ -456,7 +498,7 @@ def _story_reel_name(project_root, episode, sequence, shot):
         if str(row.get("shot") or "") == str(shot):
             return str(row.get("shot") or "")
 
-    sequence_json = _read_json(Path(project_root) / "sequences" / episode / sequence / "sequence.json")
+    sequence_json = _read_json(_entity_root(project_root, "sequences") / episode / sequence / "sequence.json")
     sequence_shots = sequence_json.get("shots") or []
     shot_index = None
     for index, row in enumerate(sequence_shots):
@@ -493,8 +535,15 @@ def _story_reel_media(project_root, episode, sequence, shot):
     return [_rv_sequence_path(media_path)]
 
 
-def _latest_shot_review(project_root, episode, sequence, shot, dept):
-    base = Path(project_root) / "shots" / episode / sequence / shot / "publish" / "review" / dept
+def _shot_review_base(project_root, episode, sequence, shot, dept, profile):
+    shot_root = _entity_root(project_root, "shots") / episode / sequence / shot
+    if profile == "publish":
+        return shot_root / "publish" / "review" / dept
+    return shot_root / "review" / dept / profile
+
+
+def _latest_shot_review(project_root, episode, sequence, shot, dept, profile="publish"):
+    base = _shot_review_base(project_root, episode, sequence, shot, dept, profile)
     review = _latest_review_json(base)
     if review:
         return review
@@ -509,7 +558,7 @@ def _latest_shot_review(project_root, episode, sequence, shot, dept):
 
 
 def _asset_review_rows(project_root):
-    roots = sorted((Path(project_root) / "assets").glob("*/*/*"))
+    roots = sorted(_entity_root(project_root, "assets").glob("*/*/*"))
     rows = []
     for asset_root in roots:
         if not asset_root.is_dir():
@@ -685,7 +734,9 @@ class SmartReviewWidget(QtWidgets.QWidget):
         layout.addWidget(self.shot_mode_combo)
         options = QtWidgets.QGridLayout()
         self.shot_dept_combo = _combo(SHOT_DEPTS)
-        self.version_mode_combo = _combo(["latest", "locked"])
+        self.shot_profile_combo = _combo(SHOT_PROFILES)
+        self.version_mode_combo = _combo(["latest"])
+        self.review_version_combo = _combo([])
         self.handle_in = QtWidgets.QSpinBox()
         self.handle_out = QtWidgets.QSpinBox()
         for spin in (self.handle_in, self.handle_out):
@@ -698,19 +749,31 @@ class SmartReviewWidget(QtWidgets.QWidget):
         self.sync_check.setChecked(True)
         options.addWidget(QtWidgets.QLabel("Department"), 0, 0)
         options.addWidget(self.shot_dept_combo, 0, 1)
-        options.addWidget(QtWidgets.QLabel("Version"), 1, 0)
-        options.addWidget(self.version_mode_combo, 1, 1)
-        options.addWidget(QtWidgets.QLabel("Handle In"), 2, 0)
-        options.addWidget(self.handle_in, 2, 1)
-        options.addWidget(QtWidgets.QLabel("Handle Out"), 3, 0)
-        options.addWidget(self.handle_out, 3, 1)
-        options.addWidget(self.hud_check, 4, 0, 1, 2)
-        options.addWidget(self.trim_check, 5, 0, 1, 2)
-        options.addWidget(self.sync_check, 6, 0, 1, 2)
+        options.addWidget(QtWidgets.QLabel("Profile"), 1, 0)
+        options.addWidget(self.shot_profile_combo, 1, 1)
+        options.addWidget(QtWidgets.QLabel("Version"), 2, 0)
+        options.addWidget(self.version_mode_combo, 2, 1)
+        options.addWidget(QtWidgets.QLabel("Review Version"), 3, 0)
+        options.addWidget(self.review_version_combo, 3, 1)
+        options.addWidget(QtWidgets.QLabel("Handle In"), 4, 0)
+        options.addWidget(self.handle_in, 4, 1)
+        options.addWidget(QtWidgets.QLabel("Handle Out"), 5, 0)
+        options.addWidget(self.handle_out, 5, 1)
+        options.addWidget(self.hud_check, 6, 0, 1, 2)
+        options.addWidget(self.trim_check, 7, 0, 1, 2)
+        options.addWidget(self.sync_check, 8, 0, 1, 2)
         layout.addLayout(options)
+        decisions = QtWidgets.QGridLayout()
+        self.approve_btn = QtWidgets.QPushButton("Approve for Delivery")
+        self.changes_btn = QtWidgets.QPushButton("Request Changes")
+        self.revoke_btn = QtWidgets.QPushButton("Revoke Approval")
+        decisions.addWidget(self.approve_btn, 0, 0, 1, 2)
+        decisions.addWidget(self.changes_btn, 1, 0)
+        decisions.addWidget(self.revoke_btn, 1, 1)
+        layout.addLayout(decisions)
         self.shot_summary = QtWidgets.QPlainTextEdit()
         self.shot_summary.setReadOnly(True)
-        self.shot_summary.setMaximumHeight(74)
+        self.shot_summary.setMaximumHeight(92)
         layout.addWidget(self.shot_summary)
         self._add_actions(layout)
 
@@ -724,6 +787,13 @@ class SmartReviewWidget(QtWidgets.QWidget):
         self.shot_current_btn.clicked.connect(self.current_context)
         self.shot_list.itemChanged.connect(lambda _item: self._update_shot_summary())
         self.shot_mode_combo.currentTextChanged.connect(lambda _text: self._update_shot_summary())
+        self.shot_profile_combo.currentTextChanged.connect(self.refresh_shots)
+        self.shot_dept_combo.currentTextChanged.connect(self._refresh_review_versions)
+        self.shot_profile_combo.currentTextChanged.connect(self._refresh_review_versions)
+        self.shot_list.itemChanged.connect(lambda _item: self._refresh_review_versions())
+        self.approve_btn.clicked.connect(lambda: self._review_decision("APPROVED"))
+        self.changes_btn.clicked.connect(lambda: self._review_decision("CHANGES_REQUESTED"))
+        self.revoke_btn.clicked.connect(lambda: self._review_decision("REVOKED"))
 
     def _add_actions(self, layout):
         grid = QtWidgets.QGridLayout()
@@ -763,7 +833,7 @@ class SmartReviewWidget(QtWidgets.QWidget):
         current = self.episode_combo.currentText()
         self.episode_combo.blockSignals(True)
         self.episode_combo.clear()
-        shots_root = self.project_root / "shots"
+        shots_root = _entity_root(self.project_root, "shots")
         episodes = [path.name for path in sorted(shots_root.iterdir()) if path.is_dir()] if shots_root.exists() else []
         self.episode_combo.addItems(episodes)
         if current:
@@ -777,7 +847,7 @@ class SmartReviewWidget(QtWidgets.QWidget):
         current = self.sequence_combo.currentText()
         self.sequence_combo.blockSignals(True)
         self.sequence_combo.clear()
-        base = self.project_root / "shots" / self.episode_combo.currentText()
+        base = _entity_root(self.project_root, "shots") / self.episode_combo.currentText()
         sequences = [path.name for path in sorted(base.iterdir()) if path.is_dir()] if base.exists() else []
         self.sequence_combo.addItems(sequences)
         if current:
@@ -822,6 +892,7 @@ class SmartReviewWidget(QtWidgets.QWidget):
             )
             self.shot_list.addItem(item)
         self._update_shot_summary()
+        self._refresh_review_versions()
 
     def refresh_assets(self):
         self.asset_list.clear()
@@ -839,8 +910,9 @@ class SmartReviewWidget(QtWidgets.QWidget):
 
     def _shot_status(self, episode, sequence, shot):
         chunks = []
+        profile = self.shot_profile_combo.currentText() if hasattr(self, "shot_profile_combo") else "publish"
         for dept in ("layout", "anim", "comp"):
-            review = _latest_shot_review(self.project_root, episode, sequence, shot, dept)
+            review = _latest_shot_review(self.project_root, episode, sequence, shot, dept, profile)
             sequence_media = _sequence_shot_media(self.project_root, episode, sequence, shot, dept)
             quick_media = _quick_check_media(self.project_root, episode, sequence, shot, dept)
             chunks.append("%s %s" % (dept, "ready" if review or sequence_media or quick_media else "-"))
@@ -853,6 +925,77 @@ class SmartReviewWidget(QtWidgets.QWidget):
             if item.checkState() == QtCore.Qt.Checked:
                 rows.append(item.data(QtCore.Qt.UserRole))
         return rows
+
+    def _selected_review_path(self):
+        rows = self._selected_shots()
+        if len(rows) != 1:
+            raise RuntimeError("Select exactly one shot for a review decision.")
+        row = rows[0]
+        base = _shot_review_base(
+            self.project_root,
+            row["episode"], row["sequence"], row["shot"],
+            self.shot_dept_combo.currentText(),
+            self.shot_profile_combo.currentText(),
+        )
+        version = self.review_version_combo.currentText()
+        review = base / version / "review.json"
+        if not review.is_file():
+            raise RuntimeError("Selected review version was not found: %s" % review)
+        return review
+
+    def _refresh_review_versions(self):
+        current = self.review_version_combo.currentText()
+        versions = []
+        rows = self._selected_shots()
+        if len(rows) == 1:
+            row = rows[0]
+            base = _shot_review_base(
+                self.project_root,
+                row["episode"], row["sequence"], row["shot"],
+                self.shot_dept_combo.currentText(),
+                self.shot_profile_combo.currentText(),
+            )
+            versions = _review_versions(base)
+        self.review_version_combo.blockSignals(True)
+        self.review_version_combo.clear()
+        self.review_version_combo.addItems(versions)
+        if current in versions:
+            self.review_version_combo.setCurrentText(current)
+        self.review_version_combo.blockSignals(False)
+
+    def _review_decision(self, decision):
+        try:
+            review = self._selected_review_path()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Smart Review", str(exc))
+            return
+        verb = {
+            "APPROVED": "Approve for Client Delivery",
+            "CHANGES_REQUESTED": "Request Changes",
+            "REVOKED": "Revoke Approval",
+        }[decision]
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            verb,
+            "%s\n\n%s\n\nContinue?" % (verb, review),
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        comment, accepted = QtWidgets.QInputDialog.getText(self, verb, "Comment")
+        if not accepted:
+            return
+        try:
+            record = _decision_service().decide(
+                review,
+                decision,
+                author=os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser(),
+                comment=str(comment),
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Smart Review", str(exc))
+            return
+        self.status.setText("%s: %s %s" % (record.decision, record.version, record.author))
+        self.refresh_shots()
 
     def _selected_assets(self):
         rows = []
@@ -878,8 +1021,14 @@ class SmartReviewWidget(QtWidgets.QWidget):
         sequences = sorted({row["sequence"] for row in rows})
         output = "Dept 2x2: Story Reel | Layout / Animation | Comp" if self.shot_mode_combo.currentText() == "Dept Compare Grid" else "RV session stack"
         self.shot_summary.setPlainText(
-            "Selected shots: %d\nSequences: %s\nMode: %s\nOutput: %s"
-            % (len(rows), ", ".join(sequences) or "-", self.shot_mode_combo.currentText(), output)
+            "Selected shots: %d\nSequences: %s\nMode: %s\nProfile: %s\nOutput: %s"
+            % (
+                len(rows),
+                ", ".join(sequences) or "-",
+                self.shot_mode_combo.currentText(),
+                self.shot_profile_combo.currentText(),
+                output,
+            )
         )
 
     def _update_asset_summary(self):
@@ -906,20 +1055,40 @@ class SmartReviewWidget(QtWidgets.QWidget):
                     )
                 )
                 continue
-            sequence_media = _sequence_shot_media(
-                self.project_root,
-                row["episode"],
-                row["sequence"],
-                row["shot"],
-                dept,
-            )
-            if sequence_media:
-                media.extend(sequence_media[:1])
-                continue
-            review = _latest_shot_review(self.project_root, row["episode"], row["sequence"], row["shot"], dept)
-            if review:
-                media.extend(_media_from_review(review)[:1])
+            media.extend(self._department_media(row, dept))
         return _dedupe(media)
+
+    def _department_media(self, row, dept):
+        profile = self.shot_profile_combo.currentText()
+        if profile != "publish":
+            base = _shot_review_base(
+                self.project_root, row["episode"], row["sequence"], row["shot"], dept, profile
+            )
+            selected_version = self.review_version_combo.currentText() if dept == self.shot_dept_combo.currentText() else ""
+            selected_review = base / selected_version / "review.json" if selected_version else None
+            review = selected_review if selected_review and selected_review.is_file() else _latest_shot_review(
+                self.project_root, row["episode"], row["sequence"], row["shot"], dept, profile
+            )
+            if review:
+                return _media_from_review(review)[:1]
+        sequence_media = _sequence_shot_media(
+            self.project_root,
+            row["episode"],
+            row["sequence"],
+            row["shot"],
+            dept,
+        )
+        if sequence_media:
+            return sequence_media[:1]
+        review = _latest_shot_review(
+            self.project_root,
+            row["episode"],
+            row["sequence"],
+            row["shot"],
+            dept,
+            "publish",
+        )
+        return _media_from_review(review)[:1] if review else []
 
     def _dept_compare_media(self):
         rows = self._selected_shots()
@@ -929,9 +1098,9 @@ class SmartReviewWidget(QtWidgets.QWidget):
         media = []
         for resolver in (
             lambda: _story_reel_media(self.project_root, row["episode"], row["sequence"], row["shot"]),
-            lambda: _sequence_shot_media(self.project_root, row["episode"], row["sequence"], row["shot"], "layout"),
-            lambda: _sequence_shot_media(self.project_root, row["episode"], row["sequence"], row["shot"], "anim"),
-            lambda: _sequence_shot_media(self.project_root, row["episode"], row["sequence"], row["shot"], "comp"),
+            lambda: self._department_media(row, "layout"),
+            lambda: self._department_media(row, "anim"),
+            lambda: self._department_media(row, "comp"),
         ):
             resolved = resolver()
             media.extend(resolved[:1])

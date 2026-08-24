@@ -9,6 +9,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig, expand_config_tokens, load_config
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import configured_project_paths
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,7 @@ class StoryreelBuilder:
         shot_name = str(shot.get("shot") or "").strip()
         if not episode or not sequence or not shot_name:
             return first_file
-        shot_root = self.project_root / "shots" / episode / sequence / shot_name
+        shot_root = configured_project_paths(self.project_root, self.project_config).shot_root(episode, sequence, shot_name)
         thumbnail = shot_root / "thumbnail.jpg"
         if not execute:
             return thumbnail

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -97,6 +98,30 @@ def _plugin_validation_results(report: dict | None) -> list[dict]:
         for row in ((report or {}).get("plugins") or [])
         if row.get("requirement") == "optional" and not row.get("loaded")
     ]
+
+
+def _normalize_color_management_for_save(cmds) -> dict:
+    """Remove stale OCIO scene overrides when the Maya process uses SynColor."""
+
+    enabled = str(os.environ.get("MAYA_COLOR_MANAGEMENT_SYNCOLOR") or "").strip().lower()
+    if enabled in {"", "0", "false", "no", "off"}:
+        return {"mode": "ocio", "changed": False}
+    changed = False
+    for node in cmds.ls(type="colorManagementGlobals") or []:
+        config_enabled = f"{node}.configFileEnabled"
+        config_path = f"{node}.configFilePath"
+        try:
+            if cmds.objExists(config_enabled):
+                cmds.setAttr(config_enabled, False)
+                changed = True
+            if cmds.objExists(config_path):
+                cmds.setAttr(config_path, "", type="string")
+                changed = True
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not normalize Maya color management on {node}: {exc}"
+            ) from exc
+    return {"mode": "syncolor", "changed": changed}
 
 
 def _preferred_camera(cameras: list[str]) -> str:
@@ -299,19 +324,34 @@ def _render_review_thumbnail(
         imgcvt = maya_location / "bin" / "imgcvt.exe"
         if imgcvt.is_file():
             completed = subprocess.run(
-                [str(imgcvt), "-f", "jpg", str(rendered), str(target)],
+                [str(imgcvt), "-t", "jpg", "-q", "90", str(rendered), str(target)],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if completed.returncode == 0 and target.is_file():
+            if (
+                completed.returncode == 0
+                and target.is_file()
+                and target.read_bytes()[:2] == b"\xff\xd8"
+            ):
                 return target
     except Exception:
         pass
-    # Last-resort copy is kept only for Maya installations without imgcvt.
-    # Validation records the actual source in source_manifest.json.
-    shutil.copy2(rendered, target)
-    return target
+    try:
+        try:
+            from PySide6 import QtGui
+        except ImportError:
+            from PySide2 import QtGui
+        image = QtGui.QImage(str(rendered))
+        if not image.isNull() and image.save(str(target), "JPEG", 90):
+            if target.read_bytes()[:2] == b"\xff\xd8":
+                return target
+    except Exception:
+        pass
+    raise RuntimeError(
+        "Review thumbnail could not be encoded as JPEG. "
+        f"Source image: {rendered}"
+    )
 
 
 def _latest_preview_render_contract(shot_service, identity, department: str) -> dict:
@@ -887,6 +927,7 @@ def _run_scene_construction(
             shot_data,
             department=plan.department,
             project_root=manager.project_config.project_root,
+            construct_data=construct_data,
         )
     from smartlib.dcc.maya.shot_builder import create_review_display_layers
 
@@ -947,6 +988,7 @@ def _run_scene_construction(
             f"{identity.shot}_{plan.department}_{plan.task}_{args.output_version}"
             f"{scene_extension}"
         )
+        _normalize_color_management_for_save(cmds)
         cmds.file(rename=str(scene_path))
         cmds.file(save=True, type=scene_type, force=True)
     usd_path = None
@@ -1442,6 +1484,7 @@ def _run_sequence_construction(
         f"{identity.episode}_{identity.sequence}_{plan.department}_"
         f"{plan.task}_{args.output_version}{scene_extension}"
     )
+    _normalize_color_management_for_save(cmds)
     cmds.file(rename=str(scene_path))
     cmds.file(save=True, type=scene_type, force=True)
     validation = _validation_payload(

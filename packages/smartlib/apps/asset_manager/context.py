@@ -418,6 +418,8 @@ class AssetContextService:
                 continue
             profiles = recipe.get("profiles") or {}
             if isinstance(profiles, dict) and profiles:
+                if not bool(recipe.get("inherit_common_profiles", True)):
+                    return str(asset_class), dict(profiles)
                 # Recipes specialize common profiles. Keep project-level profiles
                 # such as MCP and ANIM when a matching asset recipe does not
                 # explicitly override them.
@@ -426,6 +428,36 @@ class AssetContextService:
                 merged_profiles.update(profiles)
                 return str(asset_class), merged_profiles
         return "default", context.get("quality_profiles") or {}
+
+    def stage_profile_policy(self, stage: str) -> dict[str, Any]:
+        """Return the configured shot-stage policy, retaining legacy aliases."""
+
+        stage_name = str(stage or "WORK").strip().upper()
+        if stage_name == "FINAL":
+            stage_name = "REND"
+        context = self.load_context("asset")
+        policies = context.get("stage_profiles") or {}
+        policy = policies.get(stage_name) or policies.get(stage_name.lower()) or {}
+        return dict(policy) if isinstance(policy, dict) else {}
+
+    def stage_context_for_asset(self, identity: AssetIdentity, stage: str) -> str:
+        """Map FAST/WORK/REND to an Asset Context for the selected asset class."""
+
+        stage_name = str(stage or "WORK").strip().upper()
+        if stage_name == "FINAL":
+            stage_name = "REND"
+        context = self.load_context("asset")
+        asset_class, profiles = self._profiles_for_identity(identity, context)
+        policy = self.stage_profile_policy(stage_name)
+        selected = str(policy.get(asset_class) or "").strip().upper()
+        if selected and selected in {str(value).upper() for value in profiles}:
+            return selected
+        fallback = {
+            "environment": {"FAST": "PROXY", "WORK": "PROXY", "REND": "REND"},
+            "character": {"FAST": "LO", "WORK": "ANIM", "REND": "REND"},
+            "prop": {"FAST": "LO", "WORK": "LO", "REND": "REND"},
+        }.get(asset_class, {"FAST": "LO", "WORK": "ANIM", "REND": "REND"})
+        return fallback.get(stage_name, stage_name)
 
     @staticmethod
     def _recipe_matches(match: Any, values: dict[str, str]) -> bool:

@@ -1,0 +1,18 @@
+schema: smart_delivery_profile/v1
+profile:
+  id: dandelione
+  version: 3
+  client: DandeLione
+paths:
+  client_shot_root: shot
+  maya: "shot/{episode}/{sequence}/{shot}/01_anim/03_animation/scenes/{episode}_{sequence}_{shot}_{task}_v{version:03d}.ma"
+  aep: "shot/{episode}/{sequence}/{shot}/04_comp/anim/03_preComp/{episode}_{sequence}_{shot}_{task}_v{version:03d}.aep"
+  image_sequence: "shot/{episode}/{sequence}/{shot}/04_comp/ftg/01_anim/03_animation/{review_layer}/v{version:03d}/01/ELCD_{episode}_{sequence}_{shot}_{review_layer}_v{version:03d}.####.png"
+  review: "shot/{episode}/{sequence}/{shot}/04_comp/anim/finalimage/03_preComp/{episode}_{sequence}_{shot}_{task}_v{version:03d}.mov"
+package:
+  staging_root: "{workspace_root}/delivery/{job_id}"
+  archive_root: "{delivery_root}/client/{client}/{delivery_batch}"
+validation:
+  case_sensitive: true
+archive:
+  format: zip

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.metadata import read_json
 
 
 VERSION_RE = re.compile(r"^v\d+$", re.IGNORECASE)
@@ -79,13 +80,40 @@ class AssetPublishResolver:
             return None
         publish_root = Path(variant_root) / "publish" / "asset"
         requested_version = str(version or rule.version).strip().lower()
-        contexts = [rule.context, *rule.fallback_contexts]
+        contexts = [
+            self._asset_context_for_stage(Path(variant_root), value)
+            for value in (rule.context, *rule.fallback_contexts)
+        ]
         for index, context in enumerate(dict.fromkeys(contexts)):
             alias = requested_version if index == 0 else rule.fallback_version
             path = self._resolve_context(publish_root / context, alias, rule.formats)
             if path:
                 return path
         return None
+
+    def _asset_context_for_stage(self, variant_root: Path, value: str) -> str:
+        """Translate a Stage Profile to the appropriate per-asset Context."""
+
+        requested = str(value or "").strip()
+        if requested.upper() not in {"FAST", "WORK", "REND", "FINAL"}:
+            return requested.lower()
+        try:
+            from smartlib.apps.asset_manager.context import AssetContextService
+            from smartlib.core.path_resolver import AssetIdentity
+
+            asset_root = variant_root.parent
+            metadata = read_json(asset_root / "asset.json", {}) or {}
+            identity = AssetIdentity(
+                str(metadata.get("category") or asset_root.parents[1].name),
+                str(metadata.get("group") or asset_root.parent.name),
+                str(metadata.get("asset") or metadata.get("name") or asset_root.name),
+                variant_root.name,
+            )
+            return AssetContextService(self.project_config).stage_context_for_asset(
+                identity, requested
+            ).lower()
+        except (FileNotFoundError, KeyError, TypeError, ValueError, IndexError):
+            return requested.lower()
 
     def resolve_context(
         self,

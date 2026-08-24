@@ -55,11 +55,11 @@ class SmartPathResolver:
 
     def _scheme_root(self, scheme: str, parts: list[str]) -> tuple[Path, list[str]]:
         if scheme == "asset":
-            return self.project_root / "assets", parts
+            return self.project_root / "production" / "assets", parts
         if scheme == "shot":
-            return self.project_root / "shots", parts
+            return self.project_root / "production" / "shots", parts
         if scheme == "sequence":
-            return self.project_root / "sequences", parts
+            return self.project_root / "production" / "sequences", parts
         raise ValueError(f"Unsupported virtual path scheme: {scheme}")
 
     def _resolve_version_alias(self, root: Path, parts: list[str]) -> tuple[list[str], str]:

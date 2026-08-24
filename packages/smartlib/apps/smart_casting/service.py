@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import csv
+import io
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 from smartlib.apps.asset_manager import AssetCreateRequest, AssetManagerService
 from smartlib.apps.shot_manager import SequenceIdentity, ShotIdentity, ShotManagerService
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.credentials import credentials_path
 from smartlib.core.metadata import read_json, write_json
 from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
 
 CAST_CONTEXTS = ("FAST", "WORK", "FINAL")
 CASTING_EXCLUDED_CATEGORIES = {"prop"}
+GOOGLE_SHEET_ID_RE = re.compile(r"/spreadsheets/d/([^/?#]+)")
 
 
 @dataclass(frozen=True)
@@ -49,8 +56,16 @@ class SmartCastingService:
         )
         self.asset_service = AssetManagerService(project_config)
         self.shot_service = ShotManagerService(project_config)
+        self.last_asset_source = "filesystem"
+        self.last_asset_source_error = ""
 
     def list_assets(self) -> list[CastingAsset]:
+        sheet_rows = self._list_assets_from_spreadsheet()
+        if sheet_rows:
+            return sheet_rows
+        return self._list_assets_from_filesystem()
+
+    def _list_assets_from_filesystem(self) -> list[CastingAsset]:
         root = self.paths.assets_root()
         rows: list[CastingAsset] = []
         if not root.exists():
@@ -86,6 +101,148 @@ class SmartCastingService:
                     )
                 )
         return sorted(rows, key=lambda row: (row.category.lower(), row.group.lower(), row.asset.lower(), row.variant.lower()))
+
+    def _list_assets_from_spreadsheet(self) -> list[CastingAsset]:
+        sheet_id, sheet_url, gid = self._asset_sheet_settings()
+        if not sheet_id and not sheet_url:
+            self.last_asset_source = "filesystem"
+            self.last_asset_source_error = ""
+            return []
+
+        rows: list[dict[str, Any]] = []
+        try:
+            rows = self._read_asset_sheet_records(sheet_id=sheet_id, sheet_url=sheet_url, gid=gid)
+        except Exception as exc:
+            self.last_asset_source_error = str(exc)
+
+        if rows:
+            assets = self._asset_rows_from_sheet_records(rows)
+            if assets:
+                write_json(self._asset_sheet_cache_path(), [self._asset_row_to_cache(row) for row in assets])
+                self.last_asset_source = "spreadsheet"
+                return assets
+
+        cached = self._asset_rows_from_sheet_cache()
+        if cached:
+            self.last_asset_source = "spreadsheet cache"
+            return cached
+        self.last_asset_source = "filesystem"
+        return []
+
+    def _read_asset_sheet_records(
+        self,
+        *,
+        sheet_id: str,
+        sheet_url: str,
+        gid: str,
+    ) -> list[dict[str, Any]]:
+        path = credentials_path()
+        if sheet_id and path and path.exists():
+            try:
+                import gspread
+            except ImportError:
+                gspread = None
+            if gspread is not None:
+                gc = gspread.service_account(filename=str(path))
+                return gc.open_by_key(sheet_id).sheet1.get_all_records()
+
+        export_url = self._asset_sheet_csv_url(sheet_id=sheet_id, sheet_url=sheet_url, gid=gid)
+        if not export_url:
+            raise RuntimeError("google_sheets.asset_list_url or asset_list_id is not set")
+        request = Request(export_url, headers={"User-Agent": "smart-casting/1.0"})
+        with urlopen(request, timeout=6) as response:
+            payload = response.read().decode("utf-8-sig")
+        return list(csv.DictReader(io.StringIO(payload)))
+
+    def _asset_rows_from_sheet_records(self, rows: list[dict[str, Any]]) -> list[CastingAsset]:
+        assets: dict[tuple[str, str, str, str], CastingAsset] = {}
+        for row in rows:
+            category = str(self._row_value(row, "category", "Category") or "").strip()
+            group = str(self._row_value(row, "group", "Group") or "").strip()
+            asset = str(self._row_value(row, "asset", "Asset", "Asset Name", "AssetName", "name") or "").strip()
+            variant = str(self._row_value(row, "variant", "Variant") or "default").strip() or "default"
+            if not category or not group or not asset:
+                continue
+            if category.lower() in CASTING_EXCLUDED_CATEGORIES:
+                continue
+            asset_root = self.paths.asset_root(AssetIdentity(category, group, asset))
+            thumbnail = self._asset_thumbnail_path(asset_root) if asset_root.exists() else None
+            key = (category, group, asset, variant)
+            assets[key] = CastingAsset(
+                category=category,
+                group=group,
+                asset=asset,
+                variant=variant,
+                status=str(self._row_value(row, "status", "Status") or "Wait"),
+                description=str(self._row_value(row, "description", "Description") or ""),
+                thumbnail=str(thumbnail or ""),
+                path=str(asset_root) if asset_root.exists() else "",
+            )
+        return sorted(assets.values(), key=lambda row: (row.category.lower(), row.group.lower(), row.asset.lower(), row.variant.lower()))
+
+    def _asset_rows_from_sheet_cache(self) -> list[CastingAsset]:
+        data = read_json(self._asset_sheet_cache_path(), []) or []
+        if not isinstance(data, list):
+            return []
+        return self._asset_rows_from_sheet_records([row for row in data if isinstance(row, dict)])
+
+    def _asset_row_to_cache(self, row: CastingAsset) -> dict[str, str]:
+        return {
+            "category": row.category,
+            "group": row.group,
+            "asset": row.asset,
+            "variant": row.variant,
+            "status": row.status,
+            "description": row.description,
+        }
+
+    def _asset_sheet_cache_path(self) -> Path:
+        return self.project_config.config_dir / ".cache" / "asset_list.json"
+
+    def _asset_sheet_settings(self) -> tuple[str, str, str]:
+        google_sheets = self.project_config.base.get("google_sheets") or {}
+        anchors = self.project_config.base.get("anchors") or {}
+        sheet_url = ""
+        sheet_id = ""
+        if isinstance(google_sheets, dict):
+            sheet_url = str(google_sheets.get("asset_list_url") or "").strip()
+            sheet_id = str(google_sheets.get("asset_list_id") or "").strip()
+        if not sheet_url and isinstance(anchors, dict):
+            sheet_url = str(anchors.get("Asset List URL") or anchors.get("asset_list_url") or "").strip()
+        sheet_id = sheet_id or self._google_sheet_id(sheet_url)
+        gid = self._google_sheet_gid(sheet_url)
+        return sheet_id, sheet_url, gid
+
+    @staticmethod
+    def _asset_sheet_csv_url(*, sheet_id: str, sheet_url: str, gid: str) -> str:
+        if sheet_id:
+            query = {"format": "csv"}
+            if gid:
+                query["gid"] = gid
+            return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?{urlencode(query)}"
+        if sheet_url and "output=csv" in sheet_url.lower():
+            return sheet_url
+        return ""
+
+    @staticmethod
+    def _google_sheet_id(url: str) -> str:
+        match = GOOGLE_SHEET_ID_RE.search(str(url or ""))
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _google_sheet_gid(url: str) -> str:
+        parsed = urlparse(str(url or ""))
+        query = parse_qs(parsed.query)
+        return str((query.get("gid") or [""])[0])
+
+    @staticmethod
+    def _row_value(row: dict[str, Any], *names: str) -> Any:
+        normalized = {str(key).replace(" ", "").lower(): value for key, value in row.items()}
+        for name in names:
+            key = name.replace(" ", "").lower()
+            if key in normalized:
+                return normalized[key]
+        return None
 
     def list_variants(self, category: str, group: str, asset: str) -> list[str]:
         asset_root = self.paths.asset_root(AssetIdentity(category, group, asset))

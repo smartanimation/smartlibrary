@@ -93,7 +93,7 @@ class FakeAdapter:
         return []
 
     def object_set_exists(self, name):
-        return name in {"allRigSet", "cache_geo_set"}
+        return name in {"allRigSet", "cache_geo_set", "skel_export_set"}
 
     def object_set_members(self, name):
         return [f"|hero|{name}_member"]
@@ -171,7 +171,7 @@ def test_maya_context_resolves_asset_and_shot_profiles():
 def test_asset_required_sets_and_shot_camera_policy_are_profile_checks():
     asset_keys = {row.key for row in create_asset_profile().checks}
     shot_keys = {row.key for row in create_shot_profile().checks}
-    assert {"all_rig_set", "cache_geo_set"} <= asset_keys
+    assert {"all_rig_set", "cache_geo_set", "skel_export_set"} <= asset_keys
     assert {
         "cast_assets_exist",
         "cast_versions",
@@ -259,6 +259,28 @@ def test_background_asset_skips_cache_set_requirement():
     cache_result = next(row for row in report.results if row.key == "cache_geo_set")
     assert cache_result.severity == Severity.PASS
     assert "Skipped" in cache_result.message
+
+
+def test_rigging_asset_requires_nonempty_skel_export_set():
+    adapter = FakeAdapter()
+    adapter.object_set_exists = lambda name: name != "skel_export_set"
+    report = PreflightEngine(adapter, create_asset_profile()).run(
+        PreflightContext(kind="asset", entity="Hero", task="Rigging")
+    )
+    result = next(row for row in report.results if row.key == "skel_export_set")
+    assert result.severity == Severity.ERROR
+    assert report.blocked
+
+
+def test_non_rigging_asset_skips_skel_export_set():
+    adapter = FakeAdapter()
+    adapter.object_set_exists = lambda name: name != "skel_export_set"
+    report = PreflightEngine(adapter, create_asset_profile()).run(
+        PreflightContext(kind="asset", entity="Hero", task="Model")
+    )
+    result = next(row for row in report.results if row.key == "skel_export_set")
+    assert result.severity == Severity.PASS
+    assert "Skipped" in result.message
 
 
 def test_missing_uv_and_invalid_texture_are_asset_errors():

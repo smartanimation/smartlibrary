@@ -12,6 +12,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import ProjectPaths
 from smartlib.core.versioning import format_version, next_version, parse_version
 
 
@@ -69,6 +70,7 @@ DEPARTMENT_ALIASES = {
     "look": "look",
     "model": "model",
     "rig": "rig",
+    "assembly": "assembly",
 }
 
 
@@ -140,6 +142,7 @@ class SmartIngestService:
             raise RuntimeError("project_root is not set in templates_base.yml")
         self.project_root = project_root
         templates = project_config.base.get("templates") or {}
+        self.paths = ProjectPaths(project_root, project_config.templates, project_config.project_name)
         self.incoming_root = self._resolve_template(templates.get("incoming_root"), project_root / "incoming")
         self.staging_root = self._resolve_template(templates.get("staging_root"), project_root / "staging")
         self.project_name = project_config.project_name
@@ -302,6 +305,8 @@ class SmartIngestService:
                     if item.target_type == "Editorial":
                         manifests.append(self._write_editorial_source_metadata(item, item.target_path, checksum))
                         editorial_records.append((item, item.target_path))
+                    elif item.target_type == "Asset":
+                        manifests.append(self._write_asset_data_metadata(item, item.target_path, checksum))
                     elif item.target_type == "Sequence" and item.metadata.department == "virtual_camera":
                         manifests.append(self._write_sequence_package_metadata(item, item.target_path, checksum))
                 elif item.action == "reject":
@@ -315,6 +320,47 @@ class SmartIngestService:
             for lock_path in reversed(locks):
                 self._release_delivery_lock(lock_path)
         return IngestRunResult(copied, rejected, processed_sources, skipped, manifests)
+
+    def ignore_items(self, items: list[PlanItem], *, reason: str = "not related to CG ingest") -> IngestRunResult:
+        processed_sources: list[Path] = []
+        skipped: list[PlanItem] = []
+        manifests: list[Path] = []
+        ignore_items = [item for item in items if item.selected and item.source_path.exists()]
+        delivery_roots = sorted(
+            {root for item in ignore_items if (root := self._delivery_root(item.source_path))},
+            key=lambda path: str(path).lower(),
+        )
+        locks: list[Path] = []
+        try:
+            for delivery_root in delivery_roots:
+                locks.append(self._acquire_delivery_lock(delivery_root))
+            for item in items:
+                if not item.selected or not item.source_path.exists():
+                    skipped.append(item)
+                    continue
+                checksum = _sha1(item.source_path)
+                ignored = replace(
+                    item,
+                    target_path=item.source_path,
+                    action="ignore",
+                    target_type="Ignored",
+                    status="Ignored",
+                    reason=reason,
+                    metadata=replace(item.metadata, target_type="Ignored", comment=reason),
+                )
+                state_path = self._record_processed(
+                    ignored,
+                    ignored.source_path,
+                    checksum,
+                    status="ignored",
+                )
+                if state_path not in manifests:
+                    manifests.append(state_path)
+                processed_sources.append(item.source_path)
+        finally:
+            for lock_path in reversed(locks):
+                self._release_delivery_lock(lock_path)
+        return IngestRunResult([], [], processed_sources, skipped, manifests)
 
     def update_item_metadata(self, item: PlanItem, **changes: Any) -> PlanItem:
         metadata = replace(item.metadata, **changes)
@@ -550,27 +596,10 @@ class SmartIngestService:
                 return None, "extension is not asset data"
             if not metadata.asset or not metadata.department:
                 return None, "asset and department are required"
-            version = self._next_version(
-                self.project_root
-                / "assets"
-                / metadata.category
-                / metadata.group
-                / metadata.asset
-                / metadata.variant
-                / "data"
-                / metadata.department
-                / metadata.subset
-            )
+            package_root = self._asset_data_package_root(metadata)
+            version = self._next_version(package_root)
             return (
-                self.project_root
-                / "assets"
-                / metadata.category
-                / metadata.group
-                / metadata.asset
-                / metadata.variant
-                / "data"
-                / metadata.department
-                / metadata.subset
+                package_root
                 / version
                 / source.name
             ), "asset data copy"
@@ -675,6 +704,55 @@ class SmartIngestService:
         self._update_editorial_version_index(package_root, version_dir.name)
         return manifest_path
 
+    def _write_asset_data_metadata(
+        self,
+        item: PlanItem,
+        target_path: Path,
+        checksum: str,
+    ) -> Path:
+        version_dir = target_path.parent
+        package_root = version_dir.parent
+        manifest_path = version_dir / "manifest.json"
+        manifest = read_json(manifest_path, {}) or {}
+        file_format = target_path.suffix.lower().lstrip(".")
+        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+        if item.metadata.department == "assembly" and item.metadata.subset == "client":
+            files["assembly"] = target_path.name
+        else:
+            files[file_format] = {
+                "name": target_path.name,
+                "path": target_path.name,
+                "source": item.source_path.name,
+                "sha1": checksum,
+                "size": item.size,
+            }
+        manifest.update(
+            {
+                "schema": "smartpipeline.asset_data.v1",
+                "asset": item.metadata.asset,
+                "category": item.metadata.category,
+                "group": item.metadata.group,
+                "variant": item.metadata.variant or "default",
+                "data_type": item.metadata.department,
+                "subset": item.metadata.subset,
+                "format": file_format,
+                "version": version_dir.name,
+                "files": files,
+                "source_file": str(item.source_path).replace("\\", "/"),
+                "sha1": checksum,
+                "size": item.size,
+                "imported_at": datetime.now().isoformat(timespec="seconds"),
+                "comment": item.metadata.comment,
+            }
+        )
+        write_json(manifest_path, manifest)
+        latest: dict[str, Any] = {"version": version_dir.name, "path": f"{version_dir.name}/{target_path.name}"}
+        if item.metadata.department == "assembly" and item.metadata.subset == "client":
+            latest["manifest"] = f"{version_dir.name}/manifest.json"
+        write_json(package_root / "latest.json", latest)
+        self._update_version_index(package_root, version_dir.name, item.metadata.comment)
+        return manifest_path
+
     def _record_processed(
         self,
         item: PlanItem,
@@ -682,6 +760,7 @@ class SmartIngestService:
         checksum: str,
         *,
         companion: dict[str, Any] | None = None,
+        status: str = "processed",
     ) -> Path:
         delivery_root = self._delivery_root(item.source_path)
         if delivery_root is None:
@@ -694,7 +773,7 @@ class SmartIngestService:
         record = self._manifest_data(item, target_path, "processed", checksum=checksum)
         record.update(
             {
-                "status": "processed",
+                "status": status,
                 "source": key,
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
@@ -812,6 +891,10 @@ class SmartIngestService:
         return written
 
     def _update_editorial_version_index(self, source_root: Path, version: str) -> None:
+        self._update_version_index(source_root, version)
+        write_json(source_root / "latest.json", {"version": version, "path": f"{version}/manifest.json"})
+
+    def _update_version_index(self, source_root: Path, version: str, comment: str = "") -> None:
         existing = read_json(source_root / "versions.json", []) or []
         by_version = {
             str(item.get("version")): dict(item)
@@ -819,12 +902,25 @@ class SmartIngestService:
             if isinstance(item, dict) and item.get("version")
         }
         by_version[version] = {"version": version, "status": "latest"}
+        if comment:
+            by_version[version]["comment"] = comment
         for name, item in by_version.items():
             if name != version and item.get("status") == "latest":
                 item["status"] = "ingested"
         versions = sorted(by_version.values(), key=lambda item: parse_version(str(item["version"])))
         write_json(source_root / "versions.json", versions)
-        write_json(source_root / "latest.json", {"version": version, "path": f"{version}/manifest.json"})
+
+    def _asset_data_package_root(self, metadata: IngestMetadata) -> Path:
+        return (
+            self.paths.assets_root()
+            / metadata.category
+            / metadata.group
+            / metadata.asset
+            / (metadata.variant or "default")
+            / "data"
+            / metadata.department
+            / (metadata.subset or "main")
+        )
 
     def _manifest_data(self, item: PlanItem, output_path: Path, state: str, *, checksum: str | None = None) -> dict[str, Any]:
         return {
@@ -959,7 +1055,7 @@ class SmartIngestService:
         except ValueError:
             return False
         record = files.get(key)
-        if not isinstance(record, dict) or record.get("status") != "processed":
+        if not isinstance(record, dict) or record.get("status") not in {"processed", "ignored"}:
             return False
         stat = path.stat()
         return record.get("size") == stat.st_size and record.get("mtime_ns") == stat.st_mtime_ns
@@ -1016,6 +1112,7 @@ class SmartIngestService:
 
     def _infer_department(self, tokens: list[str]) -> str:
         configured = set(self.project_config.base.get("asset_depts") or []) | set(self.project_config.base.get("shot_depts") or [])
+        configured.add("assembly")
         for token in tokens:
             department = DEPARTMENT_ALIASES.get(token.lower(), token.lower())
             if department in configured or department in DEPARTMENT_ALIASES.values():
@@ -1083,7 +1180,7 @@ class SmartIngestService:
         return episode, sequence
 
     def _infer_asset_name(self, tokens: list[str], department: str) -> str:
-        ignored = {department, "model", "rig", "look", "render", "cache", "main", "default"}
+        ignored = {department, "model", "rig", "look", "render", "cache", "assembly", "client", "main", "default"}
         for token in tokens:
             low = token.lower()
             if low in ignored or VERSION_RE.fullmatch(low) or DATE_RE.fullmatch(low) or SHOT_RE.fullmatch(low):
