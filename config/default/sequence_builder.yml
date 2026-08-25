@@ -1,4 +1,19 @@
+default_recipe: Standard Sequence
+
 recipes:
+  Standard Sequence:
+    version: v001
+    inputs:
+      - editorial
+      - virtual_camera
+      - cast
+      - storyreel
+      - audio
+      - light
+  Mocap Only:
+    version: v001
+    inputs:
+      - mocap
   Mocap + Virtual Camera:
     version: v001
     inputs:

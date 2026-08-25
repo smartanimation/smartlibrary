@@ -239,6 +239,33 @@ def test_smart_casting_sequence_cast_rows_include_context_statuses(tmp_path: Pat
     assert rows[0]["contexts"] == {"FAST": "Missing", "WORK": "Ready", "FINAL": "WIP"}
 
 
+def test_smart_casting_maps_environment_work_to_proxy(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    asset_root = project_root / "library" / "assets" / "BG" / "main" / "Room"
+    write_json(
+        asset_root / "asset.json",
+        {"category": "BG", "group": "main", "asset": "Room", "asset_type": "BG"},
+    )
+    write_json(asset_root / "default" / "variant.json", {"variant": "default"})
+    proxy_root = asset_root / "default" / "publish" / "asset" / "proxy"
+    write_json(proxy_root / "latest.json", {"version": "v001", "path": "v001/asset.mb"})
+    write_json(proxy_root / "versions.json", [{"version": "v001", "status": "latest"}])
+    scene = proxy_root / "v001" / "asset.mb"
+    scene.parent.mkdir(parents=True, exist_ok=True)
+    scene.write_bytes(b"maya")
+
+    service = SmartCastingService(ProjectConfig(config_dir))
+    statuses = service.cast_context_statuses(
+        {"asset": "Room", "variant": "default", "asset_publish": "approved"}
+    )
+
+    assert statuses["FAST"] == "WIP"
+    assert statuses["WORK"] == "WIP"
+    assert statuses["FINAL"] == "Missing"
+
+
 def test_sequence_cast_save_adds_missing_casts_to_shots_without_overwriting(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"

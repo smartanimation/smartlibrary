@@ -78,23 +78,42 @@ class SmartSequenceBuilderService:
         if isinstance(recipes, dict) and recipes:
             return {str(key): dict(value or {}) for key, value in recipes.items()}
         return {
+            "Standard Sequence": {
+                "version": "v001",
+                "inputs": ["editorial", "virtual_camera", "cast", "storyreel", "audio", "light"],
+            },
+            "Mocap Only": {
+                "version": "v001",
+                "inputs": ["mocap"],
+            },
             "Mocap + Virtual Camera": {
                 "version": "v001",
                 "inputs": ["editorial", "mocap", "virtual_camera", "cast", "storyreel", "audio", "light"],
             }
         }
 
+    def default_recipe(self) -> str:
+        data = self.project_config.load("sequence_builder.yml")
+        configured = str((data or {}).get("default_recipe") or "").strip()
+        recipes = self.recipes()
+        if configured in recipes:
+            return configured
+        if "Standard Sequence" in recipes:
+            return "Standard Sequence"
+        return next(iter(recipes), "Standard Sequence")
+
     def plan(
         self,
         episode: str,
         sequence: str,
-        recipe: str = "Mocap + Virtual Camera",
+        recipe: str = "",
         *,
         virtual_camera_take: str = "",
         enabled: dict[str, bool] | None = None,
     ) -> SequenceBuildPlan:
         identity = SequenceIdentity(episode, sequence)
         sequence_data = self.shots.load_sequence(identity)
+        recipe = str(recipe or self.default_recipe())
         recipe_data = self.recipes().get(recipe, {})
         recipe_inputs = {
             str(value) for value in (recipe_data.get("inputs") or []) if str(value)
@@ -307,6 +326,8 @@ class SmartSequenceBuilderService:
     def _latest_version(path: Path | None) -> str:
         if not path:
             return ""
+        if path.is_dir() and path.name.startswith("v") and path.name[1:].isdigit():
+            return path.name
         latest = read_json(path / "latest.json", {}) if path.is_dir() else {}
         if isinstance(latest, dict) and latest.get("version"):
             return str(latest["version"])

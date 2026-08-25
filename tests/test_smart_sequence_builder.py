@@ -83,7 +83,7 @@ def test_plan_blocks_missing_required_mocap(tmp_path: Path) -> None:
     )
     _json(sequence_root / "cast.json", {"cast": {}})
 
-    plan = service.plan("ep02", "s027")
+    plan = service.plan("ep02", "s027", "Mocap + Virtual Camera")
 
     assert not plan.can_build
     required = next(item for item in plan.validation if item.key == "required")
@@ -108,11 +108,42 @@ def test_build_manager_sequence_plan_uses_recipe_validation(tmp_path: Path) -> N
 
     plan = service.sequence_build_plan(
         SequenceIdentity("ep02", "s027"),
+        recipe="Mocap + Virtual Camera",
         overrides={"use_placements": False},
     )
 
     assert not plan.buildable
     assert any(row.code == "SEQUENCE_REQUIRED" for row in plan.validations)
+
+
+def test_standard_sequence_is_default_and_does_not_require_mocap(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config = _config(tmp_path / "config", project_root)
+    service = SmartSequenceBuilderService(config)
+    sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
+    _json(sequence_root / "sequence.json", {
+        "episode": "ep02", "sequence": "s027",
+        "shots": [{"shot": "sh010", "cut_in": 1001, "cut_out": 1010}],
+    })
+    _json(sequence_root / "cast.json", {"cast": {}})
+
+    plan = service.plan("ep02", "s027")
+
+    assert plan.recipe == "Standard Sequence"
+    assert plan.can_build
+    assert not next(item for item in plan.inputs if item.key == "mocap").enabled
+
+
+def test_project_can_override_default_sequence_recipe(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config = _config(tmp_path / "config", project_root)
+    config.config_dir.joinpath("sequence_builder.yml").write_text(
+        "default_recipe: Mocap Only\n", encoding="utf-8"
+    )
+
+    service = SmartSequenceBuilderService(config)
+
+    assert service.default_recipe() == "Mocap Only"
 
 
 def test_build_manager_allocates_next_sequence_construct_version(tmp_path: Path) -> None:

@@ -2448,6 +2448,31 @@ class ShotManagerService:
                     )
                 )
             )
+        try:
+            audio_manifest = read_json(
+                self.shot_data_root(identity) / "audio" / "latest.json", {}
+            ) or {}
+        except (AttributeError, OSError):
+            audio_manifest = {}
+        audio_text = str(audio_manifest.get("path") or "").strip()
+        if audio_text:
+            audio_path = self._project_path_from_text(audio_text)
+            audio_exists = bool(audio_path and audio_path.is_file())
+            components.append(
+                asdict(
+                    ConstructComponent(
+                        component_type="audio",
+                        name="main",
+                        version=str(audio_manifest.get("version") or _version_from_path(audio_path) or "latest"),
+                        mode="apply",
+                        path=str(audio_path) if audio_path else audio_text,
+                        required=False,
+                        enabled=audio_exists,
+                        note="" if audio_exists else "Latest shot audio file was not found.",
+                        source={"kind": "shot_data", "data_type": "audio", "scope": "shot"},
+                    )
+                )
+            )
         anim_input_path = self.latest_anim_input(identity)
         anim_input = read_json(anim_input_path, {}) if anim_input_path else {}
         if anim_input_path:
@@ -2748,6 +2773,7 @@ class ShotManagerService:
             )
             for component in (persisted.get("components") or [])
             if isinstance(component, dict)
+            and bool((component.get("source") or {}).get("context_override"))
             and str((component.get("source") or {}).get("context") or "")
         }
         saved_contexts.update(cast_contexts or {})
@@ -2792,7 +2818,10 @@ class ShotManagerService:
             if saved.get("note") and not is_optional_background:
                 merged["note"] = saved["note"]
             source = dict(component.get("source") or {})
-            source.update(saved.get("source") or {})
+            saved_source = dict(saved.get("source") or {})
+            if not bool(saved_source.get("context_override")):
+                saved_source.pop("context", None)
+            source.update(saved_source)
             merged["source"] = source
             if str(merged.get("name") or "") in excluded:
                 merged["enabled"] = False
@@ -2802,6 +2831,13 @@ class ShotManagerService:
             if not isinstance(component, dict):
                 continue
             source = component.get("source") or {}
+            if (
+                str(source.get("kind") or "") == "cast_entry"
+                and str(component.get("name") or "") not in generated_cast_types
+            ):
+                # Current Cast membership is authoritative. A removed Cast
+                # entry must not be resurrected by an older Construct file.
+                continue
             if (
                 str(source.get("kind") or "") == "anim_input"
                 and str(component.get("component_type") or "").lower()

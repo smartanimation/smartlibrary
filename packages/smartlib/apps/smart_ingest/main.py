@@ -21,6 +21,7 @@ TARGET_FILTERS = [
     ("asset", ".ma .fbx .abc .usd"),
     ("shot", ".ma .aep .mov"),
     ("reference", ".pdf .jpeg .png"),
+    ("intake", "intake"),
     ("others", "(others)"),
     ("rejected", ""),
 ]
@@ -173,7 +174,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.history_search.textChanged.connect(self._refresh_history)
         toolbar.addWidget(self.history_search, 1)
         self.history_type_combo = QtWidgets.QComboBox()
-        self.history_type_combo.addItems(["All", "Editorial", "Asset", "Shot", "Sequence", "Vendor", "Ignored"])
+        self.history_type_combo.addItems(["All", "Editorial", "Asset", "Shot", "Sequence", "Intake", "Ignored"])
         self.history_type_combo.currentTextChanged.connect(self._refresh_history)
         toolbar.addWidget(self.history_type_combo)
         refresh = QtWidgets.QToolButton()
@@ -231,7 +232,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
 
         layout.addWidget(QtWidgets.QLabel("Target / Metadata"))
         self.target_type_combo = QtWidgets.QComboBox()
-        self.target_type_combo.addItems(["Asset", "Shot", "Sequence", "Editorial", "Vendor"])
+        self.target_type_combo.addItems(["Asset", "Shot", "Sequence", "Editorial", "Intake"])
         layout.addWidget(self._form_row("Target Type", self.target_type_combo))
 
         self.project_edit = QtWidgets.QLineEdit(self.service.project_name)
@@ -270,7 +271,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             ("Episode", self.episode_edit, "episode"),
             ("Sequence", self.sequence_edit, "sequence"),
             ("Shot", self.shot_edit, "shot"),
-            ("Vendor", self.vendor_edit, "vendor"),
+            ("Source", self.vendor_edit, "vendor"),
             ("Delivery Date", self.delivery_date_edit, "delivery_date"),
         ]:
             row = self._form_row(label, widget)
@@ -527,7 +528,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                     if not isinstance(data, dict) or data.get("status") not in {"processed", "ignored"}:
                         continue
                     target_type = str(data.get("target_type") or "")
-                    if target_filter != "All" and target_type != target_filter:
+                    if target_filter != "All" and not self._history_type_matches(target_type, target_filter):
                         continue
                     searchable = " ".join(
                         str(data.get(key) or "")
@@ -545,7 +546,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 if data.get("state") != "processed":
                     continue
                 target_type = str(data.get("target_type") or "")
-                if target_filter != "All" and target_type != target_filter:
+                if target_filter != "All" and not self._history_type_matches(target_type, target_filter):
                     continue
                 searchable = " ".join(
                     str(data.get(key) or "")
@@ -568,7 +569,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 str(data.get("processed_at") or data.get("created_at") or "").replace("T", " "),
                 source_path.name,
                 source_path.suffix.lower().lstrip(".").upper() or "FILE",
-                str(data.get("target_type") or "-"),
+                self._display_target_type(str(data.get("target_type") or "-")),
                 str(target_path),
                 str(data.get("status") or data.get("state") or "-"),
             ]
@@ -583,6 +584,16 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                     cell.setData(QtCore.Qt.ItemDataRole.UserRole + 4, legacy)
                 self.history_table.setItem(row, column, cell)
         self.history_summary_label.setText(f"Processed: {len(records)}")
+
+    @staticmethod
+    def _history_type_matches(target_type: str, target_filter: str) -> bool:
+        if target_filter == "Intake" and target_type == "Vendor":
+            return True
+        return target_type == target_filter
+
+    @staticmethod
+    def _display_target_type(target_type: str) -> str:
+        return "Intake" if target_type == "Vendor" else target_type
 
     def _history_paths(self) -> tuple[Path | None, Path | None]:
         row = self.history_table.currentRow()
@@ -746,8 +757,9 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self._updating_metadata_form = True
         try:
             self.target_type_combo.blockSignals(True)
-            if metadata.target_type in ["Asset", "Shot", "Sequence", "Editorial", "Vendor"]:
-                self.target_type_combo.setCurrentText(metadata.target_type)
+            target_type = "Intake" if metadata.target_type == "Vendor" else metadata.target_type
+            if target_type in ["Asset", "Shot", "Sequence", "Editorial", "Intake"]:
+                self.target_type_combo.setCurrentText(target_type)
             self.target_type_combo.blockSignals(False)
             self.project_edit.setText(metadata.project)
             self.asset_edit.setText(metadata.asset)
@@ -813,7 +825,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 "format",
                 "delivery_date",
             },
-            "Vendor": {
+            "Intake": {
                 "project",
                 "vendor",
                 "episode",
@@ -902,7 +914,9 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             return "audio"
         if target_type == "editorial" and subset == "storyreel":
             return "storyreel"
-        if target_type in {"asset", "shot", "editorial"}:
+        if target_type == "vendor":
+            return "intake"
+        if target_type in {"asset", "shot", "editorial", "intake"}:
             return target_type
         if target_type in {"design", "reference"}:
             return target_type

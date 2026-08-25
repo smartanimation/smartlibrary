@@ -168,6 +168,16 @@ class AssetContextService:
         _asset_class, profiles = self._profiles_for_identity(identity, context)
         return list(profiles.keys())
 
+    def asset_class_for_asset(
+        self,
+        identity: AssetIdentity,
+        context_name: str = "asset",
+        version: str | None = None,
+    ) -> str:
+        context = self.load_context(context_name, version)
+        asset_class, _profiles = self._profiles_for_identity(identity, context)
+        return asset_class
+
     def assemble(
         self,
         identity: AssetIdentity,
@@ -802,6 +812,11 @@ class AssetContextService:
     def list_packs(self, identity: AssetIdentity, *, quality_profile: str, context_name: str = "asset") -> list[dict]:
         subset = quality_profile.lower() if context_name == "asset" else f"{context_name}_{quality_profile.lower()}"
         base_dir = self.paths.asset_publish_dir(identity, "asset", subset)
+        version_rows = read_json(base_dir / "versions.json", []) or []
+        statuses = {
+            str(row.get("version") or ""): str(row.get("status") or "published")
+            for row in version_rows if isinstance(row, dict)
+        }
         packs = []
         for version_dir in sorted(base_dir.glob("v*"), reverse=True):
             manifest_path = version_dir / "build_manifest.json"
@@ -814,9 +829,48 @@ class AssetContextService:
                     "manifest": manifest,
                     "manifest_path": str(manifest_path),
                     "comment": str((read_json(version_dir / "publish.json", {}) or {}).get("comment") or ""),
+                    "status": statuses.get(version_dir.name, "published"),
                 }
             )
         return packs
+
+    def approve_pack(
+        self,
+        identity: AssetIdentity,
+        *,
+        quality_profile: str,
+        version: str,
+        context_name: str = "asset",
+    ) -> Path:
+        """Explicitly approve one packed Context version."""
+
+        subset = quality_profile.lower() if context_name == "asset" else f"{context_name}_{quality_profile.lower()}"
+        base_dir = self.paths.asset_publish_dir(identity, "asset", subset)
+        version_label = str(version or "").strip().lower()
+        version_dir = base_dir / version_label
+        if parse_version(version_label) is None or not version_dir.is_dir():
+            raise FileNotFoundError(f"Context Pack version was not found: {version_dir}")
+        if not (version_dir / "publish.json").is_file():
+            raise RuntimeError(f"Context Pack is incomplete: {version_dir / 'publish.json'}")
+
+        path = base_dir / "versions.json"
+        versions = read_json(path, []) or []
+        rows = []
+        found = False
+        for raw_row in versions if isinstance(versions, list) else []:
+            if not isinstance(raw_row, dict):
+                continue
+            row = dict(raw_row)
+            row_version = str(row.get("version") or "")
+            if row_version == version_label:
+                row["status"] = "approved"
+                found = True
+            elif str(row.get("status") or "").lower() == "approved":
+                row["status"] = "published"
+            rows.append(row)
+        if not found:
+            rows.append({"version": version_label, "status": "approved"})
+        return write_json(path, rows)
 
     def entries_from_manifest(self, identity: AssetIdentity, manifest: dict[str, Any]) -> list[AssetContextEntry]:
         entries = []
@@ -958,7 +1012,9 @@ class AssetContextService:
         for row in versions if isinstance(versions, list) else []:
             if not isinstance(row, dict):
                 continue
-            status = "approved" if row.get("status") == "latest" else row.get("status", "")
-            next_rows.append({"version": row.get("version"), "status": status})
+            next_row = dict(row)
+            if str(next_row.get("status") or "").lower() == "latest":
+                next_row["status"] = "published"
+            next_rows.append(next_row)
         next_rows.append({"version": version_label, "status": "latest"})
         return write_json(path, next_rows)

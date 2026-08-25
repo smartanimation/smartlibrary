@@ -707,3 +707,34 @@ def test_editorial_preflight_reports_audio_ready(tmp_path: Path, monkeypatch) ->
     assert "audio - SKIP" not in preview.report
     assert "resolution - OK: 1920x1080" in preview.report
     assert "black frame - WARNING: 1 range(s): 1.000-1.125s" in preview.report
+
+
+def test_intake_extracts_sequence_audio_for_sequence_recipe(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "sequence_audio_config"
+    _write_config(config_dir, project_root)
+    service = EditorialIntakeService(ProjectConfig(config_dir))
+    events = [
+        EditorialEvent("ep02", "s027", "c001", 1001, 1100),
+        EditorialEvent("ep02", "s027", "c002", 1101, 1150),
+    ]
+    source = tmp_path / "offline.mov"
+    source.write_bytes(b"movie")
+    publish_dir = project_root / "editorial" / "publish" / "ep02" / "s027" / "v004"
+    monkeypatch.setattr(service, "_source_has_audio", lambda _path: True)
+    monkeypatch.setattr(service, "_ffmpeg_path", lambda: tmp_path / "ffmpeg.exe")
+
+    def fake_run(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"wav")
+        return object()
+
+    monkeypatch.setattr("smartlib.editorial.intake.subprocess.run", fake_run)
+
+    output = service.write_sequence_audio(events, source, publish_dir)
+
+    expected_root = service.shots.paths.sequence_root("ep02", "s027") / "data" / "audio"
+    assert output == expected_root / "v004" / "ep02_s027.wav"
+    latest = json.loads((expected_root / "latest.json").read_text())
+    assert latest["version"] == "v004"
+    assert latest["cut_in"] == 1001
+    assert latest["cut_out"] == 1150

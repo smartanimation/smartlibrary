@@ -863,10 +863,16 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_assemble_btn = QtWidgets.QPushButton("Assemble")
         self.context_pack_btn = QtWidgets.QPushButton("Pack")
         self.context_pack_btn.setEnabled(False)
+        self.context_approve_btn = QtWidgets.QPushButton("Approve")
+        self.context_approve_btn.setEnabled(False)
+        self.context_approve_btn.setToolTip(
+            "Approve the selected packed Context version. Pack itself remains WIP."
+        )
         context_header.addStretch(1)
         context_header.addWidget(self.context_use_scene_btn)
         context_header.addWidget(self.context_assemble_btn)
         context_header.addWidget(self.context_pack_btn)
+        context_header.addWidget(self.context_approve_btn)
         context_main_layout.addLayout(context_header)
         self.context_readiness_label = QtWidgets.QLabel("PACK BLOCKED: Assemble a Context first")
         self.context_readiness_label.setObjectName("context_readiness_label")
@@ -889,7 +895,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_state_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         context_main_layout.addWidget(self.context_state_table, 1)
         self.context_pack_tree = QtWidgets.QTreeWidget()
-        self.context_pack_tree.setHeaderLabels(["Dept", "Subset", "Ver", "Comment"])
+        self.context_pack_tree.setHeaderLabels(["Pack", "Subset", "Ver", "Status", "Comment"])
         self._apply_context_pack_tree_header()
         self.context_pack_tree.setIndentation(10)
         context_main_layout.addWidget(self.context_pack_tree, 1)
@@ -959,6 +965,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_assemble_btn.clicked.connect(self._assemble_selected_asset_context)
         self.context_use_scene_btn.clicked.connect(self._use_current_scene_as_assembly)
         self.context_pack_btn.clicked.connect(self._pack_selected_asset_context)
+        self.context_approve_btn.clicked.connect(self._approve_selected_asset_context)
+        self.context_pack_tree.itemSelectionChanged.connect(
+            self._update_context_approve_state
+        )
         self.refresh_data_btn.clicked.connect(self._refresh_current_data)
         self.export_mesh_btn.clicked.connect(self._export_selected_data_type)
         self.open_data_scene_btn.clicked.connect(self._open_selected_data_scene)
@@ -1493,7 +1503,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._populate_construct_tree(asset)
         self._update_data_watcher(asset)
         self._populate_preview_list(asset)
-        self._populate_context_pack_tree()
+        self._populate_context_profiles()
         self._populate_asset_publish_tree(asset)
         if self._selected_publish_type() == "retarget":
             self._refresh_retarget_publish_tab(asset)
@@ -2031,6 +2041,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _populate_context_profiles(self, *_args) -> None:
         current = self._current_context_profile()
+        self.context_profile_list.blockSignals(True)
         self.context_profile_list.clear()
         version = self.context_version_combo.currentText().strip() or None
         try:
@@ -2051,6 +2062,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 self.context_profile_list.setCurrentRow(index)
         except Exception as exc:
             self.status_label.setText(str(exc))
+        finally:
+            self.context_profile_list.blockSignals(False)
         self._populate_context_pack_tree()
 
     def _current_context_profile(self) -> str:
@@ -2068,6 +2081,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_verification = None
         self.context_state_table.setRowCount(0)
         self.context_pack_btn.setEnabled(False)
+        self.context_approve_btn.setEnabled(False)
         self._set_context_readiness("BLOCKED", "Assemble a Context first")
         if getattr(self, "context_pack_tree", None):
             self.context_pack_tree.clear()
@@ -2444,7 +2458,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     status = str((json.load(stream) or {}).get("status") or "verifying").upper()
             except Exception:
                 status = "VERIFYING"
-            assembly_item = QtWidgets.QTreeWidgetItem(["_assembly", "", status, "verification scene"])
+            assembly_item = QtWidgets.QTreeWidgetItem(["_assembly", "", "", status, "verification scene"])
             assembly_item.setForeground(0, QtGui.QColor("#d6b46b"))
             assembly_item.setExpanded(True)
             self.context_pack_tree.addTopLevelItem(assembly_item)
@@ -2455,13 +2469,22 @@ class AssetManagerWindow(QtWidgets.QDialog):
                             str(entry.get("publish_type") or ""),
                             str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
                             str(entry.get("version") or ""),
+                            "",
                             str(entry.get("comment") or ""),
                         ]
                     )
                 )
         for pack in packs:
-            version_item = QtWidgets.QTreeWidgetItem([pack["version"], "", "", pack.get("comment", "")])
+            pack_status = str(pack.get("status") or "published").upper()
+            version_item = QtWidgets.QTreeWidgetItem(
+                [pack["version"], "", "", pack_status, pack.get("comment", "")]
+            )
             version_item.setData(0, QtCore.Qt.UserRole, pack["manifest"])
+            version_item.setData(0, QtCore.Qt.UserRole + 1, pack["version"])
+            if pack_status == "APPROVED":
+                version_item.setForeground(3, QtGui.QColor("#72c48f"))
+            elif pack_status in {"LATEST", "PUBLISHED"}:
+                version_item.setForeground(3, QtGui.QColor("#d6b46b"))
             version_item.setExpanded(True)
             self.context_pack_tree.addTopLevelItem(version_item)
             for entry in pack["manifest"].get("resolved_representations") or []:
@@ -2471,12 +2494,58 @@ class AssetManagerWindow(QtWidgets.QDialog):
                             str(entry.get("publish_type") or ""),
                             str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
                             str(entry.get("version") or ""),
+                            "",
                             str(entry.get("comment") or ""),
                         ]
                     )
                 )
         self._apply_context_pack_tree_header()
         self.context_pack_tree.expandAll()
+        self._update_context_approve_state()
+
+    def _selected_context_pack_item(self):
+        item = self.context_pack_tree.currentItem()
+        while item is not None and item.parent() is not None:
+            item = item.parent()
+        if item is None or not item.data(0, QtCore.Qt.UserRole):
+            return None
+        return item
+
+    def _update_context_approve_state(self) -> None:
+        item = self._selected_context_pack_item()
+        self.context_approve_btn.setEnabled(
+            bool(item and str(item.text(3)).upper() != "APPROVED")
+        )
+
+    def _approve_selected_asset_context(self) -> None:
+        asset = self._current_asset()
+        profile = self._current_context_profile()
+        item = self._selected_context_pack_item()
+        if not asset or not profile or item is None:
+            self.status_label.setText("Select a packed Context version first")
+            return
+        version = str(item.data(0, QtCore.Qt.UserRole + 1) or item.text(0)).strip()
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Approve Context Pack",
+            f"Approve {asset.name} / {profile} / {version}?\n\n"
+            "Any previously approved version for this Context will be replaced.",
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            service = _asset_context_service(self.manager.config_dir)
+            service.approve_pack(
+                self._asset_context_identity(asset),
+                quality_profile=profile,
+                version=version,
+            )
+            self._populate_context_pack_tree()
+            self.status_label.setText(
+                f"Context approved: {asset.name} {profile} {version}"
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Context Approve Failed", str(exc))
 
     def _apply_context_pack_tree_header(self) -> None:
         if not getattr(self, "context_pack_tree", None):
@@ -2486,6 +2555,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
         header.setStretchLastSection(True)
     def _populate_data_tree(self, asset: Asset) -> None:
         selected_type = str(self.data_type_list.currentItem().data(QtCore.Qt.UserRole) or "") if self.data_type_list.currentItem() else ""

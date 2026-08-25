@@ -354,10 +354,36 @@ class SmartCastingService:
         variant_root = asset_root / variant
         if not variant_root.exists():
             return {context: "Missing" for context in CAST_CONTEXTS}
-        return {
-            context: self._context_status(variant_root, context, asset_publish)
-            for context in CAST_CONTEXTS
-        }
+        metadata = read_json(asset_root / "asset.json", {}) or {}
+        identity = AssetIdentity(
+            str(metadata.get("category") or asset_root.parents[1].name),
+            str(metadata.get("group") or asset_root.parent.name),
+            str(metadata.get("asset") or metadata.get("name") or asset_root.name),
+            variant,
+        )
+        try:
+            from smartlib.apps.asset_manager.context import AssetContextService
+
+            context_service = AssetContextService(self.project_config)
+            if context_service.asset_class_for_asset(identity) == "default":
+                resolved_contexts = {context: context for context in CAST_CONTEXTS}
+            else:
+                resolved_contexts = {
+                    stage: context_service.stage_context_for_asset(identity, stage)
+                    for stage in CAST_CONTEXTS
+                }
+        except (FileNotFoundError, KeyError, TypeError, ValueError, IndexError):
+            resolved_contexts = {context: context for context in CAST_CONTEXTS}
+        statuses = {}
+        for stage in CAST_CONTEXTS:
+            resolved_context = resolved_contexts.get(stage, stage)
+            status = self._context_status(variant_root, resolved_context, asset_publish)
+            # Preserve visibility of pre-migration packs (work/final) until an
+            # ANIM/PROXY/REND pack replaces them.
+            if status == "Missing" and str(resolved_context).upper() != stage:
+                status = self._context_status(variant_root, stage, asset_publish)
+            statuses[stage] = status
+        return statuses
 
     def _asset_for_cast_entry(
         self,

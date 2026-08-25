@@ -30,7 +30,8 @@ def stage_shot_from_preview(
     else:
         cmds.file(new=True, force=True)
     _apply_scene_policy(cmds, shot_data or {})
-    _load_shot_audio(cmds, Path(project_root) if project_root else None, shot_data or {})
+    if _construct_enabled(construct_data, "audio", "main"):
+        _load_shot_audio(cmds, Path(project_root) if project_root else None, shot_data or {})
     referenced = build_shot_from_preview(preview_items, shot_data)
     if project_root and construct_data:
         _apply_construct_cameras(
@@ -161,7 +162,8 @@ def stage_anim_from_input(
     _apply_construct_set_dress(root, construct_data)
     _apply_construct_animation_curves(root, construct_data)
     _apply_shot_timing(cmds, anim_shot_data)
-    _load_shot_audio(cmds, root, anim_shot_data)
+    if _construct_enabled(construct_data, "audio", "main"):
+        _load_shot_audio(cmds, root, anim_shot_data)
     return referenced
 
 
@@ -236,7 +238,8 @@ def update_anim_construct(
     if "animation_curve" in selected_types:
         _apply_construct_animation_curves(root, construct_data)
     _apply_shot_timing(cmds, shot_data or _shot_data_from_anim_input(anim_input))
-    _load_shot_audio(cmds, root, shot_data or _shot_data_from_anim_input(anim_input))
+    if _construct_enabled(construct_data, "audio", "main"):
+        _load_shot_audio(cmds, root, shot_data or _shot_data_from_anim_input(anim_input))
     return referenced
 
 
@@ -1903,7 +1906,12 @@ def _load_shot_audio(cmds, project_root: Path | None, shot_data: dict) -> str:
             cmds.delete(node_name)
     except Exception:
         pass
-    offset = int(audio.get("cut_in") or (shot_data.get("editorial") or {}).get("cut_in") or 1001)
+    editorial = shot_data.get("editorial") or {}
+    cut_range = editorial.get("cut_range") or []
+    if isinstance(cut_range, (list, tuple)) and cut_range:
+        offset = int(cut_range[0])
+    else:
+        offset = int(audio.get("cut_in") or editorial.get("cut_in") or 1001)
     node = str(cmds.sound(file=str(path), offset=offset, name=node_name))
     try:
         import maya.mel as mel

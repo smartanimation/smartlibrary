@@ -163,6 +163,33 @@ def test_editorial_timing_is_a_construct_input_and_diff_code(tmp_path: Path) -> 
     assert timing_change["selected"] is True
 
 
+def test_shot_audio_is_a_construct_input(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep001", "sq010", "sh0010")
+    audio = service.shot_data_root(identity) / "audio" / "v002" / "sh0010.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"wav")
+    write_json(
+        service.shot_data_root(identity) / "audio" / "latest.json",
+        {
+            "version": "v002",
+            "path": audio.relative_to(project_root).as_posix(),
+        },
+    )
+
+    construct = service.construct_from_stage_inputs(identity)
+    component = next(row for row in construct["components"] if row["component_type"] == "audio")
+
+    assert component["name"] == "main"
+    assert component["version"] == "v002"
+    assert component["mode"] == "apply"
+    assert component["enabled"] is True
+    assert component["path"] == str(audio)
+
+
 def test_write_construct_normalizes_fx_cache(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
@@ -241,7 +268,7 @@ def test_resolved_construct_overlays_saved_choices_and_context() -> None:
                 "name": "hero",
                 "enabled": False,
                 "mode": "reference",
-                "source": {"context": "FAST"},
+                "source": {"context": "FAST", "context_override": True},
             },
             {
                 "component_type": "fx",
@@ -280,6 +307,62 @@ def test_resolved_construct_overlays_saved_choices_and_context() -> None:
     assert result["components"][0]["enabled"] is False
     assert result["components"][0]["source"]["context"] == "FAST"
     assert result["components"][1]["name"] == "smoke"
+
+
+def test_resolved_construct_prunes_cast_removed_from_current_definition() -> None:
+    service = object.__new__(ShotManagerService)
+    service.load_construct = lambda _identity: {
+        "components": [
+            {
+                "component_type": "rig",
+                "name": "removed_character",
+                "source": {"kind": "cast_entry", "asset": "Removed"},
+            },
+            {
+                "component_type": "fx",
+                "name": "custom_smoke",
+                "source": {"kind": "custom"},
+            },
+        ]
+    }
+    service.construct_from_stage_inputs = lambda *_args, **_kwargs: {
+        "components": []
+    }
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    result = service.resolved_construct(identity)
+
+    assert [component["name"] for component in result["components"]] == [
+        "custom_smoke"
+    ]
+
+
+def test_saved_context_without_explicit_override_follows_stage_profile() -> None:
+    service = object.__new__(ShotManagerService)
+    captured = {}
+    service.load_construct = lambda _identity: {
+        "components": [{
+            "component_type": "rig",
+            "name": "hero",
+            "source": {"kind": "cast_entry", "context": "ANIM"},
+        }]
+    }
+
+    def generated(_identity, *, cast_contexts=None, **_kwargs):
+        captured["contexts"] = dict(cast_contexts or {})
+        return {"components": [{
+            "component_type": "rig",
+            "name": "hero",
+            "source": {"kind": "cast_entry", "context": "LO"},
+        }]}
+
+    service.construct_from_stage_inputs = generated
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    result = service.resolved_construct(identity)
+
+    assert captured["contexts"] == {}
+    assert result["components"][0]["source"]["context"] == "LO"
 
 
 def test_missing_background_asset_usd_is_visible_but_not_required(tmp_path: Path) -> None:

@@ -921,7 +921,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         profile_layout = QtWidgets.QVBoxLayout(profile_page)
         profile_layout.setContentsMargins(8, 8, 8, 8)
         class_actions = QtWidgets.QHBoxLayout()
-        class_actions.addWidget(QtWidgets.QLabel("Asset Class"))
+        class_actions.addWidget(QtWidgets.QLabel("Asset Type"))
         self.context_asset_class_combo = QtWidgets.QComboBox()
         self.context_asset_class_combo.setMinimumWidth(180)
         class_actions.addWidget(self.context_asset_class_combo)
@@ -1564,10 +1564,31 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         if not data:
             return
         self._context_loading = True
-        self.context_asset_class_combo.addItem("Default / Legacy", "default")
-        for asset_class in sorted((data.get("asset_context_recipes") or {}).keys()):
-            self.context_asset_class_combo.addItem(asset_class, asset_class)
-        self._current_asset_class_key = "default"
+        recipes = data.get("asset_context_recipes") or {}
+        if self._current_context_key == "asset" and recipes:
+            labels = {
+                "character": "Character",
+                "environment": "Background",
+                "prop": "Prop",
+            }
+            ordered = [
+                value for value in ("character", "environment", "prop")
+                if value in recipes
+            ]
+            ordered.extend(sorted(value for value in recipes if value not in ordered))
+            for asset_class in ordered:
+                self.context_asset_class_combo.addItem(
+                    labels.get(asset_class, asset_class.replace("_", " ").title()),
+                    asset_class,
+                )
+            self._current_asset_class_key = str(
+                self.context_asset_class_combo.itemData(0) or "character"
+            )
+        else:
+            self.context_asset_class_combo.addItem("Default / Legacy", "default")
+            for asset_class in sorted(recipes):
+                self.context_asset_class_combo.addItem(asset_class, asset_class)
+            self._current_asset_class_key = "default"
         self._populate_stage_profiles(data)
         representations = self.asset_subset_catalog
         for publish_type in sorted(representations):
@@ -2080,6 +2101,28 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         asset_config["workspace_load_policy"] = workspace_policy
         save_yml(asset_config_path, asset_config)
 
+    def _load_sequence_builder_editor(self, project_name=None):
+        default_data = load_yml(os.path.join(DEFAULT_DIR, "sequence_builder.yml"))
+        project_data = (
+            load_yml(os.path.join(PROJECTS_ROOT, project_name, "sequence_builder.yml"))
+            if project_name else {}
+        )
+        data = merge_dicts(default_data, project_data)
+        recipes = data.get("recipes") or {}
+        combo = self.shot_depts_list["sequence_recipe"]
+        combo.clear()
+        combo.addItems([str(name) for name in recipes])
+        selected = str(data.get("default_recipe") or "Standard Sequence")
+        index = combo.findText(selected)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _save_sequence_builder_config(self, project_dir):
+        path = os.path.join(project_dir, "sequence_builder.yml")
+        data = load_yml(path)
+        selected = self.shot_depts_list["sequence_recipe"].currentText().strip()
+        data["default_recipe"] = selected or "Standard Sequence"
+        save_yml(path, data)
+
     def save_config(self):
         self._save_tree_to_memory()
         name = self.name_input.text().strip()
@@ -2213,6 +2256,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._save_preflight_config(proj_dir)
         self._save_context_configs(proj_dir)
         self._save_resolver_rules(proj_dir)
+        self._save_sequence_builder_config(proj_dir)
         save_yml(os.path.join(proj_dir, "review.yml"), review_config)
         self.config_saved.emit()
         QtWidgets.QMessageBox.information(self, "Saved", "Success")
@@ -2251,6 +2295,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._load_context_editor(project_name)
         self._load_resolver_editor(project_name)
         self._load_review_editor(project_name)
+        self._load_sequence_builder_editor(project_name)
 
     def init_ui_from_default(self):
         master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
@@ -2266,6 +2311,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._load_context_editor()
         self._load_resolver_editor()
         self._load_review_editor()
+        self._load_sequence_builder_editor()
 
     def remove_from_selected(self):
         row = self.selected_list.currentRow()
@@ -2603,9 +2649,23 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         partition_layout.addWidget(partition_help)
         partition_layout.addStretch(1)
 
+        recipe_widget = QtWidgets.QWidget()
+        recipe_layout = QtWidgets.QVBoxLayout(recipe_widget)
+        recipe_layout.setContentsMargins(0, 0, 0, 0)
+        recipe_layout.addWidget(QtWidgets.QLabel("Default Sequence Recipe"))
+        sequence_recipe_combo = QtWidgets.QComboBox()
+        recipe_layout.addWidget(sequence_recipe_combo)
+        recipe_help = QtWidgets.QLabel(
+            "Initial recipe used by Review Build Manager in Sequence scope."
+        )
+        recipe_help.setWordWrap(True)
+        recipe_layout.addWidget(recipe_help)
+        recipe_layout.addStretch(1)
+
         layout.addWidget(department_widget, 1)
         layout.addWidget(task_widget, 1)
         layout.addWidget(partition_widget, 1)
+        layout.addWidget(recipe_widget, 1)
 
         add_department.clicked.connect(
             lambda: self._add_editable_list_item(
@@ -2627,6 +2687,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             "tasks": task_list,
             "partition": partition_edit,
             "default_partition": default_partition_edit,
+            "sequence_recipe": sequence_recipe_combo,
         }
 
     def _add_editable_list_item(self, list_widget, text, data=None, partition=None):

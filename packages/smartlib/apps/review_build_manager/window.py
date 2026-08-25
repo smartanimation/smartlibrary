@@ -348,20 +348,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.contents_select_all_btn = QtWidgets.QPushButton("Select All")
         self.contents_clear_btn = QtWidgets.QPushButton("Clear")
         self.contents_invert_btn = QtWidgets.QPushButton("Invert")
-        self.contents_context_combo = QtWidgets.QComboBox()
-        self.contents_context_combo.addItems(self.service.asset_context_profiles())
-        self.contents_apply_context_btn = QtWidgets.QPushButton("Review Changes")
-        self.contents_apply_context_btn.setToolTip(
-            "Review the selected cast context changes before applying them."
-        )
         self.contents_summary_label = QtWidgets.QLabel("Select a shot")
         contents_tools.addWidget(self.contents_select_all_btn)
         contents_tools.addWidget(self.contents_clear_btn)
         contents_tools.addWidget(self.contents_invert_btn)
-        contents_tools.addStretch(1)
-        contents_tools.addWidget(QtWidgets.QLabel("Context to Selected"))
-        contents_tools.addWidget(self.contents_context_combo)
-        contents_tools.addWidget(self.contents_apply_context_btn)
         contents_tools.addStretch(1)
         contents_tools.addWidget(self.contents_summary_label)
         contents_layout.addLayout(contents_tools)
@@ -544,7 +534,6 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.contents_select_all_btn.clicked.connect(lambda: self._set_content_checks("select"))
         self.contents_clear_btn.clicked.connect(lambda: self._set_content_checks("clear"))
         self.contents_invert_btn.clicked.connect(lambda: self._set_content_checks("invert"))
-        self.contents_apply_context_btn.clicked.connect(self._apply_context_to_contents)
         self.build_contents_table.itemChanged.connect(self._content_item_changed)
         self.sequence_recipe_combo.currentTextChanged.connect(
             self._sequence_recipe_changed
@@ -1037,6 +1026,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self._content_settings(status)["contexts"][name] = str(context)
         source = dict(data["component"].get("source") or {})
         source["context"] = str(context)
+        source["context_override"] = True
         data["component"]["source"] = source
         self.service.save_build_contents(status.identity, self.current_build_content_rows)
         self._populate_build_contents(status)
@@ -2004,7 +1994,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 if not str(source.get("asset") or ""):
                     continue
                 saved_context = str(source.get("context") or "")
-                if name and saved_context and name not in contexts:
+                if (
+                    name and saved_context and bool(source.get("context_override"))
+                    and name not in contexts
+                ):
                     contexts[name] = saved_context
                 if name and not bool(component.get("enabled", True)):
                     excluded.add(name)

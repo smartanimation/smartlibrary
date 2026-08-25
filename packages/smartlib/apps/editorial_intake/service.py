@@ -253,6 +253,8 @@ class SmartEditorialIntakeService:
             report.append(f"audio - OK: {len(result.shot_audio)} shots")
         elif source.mov_path:
             report.append("audio - SKIP: no audio stream or registered shot.json")
+        if result.sequence_audio:
+            report.append(f"sequence audio - OK: {result.sequence_audio}")
 
         storyreel_publish_dir = None
         storyreel_shots = 0

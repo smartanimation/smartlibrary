@@ -1455,6 +1455,25 @@ def _run_sequence_construction(
     enabled_recipe_inputs = {
         item.key for item in recipe_plan.inputs if item.enabled
     }
+    audio_input = next(
+        (
+            item
+            for item in recipe_plan.inputs
+            if item.key == "audio" and item.enabled and item.state == "READY"
+        ),
+        None,
+    )
+    if audio_input and audio_input.path:
+        from smartlib.dcc.maya.shot_builder import _load_shot_audio
+
+        _load_shot_audio(
+            cmds,
+            manager.project_config.project_root,
+            {
+                "audio": {"path": audio_input.path, "cut_in": recipe_plan.frame_start},
+                "editorial": {"cut_in": recipe_plan.frame_start},
+            },
+        )
     if "light" in enabled_recipe_inputs:
         from smartlib.dcc.maya.shot_scene_data import import_scene_component_package
 

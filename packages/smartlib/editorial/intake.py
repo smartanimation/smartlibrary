@@ -88,6 +88,7 @@ class EditorialIntakeResult:
     events: list[EditorialEvent]
     editorial_timings: list[Path]
     shot_audio: list[Path] = field(default_factory=list)
+    sequence_audio: Path | None = None
 
 
 class EditorialIntakeService:
@@ -168,6 +169,7 @@ class EditorialIntakeService:
         publish_mov = None
         editorial_timings: list[Path] = []
         shot_audio: list[Path] = []
+        sequence_audio = None
         if request.publish:
             work_manifest = read_json(work_dir / "manifest.json", {}) or {}
             publish_dir = self.publish_cut(
@@ -186,6 +188,7 @@ class EditorialIntakeService:
             # disables "Create Folder Structure".
             if publish_mov:
                 shot_audio = self.write_shot_audio(events, publish_mov, publish_dir)
+                sequence_audio = self.write_sequence_audio(events, publish_mov, publish_dir)
             editorial_timings = self.write_shot_editorial_snapshots(events, publish_dir)
 
         return EditorialIntakeResult(
@@ -198,6 +201,7 @@ class EditorialIntakeService:
             events=events,
             editorial_timings=editorial_timings,
             shot_audio=shot_audio,
+            sequence_audio=sequence_audio,
         )
 
     def ensure_sequence_structures(self, events: list[EditorialEvent]) -> list[Path]:
@@ -412,6 +416,50 @@ class EditorialIntakeService:
             )
             written.append(output)
         return written
+
+    def write_sequence_audio(
+        self,
+        events: list[EditorialEvent],
+        source_mov: Path,
+        publish_dir: Path,
+    ) -> Path | None:
+        if not events or not self._source_has_audio(source_mov):
+            return None
+        episode, sequence = _publish_identity(events, "", "")
+        sequence_root = configured_project_paths(
+            self.project_root, self.project_config
+        ).sequence_root(episode, sequence)
+        version_dir = sequence_root / "data" / "audio" / publish_dir.name
+        output = version_dir / f"{episode}_{sequence}.wav"
+        version_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                str(self._ffmpeg_path()),
+                "-y",
+                "-i",
+                str(source_mov),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-c:a",
+                "pcm_s16le",
+                str(output),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        write_json(
+            sequence_root / "data" / "audio" / "latest.json",
+            {
+                "version": publish_dir.name,
+                "path": _relative_to_project(output, self.project_root),
+                "fps": self.fps,
+                "cut_in": min(event.cut_in for event in events),
+                "cut_out": max(event.cut_out for event in events),
+                "editorial_publish": _relative_to_project(publish_dir, self.project_root),
+            },
+        )
+        return output
 
     def _source_has_audio(self, source: Path) -> bool:
         ffprobe = self._ffmpeg_path().with_name("ffprobe.exe")

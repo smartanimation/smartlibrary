@@ -304,8 +304,7 @@ class ReviewBuildManagerService:
         return list(self.sequence_builder.recipes())
 
     def default_sequence_recipe(self) -> str:
-        recipes = self.sequence_recipes()
-        return recipes[0] if recipes else "Mocap + Virtual Camera"
+        return self.sequence_builder.default_recipe()
 
     def sequence_recipe_plan(
         self,
@@ -425,18 +424,29 @@ class ReviewBuildManagerService:
             str(key): str(value).upper()
             for key, value in (cast_contexts or {}).items()
         }
-        persisted_construct = self.shots.load_construct(identity)
+        load_construct = getattr(self.shots, "load_construct", None)
+        persisted_construct = load_construct(identity) if load_construct else {}
         for component in persisted_construct.get("components") or []:
             if not isinstance(component, dict):
                 continue
             name = str(component.get("name") or "")
-            saved_context = str((component.get("source") or {}).get("context") or "").upper()
-            if name and saved_context and name not in context_map:
+            saved_source = component.get("source") or {}
+            saved_context = str(saved_source.get("context") or "").upper()
+            if (
+                name and saved_context and bool(saved_source.get("context_override"))
+                and name not in context_map
+            ):
                 context_map[name] = saved_context
-        cast_data = self.shots.load_cast(identity)
+        load_cast = getattr(self.shots, "load_cast", None)
+        cast_data = load_cast(identity) if load_cast else {}
         cast_rows = cast_data.get("cast") or {}
         if not cast_rows:
-            cast_rows = (self.shots.load_sequence_cast(identity.episode, identity.sequence).get("cast") or {})
+            load_sequence_cast = getattr(self.shots, "load_sequence_cast", None)
+            sequence_cast = (
+                load_sequence_cast(identity.episode, identity.sequence)
+                if load_sequence_cast else {}
+            )
+            cast_rows = sequence_cast.get("cast") or {}
         for cast_key, entry in cast_rows.items():
             if not isinstance(entry, dict):
                 continue
@@ -475,7 +485,7 @@ class ReviewBuildManagerService:
                     name,
                     str(source.get("context") or default_context or "WORK").upper(),
                 )
-                if is_asset_component
+                if (is_cast or is_asset_component)
                 else "payload" if is_usd else ""
             )
             latest_path = None

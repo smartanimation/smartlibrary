@@ -126,6 +126,22 @@ def test_asset_assembly_ingest_writes_asset_manager_indexes(tmp_path: Path) -> N
     ]
 
 
+def test_vendor_delivery_is_planned_as_intake(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / "vendors" / "studioA" / "20260824_01" / "delivery.zip"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"zip")
+
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    item = service.plan_file(source)
+
+    assert item.status == "Ready"
+    assert item.target_type == "Intake"
+    assert item.metadata.vendor == "studioA"
+    assert item.target_path == project_root / "production" / "intake" / "studioA" / "20260824" / "delivery.zip"
+
+
 def test_fbm_companion_is_hidden_and_ingested_with_parent_fbx(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)

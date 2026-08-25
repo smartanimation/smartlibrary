@@ -45,7 +45,7 @@ EDITORIAL_EXTENSIONS = {".aaf", ".edl", ".mov", ".mp4", ".otio", ".xml"}
 ASSET_EXTENSIONS = {".abc", ".fbx", ".ma", ".mb", ".tga", ".tif", ".tiff", ".usd", ".usda", ".usdc"}
 SHOT_EXTENSIONS = {".abc", ".fbx", ".mov", ".mp4", ".usd", ".usda", ".usdc", ".wav"}
 SEQUENCE_EXTENSIONS = SHOT_EXTENSIONS | {".edl", ".otio", ".xml"}
-VENDOR_EXTENSIONS = SUPPORTED_EXTENSIONS | {".rar", ".7z"}
+INTAKE_EXTENSIONS = SUPPORTED_EXTENSIONS | {".rar", ".7z"}
 
 DATE_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
 DELIVERY_FOLDER_RE = re.compile(r"^20\d{6}_\d{2}$")
@@ -517,7 +517,7 @@ class SmartIngestService:
             )
         if len(parts) >= 3 and parts[0] == "vendors":
             return IngestMetadata(
-                target_type="Vendor",
+                target_type="Intake",
                 project=self.project_name,
                 department=department,
                 subset=subset,
@@ -586,11 +586,12 @@ class SmartIngestService:
                 / version
                 / filename
             ), "editorial data copy"
-        if target_type == "Vendor":
-            if extension not in VENDOR_EXTENSIONS or not metadata.vendor:
-                return None, "vendor or extension is unknown"
+        if target_type in {"Intake", "Vendor"}:
+            if extension not in INTAKE_EXTENSIONS:
+                return None, "extension is not intake-ready"
             delivery = metadata.delivery_date or datetime.now().strftime("%Y%m%d")
-            return self.staging_root / "vendors" / metadata.vendor / delivery / source.name, "vendor staging copy"
+            source_name = metadata.vendor or "external"
+            return self.paths.production_root() / "intake" / source_name / delivery / source.name, "intake archive copy"
         if target_type == "Asset":
             if extension not in ASSET_EXTENSIONS:
                 return None, "extension is not asset data"
