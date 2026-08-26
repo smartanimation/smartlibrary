@@ -1,4 +1,9 @@
-from smartlib.preflight import PreflightContext, PreflightEngine, Severity
+from smartlib.preflight import (
+    PreflightContext,
+    PreflightEngine,
+    PreflightManifestStore,
+    Severity,
+)
 from smartlib.preflight.profiles import create_asset_profile, create_shot_profile
 from smartlib.dcc.maya.preflight import MayaPreflightAdapter, resolve_context
 
@@ -47,7 +52,7 @@ class FakeAdapter:
     def outside_project_references(self, _project_root):
         return []
 
-    def meshes_without_uvs(self):
+    def meshes_without_uvs(self, _set_name=None):
         return []
 
     def missing_texture_nodes(self):
@@ -147,6 +152,19 @@ def test_report_is_serializable(tmp_path):
     assert report.attempt_id in text
 
 
+def test_preflight_manifest_store_writes_attempt_and_latest(tmp_path):
+    report = PreflightEngine(FakeAdapter(), create_asset_profile()).run(
+        PreflightContext(kind="asset", entity="Hero")
+    )
+    manifest = PreflightManifestStore(tmp_path).write(report)
+    assert manifest == (
+        tmp_path / "manifests" / "preflight" / report.attempt_id / "manifest.json"
+    )
+    latest = manifest.parents[1] / "latest.json"
+    assert latest.is_file()
+    assert report.attempt_id in latest.read_text(encoding="utf-8")
+
+
 class ContextCmds:
     def __init__(self, path):
         self.path = path
@@ -166,6 +184,44 @@ def test_maya_context_resolves_asset_and_shot_profiles():
     assert (shot.kind, shot.entity, shot.task, shot.version) == (
         "shot", "sh020", "Animation", "v018"
     )
+
+
+def test_maya_context_falls_back_to_canonical_data_roots_without_json(tmp_path):
+    asset_scene = (
+        tmp_path / "assets" / "CH" / "main" / "DLI" / "default"
+        / "work" / "rig" / "maya" / "main" / "v001" / "DLI.mb"
+    )
+    asset = resolve_context(ContextCmds(asset_scene.as_posix()))
+    assert asset.entity == "DLI"
+    assert asset.metadata["data_root"] == (
+        tmp_path / "assets" / "CH" / "main" / "DLI" / "default" / "data"
+    ).as_posix()
+
+    shot_scene = (
+        tmp_path / "shots" / "ep02" / "s027" / "c001"
+        / "work" / "anim" / "maya" / "main" / "v001" / "c001.ma"
+    )
+    shot = resolve_context(ContextCmds(shot_scene.as_posix()))
+    assert shot.metadata["data_root"] == (
+        tmp_path / "shots" / "ep02" / "s027" / "c001" / "data"
+    ).as_posix()
+
+
+def test_maya_context_resolves_entity_data_roots(tmp_path):
+    asset_root = tmp_path / "assets" / "CH" / "main" / "Hero"
+    asset_scene = asset_root / "default" / "work" / "rig" / "Hero_rig_v001.ma"
+    asset_scene.parent.mkdir(parents=True)
+    (asset_root / "asset.json").write_text('{"asset": "Hero"}', encoding="utf-8")
+    asset = resolve_context(ContextCmds(asset_scene.as_posix()))
+
+    shot_root = tmp_path / "shots" / "ep01" / "sq010" / "sh020"
+    shot_scene = shot_root / "work" / "anim" / "sh020_anim_v001.ma"
+    shot_scene.parent.mkdir(parents=True)
+    (shot_root / "shot.json").write_text("{}", encoding="utf-8")
+    shot = resolve_context(ContextCmds(shot_scene.as_posix()))
+
+    assert asset.metadata["data_root"] == (asset_root / "default" / "data").as_posix()
+    assert shot.metadata["data_root"] == (shot_root / "data").as_posix()
 
 
 def test_asset_required_sets_and_shot_camera_policy_are_profile_checks():
@@ -285,7 +341,7 @@ def test_non_rigging_asset_skips_skel_export_set():
 
 def test_missing_uv_and_invalid_texture_are_asset_errors():
     adapter = FakeAdapter()
-    adapter.meshes_without_uvs = lambda: ["|Root|body_geoShape"]
+    adapter.meshes_without_uvs = lambda _set_name=None: ["|Root|body_geoShape"]
     adapter.missing_texture_nodes = lambda: ["body_baseColor_file"]
     report = PreflightEngine(adapter, create_asset_profile()).run(
         PreflightContext(kind="asset", entity="Hero")
@@ -293,6 +349,23 @@ def test_missing_uv_and_invalid_texture_are_asset_errors():
     assert next(row for row in report.results if row.key == "meshes_have_uvs").severity == Severity.ERROR
     assert next(row for row in report.results if row.key == "texture_files_exist").severity == Severity.ERROR
     assert report.blocked
+
+
+def test_missing_uv_ignores_meshes_outside_cache_geo_set():
+    adapter = FakeAdapter()
+    requested_sets = []
+
+    def missing_uvs(set_name=None):
+        requested_sets.append(set_name)
+        return []
+
+    adapter.meshes_without_uvs = missing_uvs
+    report = PreflightEngine(adapter, create_asset_profile()).run(
+        PreflightContext(kind="asset", entity="Hero", task="Rigging")
+    )
+    result = next(row for row in report.results if row.key == "meshes_have_uvs")
+    assert result.severity == Severity.PASS
+    assert requested_sets == ["cache_geo_set"]
 
 
 def test_hidden_geometry_outside_cache_set_is_ignored():

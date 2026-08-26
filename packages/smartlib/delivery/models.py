@@ -24,6 +24,28 @@ class ShotContext:
 
 
 @dataclass(frozen=True)
+class AssetContext:
+    category: str
+    group: str
+    asset_name: str
+    variant: str
+    task: str
+    version: int
+
+    @property
+    def code(self) -> str:
+        return f"{self.category}_{self.group}_{self.asset_name}_{self.variant}"
+
+    def tokens(self) -> dict[str, Any]:
+        return {
+            "category": self.category, "group": self.group,
+            "asset_name": self.asset_name, "asset": self.asset_name,
+            "variant": self.variant, "task": self.task,
+            "version": int(self.version),
+        }
+
+
+@dataclass(frozen=True)
 class DeliveryInput:
     id: str
     kind: str
@@ -65,7 +87,7 @@ class DeliveryPlan:
     job_id: str
     profile_id: str
     profile_version: int
-    context: ShotContext
+    context: ShotContext | AssetContext
     items: list[DeliveryItem]
     package_root: Path
     metadata: dict[str, Any] = field(default_factory=dict)

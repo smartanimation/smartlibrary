@@ -98,10 +98,10 @@ class MayaPreflightAdapter:
             direct = self.cmds.listRelatives(
                 node, shapes=True, type="mesh", fullPath=True, noIntermediate=True
             ) or []
-            descendants = self.cmds.listRelatives(
-                node, allDescendents=True, type="mesh", fullPath=True, noIntermediate=True
-            ) or []
-            shapes.update(str(shape) for shape in (*direct, *descendants))
+            # Do not expand every descendant of a group member. Rig setup and
+            # blendShape targets often live below the same hierarchy without
+            # being explicit cache_geo_set publish members.
+            shapes.update(str(shape) for shape in direct)
         return sorted(shapes, key=str.casefold)
 
     def _hidden_reason(self, node: str) -> str:
@@ -139,9 +139,14 @@ class MayaPreflightAdapter:
     def asset_lights(self) -> list[str]:
         return sorted({str(node) for node in self.cmds.ls(lights=True, long=True) or []}, key=str.casefold)
 
-    def meshes_without_uvs(self) -> list[str]:
+    def meshes_without_uvs(self, set_name: str | None = None) -> list[str]:
         missing = []
-        for shape in self.cmds.ls(type="mesh", long=True, noIntermediate=True) or []:
+        shapes = (
+            self._set_mesh_shapes(set_name)
+            if set_name
+            else self.cmds.ls(type="mesh", long=True, noIntermediate=True) or []
+        )
+        for shape in shapes:
             try:
                 count = int(self.cmds.polyEvaluate(shape, uvcoord=True) or 0)
             except (RuntimeError, TypeError, ValueError):
@@ -396,6 +401,9 @@ def resolve_context(cmds_module=None) -> PreflightContext:
     if forced == "asset" or (asset_match and forced != "shot"):
         entity, task = _asset_identity(path)
         metadata = _asset_metadata(path)
+        data_root = _asset_data_root(path)
+        if data_root:
+            metadata["data_root"] = data_root.as_posix()
         metadata["policy"] = _preflight_policy()
         return PreflightContext(
             kind="asset",
@@ -407,8 +415,15 @@ def resolve_context(cmds_module=None) -> PreflightContext:
         )
     entity = shot_match.group(3) if shot_match else Path(path).stem
     task = _task_from_scene(path)
-    metadata = {"sequence": shot_match.group(2) if shot_match else "", "policy": _preflight_policy()}
+    metadata = {
+        "episode": shot_match.group(1) if shot_match else "",
+        "sequence": shot_match.group(2) if shot_match else "",
+        "policy": _preflight_policy(),
+    }
     metadata.update(_shot_metadata(path))
+    data_root = _shot_data_root(path)
+    if data_root:
+        metadata["data_root"] = data_root.as_posix()
     return PreflightContext(
         kind="shot",
         entity=entity,
@@ -434,6 +449,12 @@ def _asset_identity(path: str) -> tuple[str, str]:
         start = lowered.index("assets") + 1
     except ValueError:
         return Path(path).stem, _task_from_scene(path)
+    # Canonical layout: assets/{category}/{group}/{asset}/{variant}/...
+    # Resolve this before looking for task folders because paths commonly contain
+    # .../{variant}/work/rig/... and "work" is not the Asset name.
+    structural = {"work", "publish", "data", "model", "rig", "look", "lookdev", "groom", "texture", "surfacing"}
+    if len(parts) >= start + 4 and lowered[start + 3] not in structural:
+        return parts[start + 2], _task_from_scene(path)
     tasks = {"model", "rig", "look", "lookdev", "groom", "texture", "surfacing"}
     for index in range(start, len(parts)):
         if lowered[index] in tasks:
@@ -477,6 +498,53 @@ def _asset_metadata(scene_path: str) -> dict:
         if data:
             return data
     return {}
+
+
+def _asset_data_root(scene_path: str) -> Path | None:
+    asset_root = _descriptor_root(scene_path, "asset.json")
+    if asset_root is not None:
+        try:
+            relative = Path(scene_path).resolve().relative_to(asset_root.resolve())
+        except (OSError, ValueError):
+            relative = None
+        if relative and relative.parts:
+            return asset_root / relative.parts[0] / "data"
+    parts = Path(scene_path).parts
+    lowered = [part.lower() for part in parts]
+    try:
+        start = lowered.index("assets") + 1
+    except ValueError:
+        return None
+    if len(parts) < start + 4:
+        return None
+    structural = {"work", "publish", "data", "model", "rig", "look", "lookdev", "groom", "texture", "surfacing"}
+    if lowered[start + 3] in structural:
+        return None
+    return Path(*parts[: start + 4]) / "data"
+
+
+def _shot_data_root(scene_path: str) -> Path | None:
+    shot_root = _descriptor_root(scene_path, "shot.json")
+    if shot_root:
+        return shot_root / "data"
+    parts = Path(scene_path).parts
+    lowered = [part.lower() for part in parts]
+    try:
+        start = lowered.index("shots") + 1
+    except ValueError:
+        return None
+    # Canonical layout: shots/{episode}/{sequence}/{shot}/...
+    if len(parts) >= start + 3:
+        return Path(*parts[: start + 3]) / "data"
+    return None
+
+
+def _descriptor_root(scene_path: str, filename: str) -> Path | None:
+    current = Path(scene_path).parent
+    for parent in (current, *current.parents):
+        if (parent / filename).is_file():
+            return parent
+    return None
 
 
 def _preflight_policy() -> dict:

@@ -284,11 +284,15 @@ class SmartSequenceBuilderService:
 
     def _resolve_storyreel(self, identity: SequenceIdentity) -> Path | None:
         roots = [
+            self.project_root / "workspace" / "editorial" / "publish" / identity.episode / identity.sequence,
             self.project_root / "editorial" / "publish" / identity.episode / identity.sequence,
             self.project_root / "editorial" / identity.episode / identity.sequence,
         ]
         for root in roots:
-            result = self._first_file(root)
+            latest = read_json(root / "latest.json", {}) or {}
+            version = str(latest.get("version") or "").strip()
+            storyreel_root = root / version / "storyreel" if version else root / "storyreel"
+            result = self._first_file(storyreel_root)
             if result:
                 return result
         return None

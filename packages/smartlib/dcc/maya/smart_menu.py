@@ -27,6 +27,11 @@ DEFAULT_MENU_CONFIG = {
                     "enabled": True,
                 },
                 {
+                    "label": "Sequence Manager",
+                    "command": "smartlib.dcc.maya.smart_menu.show_sequence_manager",
+                    "enabled": True,
+                },
+                {
                     "label": "Smart Preflight",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_preflight",
                     "enabled": True,
@@ -196,7 +201,29 @@ def _load_menu_config() -> dict:
         return DEFAULT_MENU_CONFIG
     if not isinstance(data, dict) or not isinstance(data.get("maya_menu"), dict):
         return DEFAULT_MENU_CONFIG
+    _ensure_sequence_manager_entry(data)
     return data
+
+
+def _ensure_sequence_manager_entry(data: dict) -> None:
+    """Add the built-in Sequence Manager entry to older project menu configs."""
+    menu_data = data.get("maya_menu") or {}
+    categories = menu_data.get("categories")
+    if not isinstance(categories, dict):
+        return
+    file_items = categories.setdefault("File", [])
+    normalized = _menu_items_from_config(file_items)
+    command = "smartlib.dcc.maya.smart_menu.show_sequence_manager"
+    if any(str(item.get("command") or "").strip() == command for item in normalized):
+        return
+    entry = {"label": "Sequence Manager", "command": command, "enabled": True}
+    if isinstance(file_items, list):
+        file_items.append(entry)
+    elif isinstance(file_items, dict):
+        file_items[entry["label"]] = {
+            "command": entry["command"],
+            "enabled": entry["enabled"],
+        }
 
 
 def _resolve_command(path: str):
@@ -317,6 +344,26 @@ def show_shot_manager() -> None:
 
     config_dir = os.environ.get("PROJECT_CONFIG_DIR") or str(_root() / "config" / "STKB")
     shot_manager_ui.show(config_dir)
+
+
+def show_sequence_manager() -> None:
+    ensure_runtime_paths()
+    existing_module = sys.modules.get("smartlib.apps.sequence_manager.__main__")
+    existing_window = getattr(existing_module, "_WINDOW", None) if existing_module else None
+    if existing_window is not None:
+        try:
+            existing_window.close()
+            existing_window.deleteLater()
+        except RuntimeError:
+            pass
+    _reload(
+        "smartlib.apps.sequence_manager.service",
+        "smartlib.apps.sequence_manager.__main__",
+        "smartlib.apps.sequence_manager",
+    )
+    from smartlib.apps import sequence_manager
+
+    sequence_manager.show(config_dir=str(_config_dir()))
 
 
 def show_smart_preflight() -> None:

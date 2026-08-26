@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.path_resolver import configured_project_paths
 from smartlib.core.versioning import format_version, next_version, parse_version
 
 
@@ -415,7 +416,10 @@ def ingested_editorial_files(
     project_root = project_config.project_root
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
-    role_root = project_root / "editorial" / "data" / episode / sequence / role
+    role_root = (
+        configured_project_paths(project_root, project_config).editorial_data_root()
+        / episode / sequence / role
+    )
     if not role_root.exists():
         return []
     version_dirs = [
@@ -448,7 +452,7 @@ def ingested_editorial_episode_sequences(
     project_root = project_config.project_root
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
-    root = project_root / "editorial" / "data"
+    root = configured_project_paths(project_root, project_config).editorial_data_root()
     if not root.exists():
         return []
     return sorted(
@@ -484,7 +488,10 @@ def latest_ingested_shot_media(
     project_root = project_config.project_root
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
-    root = project_root / "editorial" / "data" / episode / sequence / "shot_media"
+    root = (
+        configured_project_paths(project_root, project_config).editorial_data_root()
+        / episode / sequence / "shot_media"
+    )
     if not root.exists():
         return []
     result = []

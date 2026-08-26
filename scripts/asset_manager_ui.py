@@ -32,6 +32,19 @@ def _qt_modules():
 QtCore, QtGui, QtWidgets = _qt_modules()
 
 
+class _SortValueTableWidgetItem(QtWidgets.QTableWidgetItem):
+    """Table item whose display text and sort value can differ."""
+
+    def __init__(self, text: str, sort_value):
+        super().__init__(text)
+        self._sort_value = sort_value
+
+    def __lt__(self, other) -> bool:
+        if isinstance(other, _SortValueTableWidgetItem):
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
+
+
 def _exec_menu(menu, pos):
     """Execute a context menu with either the Qt 6 or Qt 5 API."""
     exec_method = getattr(menu, "exec", None)
@@ -520,6 +533,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.work_list.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.work_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.work_list.setSortingEnabled(True)
+        self.work_list.horizontalHeader().setSortIndicator(
+            2, QtCore.Qt.DescendingOrder
+        )
         work_layout.addWidget(self.work_list)
         button_grid = QtWidgets.QGridLayout()
         self.open_scene_btn = QtWidgets.QPushButton("OPEN")
@@ -1451,6 +1467,8 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._update_dependency_label(asset)
         self._update_detail_asset_info(asset)
         if not asset:
+            self.work_list.setSortingEnabled(True)
+            self.work_list.sortItems(2, QtCore.Qt.DescendingOrder)
             return
 
         department = self._current_department()
@@ -1488,7 +1506,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
             thumbnail = self.manager.thumbnail_path_for_workfile(path)
             if thumbnail.exists():
                 thumb_item.setIcon(QtGui.QIcon(str(thumbnail)))
-            updated_item = QtWidgets.QTableWidgetItem(self._format_updated(path))
+            try:
+                updated_timestamp = path.stat().st_mtime
+            except OSError:
+                updated_timestamp = 0.0
+            updated_item = _SortValueTableWidgetItem(
+                self._format_updated(path), updated_timestamp
+            )
             updated_item.setFlags(updated_item.flags() & ~QtCore.Qt.ItemIsEditable)
             self.work_list.setItem(row, 0, thumb_item)
             self.work_list.setItem(row, 1, file_item)
@@ -1497,6 +1521,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.work_list.setItem(row, 3, comment_item)
         self.work_list.blockSignals(False)
         self.work_list.setSortingEnabled(True)
+        self.work_list.sortItems(2, QtCore.Qt.DescendingOrder)
         self.work_list.resizeColumnsToContents()
 
         self._populate_data_tree(asset)
@@ -5132,14 +5157,10 @@ def setup_quick_preview_locators(asset_name: str) -> dict:
     except ImportError as exc:
         raise RuntimeError("Quick Preview setup is available inside Maya.") from exc
 
-    top = _find_exact_top_node(cmds, asset_name)
-    if not top:
-        raise RuntimeError(f"Asset top node was not found: {asset_name}")
-
     pipeline_grp = _ensure_group(cmds, "PIPELINE_GRP")
     preview_grp = _ensure_group(cmds, "PREVIEW_GRP", parent=pipeline_grp)
-    preview_tops = _preview_asset_top_nodes(cmds, asset_name, top)
-    bbox = _combined_world_bbox(cmds, preview_tops)
+    preview_geometry = _quick_preview_geometry(cmds)
+    bbox = _combined_world_bbox(cmds, preview_geometry)
     center = [
         (bbox[0] + bbox[3]) * 0.5,
         (bbox[1] + bbox[4]) * 0.5,
@@ -5169,10 +5190,122 @@ def setup_quick_preview_locators(asset_name: str) -> dict:
         "camera": camera,
         "focus_manual": focus_manual,
         "camera_manual": camera_manual,
-        "preview_tops": preview_tops,
+        "preview_tops": preview_geometry,
+        "preview_geometry": preview_geometry,
         "bbox": bbox,
         "camera_distance": camera_distance,
     }
+
+
+def _quick_preview_geometry(cmds) -> list[str]:
+    """Use cache_geo_set geometry, falling back to effectively visible meshes."""
+
+    geometry_set = _quick_preview_geometry_set(cmds)
+    shapes = (
+        _mesh_shapes_from_set(cmds, geometry_set)
+        if geometry_set
+        else [
+            shape for shape in (cmds.ls(type="mesh", long=True) or [])
+            if _is_preview_mesh_shape(cmds, shape, require_visible=True)
+        ]
+    )
+    transforms = []
+    for shape in shapes:
+        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        if parents:
+            transforms.append(parents[0])
+    geometry = _unique_nodes_by_path(transforms)
+    if not geometry:
+        source = geometry_set or "visible scene geometry"
+        raise RuntimeError(f"No polygon geometry was found in {source} for Quick Preview.")
+    return geometry
+
+
+def _quick_preview_geometry_set(cmds) -> str | None:
+    matches = list(cmds.ls("cache_geo_set", type="objectSet", long=False) or [])
+    matches.extend(cmds.ls("*:cache_geo_set", type="objectSet", long=False) or [])
+    matches = _unique_nodes_by_path([str(value) for value in matches])
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise RuntimeError(
+            "Multiple cache_geo_set candidates were found: " + ", ".join(matches)
+        )
+    return matches[0]
+
+
+def _mesh_shapes_from_set(cmds, set_name: str) -> list[str]:
+    shapes = []
+    pending = list(cmds.sets(set_name, query=True) or [])
+    visited_sets = set()
+    while pending:
+        member = str(pending.pop(0)).split(".", 1)[0]
+        if not cmds.objExists(member):
+            continue
+        if cmds.nodeType(member) == "objectSet":
+            if member not in visited_sets:
+                visited_sets.add(member)
+                pending.extend(cmds.sets(member, query=True) or [])
+            continue
+        if cmds.nodeType(member) == "mesh":
+            candidates = cmds.ls(member, long=True) or [member]
+        else:
+            candidates = []
+            candidates.extend(
+                cmds.listRelatives(
+                    member, shapes=True, type="mesh", fullPath=True, noIntermediate=True
+                ) or []
+            )
+            candidates.extend(
+                cmds.listRelatives(
+                    member, allDescendents=True, type="mesh", fullPath=True, noIntermediate=True
+                ) or []
+            )
+        shapes.extend(
+            shape for shape in candidates
+            if _is_preview_mesh_shape(cmds, shape, require_visible=False)
+        )
+    return _unique_nodes_by_path(shapes)
+
+
+def _is_preview_mesh_shape(cmds, shape: str, *, require_visible: bool) -> bool:
+    try:
+        if cmds.nodeType(shape) != "mesh" or cmds.getAttr(f"{shape}.intermediateObject"):
+            return False
+    except Exception:
+        return False
+    if not require_visible:
+        return True
+    current = shape
+    while current:
+        for attribute in ("visibility", "lodVisibility"):
+            plug = f"{current}.{attribute}"
+            try:
+                if cmds.objExists(plug) and not bool(cmds.getAttr(plug)):
+                    return False
+            except Exception:
+                pass
+        try:
+            if (
+                cmds.objExists(f"{current}.overrideEnabled")
+                and cmds.getAttr(f"{current}.overrideEnabled")
+                and cmds.objExists(f"{current}.overrideVisibility")
+                and not cmds.getAttr(f"{current}.overrideVisibility")
+            ):
+                return False
+        except Exception:
+            pass
+        parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
+        current = parents[0] if parents else ""
+    for layer in cmds.listConnections(shape, type="displayLayer") or []:
+        if str(layer).split(":")[-1] in {"defaultLayer", "defaultDisplayLayer"}:
+            continue
+        try:
+            if cmds.objExists(f"{layer}.visibility") and not cmds.getAttr(f"{layer}.visibility"):
+                return False
+        except Exception:
+            pass
+    return True
 
 
 def _preview_asset_top_nodes(cmds, asset_name: str, local_top: str) -> list[str]:
@@ -5210,7 +5343,12 @@ def create_quick_preview_package(
     version = next_review_version(base_dir)
     version_label = f"v{version:03d}"
     version_dir = base_dir / version_label
-    outputs = export_quick_preview_images(asset.name, result, version_dir)
+    outputs = export_quick_preview_images(
+        asset.name,
+        result,
+        version_dir,
+        uv_checker=_quick_preview_uv_checker(manager),
+    )
     review_data = {
         "asset": asset.name,
         "category": asset.category,
@@ -5220,7 +5358,7 @@ def create_quick_preview_package(
         "subset": subset,
         "version": version_label,
         "type": "quick_preview",
-        "views": ["front", "side", "top"],
+        "views": ["front", "side", "top", "bottom"],
         "outputs": outputs,
         "locators": {
             "focus": result.get("focus"),
@@ -5252,6 +5390,28 @@ def create_quick_preview_package(
     result["version_dir"] = str(version_dir)
     result["review_json"] = str(version_dir / "review.json")
     return result
+
+
+def _quick_preview_uv_checker(manager: AssetManager) -> Path:
+    settings = (getattr(manager, "asset_config", {}) or {}).get("quick_preview") or {}
+    configured = str(
+        settings.get("uv_checker")
+        or settings.get("uv_checker_texture")
+        or ""
+    ).strip()
+    pipeline_root = Path(__file__).resolve().parents[1]
+    if configured:
+        configured = configured.replace("{project_root}", str(manager.project_root))
+        configured = configured.replace("{smartpipeline_root}", str(pipeline_root))
+        path = Path(configured)
+        if not path.is_absolute():
+            path = Path(manager.config_dir) / path
+        if path.is_file():
+            return path
+    fallback = pipeline_root / "templates" / "image" / "UVChecker.png"
+    if not fallback.is_file():
+        raise FileNotFoundError(f"Quick Preview UV checker was not found: {fallback}")
+    return fallback
 
 
 def quick_preview_base_dir(asset: Asset, variant: str, department: str, subset: str) -> Path:
@@ -5811,7 +5971,13 @@ def read_json_file(path: Path, default=None):
         return json.load(f)
 
 
-def export_quick_preview_images(asset_name: str, locator_data: dict, version_dir: Path) -> dict[str, list[str]]:
+def export_quick_preview_images(
+    asset_name: str,
+    locator_data: dict,
+    version_dir: Path,
+    *,
+    uv_checker: Path | None = None,
+) -> dict[str, list[str]]:
     try:
         import maya.cmds as cmds
     except ImportError as exc:
@@ -5826,18 +5992,25 @@ def export_quick_preview_images(asset_name: str, locator_data: dict, version_dir
         ("front", [focus_position[0], focus_position[1], focus_position[2] + distance], [0, 0, 0]),
         ("side", [focus_position[0] + distance, focus_position[1], focus_position[2]], [0, 90, 0]),
         ("top", [focus_position[0], focus_position[1] + distance, focus_position[2]], [-90, 0, 0]),
+        ("bottom", [focus_position[0], focus_position[1] - distance, focus_position[2]], [90, 0, 0]),
     ]
-    modes = ("beauty", "wireframe", "bbox")
+    modes = ("beauty", "wireframe", "bbox", "uv")
     panel = _active_model_panel(cmds)
     original_camera = cmds.modelPanel(panel, query=True, camera=True)
+    original_display = _capture_model_editor_display(cmds, panel)
     original_selection = cmds.ls(selection=True, long=True) or []
     outputs: dict[str, list[str]] = {key: [] for key in modes}
     cameras = []
     bbox_curve = None
+    uv_override = None
     original_bg = _capture_viewport_background(cmds)
     try:
         cmds.select(clear=True)
         bbox_curve = _create_preview_bbox_curve(cmds, bbox)
+        if uv_checker and Path(uv_checker).is_file():
+            uv_override = _create_uv_checker_override(
+                cmds, locator_data.get("preview_geometry") or [], Path(uv_checker)
+            )
         _set_viewport_background(cmds, (0.48, 0.48, 0.48))
         for index, (_view_name, position, rotation) in enumerate(views, start=1):
             camera_transform, _camera_shape = cmds.camera(name=f"quickPreview_{index:02d}_CAM")
@@ -5849,6 +6022,7 @@ def export_quick_preview_images(asset_name: str, locator_data: dict, version_dir
                 output_dir.mkdir(parents=True, exist_ok=True)
                 output_path = output_dir / f"{asset_name}_{mode}_{index:04d}.jpg"
                 _apply_quick_preview_mode(cmds, panel, mode, bbox_curve)
+                _set_uv_checker_override(cmds, uv_override, mode == "uv")
                 cmds.playblast(
                     completeFilename=str(output_path),
                     forceOverwrite=True,
@@ -5872,12 +6046,47 @@ def export_quick_preview_images(asset_name: str, locator_data: dict, version_dir
                 cmds.delete(camera)
         if bbox_curve and cmds.objExists(bbox_curve):
             cmds.delete(bbox_curve)
+        _delete_uv_checker_override(cmds, uv_override)
         _restore_viewport_background(cmds, original_bg)
+        _restore_model_editor_display(cmds, panel, original_display)
         if original_selection:
             existing = [node for node in original_selection if cmds.objExists(node)]
             if existing:
                 cmds.select(existing, replace=True)
     return outputs
+
+
+def _capture_model_editor_display(cmds, panel: str) -> dict:
+    flags = (
+        "allObjects", "polymeshes", "nurbsCurves", "nurbsSurfaces",
+        "subdivSurfaces", "joints", "locators", "cameras", "grid",
+        "manipulators", "displayAppearance", "wireframeOnShaded", "displayTextures",
+    )
+    result = {}
+    for flag in flags:
+        try:
+            result[flag] = cmds.modelEditor(panel, query=True, **{flag: True})
+        except Exception:
+            pass
+    return result
+
+
+def _restore_model_editor_display(cmds, panel: str, settings: dict) -> None:
+    if not settings:
+        return
+    all_objects = settings.get("allObjects")
+    if all_objects is not None:
+        try:
+            cmds.modelEditor(panel, edit=True, allObjects=all_objects)
+        except Exception:
+            pass
+    for flag, value in settings.items():
+        if flag == "allObjects":
+            continue
+        try:
+            cmds.modelEditor(panel, edit=True, **{flag: value})
+        except Exception:
+            pass
 
 
 def _active_model_panel(cmds) -> str:
@@ -5893,7 +6102,7 @@ def _active_model_panel(cmds) -> str:
 def _apply_quick_preview_mode(cmds, panel: str, mode: str, bbox_curve: str | None) -> None:
     if bbox_curve and cmds.objExists(bbox_curve):
         cmds.setAttr(f"{bbox_curve}.visibility", mode == "bbox")
-    if mode == "beauty":
+    if mode in {"beauty", "uv"}:
         display_appearance = "smoothShaded"
         wireframe_on_shaded = False
         display_textures = True
@@ -5908,6 +6117,11 @@ def _apply_quick_preview_mode(cmds, panel: str, mode: str, bbox_curve: str | Non
     cmds.modelEditor(
         panel,
         edit=True,
+        allObjects=False,
+        polymeshes=True,
+        nurbsCurves=False,
+        nurbsSurfaces=False,
+        subdivSurfaces=False,
         displayAppearance=display_appearance,
         wireframeOnShaded=wireframe_on_shaded,
         displayTextures=display_textures,
@@ -5915,30 +6129,128 @@ def _apply_quick_preview_mode(cmds, panel: str, mode: str, bbox_curve: str | Non
         manipulators=False,
         locators=False,
         cameras=False,
-        joints=True,
+        joints=False,
     )
+
+
+def _create_uv_checker_override(cmds, geometry: list[str], texture: Path) -> dict | None:
+    shapes = []
+    for transform in geometry:
+        shapes.extend(cmds.listRelatives(transform, shapes=True, noIntermediate=True, fullPath=True) or [])
+    shapes = [shape for shape in _unique_nodes_by_path(shapes) if cmds.nodeType(shape) == "mesh"]
+    if not shapes:
+        return None
+    assignments = {}
+    shading_groups = _unique_nodes_by_path(
+        [
+            shading_group
+            for shape in shapes
+            for shading_group in (cmds.listConnections(shape, type="shadingEngine") or [])
+        ]
+    )
+    for shading_group in shading_groups:
+        members = cmds.sets(shading_group, query=True) or []
+        matching = []
+        for member in members:
+            member_name = str(member)
+            member_node = member_name.split(".", 1)[0]
+            if any(
+                member_name == shape
+                or member_name.startswith(f"{shape}.")
+                or member_name == transform
+                or member_name.startswith(f"{transform}.")
+                or member_node == _node_leaf_name(shape)
+                or member_node == _node_leaf_name(transform)
+                for shape, transform in (
+                    (shape, (cmds.listRelatives(shape, parent=True, fullPath=True) or [""])[0])
+                    for shape in shapes
+                )
+            ):
+                matching.append(member_name)
+        if matching:
+            assignments[shading_group] = matching
+    shader = cmds.shadingNode("lambert", asShader=True, name="quickPreview_uvChecker_MAT")
+    file_node = cmds.shadingNode("file", asTexture=True, name="quickPreview_uvChecker_FILE")
+    place = cmds.shadingNode("place2dTexture", asUtility=True, name="quickPreview_uvChecker_PLACE2D")
+    for attr in (
+        "coverage", "translateFrame", "rotateFrame", "mirrorU", "mirrorV", "stagger",
+        "wrapU", "wrapV", "repeatUV", "offset", "rotateUV", "noiseUV", "vertexUvOne",
+        "vertexUvTwo", "vertexUvThree", "vertexCameraOne",
+    ):
+        try:
+            cmds.connectAttr(f"{place}.{attr}", f"{file_node}.{attr}", force=True)
+        except Exception:
+            pass
+    cmds.connectAttr(f"{place}.outUV", f"{file_node}.uvCoord", force=True)
+    cmds.connectAttr(f"{place}.outUvFilterSize", f"{file_node}.uvFilterSize", force=True)
+    cmds.setAttr(f"{place}.repeatUV", 2.0, 2.0, type="double2")
+    cmds.connectAttr(f"{file_node}.outColor", f"{shader}.color", force=True)
+    cmds.setAttr(f"{file_node}.fileTextureName", str(texture).replace("\\", "/"), type="string")
+    shading_group = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="quickPreview_uvChecker_SG")
+    cmds.connectAttr(f"{shader}.outColor", f"{shading_group}.surfaceShader", force=True)
+    return {
+        "shapes": shapes,
+        "assignments": assignments,
+        "shader": shader,
+        "file": file_node,
+        "place": place,
+        "shading_group": shading_group,
+        "active": False,
+    }
+
+
+def _set_uv_checker_override(cmds, data: dict | None, enabled: bool) -> None:
+    if not data or bool(data.get("active")) == enabled:
+        return
+    if enabled:
+        cmds.sets(data["shapes"], edit=True, forceElement=data["shading_group"])
+    else:
+        for shading_group, members in data["assignments"].items():
+            existing = [
+                member for member in members
+                if cmds.objExists(member.split(".", 1)[0])
+            ]
+            if cmds.objExists(shading_group) and existing:
+                cmds.sets(existing, edit=True, forceElement=shading_group)
+    data["active"] = enabled
+
+
+def _delete_uv_checker_override(cmds, data: dict | None) -> None:
+    if not data:
+        return
+    try:
+        _set_uv_checker_override(cmds, data, False)
+    finally:
+        for node in (data.get("shading_group"), data.get("shader"), data.get("file"), data.get("place")):
+            if node and cmds.objExists(node):
+                cmds.delete(node)
 
 
 def _create_preview_bbox_curve(cmds, bbox: list[float]) -> str:
     x0, y0, z0, x1, y1, z1 = bbox
-    points = [
-        (x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0), (x0, y0, z0),
-        (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1), (x0, y0, z1),
-        (x1, y0, z1), (x1, y0, z0), (x1, y1, z0), (x1, y1, z1),
-        (x0, y1, z1), (x0, y1, z0),
-    ]
-    curve = cmds.curve(degree=1, point=points, name="quickPreview_bbox_CRV")
-    shapes = cmds.listRelatives(curve, shapes=True, fullPath=True) or []
+    box = cmds.polyCube(
+        name="quickPreview_bbox_GEO",
+        width=max(x1 - x0, 0.001),
+        height=max(y1 - y0, 0.001),
+        depth=max(z1 - z0, 0.001),
+        constructionHistory=False,
+    )[0]
+    cmds.xform(
+        box,
+        worldSpace=True,
+        translation=((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5),
+    )
+    shapes = cmds.listRelatives(box, shapes=True, fullPath=True) or []
     for shape in shapes:
         try:
             cmds.setAttr(f"{shape}.overrideEnabled", True)
             cmds.setAttr(f"{shape}.overrideRGBColors", True)
             cmds.setAttr(f"{shape}.overrideColorRGB", 0.1, 1.0, 0.1)
-            cmds.setAttr(f"{shape}.lineWidth", 2)
+            cmds.setAttr(f"{shape}.overrideShading", False)
         except Exception:
             pass
-    cmds.setAttr(f"{curve}.visibility", False)
-    return curve
+    cmds.setAttr(f"{box}.visibility", False)
+    return box
 
 
 def _capture_viewport_background(cmds) -> dict:

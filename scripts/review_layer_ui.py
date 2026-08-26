@@ -95,11 +95,9 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         self.context_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         self.shot_combo = QtWidgets.QComboBox()
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
-        self.sync_btn = QtWidgets.QPushButton("Sync Maya Layers")
         header.addWidget(self.context_label)
         header.addWidget(self.shot_combo, 1)
         header.addWidget(self.refresh_btn)
-        header.addWidget(self.sync_btn)
         root.addLayout(header)
 
         body = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -114,7 +112,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
 
         footer = QtWidgets.QHBoxLayout()
         self.status_label = QtWidgets.QLabel("")
-        self.save_btn = QtWidgets.QPushButton("Save")
+        self.save_btn = QtWidgets.QPushButton("Publish Definitions")
         self.create_layers_btn = QtWidgets.QPushButton("Create / Sync Display Layers")
         self.close_btn = QtWidgets.QPushButton("Close")
         self.save_btn.setStyleSheet("background-color: #2868a8;")
@@ -126,16 +124,13 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         root.addLayout(footer)
 
         if not self.is_maya_session:
-            self.sync_btn.setEnabled(False)
             self.create_layers_btn.setEnabled(False)
             self.add_object_btn.setEnabled(False)
             self.select_maya_btn.setEnabled(False)
 
         self.shot_combo.currentIndexChanged.connect(self._shot_changed)
         self.refresh_btn.clicked.connect(self.refresh)
-        self.sync_btn.clicked.connect(self.create_review_layers)
         self.layer_list.currentItemChanged.connect(lambda *_: self._refresh_member_views())
-        self.layer_list.model().rowsMoved.connect(lambda *_: self._refresh_layer_counts())
         self.add_layer_btn.clicked.connect(self.add_layer)
         self.duplicate_layer_btn.clicked.connect(self.duplicate_layer)
         self.delete_layer_btn.clicked.connect(self.delete_layer)
@@ -144,6 +139,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         self.remove_member_btn.clicked.connect(self.remove_members)
         self.select_maya_btn.clicked.connect(self.select_members_in_maya)
         self.cast_search.textChanged.connect(self._populate_available_cast)
+        self.display_layer_combo.currentTextChanged.connect(self._display_layer_changed)
         self.save_btn.clicked.connect(self.save)
         self.create_layers_btn.clicked.connect(self.create_review_layers)
         self.close_btn.clicked.connect(self.close)
@@ -154,8 +150,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(QtWidgets.QLabel("Review Layers"))
         self.layer_list = QtWidgets.QListWidget()
-        self.layer_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
-        self.layer_list.setDefaultDropAction(QtCore.Qt.MoveAction)
+        self.layer_list.setDragDropMode(QtWidgets.QAbstractItemView.NoDragDrop)
         layout.addWidget(self.layer_list, 1)
         actions = QtWidgets.QHBoxLayout()
         self.add_layer_btn = QtWidgets.QPushButton("+")
@@ -172,6 +167,12 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(QtWidgets.QLabel("Layer Members"))
+        mapping = QtWidgets.QHBoxLayout()
+        mapping.addWidget(QtWidgets.QLabel("Display Layer"))
+        self.display_layer_combo = QtWidgets.QComboBox()
+        self.display_layer_combo.setEditable(True)
+        mapping.addWidget(self.display_layer_combo, 1)
+        layout.addLayout(mapping)
         actions = QtWidgets.QHBoxLayout()
         self.add_cast_btn = QtWidgets.QPushButton("Add Cast")
         self.add_object_btn = QtWidgets.QPushButton("Add Selected Objects")
@@ -285,12 +286,6 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             self.service.review_layers(self.identity, self.department)
         )
         repaired = self._normalize_cast_members()
-        if repaired:
-            self.service.write_review_layers(
-                self.identity,
-                self._layers,
-                department=self.department,
-            )
         self._populate_layers()
         self._refresh_member_views()
         self.status_label.setText(f"{len(self._layers)} Review Layers")
@@ -328,7 +323,10 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         if name in self._layers:
             QtWidgets.QMessageBox.warning(self, "Add Review Layer", f"Layer already exists: {name}")
             return
-        self._layers[name] = {"members": [], "objects": [], "order": len(self._layers) * 10}
+        self._layers[name] = {
+            "members": [], "objects": [], "display_layer": name,
+            "order": len(self._layers) * 10,
+        }
         self._populate_layers(name)
 
     def duplicate_layer(self) -> None:
@@ -343,6 +341,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         layer = deepcopy(self._layers[source])
         layer["members"] = []
         layer["objects"] = []
+        layer["display_layer"] = name
         self._layers[name] = layer
         self._populate_layers(name)
 
@@ -504,13 +503,37 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         self._populate_available_cast()
         layer_name = self.current_layer_name()
         layer = self._layers.get(layer_name) or {}
+        display_layer = str(layer.get("display_layer") or layer_name)
+        choices = []
+        if self.is_maya_session:
+            try:
+                import maya.cmds as cmds
+
+                choices = [
+                    str(value) for value in (cmds.ls(type="displayLayer") or [])
+                    if str(value) != "defaultLayer"
+                ]
+            except Exception:
+                choices = []
+        self.display_layer_combo.blockSignals(True)
+        self.display_layer_combo.clear()
+        self.display_layer_combo.addItems(list(dict.fromkeys([display_layer, *choices])))
+        self.display_layer_combo.setCurrentText(display_layer)
+        self.display_layer_combo.setEnabled(bool(layer_name))
+        self.display_layer_combo.blockSignals(False)
         count = len(layer.get("members") or []) + len(layer.get("objects") or [])
         self.info_label.setText(
             f"Selected Layer: {layer_name}\n"
-            f"Display Layer: {layer_name}\n"
+            f"Display Layer: {display_layer}\n"
             f"Member Count: {count}\n"
             "Cast Unique: Yes"
         )
+
+    def _display_layer_changed(self, value: str) -> None:
+        layer_name = self.current_layer_name()
+        if not layer_name:
+            return
+        self._layers.setdefault(layer_name, {})["display_layer"] = str(value).strip() or layer_name
 
     def _populate_members(self) -> None:
         self.member_table.setRowCount(0)
@@ -563,12 +586,14 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         query = self.cast_search.text().strip().lower()
         self.cast_table.setRowCount(0)
         for cast_key, entry in sorted(self._cast.items(), key=lambda item: item[0].lower()):
+            assigned = self._cast_assignment(cast_key)
+            if assigned:
+                continue
             haystack = " ".join(
                 str(value) for value in (cast_key, entry.get("asset"), entry.get("variant"), entry.get("role"))
             ).lower()
             if query and query not in haystack:
                 continue
-            assigned = self._cast_assignment(cast_key)
             values = (
                 cast_key,
                 entry.get("asset", ""),
@@ -582,9 +607,6 @@ class ReviewLayerWindow(QtWidgets.QDialog):
                 values,
                 {"cast_key": cast_key},
             )
-            if assigned:
-                for column in range(self.cast_table.columnCount()):
-                    self.cast_table.item(row, column).setForeground(QtCore.Qt.gray)
         self.cast_table.resizeColumnsToContents()
 
     @staticmethod
@@ -613,12 +635,17 @@ class ReviewLayerWindow(QtWidgets.QDialog):
                 layer["order"] = index * 10
                 ordered[name] = layer
             self._layers = ordered
-            path = self.service.write_review_layers(
+            composition_path, layers_path = self.service.publish_review_definitions(
                 self.identity,
                 self._layers,
                 department=self.department,
+                comment="Published from Review Layer Manager",
             )
-            self.status_label.setText(f"Saved Review Spec: {path.parent.name}")
+            self.status_label.setText(
+                "Published Definitions: "
+                f"Composition {composition_path.parent.name} / "
+                f"Layers {layers_path.parent.name}"
+            )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Failed", str(exc))
 

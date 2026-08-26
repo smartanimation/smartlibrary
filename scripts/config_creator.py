@@ -14,14 +14,20 @@ DEFAULT_DIR = os.path.join(PIPELINE_ROOT, "config", "default")
 GLOBAL_SOFT_PATH = os.path.join(DEFAULT_DIR, "software_settings.yml")
 ASSET_LIST_URL_LABEL = "Asset List URL"
 SHOT_LIST_URL_LABEL = "Shot List URL"
+GOOGLE_CREDENTIALS_PATH_KEY = "credentials_path"
 SHOT_PATH_TEMPLATE_KEYS = {
     "shot_root", "shot_work_root", "shot_work", "shot_data_root",
     "shot_publish_root", "shot_output_root", "shot_render_root",
-    "shot_build_root", "shot_build", "sequence_build_root", "sequence_build",
+    "shot_build_root", "shot_build", "sequence_work_root", "sequence_work",
+    "sequence_build_root", "sequence_build",
 }
 ASSET_PATH_TEMPLATE_KEYS = {
     "asset_root", "asset_work_root", "asset_work", "asset_data_root",
     "asset_publish_root", "asset_reference_root",
+}
+ASSEMBLY_PATH_TEMPLATE_KEYS = {
+    "assembly_root", "assembly_work_root", "assembly_work",
+    "assembly_data_root", "assembly_publish_root",
 }
 PACKAGES_DIR = os.path.join(PIPELINE_ROOT, "packages")
 if PACKAGES_DIR not in sys.path:
@@ -2203,6 +2209,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             else:
                 google_sheets.pop(f"{prefix}_url", None)
                 google_sheets.pop(f"{prefix}_id", None)
+        credentials_path = self.google_credentials_path_edit.text().strip()
+        if credentials_path:
+            google_sheets[GOOGLE_CREDENTIALS_PATH_KEY] = credentials_path
+        else:
+            google_sheets.pop(GOOGLE_CREDENTIALS_PATH_KEY, None)
         if google_sheets:
             config['google_sheets'] = google_sheets
         
@@ -2226,6 +2237,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         t_tab = self.template_table["table"]
         shot_templates = {}
         asset_templates = {}
+        assembly_templates = {}
         for r in range(t_tab.rowCount()):
             k_item = t_tab.item(r, 0); v_item = t_tab.item(r, 1)
             k = k_item.text() if k_item else ""; v = v_item.text() if v_item else ""
@@ -2235,6 +2247,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 shot_templates[k] = v
             elif k in ASSET_PATH_TEMPLATE_KEYS:
                 asset_templates[k] = v
+            elif k in ASSEMBLY_PATH_TEMPLATE_KEYS:
+                assembly_templates[k] = v
             else:
                 config['templates'][k] = v
 
@@ -2242,6 +2256,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         for filename, templates in (
             ("templates_shots.yml", shot_templates),
             ("templates_assets.yml", asset_templates),
+            ("templates_assemblies.yml", assembly_templates),
         ):
             domain_path = os.path.join(proj_dir, filename)
             domain_data = load_yml(domain_path)
@@ -2519,6 +2534,21 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def create_anchors_page(self):
         page = self.create_table_page("Anchors", ["Key", "Value"])
+        credentials_row = QtWidgets.QHBoxLayout()
+        credentials_row.addWidget(QtWidgets.QLabel("Google Credentials File"))
+        self.google_credentials_path_edit = QtWidgets.QLineEdit()
+        self.google_credentials_path_edit.setPlaceholderText(
+            "%APPDATA%/credentials.json or {project_root}/config/credentials.json"
+        )
+        self.google_credentials_path_edit.setToolTip(
+            "Only the path is saved. The credential file itself is not copied into the project."
+        )
+        credentials_row.addWidget(self.google_credentials_path_edit, 1)
+        credentials_browse = QtWidgets.QPushButton("Browse")
+        credentials_browse.clicked.connect(self._browse_google_credentials_file)
+        credentials_row.addWidget(credentials_browse)
+        page["widget"].layout().insertLayout(0, credentials_row)
+
         preset_row = QtWidgets.QHBoxLayout()
         preset_row.addWidget(QtWidgets.QLabel("Resolution Preset"))
         self.anchor_resolution_preset = QtWidgets.QComboBox()
@@ -2537,6 +2567,18 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         page["table"].itemChanged.connect(self._sync_anchor_resolution_preset)
         return page
+
+    def _browse_google_credentials_file(self):
+        current = self.google_credentials_path_edit.text().strip()
+        start_path = os.path.expandvars(current) if current else os.environ.get("APPDATA", "")
+        path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select Google Credentials File",
+            start_path,
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if path:
+            self.google_credentials_path_edit.setText(path.replace("\\", "/"))
 
     def _apply_anchor_resolution_preset(self, _index):
         preset = str(self.anchor_resolution_preset.currentData() or "")
@@ -2840,6 +2882,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 r = tab.rowCount(); tab.insertRow(r)
                 tab.setItem(r, 0, QtWidgets.QTableWidgetItem(k)); tab.setItem(r, 1, QtWidgets.QTableWidgetItem(str(v)))
         google_sheets = data.get('google_sheets') or {}
+        self.google_credentials_path_edit.setText(
+            str(google_sheets.get(GOOGLE_CREDENTIALS_PATH_KEY) or "")
+        )
         for label, prefix in (
             (ASSET_LIST_URL_LABEL, "asset_list"),
             (SHOT_LIST_URL_LABEL, "shot_list"),
@@ -2891,6 +2936,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         for filename, allowed in (
             ("templates_shots.yml", SHOT_PATH_TEMPLATE_KEYS),
             ("templates_assets.yml", ASSET_PATH_TEMPLATE_KEYS),
+            ("templates_assemblies.yml", ASSEMBLY_PATH_TEMPLATE_KEYS),
         ):
             data = load_yml(os.path.join(DEFAULT_DIR, filename))
             if project_dir:

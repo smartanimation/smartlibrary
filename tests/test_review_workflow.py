@@ -6,6 +6,7 @@ import pytest
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
+from smartlib.apps.shot_manager.service import _normalized_playblast_settings
 from smartlib.review.workflow import (
     ReviewProfileService,
     ReviewWorkflowService,
@@ -94,7 +95,37 @@ def test_assembly_and_dynamic_layers_are_versioned(tmp_path: Path) -> None:
     )
     layers = read_json(layers_path)["layers"]
     assert [layer["slug"] for layer in layers] == ["Bear_Closeup", "Background_Only"]
-    assert layers[0]["precomp_placeholder"] == "BEAR_CLOSEUP"
+    assert layers[0]["display_layer"] == "Bear Closeup"
+    assert "precomp_placeholder" not in layers[0]
+    assert "camera" not in layers[0]
+
+
+def test_playblast_settings_owns_review_output_contract() -> None:
+    settings = _normalized_playblast_settings({
+        "rows": [{
+            "layer": "review_Bear Closeup",
+            "display_layer": "Bear_Display",
+            "camera": "cam_closeup",
+            "width": 1280,
+            "height": 720,
+            "start": 1001,
+            "end": 1100,
+            "overscan": 1.05,
+            "preset": "anim_review",
+            "output_format": ".png",
+            "ae_placeholder": "BEAR",
+        }]
+    })
+
+    row = settings["rows"][0]
+    assert settings["schema"] == "smartpipeline.playblast_settings.v2"
+    assert settings["layer_order"] == ["Bear_Closeup"]
+    assert row["review_layer_id"] == "Bear_Closeup"
+    assert row["display_layer"] == "Bear_Display"
+    assert row["camera"] == "cam_closeup"
+    assert row["overscan"] == 1.05
+    assert row["output_format"] == "png"
+    assert row["ae_placeholder"] == "BEAR"
 
 
 def test_review_construct_versions_are_independent_from_normal_builds(tmp_path: Path) -> None:

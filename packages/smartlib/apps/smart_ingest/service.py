@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import socket
+import urllib.request
+import zipfile
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.config_loader import ProjectConfig, load_config, studio_config_dir
 from smartlib.core.metadata import read_json, write_json
 from smartlib.core.path_resolver import ProjectPaths
 from smartlib.core.versioning import format_version, next_version, parse_version
@@ -109,7 +112,7 @@ class PlanItem:
 
     @property
     def actionable(self) -> bool:
-        return self.action in {"copy", "reject"} and self.status in {"Ready", "Reject"}
+        return self.action in {"copy", "reject", "expand_package"} and self.status in {"Ready", "Reject"}
 
 
 @dataclass(frozen=True)
@@ -242,6 +245,26 @@ class SmartIngestService:
                 selected=True,
             )
 
+        package = self._smart_package_manifest(source) if metadata is None else None
+        if package:
+            target = dict(package.get("target") or {})
+            ingest = dict(package.get("ingest") or {})
+            meta = IngestMetadata(
+                target_type=str(target.get("target_type") or package.get("package_type") or "").title(),
+                project=str(target.get("project") or self.project_name), asset=str(target.get("asset") or ""),
+                category=str(target.get("category") or "CH"), group=str(target.get("group") or "main"),
+                variant=str(target.get("variant") or "default"), department=str(target.get("department") or "assembly"),
+                subset=str(target.get("subset") or "vendor"), format=str(target.get("format") or "zip"),
+                episode=str(target.get("episode") or "ep001"), sequence=str(target.get("sequence") or "sq010"),
+                shot=str(target.get("shot") or ""), vendor=str((package.get("delivery") or {}).get("received_from") or ""),
+                delivery_date=str((package.get("delivery") or {}).get("delivery_date") or ""),
+                comment=str((package.get("delivery") or {}).get("comment") or "Smart Delivery package"),
+            )
+            target_path = self._package_target_root(ingest.get("expected_target_root"), meta)
+            if target_path.exists():
+                return self._item(source, target_path, "ZIP", "none", meta.target_type, "Conflict", "package target already exists", meta)
+            return self._item(source, target_path, "ZIP", "expand_package", meta.target_type, "Ready", "manifest package expansion", meta, selected=True)
+
         target_path, reason = self._target_path(source, meta)
         if target_path is None:
             return self._item(source, None, file_type, "none", meta.target_type, "Needs Metadata", reason, meta)
@@ -313,13 +336,82 @@ class SmartIngestService:
                     shutil.copy2(item.source_path, item.target_path)
                     rejected.append(item.target_path)
                     manifests.append(self._write_rejection_manifest(item, item.target_path))
+                elif item.action == "expand_package":
+                    checksum = _sha1(item.source_path)
+                    written = self._expand_smart_package(item.source_path, item.target_path)
+                    copied.extend(written)
+                    processed_sources.append(item.source_path)
+                    manifests.append(item.target_path / "manifest.json")
+                    state_path = self._record_processed(item, item.target_path, checksum)
+                    if state_path not in manifests:
+                        manifests.append(state_path)
                 else:
                     skipped.append(item)
             manifests.extend(self._write_editorial_delivery_manifests(editorial_records))
         finally:
             for lock_path in reversed(locks):
                 self._release_delivery_lock(lock_path)
-        return IngestRunResult(copied, rejected, processed_sources, skipped, manifests)
+        result = IngestRunResult(copied, rejected, processed_sources, skipped, manifests)
+        self._notify_ingest_completed(result)
+        return result
+
+    @staticmethod
+    def _smart_package_manifest(source: Path) -> dict[str, Any] | None:
+        if source.suffix.lower() != ".zip" or not zipfile.is_zipfile(source):
+            return None
+        try:
+            with zipfile.ZipFile(source) as archive:
+                data = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
+        except (KeyError, ValueError, UnicodeDecodeError, OSError):
+            return None
+        if not isinstance(data, dict) or not str(data.get("schema") or "").startswith("smart_ingest."):
+            return None
+        if not bool((data.get("ingest") or {}).get("auto_plan", True)):
+            return None
+        return data
+
+    def _package_target_root(self, expected: Any, metadata: IngestMetadata) -> Path:
+        text = str(expected or "").replace("\\", "/").strip("/")
+        if not text and metadata.target_type == "Asset":
+            text = f"production/assets/{metadata.category}/{metadata.group}/{metadata.asset}/{metadata.variant}/data/{metadata.department}/{metadata.subset}/v###"
+        if not text:
+            raise ValueError("Smart package manifest has no expected_target_root")
+        relative = Path(text)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"Package target must be project-relative: {text}")
+        if relative.name.lower() == "v###":
+            parent = self.project_root / relative.parent
+            return parent / self._next_version(parent)
+        return self.project_root / relative
+
+    @staticmethod
+    def _expand_smart_package(source: Path, target: Path) -> list[Path]:
+        target.mkdir(parents=True, exist_ok=False)
+        written: list[Path] = []
+        with zipfile.ZipFile(source) as archive:
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
+            for info in archive.infolist():
+                member = Path(info.filename.replace("\\", "/"))
+                if info.is_dir() or member.name == "manifest.json":
+                    continue
+                if member.is_absolute() or ".." in member.parts:
+                    raise ValueError(f"Unsafe ZIP member: {info.filename}")
+                destination = target / member
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source_stream, destination.open("wb") as target_stream:
+                    shutil.copyfileobj(source_stream, target_stream)
+                written.append(destination)
+        manifest["ingested_from"] = source.as_posix()
+        write_json(target / "manifest.json", manifest)
+        main_file = str(manifest.get("main_file") or "")
+        write_json(target.parent / "latest.json", {"version": target.name, "path": f"{target.name}/{main_file}", "manifest": f"{target.name}/manifest.json"})
+        versions_path = target.parent / "versions.json"
+        versions = read_json(versions_path, []) or []
+        for row in versions:
+            if isinstance(row, dict) and row.get("status") == "latest": row["status"] = "available"
+        versions.append({"version": target.name, "status": "latest", "comment": str((manifest.get("delivery") or {}).get("comment") or "")})
+        write_json(versions_path, versions)
+        return written
 
     def ignore_items(self, items: list[PlanItem], *, reason: str = "not related to CG ingest") -> IngestRunResult:
         processed_sources: list[Path] = []
@@ -374,6 +466,40 @@ class SmartIngestService:
     def editorial_data_roles(self) -> list[str]:
         roles = self.editorial_naming.get("roles") or {}
         return [str(value).strip() for value in roles if str(value).strip()]
+
+    def asset_categories(self) -> list[str]:
+        return self._child_dir_names(self.paths.assets_root(), fallback=["CH", "BG", "PR", "characters"])
+
+    def asset_groups(self, category: str) -> list[str]:
+        return self._child_dir_names(self.paths.assets_root() / category, fallback=["main"])
+
+    def asset_names(self, category: str, group: str) -> list[str]:
+        return self._child_dir_names(self.paths.assets_root() / category / group)
+
+    def asset_variants(self, category: str, group: str, asset: str) -> list[str]:
+        return self._child_dir_names(self.paths.assets_root() / category / group / asset, fallback=["default"])
+
+    def asset_departments(self) -> list[str]:
+        return _unique_preserve_order([*self._config_asset_departments(), "assembly"])
+
+    def asset_subsets(self, department: str) -> list[str]:
+        defaults = {
+            "assembly": ["client"],
+            "model": ["render", "hires", "proxy", "main"],
+            "rig": ["main", "layout"],
+            "look": ["main", "render"],
+        }
+        return defaults.get(department.strip().lower(), ["main"])
+
+    def _config_asset_departments(self) -> list[str]:
+        return _config_list(self.project_config.base.get("asset_depts") or [])
+
+    @staticmethod
+    def _child_dir_names(root: Path, *, fallback: list[str] | None = None) -> list[str]:
+        values = []
+        if root.exists():
+            values = sorted((path.name for path in root.iterdir() if path.is_dir()), key=str.lower)
+        return values or list(fallback or [])
 
     def restore_processed_manifest(self, manifest_path: str | Path) -> list[Path]:
         """Restore a legacy _processed record.
@@ -577,8 +703,7 @@ class SmartIngestService:
             version = self._next_editorial_data_version(metadata.episode, metadata.sequence, subset)
             filename = self._editorial_filename(source, metadata)
             return (
-                self.project_root
-                / "editorial"
+                self._editorial_data_root()
                 / "data"
                 / metadata.episode
                 / metadata.sequence
@@ -852,8 +977,7 @@ class SmartIngestService:
         written = []
         for (episode, sequence, delivery_id), values in grouped.items():
             manifest_path = (
-                self.project_root
-                / "editorial"
+                self._editorial_data_root()
                 / "data"
                 / episode
                 / sequence
@@ -866,7 +990,7 @@ class SmartIngestService:
             by_output = {str(entry.get("output")): dict(entry) for entry in entries if isinstance(entry, dict)}
             for item, target_path in values:
                 relative_output = target_path.relative_to(
-                    self.project_root / "editorial" / "data" / episode / sequence
+                    self._editorial_data_root() / "data" / episode / sequence
                 ).as_posix()
                 by_output[relative_output] = {
                     "role": item.metadata.subset,
@@ -922,6 +1046,77 @@ class SmartIngestService:
             / metadata.department
             / (metadata.subset or "main")
         )
+
+    def _editorial_data_root(self) -> Path:
+        return self.paths.editorial_data_root().parent
+
+    def _notify_ingest_completed(self, result: IngestRunResult) -> None:
+        webhook_url = self._google_chat_webhook_url()
+        if not webhook_url:
+            return
+        text = self._google_chat_ingest_message(result)
+        try:
+            _post_json(webhook_url, {"text": text})
+        except Exception as exc:
+            print(f"Smart Ingest Google Chat notification failed: {exc}")
+
+    def _google_chat_webhook_url(self) -> str:
+        smart_ingest = self._smart_ingest_secrets()
+        direct_url = str(smart_ingest.get("google_chat_webhook_url") or "").strip()
+        notifications = smart_ingest.get("notifications") if isinstance(smart_ingest.get("notifications"), dict) else {}
+        google_chat = notifications.get("google_chat") if isinstance(notifications.get("google_chat"), dict) else {}
+        if google_chat and google_chat.get("enabled") is False:
+            return ""
+        nested_url = str(google_chat.get("webhook_url") or "").strip()
+        env_name = str(google_chat.get("webhook_env") or "").strip()
+        env_url = str(os.environ.get(env_name) or "").strip() if env_name else ""
+        return nested_url or direct_url or env_url
+
+    def _smart_ingest_secrets(self) -> dict[str, Any]:
+        secrets_path = self._secrets_path()
+        if secrets_path is None:
+            return {}
+        data = load_config(secrets_path)
+        smart_ingest = data.get("smart_ingest") if isinstance(data, dict) else {}
+        return smart_ingest if isinstance(smart_ingest, dict) else {}
+
+    def _secrets_path(self) -> Path | None:
+        configured_dir = studio_config_dir()
+        candidates = []
+        if configured_dir:
+            candidates.append(configured_dir / "secrets.yml")
+        for path in [self.project_config.config_dir, *self.project_config.config_dir.parents]:
+            if path.name == "smartprojects":
+                candidates.append(path / "secrets.yml")
+                break
+        for path in candidates:
+            if path.exists():
+                return path
+        return None
+
+    def _google_chat_ingest_message(self, result: IngestRunResult) -> str:
+        lines = [
+            "Smart Ingest completed",
+            f"Project: {self.project_name}",
+            f"Copied: {len(result.copied)}",
+            f"Rejected: {len(result.rejected)}",
+            f"Skipped: {len(result.skipped)}",
+        ]
+        if result.copied:
+            lines.append("")
+            lines.append("Copied files:")
+            for path in result.copied[:10]:
+                lines.append(f"- {path.name} -> {path}")
+            if len(result.copied) > 10:
+                lines.append(f"- ... and {len(result.copied) - 10} more")
+        if result.rejected:
+            lines.append("")
+            lines.append("Rejected files:")
+            for path in result.rejected[:10]:
+                lines.append(f"- {path.name} -> {path}")
+            if len(result.rejected) > 10:
+                lines.append(f"- ... and {len(result.rejected) - 10} more")
+        return "\n".join(lines)
 
     def _manifest_data(self, item: PlanItem, output_path: Path, state: str, *, checksum: str | None = None) -> dict[str, Any]:
         return {
@@ -1190,7 +1385,7 @@ class SmartIngestService:
         return ""
 
     def _next_editorial_data_version(self, episode: str, sequence: str, subset: str) -> str:
-        return self._next_version(self.project_root / "editorial" / "data" / episode / sequence / subset)
+        return self._next_version(self._editorial_data_root() / "data" / episode / sequence / subset)
 
     def _next_version(self, root: Path) -> str:
         versions = [parse_version(path.name) for path in root.glob("v*") if path.is_dir()] if root.exists() else []
@@ -1271,6 +1466,18 @@ def _config_list(value: Any) -> list[str]:
     return []
 
 
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    seen = set()
+    unique = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(value)
+    return unique
+
+
 def _prefixed_number(value: str, prefixes: list[str]) -> str:
     for prefix in sorted((str(item) for item in prefixes), key=len, reverse=True):
         match = re.search(
@@ -1301,6 +1508,19 @@ def _write_json_atomic(path: Path, data: dict[str, Any]) -> Path:
     write_json(temporary, data)
     temporary.replace(path)
     return path
+
+
+def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        response_body = response.read().decode("utf-8")
+    return json.loads(response_body) if response_body else {}
 
 
 def _unique_path(path: Path) -> Path:

@@ -291,6 +291,13 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
     scene = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "work" / "layout" / "maya" / "scene.ma"
     scene.parent.mkdir(parents=True)
     scene.write_text("scene", encoding="utf-8")
+    audio_file = tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "data" / "audio" / "v001" / "shot010.wav"
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"wave")
+    (tmp_path / "project" / "production" / "shots" / "ep001" / "sq010" / "shot010" / "shot.json").write_text(
+        '{"editorial": {"cut_in": 1001, "cut_out": 1002, "fps": 24}, "audio": {"path": "production/shots/ep001/sq010/shot010/data/audio/v001/shot010.wav"}}',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(render_graph, "_maya_cmds_or_none", lambda: _ScenePathCmds(scene))
     graph = RenderGraph()
     output = graph.add_node("output")
@@ -322,6 +329,7 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
     assert manifest["stage"]["comp_name"] == "stage"
     assert manifest["stage"]["final_width"] == 1920
     assert manifest["stage"]["final_height"] == 1080
+    assert manifest["audio"]["path"] == audio_file.as_posix()
     assert manifest["layers"][0]["precomp"] == "CHA"
     assert "CHA/v001/t001/images/" in manifest["layers"][0]["image_sequence"]
     assert manifest["slate"]["layer"] == "Slate"
@@ -331,6 +339,7 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
     script_text = script.read_text(encoding="utf-8")
     assert "shot010_layout_build_v001_t001.json" in script_text
     assert "addSlateToStage(stage, data.slate, folders.layers);" in script_text
+    assert "addShotAudioToStage(stage, data.audio, folders.audio);" in script_text
     assert 'ensureProjectFolder("30_footage", null)' in script_text
     assert 'ensureProjectFolder("20_precomp", null)' in script_text
     assert 'ensureComp("final", data.stage.final_width, data.stage.final_height' in script_text

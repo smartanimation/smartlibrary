@@ -236,16 +236,16 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._form_row("Target Type", self.target_type_combo))
 
         self.project_edit = QtWidgets.QLineEdit(self.service.project_name)
-        self.asset_edit = QtWidgets.QLineEdit()
-        self.category_edit = QtWidgets.QLineEdit("characters")
-        self.group_edit = QtWidgets.QLineEdit("main")
-        self.variant_edit = QtWidgets.QLineEdit("default")
-        self.department_edit = QtWidgets.QLineEdit()
+        self.asset_edit = self._editable_combo()
+        self.category_edit = self._editable_combo(self.service.asset_categories())
+        self.group_edit = self._editable_combo(["main"])
+        self.variant_edit = self._editable_combo(["default"])
+        self.department_edit = self._editable_combo(self.service.asset_departments())
         self.sequence_data_type_combo = QtWidgets.QComboBox()
         self.sequence_data_type_combo.addItems(self.service.sequence_data_types())
         self.editorial_data_role_combo = QtWidgets.QComboBox()
         self.editorial_data_role_combo.addItems(self.service.editorial_data_roles())
-        self.subset_edit = QtWidgets.QLineEdit("main")
+        self.subset_edit = self._editable_combo(["client", "main"])
         self.format_edit = QtWidgets.QLineEdit()
         self.episode_edit = QtWidgets.QLineEdit("ep001")
         self.sequence_edit = QtWidgets.QLineEdit("sq010")
@@ -259,9 +259,9 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.metadata_labels: dict[str, QtWidgets.QLabel] = {}
         for label, widget, key in [
             ("Project", self.project_edit, "project"),
-            ("Asset", self.asset_edit, "asset"),
             ("Category", self.category_edit, "category"),
             ("Group", self.group_edit, "group"),
+            ("Asset", self.asset_edit, "asset"),
             ("Variant", self.variant_edit, "variant"),
             ("Department", self.department_edit, "department"),
             ("Data Type", self.sequence_data_type_combo, "sequence_data_type"),
@@ -311,18 +311,16 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         layout.addStretch()
 
         self.target_type_combo.currentTextChanged.connect(self._target_type_changed)
+        self.category_edit.currentTextChanged.connect(self._asset_scope_changed)
+        self.group_edit.currentTextChanged.connect(self._asset_scope_changed)
+        self.asset_edit.currentTextChanged.connect(self._asset_scope_changed)
+        self.department_edit.currentTextChanged.connect(self._asset_department_changed)
         self.sequence_data_type_combo.currentTextChanged.connect(self._sequence_data_type_changed)
         self.editorial_data_role_combo.currentTextChanged.connect(
             lambda _value: self._mark_metadata_dirty("subset")
         )
-        field_widgets = {
+        line_field_widgets = {
             "project": self.project_edit,
-            "asset": self.asset_edit,
-            "category": self.category_edit,
-            "group": self.group_edit,
-            "variant": self.variant_edit,
-            "department": self.department_edit,
-            "subset": self.subset_edit,
             "format": self.format_edit,
             "episode": self.episode_edit,
             "sequence": self.sequence_edit,
@@ -330,12 +328,30 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             "vendor": self.vendor_edit,
             "delivery_date": self.delivery_date_edit,
         }
-        for field_name, widget in field_widgets.items():
+        for field_name, widget in line_field_widgets.items():
             widget.editingFinished.connect(
                 lambda name=field_name: self._mark_metadata_dirty(name)
             )
+        for field_name, widget in {
+            "asset": self.asset_edit,
+            "category": self.category_edit,
+            "group": self.group_edit,
+            "variant": self.variant_edit,
+            "department": self.department_edit,
+            "subset": self.subset_edit,
+        }.items():
+            widget.currentTextChanged.connect(lambda _value, name=field_name: self._mark_metadata_dirty(name))
         self.comment_edit.textChanged.connect(lambda: self._mark_metadata_dirty("comment"))
         return panel
+
+    def _editable_combo(self, values: list[str] | None = None) -> QtWidgets.QComboBox:
+        combo = QtWidgets.QComboBox()
+        combo.setEditable(True)
+        combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        combo.addItems(values or [])
+        if values:
+            combo.setCurrentIndex(0)
+        return combo
 
     def _form_row(self, label: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
         row = QtWidgets.QWidget()
@@ -762,14 +778,18 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                 self.target_type_combo.setCurrentText(target_type)
             self.target_type_combo.blockSignals(False)
             self.project_edit.setText(metadata.project)
-            self.asset_edit.setText(metadata.asset)
-            self.category_edit.setText(metadata.category)
-            self.group_edit.setText(metadata.group)
-            self.variant_edit.setText(metadata.variant)
-            self.department_edit.setText(metadata.department)
+            self._set_combo_value(self.category_edit, metadata.category)
+            self._refresh_asset_metadata_choices()
+            self._set_combo_value(self.group_edit, metadata.group)
+            self._refresh_asset_metadata_choices()
+            self._set_combo_value(self.asset_edit, metadata.asset)
+            self._refresh_asset_metadata_choices()
+            self._set_combo_value(self.variant_edit, metadata.variant)
+            self._set_combo_value(self.department_edit, metadata.department)
+            self._refresh_asset_subset_choices()
             self._set_combo_value(self.sequence_data_type_combo, metadata.department)
             self._set_combo_value(self.editorial_data_role_combo, metadata.subset.split("/", 1)[0])
-            self.subset_edit.setText(metadata.subset)
+            self._set_combo_value(self.subset_edit, metadata.subset)
             self.format_edit.setText(metadata.format)
             self.episode_edit.setText(metadata.episode)
             self.sequence_edit.setText(metadata.sequence)
@@ -855,19 +875,22 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             editorial_role = self.editorial_data_role_combo.currentText().strip() or "edit_source"
             subset = f"shot_media/{shot}" if editorial_role == "shot_media" and shot else editorial_role
         else:
-            subset = self.subset_edit.text().strip() or "main"
+            subset = self._combo_text(self.subset_edit) or "main"
+        department = (
+            self.sequence_data_type_combo.currentText().strip()
+            if target_type == "Sequence"
+            else self._combo_text(self.department_edit)
+        )
+        if target_type == "Asset" and department == "assembly" and subset in {"", "main"}:
+            subset = "client"
         return IngestMetadata(
             target_type=target_type,
             project=self.project_edit.text().strip(),
-            asset=self.asset_edit.text().strip(),
-            category=self.category_edit.text().strip() or "characters",
-            group=self.group_edit.text().strip() or "main",
-            variant=self.variant_edit.text().strip() or "default",
-            department=(
-                self.sequence_data_type_combo.currentText().strip()
-                if target_type == "Sequence"
-                else self.department_edit.text().strip()
-            ),
+            asset=self._combo_text(self.asset_edit),
+            category=self._combo_text(self.category_edit) or "CH",
+            group=self._combo_text(self.group_edit) or "main",
+            variant=self._combo_text(self.variant_edit) or "default",
+            department=department,
             subset=subset,
             format=self.format_edit.text().strip(),
             episode=self.episode_edit.text().strip() or "ep001",
@@ -879,12 +902,55 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         )
 
     @staticmethod
+    def _combo_text(combo: QtWidgets.QComboBox) -> str:
+        return combo.currentText().strip()
+
+    @staticmethod
     def _set_combo_value(combo: QtWidgets.QComboBox, value: str) -> None:
         index = combo.findText(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+        elif combo.isEditable():
+            combo.setEditText(value)
         elif combo.count() and not value:
             combo.setCurrentIndex(0)
+
+    def _asset_scope_changed(self) -> None:
+        if self._updating_metadata_form:
+            return
+        self._refresh_asset_metadata_choices()
+
+    def _asset_department_changed(self) -> None:
+        if self._updating_metadata_form:
+            return
+        self._refresh_asset_subset_choices()
+        if self._combo_text(self.department_edit) == "assembly" and self._combo_text(self.subset_edit) in {"", "main"}:
+            self._set_combo_value(self.subset_edit, "client")
+
+    def _refresh_asset_metadata_choices(self) -> None:
+        self._refresh_combo_items(self.category_edit, self.service.asset_categories())
+        category = self._combo_text(self.category_edit) or "CH"
+        self._refresh_combo_items(self.group_edit, self.service.asset_groups(category))
+        group = self._combo_text(self.group_edit) or "main"
+        self._refresh_combo_items(self.asset_edit, self.service.asset_names(category, group))
+        asset = self._combo_text(self.asset_edit)
+        self._refresh_combo_items(self.variant_edit, self.service.asset_variants(category, group, asset))
+
+    def _refresh_asset_subset_choices(self) -> None:
+        self._refresh_combo_items(self.subset_edit, self.service.asset_subsets(self._combo_text(self.department_edit)))
+
+    def _refresh_combo_items(self, combo: QtWidgets.QComboBox, values: list[str]) -> None:
+        current = combo.currentText().strip()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(values)
+            if current:
+                self._set_combo_value(combo, current)
+            elif combo.count():
+                combo.setCurrentIndex(0)
+        finally:
+            combo.blockSignals(False)
 
     def _selected_rows(self) -> list[int]:
         return sorted({index.row() for index in self.table.selectionModel().selectedRows()})

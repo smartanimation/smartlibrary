@@ -434,28 +434,42 @@ var SmartAEBrowser = SmartAEBrowser || {};
 
   function readShotJson(data) {
     var projectRoot = String(data.projectRoot || data.project_root || "");
+    var candidates = [];
     var shotFile;
     var rootParts;
     var shotIndex;
     var packageRoot;
-    if (projectRoot && data.episode && data.sequence && data.shot) {
-      shotFile = File(joinPath(projectRoot, "shots/" + data.episode + "/" + data.sequence + "/" + data.shot + "/shot.json"));
-    } else {
-      packageRoot = String(data.package_root || data.packageRoot || "");
+    var i;
+    if (data.shot_root || data.shotRoot) {
+      candidates.push(joinPath(String(data.shot_root || data.shotRoot), "shot.json"));
+    }
+    packageRoot = String(data.package_root || data.packageRoot || "");
+    if (packageRoot) {
       rootParts = packageRoot.replace(/\\/g, "/").split("/");
       shotIndex = rootParts.join("/").toLowerCase().indexOf("/publish/preview_render/");
       if (shotIndex !== -1) {
-        shotFile = File(rootParts.join("/").slice(0, shotIndex) + "/shot.json");
+        candidates.push(rootParts.join("/").slice(0, shotIndex) + "/shot.json");
+      }
+      shotIndex = rootParts.join("/").toLowerCase().indexOf("/output/preview_render/");
+      if (shotIndex !== -1) {
+        candidates.push(rootParts.join("/").slice(0, shotIndex) + "/shot.json");
       }
     }
-    if (!shotFile || !shotFile.exists) {
-      return {};
+    if (projectRoot && data.episode && data.sequence && data.shot) {
+      candidates.push(joinPath(projectRoot, "production/shots/" + data.episode + "/" + data.sequence + "/" + data.shot + "/shot.json"));
+      candidates.push(joinPath(projectRoot, "shots/" + data.episode + "/" + data.sequence + "/" + data.shot + "/shot.json"));
     }
-    try {
-      return JSON.parse(readFile(shotFile));
-    } catch (error) {
-      return {};
+    for (i = 0; i < candidates.length; i += 1) {
+      shotFile = File(candidates[i]);
+      if (shotFile.exists) {
+        try {
+          return JSON.parse(readFile(shotFile));
+        } catch (error) {
+          return {};
+        }
+      }
     }
+    return {};
   }
 
   function readProjectResolution(data) {
@@ -483,8 +497,8 @@ var SmartAEBrowser = SmartAEBrowser || {};
     return match ? [Number(match[1]), Number(match[2])] : [];
   }
 
-  function buildTiming(data, items) {
-    var shot = readShotJson(data);
+  function buildTiming(data, items, shot) {
+    shot = shot || readShotJson(data);
     var editorial = shot.editorial || {};
     var range = frameRangeFrom(editorial.frame_range || shot.frame_range, parseNumber(editorial.cut_in || shot.cut_in, 1), parseNumber(editorial.cut_out || shot.cut_out, 1));
     var fps = parseNumber(editorial.fps || shot.fps || data.fps, 24);
@@ -653,6 +667,111 @@ var SmartAEBrowser = SmartAEBrowser || {};
     footage.name = sequenceFootageName(row, file, importAsSequence);
     moveToFolder(footage, folder);
     return footage;
+  }
+
+  function shotRootFromData(data) {
+    var packageRoot = String(data.package_root || data.packageRoot || "");
+    var parts;
+    var text;
+    var index;
+    if (data.shot_root || data.shotRoot) {
+      return String(data.shot_root || data.shotRoot);
+    }
+    if (packageRoot) {
+      parts = packageRoot.replace(/\\/g, "/").split("/");
+      text = parts.join("/").toLowerCase();
+      index = text.indexOf("/publish/preview_render/");
+      if (index !== -1) {
+        return parts.join("/").slice(0, index);
+      }
+      index = text.indexOf("/output/preview_render/");
+      if (index !== -1) {
+        return parts.join("/").slice(0, index);
+      }
+    }
+    return "";
+  }
+
+  function resolveShotMediaFile(data, value) {
+    var path = String(value || "");
+    var projectRoot = String(data.projectRoot || data.project_root || "");
+    var shotRoot = shotRootFromData(data);
+    var candidates = [];
+    var file;
+    var i;
+    if (!path) {
+      return "";
+    }
+    if (isAbsolutePath(path)) {
+      candidates.push(path);
+    } else {
+      if (projectRoot) {
+        candidates.push(joinPath(projectRoot, path));
+      }
+      if (shotRoot) {
+        candidates.push(joinPath(shotRoot, path));
+      }
+      candidates.push(path);
+    }
+    for (i = 0; i < candidates.length; i += 1) {
+      file = File(candidates[i]);
+      if (file.exists) {
+        return file.fsName;
+      }
+    }
+    return File(candidates[0]).fsName;
+  }
+
+  function shotAudioRow(data, shot) {
+    var audio = data.audio || (shot ? shot.audio : null) || {};
+    var path = resolveShotMediaFile(data, audio.path || audio.file || audio.source || "");
+    if (!path) {
+      return null;
+    }
+    return {
+      name: audio.name || "audio",
+      path: path
+    };
+  }
+
+  function importAudioFile(row, folder) {
+    var file;
+    var options;
+    var footage;
+    if (!row || !row.path) {
+      return null;
+    }
+    file = File(row.path);
+    if (!file.exists) {
+      return null;
+    }
+    footage = findFootageByPath(file.fsName);
+    if (!footage) {
+      options = new ImportOptions(file);
+      if (options.canImportAs && options.canImportAs(ImportAsType.FOOTAGE)) {
+        options.importAs = ImportAsType.FOOTAGE;
+      }
+      footage = app.project.importFile(options);
+    }
+    footage.name = row.name || basename(file.fsName);
+    moveToFolder(footage, folder);
+    return footage;
+  }
+
+  function addShotAudioToStage(stage, audioRow, folder) {
+    var footage = importAudioFile(audioRow, folder);
+    var layer;
+    if (!audioRow || !audioRow.path) {
+      return "";
+    }
+    if (!footage) {
+      return "Missing audio: " + audioRow.path;
+    }
+    layer = addSourceLayer(stage, footage, audioRow.name || "audio");
+    try {
+      layer.moveToEnd();
+    } catch (error) {}
+    return "";
   }
 
   SmartAEBrowser.openManifestDialog = function () {
@@ -1001,6 +1120,9 @@ var SmartAEBrowser = SmartAEBrowser || {};
     var data;
     var templateFile;
     var items;
+    var shot;
+    var audioRow;
+    var audioError;
     var imported = 0;
     var precomps = 0;
     var errors = [];
@@ -1030,7 +1152,8 @@ var SmartAEBrowser = SmartAEBrowser || {};
         app.newProject();
       }
       items = previewRenderBuildItems(data, manifestFile);
-      timing = buildTiming(data, items);
+      shot = readShotJson(data);
+      timing = buildTiming(data, items, shot);
       folders = {
         render: ensureProjectFolder("00_render"),
         comp: ensureProjectFolder("10_comp"),
@@ -1039,6 +1162,7 @@ var SmartAEBrowser = SmartAEBrowser || {};
       };
       folders.dept = ensureProjectFolder(String(data.department || "anim"), folders.footage);
       folders.layers = ensureProjectFolder("layers", folders.dept);
+      folders.audio = ensureProjectFolder("audio", folders.dept);
 
       app.beginUndoGroup("Build Preview Render");
       finalComp = ensureComp("final", timing.finalWidth, timing.finalHeight, timing.duration, timing.fps, folders.render);
@@ -1075,6 +1199,11 @@ var SmartAEBrowser = SmartAEBrowser || {};
         precomps += 1;
       }
 
+      audioRow = shotAudioRow(data, shot);
+      audioError = addShotAudioToStage(stage, audioRow, folders.audio);
+      if (audioError) {
+        errors.push(audioError);
+      }
       addSourceLayer(camera, stage, "stage");
       addSourceLayer(finalComp, camera, "camera");
       try {

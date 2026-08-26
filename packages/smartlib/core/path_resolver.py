@@ -46,6 +46,10 @@ class ProjectPaths:
         template = self._template("delivery_staging_root")
         return self._path_from_template(template) if template else self.workspace_root() / "delivery"
 
+    def editorial_data_root(self) -> Path:
+        template = self._template("editorial_data_root")
+        return self._path_from_template(template) if template else self.production_root() / "editorial" / "data"
+
     def workspace_partition(self, department: str) -> str:
         department_name = str(department or "").strip()
         configured = self.shot_dept_partitions or {}
@@ -104,7 +108,9 @@ class ProjectPaths:
     def asset_variant_root(self, identity: AssetIdentity) -> Path:
         return self.asset_root(identity) / identity.variant
 
-    def asset_work_dir(self, identity: AssetIdentity, department: str) -> Path:
+    def asset_work_dir(
+        self, identity: AssetIdentity, department: str, dcc: str = "maya"
+    ) -> Path:
         template = self._template("asset_work")
         if template:
             return self._path_from_template(
@@ -116,9 +122,11 @@ class ProjectPaths:
                 variant=identity.variant,
                 department=department,
                 dept=department,
+                dcc=dcc,
+                tool=dcc,
                 workspace_partition=self.workspace_partition(department),
             )
-        return self.asset_variant_root(identity) / "work" / department
+        return self.asset_work_root(identity, department) / department / dcc
 
     def assembly_root(self, identity: AssemblyIdentity) -> Path:
         template = self._template("assembly_root")
@@ -126,7 +134,7 @@ class ProjectPaths:
             return self._path_from_template(
                 template, category=identity.category, group=identity.group,
                 assembly=identity.name, assembly_name=identity.name,
-                name=identity.name, variant=identity.variant,
+                asset_name=identity.name, name=identity.name, variant=identity.variant,
             )
         return self.assemblies_root() / identity.category / identity.group / identity.name
 
@@ -139,18 +147,33 @@ class ProjectPaths:
             return self._path_from_template(
                 template, category=identity.category, group=identity.group,
                 assembly=identity.name, assembly_name=identity.name,
-                name=identity.name, variant=identity.variant,
+                asset_name=identity.name, name=identity.name, variant=identity.variant,
                 department=department, dept=department,
                 workspace_partition=self.workspace_partition(department),
             )
         return self.workspace_root() / self.workspace_partition(department) / "assemblies" / identity.category / identity.group / identity.name / identity.variant / "work"
+
+    def assembly_work_dir(
+        self, identity: AssemblyIdentity, department: str, dcc: str = "maya"
+    ) -> Path:
+        template = self._template("assembly_work")
+        if template:
+            return self._path_from_template(
+                template, category=identity.category, group=identity.group,
+                assembly=identity.name, assembly_name=identity.name,
+                asset_name=identity.name, name=identity.name,
+                variant=identity.variant, department=department, dept=department,
+                dcc=dcc, tool=dcc,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return self.assembly_work_root(identity, department) / department / dcc
 
     def assembly_data_root(self, identity: AssemblyIdentity) -> Path:
         template = self._template("assembly_data_root")
         return self._path_from_template(
             template, category=identity.category, group=identity.group,
             assembly=identity.name, assembly_name=identity.name,
-            name=identity.name, variant=identity.variant,
+            asset_name=identity.name, name=identity.name, variant=identity.variant,
         ) if template else self.assembly_variant_root(identity) / "data"
 
     def assembly_publish_root(self, identity: AssemblyIdentity) -> Path:
@@ -158,7 +181,7 @@ class ProjectPaths:
         return self._path_from_template(
             template, category=identity.category, group=identity.group,
             assembly=identity.name, assembly_name=identity.name,
-            name=identity.name, variant=identity.variant,
+            asset_name=identity.name, name=identity.name, variant=identity.variant,
         ) if template else self.assembly_variant_root(identity) / "publish"
 
     def asset_work_root(self, identity: AssetIdentity, department: str = "") -> Path:
@@ -205,8 +228,10 @@ class ProjectPaths:
     def asset_publish_dir(self, identity: AssetIdentity, publish_type: str, subset: str) -> Path:
         return self.asset_publish_root(identity) / publish_type / subset
 
-    def asset_work_scene_dir(self, identity: AssetIdentity, department: str) -> Path:
-        return self.asset_variant_root(identity) / "work" / department
+    def asset_work_scene_dir(
+        self, identity: AssetIdentity, department: str, dcc: str = "maya"
+    ) -> Path:
+        return self.asset_work_dir(identity, department, dcc)
 
     def legacy_asset_work_dir(self, identity: AssetIdentity, department: str) -> Path:
         return self.asset_variant_root(identity) / department / "work"
@@ -272,7 +297,22 @@ class ProjectPaths:
         return self.sequence_build_root(episode, sequence, department) / department / dcc / task / version
 
     def sequence_work_dir(self, episode: str, sequence: str, department: str, dcc: str) -> Path:
-        return self.sequence_workspace_root(episode, sequence) / department / "work" / dcc
+        template = self._template("sequence_work")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence,
+                department=department, dept=department, dcc=dcc, tool=dcc,
+                workspace_partition=self.workspace_partition(department),
+            )
+        root_template = self._template("sequence_work_root")
+        if root_template:
+            root = self._path_from_template(
+                root_template, episode=episode, sequence=sequence, seq=sequence,
+                department=department, dept=department,
+                workspace_partition=self.workspace_partition(department),
+            )
+            return root / department / dcc
+        return self.workspace_root() / self.workspace_partition(department) / "sequences" / episode / sequence / "work" / department / dcc
 
     def sequence_publish_dir(self, episode: str, sequence: str, publish_type: str) -> Path:
         return self.sequence_workspace_root(episode, sequence) / "publish" / publish_type

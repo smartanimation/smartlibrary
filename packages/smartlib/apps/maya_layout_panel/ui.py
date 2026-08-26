@@ -9,16 +9,16 @@ from smartlib.core.config_loader import ProjectConfig
 
 def _qt_modules():
     try:
-        from PySide6 import QtCore, QtWidgets
+        from PySide6 import QtCore, QtGui, QtWidgets
 
-        return QtCore, QtWidgets
+        return QtCore, QtGui, QtWidgets
     except ImportError:
-        from PySide2 import QtCore, QtWidgets
+        from PySide2 import QtCore, QtGui, QtWidgets
 
-        return QtCore, QtWidgets
+        return QtCore, QtGui, QtWidgets
 
 
-QtCore, QtWidgets = _qt_modules()
+QtCore, QtGui, QtWidgets = _qt_modules()
 
 
 def _default_config_dir() -> Path:
@@ -66,6 +66,7 @@ class MayaLayoutPanelWindow(QtWidgets.QMainWindow):
         self.project_config = ProjectConfig(config_dir or _default_config_dir())
         self.camera_mode = "selected"
         self.active_camera_snapshot = ""
+        self.gate_mask_color = (0.7, 0.7, 0.7)
         self._maya_script_jobs = []
         self._active_camera_timer = None
         self._build_ui()
@@ -185,10 +186,18 @@ class MayaLayoutPanelWindow(QtWidgets.QMainWindow):
             "Display Gate Mask",
             lambda enabled: self.apply_camera_bool("Gate Mask", "set_gate_mask", enabled),
         )
-        self._add_film_fit_row(grid, 2)
-        self.overscan_spin = self._add_spin_row(grid, 3, "Display Overscan", 1.0, 0.01, 10.0, 3, "set_display_overscan")
-        self.near_clip_spin = self._add_spin_row(grid, 4, "Near Clip Plane", 0.1, 0.001, 100000.0, 3, "set_near_clip")
-        self.far_clip_spin = self._add_spin_row(grid, 5, "Far Clip Plane", 10000.0, 1.0, 10000000.0, 3, "set_far_clip")
+        self.gate_mask_opacity_spin = self._add_slider_spin_row(
+            grid,
+            2,
+            "Gate Mask Opacity",
+            0.7,
+            self.set_gate_mask_opacity,
+        )
+        self._add_gate_mask_color_row(grid, 3)
+        self._add_film_fit_row(grid, 4)
+        self.overscan_spin = self._add_spin_row(grid, 5, "Display Overscan", 1.0, 0.01, 10.0, 3, "set_display_overscan")
+        self.near_clip_spin = self._add_spin_row(grid, 6, "Near Clip Plane", 0.1, 0.001, 100000.0, 3, "set_near_clip")
+        self.far_clip_spin = self._add_spin_row(grid, 7, "Far Clip Plane", 10000.0, 1.0, 10000000.0, 3, "set_far_clip")
         layout.addLayout(grid)
         return widget
 
@@ -349,6 +358,65 @@ class MayaLayoutPanelWindow(QtWidgets.QMainWindow):
         grid.addWidget(self._button("Set", lambda: self.apply_camera_numeric(label, function_name, spin.value())), row, 2)
         return spin
 
+    def _add_slider_spin_row(
+        self,
+        grid: QtWidgets.QGridLayout,
+        row: int,
+        label: str,
+        value: float,
+        callback: Callable[[float], None],
+    ) -> QtWidgets.QDoubleSpinBox:
+        grid.addWidget(QtWidgets.QLabel(label), row, 0)
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setRange(0.0, 1.0)
+        spin.setDecimals(3)
+        spin.setSingleStep(0.05)
+        spin.setValue(value)
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(0, 1000)
+        slider.setValue(int(round(value * 1000.0)))
+        spin.valueChanged.connect(lambda spin_value: self._sync_slider_from_spin(slider, spin_value, callback))
+        slider.valueChanged.connect(lambda slider_value: self._sync_spin_from_slider(spin, slider_value, callback))
+        grid.addWidget(spin, row, 1)
+        grid.addWidget(slider, row, 2)
+        return spin
+
+    def _add_gate_mask_color_row(self, grid: QtWidgets.QGridLayout, row: int) -> None:
+        grid.addWidget(QtWidgets.QLabel("Gate Mask Color"), row, 0)
+        self.gate_mask_color_button = QtWidgets.QPushButton("")
+        self.gate_mask_color_button.setMinimumWidth(68)
+        self.gate_mask_color_button.clicked.connect(self.choose_gate_mask_color)
+        self.gate_mask_color_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.gate_mask_color_slider.setRange(0, 100)
+        self.gate_mask_color_slider.setValue(70)
+        self.gate_mask_color_slider.valueChanged.connect(self.set_gate_mask_color_from_slider)
+        grid.addWidget(self.gate_mask_color_button, row, 1)
+        grid.addWidget(self.gate_mask_color_slider, row, 2)
+        self._update_gate_mask_color_button()
+
+    def _sync_slider_from_spin(
+        self,
+        slider: QtWidgets.QSlider,
+        value: float,
+        callback: Callable[[float], None],
+    ) -> None:
+        slider.blockSignals(True)
+        slider.setValue(int(round(float(value) * 1000.0)))
+        slider.blockSignals(False)
+        callback(float(value))
+
+    def _sync_spin_from_slider(
+        self,
+        spin: QtWidgets.QDoubleSpinBox,
+        value: int,
+        callback: Callable[[float], None],
+    ) -> None:
+        numeric_value = float(value) / 1000.0
+        spin.blockSignals(True)
+        spin.setValue(numeric_value)
+        spin.blockSignals(False)
+        callback(numeric_value)
+
     def set_camera_mode(self, mode: str) -> None:
         self.camera_mode = mode if mode in self.CAMERA_MODES else "selected"
         if self.camera_mode == "active":
@@ -399,6 +467,37 @@ class MayaLayoutPanelWindow(QtWidgets.QMainWindow):
         label = self.film_fit_combo.currentText()
         value = int(self.film_fit_combo.currentData())
         self._run_status("Film Fit", lambda: f"{label}: {layout_panel.set_film_fit(self.camera_mode, value, self._camera_pattern())} camera(s)")
+
+    def set_gate_mask_opacity(self, value: float) -> None:
+        from smartlib.dcc.maya import layout_panel
+
+        self._run_status("Gate Mask Opacity", lambda: f"{value:.3f}: {layout_panel.set_gate_mask_opacity(self.camera_mode, value, self._camera_pattern())} camera(s)")
+
+    def choose_gate_mask_color(self) -> None:
+        initial = QtGui.QColor.fromRgbF(*self.gate_mask_color)
+        color = QtWidgets.QColorDialog.getColor(initial, self, "Gate Mask Color")
+        if not color.isValid():
+            return
+        self.gate_mask_color = (color.redF(), color.greenF(), color.blueF())
+        self._update_gate_mask_color_button()
+        self.apply_gate_mask_color()
+
+    def set_gate_mask_color_from_slider(self, value: int) -> None:
+        level = float(value) / 100.0
+        self.gate_mask_color = (level, level, level)
+        self._update_gate_mask_color_button()
+        self.apply_gate_mask_color()
+
+    def apply_gate_mask_color(self) -> None:
+        from smartlib.dcc.maya import layout_panel
+
+        self._run_status("Gate Mask Color", lambda: f"{layout_panel.set_gate_mask_color(self.camera_mode, self.gate_mask_color, self._camera_pattern())} camera(s)")
+
+    def _update_gate_mask_color_button(self) -> None:
+        red, green, blue = [int(round(channel * 255.0)) for channel in self.gate_mask_color]
+        self.gate_mask_color_button.setStyleSheet(
+            f"QPushButton {{ background-color: rgb({red}, {green}, {blue}); border: 1px solid #2b2b2b; }}"
+        )
 
     def set_all_camera_defaults(self) -> None:
         from smartlib.dcc.maya import layout_panel

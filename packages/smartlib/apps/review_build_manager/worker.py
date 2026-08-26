@@ -8,6 +8,8 @@ import subprocess
 import sys
 import time
 import traceback
+from contextlib import nullcontext
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -148,8 +150,8 @@ def _camera_for_layer(cameras: list[str], layer_name: str, configured_name: str 
             (
                 camera
                 for camera in cameras
-                if camera.lower() == requested
-                or camera.lower().rstrip("0123456789") == requested
+                if _camera_leaf_name(camera) == requested
+                or _camera_leaf_name(camera).rstrip("0123456789") == requested
             ),
             "",
         )
@@ -158,6 +160,13 @@ def _camera_for_layer(cameras: list[str], layer_name: str, configured_name: str 
     token = layer_name.strip().lower()
     match = next((camera for camera in cameras if token and token in camera.lower()), "")
     return match or _preferred_camera(cameras)
+
+
+def _camera_leaf_name(camera: str) -> str:
+    """Return a namespace-free Maya DAG leaf for configured camera matching."""
+
+    leaf = str(camera or "").replace("\\", "|").rsplit("|", 1)[-1]
+    return leaf.rsplit(":", 1)[-1].lower()
 
 
 def _review_layer_specs(
@@ -249,6 +258,98 @@ def _review_layer_specs(
     return specs
 
 
+def _review_layer_id(value: object) -> str:
+    result = str(value or "").strip()
+    if result.lower().startswith("review_"):
+        result = result[7:]
+    return _clean_name(result).strip("_-")
+
+
+def _resolved_review_layer_contracts(
+    *,
+    layer_definition: dict,
+    playblast_settings: dict,
+    assembly_by_uid: dict[str, dict],
+) -> dict[str, dict]:
+    """Join membership and output behavior by Review Layer ID."""
+
+    definitions = {}
+    for layer in layer_definition.get("layers") or []:
+        if not layer.get("enabled", True):
+            continue
+        layer_id = _review_layer_id(
+            layer.get("review_layer_id") or layer.get("slug") or layer.get("name")
+        )
+        if not layer_id:
+            continue
+        definitions[layer_id.lower()] = (layer_id, layer)
+
+    order_values = [
+        _review_layer_id(value).lower()
+        for value in (playblast_settings.get("layer_order") or [])
+    ]
+    order_by_id = {value: index for index, value in enumerate(order_values) if value}
+    resolved = {}
+    for row_index, raw in enumerate(playblast_settings.get("rows") or []):
+        row = dict(raw or {})
+        if not row.get("enabled", True):
+            continue
+        layer_id = _review_layer_id(
+            row.get("review_layer_id") or row.get("layer") or row.get("display_layer")
+        )
+        definition_match = definitions.get(layer_id.lower())
+        if not layer_id or not definition_match:
+            continue
+        canonical_id, definition = definition_match
+        members = [
+            str((assembly_by_uid.get(str(uid)) or {}).get("name") or uid)
+            for uid in (definition.get("members") or [])
+        ]
+        resolution = row.get("resolution") or []
+        width = row.get("width")
+        height = row.get("height")
+        if isinstance(resolution, (list, tuple)):
+            width = width or (resolution[0] if resolution else 0)
+            height = height or (resolution[1] if len(resolution) > 1 else 0)
+        frame_range = row.get("frame_range") or []
+        start = row.get("start")
+        end = row.get("end")
+        if isinstance(frame_range, (list, tuple)):
+            start = start if start is not None else (frame_range[0] if frame_range else None)
+            end = end if end is not None else (frame_range[1] if len(frame_range) > 1 else None)
+        placeholder = str(
+            row.get("ae_placeholder")
+            or row.get("precomp_placeholder")
+            or (row.get("ae") or {}).get("template_slot")
+            or canonical_id
+        )
+        resolved[canonical_id] = {
+            "review_layer_id": canonical_id,
+            "name": canonical_id,
+            "slug": canonical_id,
+            "display_layer": str(
+                row.get("display_layer") or definition.get("display_layer") or canonical_id
+            ),
+            "members": members,
+            "objects": list(definition.get("objects") or []),
+            "order": int(order_by_id.get(layer_id.lower(), row_index)),
+            "precomp_placeholder": placeholder,
+            "ae": {"template_slot": placeholder},
+            "camera": {"name": str(row.get("camera") or "")},
+            "resolution": {"width": int(width or 0), "height": int(height or 0)},
+            "export_frame_range": [int(start), int(end)]
+            if start is not None and end is not None else [],
+            "overscan": float(row.get("overscan") or 1.0),
+            "playblast_preset": str(row.get("preset") or row.get("playblast_preset") or ""),
+            "output_format": str(
+                row.get("output_format") or row.get("image_format") or row.get("format") or "png"
+            ).lower().lstrip("."),
+            "settings": row,
+            "definition": definition,
+        }
+    return dict(sorted(resolved.items(), key=lambda item: (item[1]["order"], item[0])))
+
+
 def _activate_review_layer(cmds, specs: list[dict], active_name: str) -> None:
     for spec in specs:
         layer = spec["display_layer"]
@@ -271,39 +372,65 @@ def _render_camera_sequence(
     progress_start: int,
     progress_end: int,
     output_pattern: str = "beauty_####.jpg",
+    project_config=None,
+    playblast_preset: str = "",
+    overscan: float = 1.0,
 ) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
     extension = Path(output_pattern).suffix.lower()
     if cmds.objExists("defaultRenderGlobals.imageFormat"):
         image_format = 32 if extension == ".png" else 51 if extension == ".exr" else 8
         cmds.setAttr("defaultRenderGlobals.imageFormat", image_format)
+    camera_shapes = cmds.listRelatives(camera, shapes=True, fullPath=True, type="camera") or []
+    overscan_state = {}
+    for shape in camera_shapes:
+        plug = f"{shape}.overscan"
+        if cmds.objExists(plug):
+            try:
+                overscan_state[plug] = cmds.getAttr(plug)
+                cmds.setAttr(plug, max(0.01, float(overscan)))
+            except Exception:
+                pass
+    preset_context = nullcontext()
+    if project_config is not None and playblast_preset:
+        from smartlib.dcc.maya.playblast_preset import applied_playblast_preset
+        preset_context = applied_playblast_preset(project_config, playblast_preset)
     count = max(1, end - start + 1)
-    for index, frame in enumerate(range(start, end + 1)):
-        cmds.currentTime(frame, edit=True)
-        rendered = Path(
-            cmds.ogsRender(
-                camera=camera,
-                currentFrame=True,
-                width=width,
-                height=height,
-                noRenderView=True,
-            )
-        )
-        target = output_dir / output_pattern.replace("####", f"{frame:04d}")
-        shutil.copy2(rendered, target)
-        progress = progress_start + int(((index + 1) / count) * (progress_end - progress_start))
-        _write_status(
-            status_path,
-            state="BUILDING",
-            progress=progress,
-            task="Playblast",
-            message=f"{camera}: {frame}/{end}",
-        )
+    try:
+        with preset_context:
+            for index, frame in enumerate(range(start, end + 1)):
+                cmds.currentTime(frame, edit=True)
+                rendered = Path(
+                    cmds.ogsRender(
+                        camera=camera,
+                        currentFrame=True,
+                        width=width,
+                        height=height,
+                        noRenderView=True,
+                    )
+                )
+                target = output_dir / output_pattern.replace("####", f"{frame:04d}")
+                shutil.copy2(rendered, target)
+                progress = progress_start + int(((index + 1) / count) * (progress_end - progress_start))
+                _write_status(
+                    status_path,
+                    state="BUILDING",
+                    progress=progress,
+                    task="Playblast",
+                    message=f"{camera}: {frame}/{end}",
+                )
+    finally:
+        for plug, value in overscan_state.items():
+            try:
+                cmds.setAttr(plug, value)
+            except Exception:
+                pass
     return str(output_dir / output_pattern.replace("####", "%04d"))
 
 
 def _render_review_thumbnail(
-    cmds, *, camera: str, frame: int, width: int, height: int, target: Path
+    cmds, *, camera: str, frame: int, width: int, height: int, target: Path,
+    project_config=None,
 ) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     cmds.currentTime(frame, edit=True)
@@ -325,6 +452,31 @@ def _render_review_thumbnail(
         if imgcvt.is_file():
             completed = subprocess.run(
                 [str(imgcvt), "-t", "jpg", "-q", "90", str(rendered), str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if (
+                completed.returncode == 0
+                and target.is_file()
+                and target.read_bytes()[:2] == b"\xff\xd8"
+            ):
+                return target
+    except Exception:
+        pass
+    # Maya can produce a valid 32-bit float EXR which imgcvt and Qt cannot
+    # decode. FFmpeg supports that format and guarantees JPEG bytes.
+    try:
+        from smartlib.review.playblast_package import find_ffmpeg
+
+        ffmpeg = find_ffmpeg(project_config)
+        if ffmpeg:
+            completed = subprocess.run(
+                [
+                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(rendered), "-frames:v", "1", "-update", "1",
+                    "-q:v", "2", str(target),
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -526,18 +678,10 @@ def _prepare_review_project_copy(
                 "  }",
                 "  if (!outputComp && queue.numItems > 0) outputComp = queue.item(1).comp;",
                 "  if (!outputComp) throw new Error('Final comp was not found: ' + finalCompNames.join(', '));",
-                "  var freshQueueItem = null;",
-                "  for (var q = 1; q <= queue.numItems; q++) {",
-                "    if (queue.item(q).comp === outputComp) { freshQueueItem = queue.item(q); break; }",
-                "  }",
-                "  if (freshQueueItem) {",
-                "    for (var removeIndex = queue.numItems; removeIndex >= 1; removeIndex--) {",
-                "      if (queue.item(removeIndex) !== freshQueueItem) queue.item(removeIndex).remove();",
-                "    }",
-                "  } else {",
-                "    while (queue.numItems > 0) queue.item(queue.numItems).remove();",
-                "    freshQueueItem = queue.items.add(outputComp);",
-                "  }",
+                "  // A DONE/STOPPED RenderQueueItem rejects applyTemplate().  Always",
+                "  // rebuild one fresh queue item after resolving the output comp.",
+                "  while (queue.numItems > 0) queue.item(queue.numItems).remove();",
+                "  var freshQueueItem = queue.items.add(outputComp);",
                 "  applyNamedTemplate(freshQueueItem, renderTemplate, renderAliases, freshQueueItem.templates || [], 'Render settings');",
                 "  var freshOutputModule = freshQueueItem.outputModule(1);",
                 "  applyNamedTemplate(freshOutputModule, outputTemplate, outputAliases, freshOutputModule.templates || [], 'Output module', true);",
@@ -546,7 +690,7 @@ def _prepare_review_project_copy(
                 "  markerFile.open('w'); markerFile.write('ok'); markerFile.close();",
                 "  app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);",
                 "  } catch (error) {",
-                "    errorFile.open('w'); errorFile.write(String(error) + '\\n' + (error.line || '')); errorFile.close();",
+                "    errorFile.encoding = 'UTF-8'; errorFile.open('w'); errorFile.write(String(error) + '\\n' + (error.line || '')); errorFile.close();",
                 "    try { app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES); } catch (ignored) {}",
                 "  }",
                 "}());",
@@ -803,6 +947,54 @@ def _construct_snapshot_for_preview(shot_service, identity, preview) -> dict:
     return shot_service.construct_snapshot(identity, {"components": components})
 
 
+def _lock_preview_to_construct_rigs(preview, construct_data: dict | None):
+    """Return preview rows pinned to the enabled Rig components in a snapshot."""
+
+    rig_components = {
+        str(component.get("name") or ""): component
+        for component in ((construct_data or {}).get("components") or [])
+        if str(component.get("component_type") or "").strip().lower() == "rig"
+        and bool(component.get("enabled", True))
+        and str(component.get("name") or "").strip()
+    }
+    if not rig_components:
+        return list(preview)
+
+    locked = []
+    for row in preview:
+        component = rig_components.get(str(getattr(row, "cast_key", "") or ""))
+        if not component:
+            locked.append(row)
+            continue
+        path = Path(str(component.get("path") or ""))
+        exists = path.is_file()
+        locked.append(
+            replace(
+                row,
+                namespace=str(component.get("namespace") or row.namespace),
+                publish_path=str(path) if exists else "",
+                status="resolved" if exists else (
+                    "missing" if bool(component.get("required", row.required))
+                    else "optional missing"
+                ),
+                message="" if exists else f"Construct Snapshot Rig was not found: {path}",
+            )
+        )
+    return locked
+
+
+def _scene_animation_curve_report(cmds) -> list[dict]:
+    try:
+        values = cmds.fileInfo("smartAnimationCurveApplyReport", query=True) or []
+        if not values:
+            return []
+        payload = values if isinstance(values, str) else values[-1]
+        report = json.loads(str(payload))
+        return report if isinstance(report, list) else []
+    except (TypeError, ValueError, RuntimeError):
+        return []
+
+
 def _run_scene_construction(
     *,
     args,
@@ -815,6 +1007,8 @@ def _run_scene_construction(
 
     from smartlib.core.metadata import write_json
     from smartlib.dcc.maya.shot_builder import (
+        ensure_smart_gate_guide,
+        ensure_scene_references_loaded,
         stage_anim_from_input,
         stage_shot_from_preview,
         update_anim_construct,
@@ -839,6 +1033,10 @@ def _run_scene_construction(
         cast_contexts=build_overrides.get("cast_contexts") or {},
         exclude_cast=build_overrides.get("exclude_cast") or [],
     )
+    # The Construct Snapshot is the build contract.  Do not resolve cast
+    # representations a second time in the worker: project policies may map
+    # WORK to PROX/LO even though the reviewed snapshot pinned an ANIM rig.
+    preview = _lock_preview_to_construct_rigs(preview, construct_data)
     enabled_rigs = {
         str(component.get("name") or "")
         for component in (construct_data.get("components") or [])
@@ -929,35 +1127,50 @@ def _run_scene_construction(
             project_root=manager.project_config.project_root,
             construct_data=construct_data,
         )
-    from smartlib.dcc.maya.shot_builder import create_review_display_layers
-
     review_requested = str(args.generate_review).strip().lower() not in {
         "", "0", "false", "no", "off"
     }
+    if not canonical_reused:
+        ensure_smart_gate_guide(cmds)
+    if review_requested:
+        ensure_scene_references_loaded(cmds)
+
+    from smartlib.dcc.maya.shot_builder import create_review_display_layers
+
     workflow = manager.review_workflow(identity)
     layer_definition = manager.layer_definition(identity, plan.department)
+    _published_layer_definition, layer_definition_path = workflow.latest_layer_definition()
     assembly_definition = manager.assembly_definition(identity)
     assembly_by_uid = {
         str(member.get("uid")): member
         for member in assembly_definition.get("members") or []
     }
-    dynamic_layers = {
+    definition_layers = {
         str(layer.get("slug") or layer.get("name")): {
             **layer,
             "members": [
                 str((assembly_by_uid.get(str(uid)) or {}).get("name") or uid)
                 for uid in layer.get("members") or []
             ],
-            "ae": {"template_slot": layer.get("precomp_placeholder")},
         }
         for layer in layer_definition.get("layers") or []
         if layer.get("enabled", True)
     }
+    playblast_settings, playblast_settings_path = shot_service.latest_playblast_settings(
+        identity,
+        plan.department,
+        plan.task,
+    )
+    dynamic_layers = _resolved_review_layer_contracts(
+        layer_definition=layer_definition,
+        playblast_settings=playblast_settings,
+        assembly_by_uid=assembly_by_uid,
+    )
     review_contract = shot_service.load_cast(identity)
     review_contract["review_layers"] = (
         dynamic_layers
         if dynamic_layers
-        else shot_service.review_layers(identity, plan.department)
+        else definition_layers
     )
     review_display_layers = create_review_display_layers(review_contract)
     try:
@@ -1031,6 +1244,8 @@ def _run_scene_construction(
                 "construct": construct_data,
                 "assembly": assembly_definition,
                 "layer_definition": layer_definition,
+                "playblast_settings": playblast_settings,
+                "playblast_settings_path": str(playblast_settings_path or ""),
                 "created_at": datetime.now().isoformat(timespec="seconds"),
             },
         )
@@ -1060,13 +1275,33 @@ def _run_scene_construction(
         profile_resolution = review_profile.get("resolution") or [width, height]
         if isinstance(profile_resolution, (list, tuple)) and len(profile_resolution) >= 2:
             width, height = int(profile_resolution[0]), int(profile_resolution[1])
-        layer_contracts = dynamic_layers or shot_service.review_layers(identity, plan.department)
+        layer_contracts = dynamic_layers
+        if not playblast_settings_path:
+            raise RuntimeError(
+                "Published playblast_settings Data was not found for "
+                f"{plan.department}/{plan.task}. Publish it from Smart Playblast before Submit for Review."
+            )
+        if not layer_contracts:
+            definition_ids = sorted(definition_layers)
+            setting_ids = sorted(
+                _review_layer_id(row.get("layer") or row.get("display_layer"))
+                for row in (playblast_settings.get("rows") or [])
+                if row.get("enabled", True)
+            )
+            raise RuntimeError(
+                "Review Layer ID join failed between Review Layer Definition and "
+                "playblast_settings. "
+                f"Definition={definition_ids}; Settings={setting_ids}"
+            )
         specs = []
+        missing_review_cameras = []
+        empty_review_layers = []
         for layer_name, contract in sorted(
             layer_contracts.items(),
             key=lambda item: (int((item[1] or {}).get("order") or 0), item[0]),
         ):
             if int(review_display_layers.get(layer_name, 0)) <= 0:
+                empty_review_layers.append(str(layer_name))
                 continue
             contract = contract or {}
             configured = contract.get("camera") or {}
@@ -1076,12 +1311,15 @@ def _run_scene_construction(
             )
             layer_camera = _camera_for_layer(cameras, layer_name, configured_name)
             if not layer_camera:
+                missing_review_cameras.append(
+                    f"{layer_name}={configured_name or '(not configured)'}"
+                )
                 continue
             layer_range = contract.get("export_frame_range") or [start, end]
             resolution_contract = contract.get("resolution") or {}
             specs.append({
                 "name": layer_name,
-                "display_layer": layer_name,
+                "display_layer": str(contract.get("display_layer") or layer_name),
                 "camera": layer_camera,
                 "contract": contract,
                 "members": list(contract.get("members") or []),
@@ -1092,8 +1330,20 @@ def _run_scene_construction(
                 ],
             })
         if not specs:
+            details = []
+            if missing_review_cameras:
+                details.append(
+                    "Review cameras were not found: "
+                    + ", ".join(missing_review_cameras)
+                )
+            if empty_review_layers:
+                details.append(
+                    "Review Layers had no resolved scene members: "
+                    + ", ".join(empty_review_layers)
+                )
             raise RuntimeError(
-                "No populated Review Layer could be reconstructed from review_spec.json."
+                "; ".join(details)
+                or "No populated Review Layer could be reconstructed from review_spec.json."
             )
         from smartlib.review.workflow import content_fingerprint
         construct_components = construct_data.get("components") or []
@@ -1139,12 +1389,31 @@ def _run_scene_construction(
                 review_profile=review_profile,
                 builder_version="review_builder_v2",
             )
+            cache_policy = str(getattr(args, "review_cache_policy", "use") or "use")
+            rebuild_layers = {
+                str(value)
+                for value in json.loads(
+                    getattr(args, "rebuild_layers_json", "[]") or "[]"
+                )
+            }
+            layer_slug = str(contract.get("slug") or spec["name"])
+            force_miss = cache_policy in {"rebuild_all", "ignore_all"} or (
+                cache_policy == "rebuild_selected"
+                and (layer_slug in rebuild_layers or spec["name"] in rebuild_layers)
+            )
             cache = workflow.find_layer_cache(
-                plan.department, str(contract.get("slug") or spec["name"]), fingerprint
+                plan.department,
+                layer_slug,
+                fingerprint,
+                force_miss=force_miss,
             )
             cache, cache_lock = workflow.reserve_layer_cache(cache)
             layer_cache_states[spec["name"]] = cache.state
-            extension = str(review_profile.get("image_format") or "png").lower()
+            extension = str(
+                contract.get("output_format")
+                or review_profile.get("image_format")
+                or "png"
+            ).lower().lstrip(".")
             pattern = (
                 f"{_clean_name(str(contract.get('slug') or spec['name']))}.####.{extension}"
             )
@@ -1170,6 +1439,9 @@ def _run_scene_construction(
                     progress_start=65 + int(index / max(1, len(specs)) * 25),
                     progress_end=65 + int((index + 1) / max(1, len(specs)) * 25),
                     output_pattern=pattern,
+                    project_config=manager.project_config,
+                    playblast_preset=str(contract.get("playblast_preset") or ""),
+                    overscan=float(contract.get("overscan") or 1.0),
                 )
                 workflow.write_layer_cache_manifest(
                     cache,
@@ -1254,23 +1526,46 @@ def _run_scene_construction(
             _render_review_project(
                 review_project, review_movie, manager.project_config
             )
-            _review_spec, review_spec_path = shot_service.resolved_review_spec(
-                identity, department=plan.department
+            thumbnail_target = review_output_dir / "output" / "thumbnail.jpg"
+            from smartlib.review.playblast_package import (
+                extract_thumbnail_from_mov,
+                find_ffmpeg,
             )
-            thumbnail = _render_review_thumbnail(
-                cmds,
-                camera=specs[0]["camera"],
-                frame=start,
-                width=min(width, 640),
-                height=min(height, 360),
-                target=review_output_dir / "output" / "thumbnail.jpg",
+            thumbnail_ok, thumbnail_message = extract_thumbnail_from_mov(
+                mov_path=review_movie,
+                thumbnail_path=thumbnail_target,
+                ffmpeg=find_ffmpeg(manager.project_config),
             )
+            if thumbnail_ok:
+                thumbnail = thumbnail_target
+            else:
+                _write_status(
+                    status_path,
+                    state="BUILDING",
+                    progress=96,
+                    task="Thumbnail fallback",
+                    message=thumbnail_message,
+                )
+                thumbnail = _render_review_thumbnail(
+                    cmds,
+                    camera=specs[0]["camera"],
+                    frame=start,
+                    width=min(width, 640),
+                    height=min(height, 360),
+                    target=thumbnail_target,
+                    project_config=manager.project_config,
+                )
             source_manifest = {
                 "schema": "smartpipeline.review_source_manifest.v1",
                 "construct": str(scene_path),
                 "construct_version": args.output_version,
                 "assembly": assembly_definition,
                 "layer_definition": layer_definition,
+                "playblast_settings": {
+                    "version": str(playblast_settings.get("version") or ""),
+                    "path": str(playblast_settings_path or ""),
+                    "fingerprint": content_fingerprint(playblast_settings),
+                },
                 "layers": review_layers,
                 "precomp": str(published_review_project),
                 "review_profile": review_profile,
@@ -1315,7 +1610,8 @@ def _run_scene_construction(
                 "shot": identity.shot,
                 "construct_version": args.output_version,
                 "source_construct": str(scene_path),
-                "review_spec": str(review_spec_path),
+                "review_layer_definition": str(layer_definition_path or ""),
+                "playblast_settings": str(playblast_settings_path or ""),
                 "output_dir": str(submitted_dir),
                 "scene": str(scene_path),
                 "scene_path": str(scene_path),
@@ -1354,6 +1650,7 @@ def _run_scene_construction(
         "camera": camera,
         "references": referenced,
         "plugin_report": getattr(args, "plugin_report", {}),
+        "animation_curve_apply_report": _scene_animation_curve_report(cmds),
         "review_display_layers": review_display_layers,
         "construct": construct_data,
         "construct_diff": construct_diff,
@@ -1361,7 +1658,8 @@ def _run_scene_construction(
         "review_sequences": review_sequences,
         "review_project": str(review_project) if review_project else "",
         "review_movie": str(review_movie) if review_movie and review_movie.is_file() else "",
-        "review_spec": str(review_spec_path) if review_spec_path else "",
+        "review_layer_definition": str(layer_definition_path or ""),
+        "playblast_settings": str(playblast_settings_path or ""),
         "build_overrides": build_overrides,
         "canonical_fingerprint": str(args.canonical_fingerprint or ""),
         "canonical_reused": canonical_reused,
@@ -1402,7 +1700,10 @@ def _run_sequence_construction(
     import maya.cmds as cmds
 
     from smartlib.core.metadata import write_json
-    from smartlib.dcc.maya.shot_builder import stage_sequence_layout_from_preview
+    from smartlib.dcc.maya.shot_builder import (
+        ensure_smart_gate_guide,
+        stage_sequence_layout_from_preview,
+    )
     shot_service = manager.shots
     sequence_options = json.loads(args.sequence_options_json or "{}")
     recipe_plan = manager.sequence_recipe_plan(
@@ -1486,6 +1787,7 @@ def _run_sequence_construction(
             manifest = version_dir / "light.json" if version_dir.is_dir() else version_dir
             if manifest.is_file():
                 import_scene_component_package(manifest)
+    ensure_smart_gate_guide(cmds)
     scene_root = shot_service.sequence_build_dir(
         identity,
         plan.department,
@@ -1841,6 +2143,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--review-profile", default="work_default")
     parser.add_argument("--delivery-profile", default="internal")
     parser.add_argument("--precomp", default="latest_approved")
+    parser.add_argument("--review-cache-policy", default="use")
+    parser.add_argument("--rebuild-layers-json", default="[]")
     args = parser.parse_args(argv)
     try:
         return run(args)

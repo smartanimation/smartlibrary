@@ -187,6 +187,7 @@ def prepare_review_ae_build(
         "department": department,
         "log": _relative_to(publish_root, log_path),
         "stage": stage_data,
+        "audio": _ae_audio_row(shot_root, project_config),
         "layers": [_ae_layer_row(publish_root, row, stage_data) for row in slots],
         "slate": _ae_slate_row(publish_root, slots, stage_data),
         "script": _relative_to(publish_root, script_path),
@@ -471,6 +472,26 @@ def _ae_slate_row(publish_root: Path, rows: list[dict[str, Any]], stage: dict[st
     return {}
 
 
+def _ae_audio_row(shot_root: Path, project_config: ProjectConfig) -> dict[str, Any]:
+    shot_data = read_json(Path(shot_root) / "shot.json", {}) or {}
+    audio = shot_data.get("audio") or {}
+    source = str(audio.get("path") or audio.get("file") or audio.get("source") or "")
+    if not source:
+        return {}
+    path = Path(source)
+    if not path.is_absolute():
+        project_root = project_config.project_root
+        if project_root:
+            project_path = project_root / source
+            path = project_path if project_path.exists() else Path(shot_root) / source
+        else:
+            path = Path(shot_root) / source
+    return {
+        "name": str(audio.get("name") or "audio"),
+        "path": path.resolve(strict=False).as_posix(),
+    }
+
+
 def _first_frame_file(publish_root: Path, sequence: str, start_frame: int) -> str:
     frame = f"{int(start_frame):04d}"
     path = sequence.replace("####", frame)
@@ -595,6 +616,7 @@ def _review_build_jsx(manifest_path: Path) -> str:
             stageLayer.startTime = 0;
         }}
         addSlateToStage(stage, data.slate, folders.layers);
+        addShotAudioToStage(stage, data.audio, folders.audio);
         var cameraLayer = camera.layers.add(stage);
         cameraLayer.name = "stage";
         cameraLayer.startTime = 0;
@@ -686,13 +708,15 @@ def _review_build_jsx(manifest_path: Path) -> str:
         var footage = ensureProjectFolder("30_footage", null);
         var dept = ensureProjectFolder(department || "anim", footage);
         var layers = ensureProjectFolder("layers", dept);
+        var audio = ensureProjectFolder("audio", dept);
         return {{
             render: render,
             comp: comp,
             precomp: precomp,
             footage: footage,
             dept: dept,
-            layers: layers
+            layers: layers,
+            audio: audio
         }};
     }}
 
@@ -735,6 +759,27 @@ def _review_build_jsx(manifest_path: Path) -> str:
         var slateLayer = stage.layers.add(footage);
         slateLayer.name = slateRow.layer || "Slate";
         slateLayer.startTime = 0;
+    }}
+
+    function addShotAudioToStage(stage, audioRow, audioFolder) {{
+        if (!audioRow || !audioRow.path) {{
+            log("Shot audio is not configured.");
+            return;
+        }}
+        var file = new File(audioRow.path);
+        if (!file.exists) {{
+            log("Shot audio file not found: " + file.fsName);
+            return;
+        }}
+        var options = new ImportOptions(file);
+        var footage = app.project.importFile(options);
+        footage.name = audioRow.name || "audio";
+        moveToFolder(footage, audioFolder);
+        var audioLayer = stage.layers.add(footage);
+        audioLayer.name = audioRow.name || "audio";
+        audioLayer.startTime = 0;
+        try {{ audioLayer.moveToEnd(); }} catch (err) {{}}
+        log("Imported shot audio: " + file.fsName);
     }}
 
     function importSequence(row, footageFolder) {{

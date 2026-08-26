@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Iterable
@@ -40,6 +41,16 @@ def stage_shot_from_preview(
             shot_data or {},
             construct_data,
             0.0,
+        )
+        # WORK STAGE is data-driven regardless of department or Rig publish
+        # representation. Apply curves after Rig references exist and resolve
+        # only the destinations actually present in the selected Rig.
+        _apply_construct_animation_curves(Path(project_root), construct_data)
+    if project_root and str(department or "").strip().lower() == "layout":
+        _attach_shot_storyreel_picture_in_picture(
+            cmds,
+            Path(project_root),
+            shot_data or {},
         )
     if _is_sequence_all_layout(shot_data or {}, department):
         referenced.extend(
@@ -628,6 +639,91 @@ def open_work_scene(path: str | Path, shot_data: dict | None = None) -> None:
     cmds.file(str(scene_path), open=True, force=True)
     _apply_shot_timing(cmds, shot_data or {})
     _repair_sequence_camera_namespaces(cmds, shot_data or {})
+    reconnect_scene_audio_to_time_slider(cmds)
+
+
+def ensure_smart_gate_guide(cmds=None) -> str:
+    """Ensure exactly one build-owned SmartGateGuide is present in the scene."""
+
+    if cmds is None:
+        try:
+            import maya.cmds as cmds
+        except ImportError as exc:
+            raise RuntimeError("SmartGateGuide creation is available inside Maya.") from exc
+
+    try:
+        shapes = cmds.ls(type="SmartViewportGateGuide", long=True) or []
+    except Exception:
+        shapes = []
+    if shapes:
+        parents = cmds.listRelatives(shapes[0], parent=True, fullPath=True) or []
+        return str(parents[0] if parents else shapes[0])
+
+    from smartlib.dcc.maya.smart_menu import ensure_smart_gate_guide_plugin
+
+    ensure_smart_gate_guide_plugin(cmds, required=True)
+    if not hasattr(cmds, "SmartGateGuide"):
+        raise RuntimeError("SmartGateGuide command is not registered after plugin load.")
+    try:
+        selection = list(cmds.ls(selection=True, long=True) or [])
+    except Exception:
+        selection = []
+    result = cmds.SmartGateGuide()
+    node = result[0] if isinstance(result, (list, tuple)) and result else result
+    try:
+        if selection:
+            cmds.select(selection, replace=True)
+        else:
+            cmds.select(clear=True)
+    except Exception:
+        pass
+    return str(node or "")
+
+
+def reconnect_scene_audio_to_time_slider(cmds=None, mel_eval=None) -> str:
+    """Bind the scene's preferred audio node to Maya's playback slider.
+
+    The binding is UI state and is not reliably preserved by a scene assembled in
+    mayapy.  Shot Manager calls this after opening both work and construct scenes.
+    """
+
+    if cmds is None:
+        try:
+            import maya.cmds as cmds
+        except ImportError:
+            return ""
+
+    try:
+        audio_nodes = [str(node) for node in (cmds.ls(type="audio") or [])]
+    except Exception:
+        return ""
+    if not audio_nodes:
+        return ""
+
+    preferred_name = "smartEditorialAudio"
+    node = next(
+        (
+            candidate
+            for candidate in audio_nodes
+            if candidate.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == preferred_name
+        ),
+        audio_nodes[0],
+    )
+
+    try:
+        if mel_eval is None:
+            import maya.mel as mel
+
+            mel_eval = mel.eval
+        slider = mel_eval("$tmpVar=$gPlayBackSlider")
+        if not slider:
+            return ""
+        cmds.timeControl(slider, edit=True, sound=node, displaySound=True)
+    except Exception:
+        # mayapy has no playback slider. The audio node remains valid in the scene
+        # and will be connected the next time Shot Manager opens it in Maya.
+        return ""
+    return node
 
 
 def _repair_sequence_camera_namespaces(cmds, sequence_data: dict) -> dict[str, str]:
@@ -694,7 +790,7 @@ def create_review_display_layers(cast_data: dict) -> dict[str, int]:
         if str(legacy_layer_node).startswith("review_"):
             cmds.delete(legacy_layer_node)
     for layer_name, layer in review_layers.items():
-        layer_node = str(layer_name)
+        layer_node = str(layer.get("display_layer") or layer_name)
         if cmds.objExists(layer_node):
             cmds.delete(layer_node)
         cmds.createDisplayLayer(name=layer_node, empty=True)
@@ -711,7 +807,7 @@ def create_review_display_layers(cast_data: dict) -> dict[str, int]:
         members = _unique_nodes(members)
         if members:
             cmds.editDisplayLayerMembers(layer_node, members, noRecurse=True)
-        created[layer_node] = len(members)
+        created[str(layer_name)] = len(members)
     return created
 
 
@@ -804,6 +900,7 @@ def _reference_file(cmds, path: Path, namespace: str) -> str:
     referenced_file = cmds.file(
         str(path),
         reference=True,
+        deferReference=False,
         namespace=namespace,
         defaultNamespace=False,
         ignoreVersion=True,
@@ -844,6 +941,43 @@ def _reference_file(cmds, path: Path, namespace: str) -> str:
                 f"but Maya assigned '{actual_namespace}'."
             )
     return namespace
+
+
+def ensure_scene_references_loaded(cmds=None) -> list[str]:
+    """Load all scene references required for Review Layer membership."""
+
+    if cmds is None:
+        try:
+            import maya.cmds as cmds
+        except ImportError as exc:
+            raise RuntimeError("Reference loading is available inside Maya.") from exc
+    loaded = []
+    failed = []
+    for reference_node in cmds.ls(type="reference") or []:
+        reference_node = str(reference_node)
+        if reference_node == "sharedReferenceNode":
+            continue
+        try:
+            is_loaded = bool(cmds.referenceQuery(reference_node, isLoaded=True))
+        except Exception:
+            is_loaded = False
+        if not is_loaded:
+            try:
+                cmds.file(loadReference=reference_node)
+            except Exception as exc:
+                failed.append(f"{reference_node}: {exc}")
+                continue
+        try:
+            if not cmds.referenceQuery(reference_node, isLoaded=True):
+                failed.append(f"{reference_node}: remained deferred")
+                continue
+        except Exception as exc:
+            failed.append(f"{reference_node}: {exc}")
+            continue
+        loaded.append(reference_node)
+    if failed:
+        raise RuntimeError("Required Maya references could not be loaded: " + "; ".join(failed))
+    return loaded
 
 
 def _import_file(cmds, path: Path, namespace: str) -> list[str]:
@@ -1330,9 +1464,11 @@ def _apply_construct_animation_curves(project_root: Path, construct_data: dict |
                 curve_path,
                 namespace=str(source.get("namespace") or "") or None,
                 clear_existing=True,
+                strict_destinations=False,
             )
         )
     if direct_components:
+        _store_animation_curve_apply_report(reports)
         return reports
 
     # Compatibility for older constructs where curves were only linked from
@@ -1353,9 +1489,25 @@ def _apply_construct_animation_curves(project_root: Path, construct_data: dict |
                     curve_path,
                     namespace=str(cast_data.get("namespace") or "") or None,
                     clear_existing=True,
+                    strict_destinations=False,
                 )
             )
+    _store_animation_curve_apply_report(reports)
     return reports
+
+
+def _store_animation_curve_apply_report(reports: list[dict]) -> None:
+    """Persist the Curve application report in-scene for worker manifests."""
+
+    try:
+        from maya import cmds
+
+        cmds.fileInfo(
+            "smartAnimationCurveApplyReport",
+            json.dumps(reports, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception:
+        pass
 
 
 def _shot_data_from_anim_input(anim_input: dict) -> dict:
@@ -1609,13 +1761,19 @@ def _sequence_shot_rows(project_root: Path, episode: str, sequence: str) -> list
 
 
 def _latest_storyreel_root(project_root: Path, episode: str, sequence: str) -> Path | None:
-    publish_root = project_root / "editorial" / "publish" / episode / sequence
-    latest = read_json(publish_root / "latest.json", {}) or {}
-    version = str(latest.get("version") or "").strip()
-    if not version:
-        return None
-    storyreel = publish_root / version / "storyreel"
-    return storyreel if storyreel.exists() else None
+    publish_roots = (
+        project_root / "workspace" / "editorial" / "publish" / episode / sequence,
+        project_root / "editorial" / "publish" / episode / sequence,
+    )
+    for publish_root in publish_roots:
+        latest = read_json(publish_root / "latest.json", {}) or {}
+        version = str(latest.get("version") or "").strip()
+        if not version:
+            continue
+        storyreel = publish_root / version / "storyreel"
+        if storyreel.exists():
+            return storyreel
+    return None
 
 
 def _storyreel_first_frame(storyreel_root: Path | None, shot: str, cut_in: int) -> Path | None:
@@ -1696,6 +1854,70 @@ def _apply_picture_in_picture(cmds, image_plane: str) -> None:
             cmds.setAttr(f"{image_plane}.{name}", value)
         except Exception:
             pass
+
+
+def _attach_shot_storyreel_picture_in_picture(
+    cmds,
+    project_root: Path,
+    shot_data: dict,
+) -> list[str]:
+    """Attach the latest editorial Storyreel to layout shot cameras as PiP."""
+
+    episode = str(shot_data.get("episode") or "").strip()
+    sequence = str(shot_data.get("sequence") or shot_data.get("seq") or "").strip()
+    shot = str(shot_data.get("shot") or "").strip()
+    if not episode or not sequence or not shot or shot.lower() == "all":
+        return []
+    storyreel_root = _latest_storyreel_root(project_root, episode, sequence)
+    storyreel = _storyreel_first_frame(storyreel_root, shot, 0)
+    if not storyreel:
+        return []
+
+    camera_shapes = cmds.ls(type="camera", long=True) or []
+    default_cameras = {"persp", "top", "front", "side"}
+    candidates = []
+    for shape in camera_shapes:
+        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        camera = str(parents[0] if parents else shape)
+        leaf = camera.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+        if leaf in default_cameras:
+            continue
+        candidates.append(camera)
+    grouped = [camera for camera in candidates if "|camera_grp|" in f"|{camera.strip('|')}|"]
+    cameras = grouped or candidates
+
+    first = _frame_number_from_path(storyreel)
+    matches = sorted(storyreel.parent.glob("storyreel_*.jpg"))
+    numbered = [value for value in (_frame_number_from_path(path) for path in matches) if value is not None]
+    last = max(numbered) if numbered else first
+    editorial = shot_data.get("editorial") or {}
+    work_range = editorial.get("work_range") or editorial.get("cut_range") or []
+    work_start = int(work_range[0]) if isinstance(work_range, (list, tuple)) and work_range else int(editorial.get("cut_in") or first or 1)
+
+    attached = []
+    for camera in dict.fromkeys(cameras):
+        image_plane = _attach_image_plane(cmds, camera, storyreel)
+        if not image_plane:
+            continue
+        if first is not None and last is not None:
+            expression_name = _unique_node_name(cmds, f"{shot}_storyreel_pip_expr")
+            expression = (
+                f"{image_plane}.frameExtension = clamp({first}, {last}, "
+                f"frame - {work_start} + {first});"
+            )
+            try:
+                cmds.expression(
+                    name=expression_name,
+                    string=expression,
+                    alwaysEvaluate=True,
+                    unitConversion="all",
+                )
+                if cmds.attributeQuery("useFrameExtension", node=image_plane, exists=True):
+                    cmds.setAttr(f"{image_plane}.useFrameExtension", True)
+            except Exception:
+                pass
+        attached.append(str(image_plane))
+    return attached
 
 
 def _qt_can_load_image(path: Path) -> bool:
@@ -1913,14 +2135,7 @@ def _load_shot_audio(cmds, project_root: Path | None, shot_data: dict) -> str:
     else:
         offset = int(audio.get("cut_in") or editorial.get("cut_in") or 1001)
     node = str(cmds.sound(file=str(path), offset=offset, name=node_name))
-    try:
-        import maya.mel as mel
-
-        slider = mel.eval("$tmpVar=$gPlayBackSlider")
-        if slider:
-            cmds.timeControl(slider, edit=True, sound=node, displaySound=True)
-    except Exception:
-        pass
+    reconnect_scene_audio_to_time_slider(cmds)
     return node
 
 

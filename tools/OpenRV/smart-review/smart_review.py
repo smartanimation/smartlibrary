@@ -22,6 +22,7 @@ PROJECT_FALLBACK_ROOT = "P:/dev/smartlibrary"
 SHOT_DEPTS = ("layout", "anim", "fx", "light", "comp")
 SHOT_PROFILES = ("publish", "internal")
 ASSET_DEPTS = ("model", "rig", "look")
+QUICK_CHECK_OUTPUTS = ("beauty", "wireframe", "bbox", "uv")
 
 
 def _repo_root():
@@ -200,7 +201,7 @@ def _media_from_sequence_review(review_json, shot=None):
     return _dedupe(media)
 
 
-def _media_from_review(review_json, selected_shots=None):
+def _media_from_review(review_json, selected_shots=None, quick_outputs=None):
     review_json = Path(review_json)
     data = _read_json(review_json)
     version_dir = review_json.parent.parent if review_json.parent.name == "metadata" else review_json.parent
@@ -211,7 +212,7 @@ def _media_from_review(review_json, selected_shots=None):
 
     if data.get("type") == "quick_preview":
         outputs = data.get("outputs") or {}
-        for key in ("beauty", "wireframe", "bbox"):
+        for key in quick_outputs or QUICK_CHECK_OUTPUTS:
             files = outputs.get(key) or []
             if not files:
                 continue
@@ -666,7 +667,8 @@ class SmartReviewWidget(QtWidgets.QWidget):
         self.beauty_check = QtWidgets.QCheckBox("Beauty")
         self.wire_check = QtWidgets.QCheckBox("Wireframe")
         self.bbox_check = QtWidgets.QCheckBox("BBox")
-        for cb in (self.beauty_check, self.wire_check, self.bbox_check):
+        self.uv_check = QtWidgets.QCheckBox("UV")
+        for cb in (self.beauty_check, self.wire_check, self.bbox_check, self.uv_check):
             cb.setChecked(True)
             checks.addWidget(cb)
         layout.addLayout(checks)
@@ -677,8 +679,11 @@ class SmartReviewWidget(QtWidgets.QWidget):
         self._add_actions(layout)
 
         self.asset_search.textChanged.connect(self.refresh_assets)
+        self.asset_filter.currentTextChanged.connect(self.refresh_assets)
         self.asset_current_btn.clicked.connect(self.current_context)
         self.asset_list.itemChanged.connect(lambda _item: self._update_asset_summary())
+        for checkbox in (self.beauty_check, self.wire_check, self.bbox_check, self.uv_check):
+            checkbox.stateChanged.connect(lambda _state: self._update_asset_summary())
 
     def _build_shot_tab(self):
         layout = QtWidgets.QVBoxLayout(self.shot_tab)
@@ -1034,8 +1039,8 @@ class SmartReviewWidget(QtWidgets.QWidget):
     def _update_asset_summary(self):
         rows = self._selected_assets()
         self.asset_summary.setPlainText(
-            "Selected assets: %d\nSources: beauty, wireframe, bbox\nContext: current shot/sequence\nOutput: RV asset review stack"
-            % len(rows)
+            "Selected assets: %d\nSources: %s\nContext: current shot/sequence\nOutput: RV asset review stack"
+            % (len(rows), ", ".join(self._selected_asset_outputs()) or "-")
         )
 
     def _shot_media(self):
@@ -1108,9 +1113,22 @@ class SmartReviewWidget(QtWidgets.QWidget):
 
     def _asset_media(self):
         media = []
+        outputs = self._selected_asset_outputs()
         for row in self._selected_assets():
-            media.extend(_media_from_review(row["review_json"]))
+            media.extend(_media_from_review(row["review_json"], quick_outputs=outputs))
         return _dedupe(media)
+
+    def _selected_asset_outputs(self):
+        outputs = []
+        for key, checkbox in (
+            ("beauty", self.beauty_check),
+            ("wireframe", self.wire_check),
+            ("bbox", self.bbox_check),
+            ("uv", self.uv_check),
+        ):
+            if checkbox.isChecked():
+                outputs.append(key)
+        return outputs
 
     def _current_media(self):
         if self.tabs.currentWidget() == self.asset_tab:
@@ -1120,12 +1138,17 @@ class SmartReviewWidget(QtWidgets.QWidget):
         return self._shot_media()
 
     def _apply_view_mode(self, source_count):
-        if self.tabs.currentWidget() != self.shot_tab:
+        if self.tabs.currentWidget() == self.asset_tab:
+            if self.asset_mode_combo.currentText() != "Quick Check Grid":
+                return
+            rows, columns = _grid_dimensions(source_count)
+        elif self.tabs.currentWidget() == self.shot_tab:
+            mode = self.shot_mode_combo.currentText()
+            if mode not in ("Contact Sheet", "Dept Compare Grid"):
+                return
+            rows, columns = (2, 2) if mode == "Dept Compare Grid" else _grid_dimensions(source_count)
+        else:
             return
-        mode = self.shot_mode_combo.currentText()
-        if mode not in ("Contact Sheet", "Dept Compare Grid"):
-            return
-        rows, columns = (2, 2) if mode == "Dept Compare Grid" else _grid_dimensions(source_count)
         try:
             commands.setViewNode("defaultLayout")
             commands.setStringProperty("#RVLayoutGroup.layout.mode", ["grid"], True)

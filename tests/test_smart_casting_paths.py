@@ -6,6 +6,38 @@ from pathlib import Path
 from smartlib.apps.smart_casting import SmartCastingService
 from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.credentials import credentials_path
+
+
+def _clear_credentials_environment(monkeypatch) -> None:
+    for name in (
+        "CREDENTIALS_PATH",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "CREDENTIALS_DIR",
+        "PROJECT_CONFIG_DIR",
+        "SMART_PROJECT_CONFIG_DIR",
+        "PROJECT_ROOT",
+        "APPDATA",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_project_credentials_path_and_environment_priority(tmp_path: Path, monkeypatch) -> None:
+    _clear_credentials_environment(monkeypatch)
+    project_root = tmp_path / "project"
+    tmp_path.joinpath("templates_base.yml").write_text(
+        "anchors:\n"
+        f"  project_root: '{project_root.as_posix()}'\n"
+        "google_sheets:\n"
+        "  credentials_path: '{project_root}/config/google-credentials.json'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PROJECT_CONFIG_DIR", str(tmp_path))
+    assert credentials_path() == project_root / "config" / "google-credentials.json"
+
+    explicit = tmp_path / "explicit.json"
+    monkeypatch.setenv("CREDENTIALS_PATH", str(explicit))
+    assert credentials_path() == explicit
 
 
 def write_json(path: Path, data: dict) -> None:

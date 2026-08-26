@@ -37,6 +37,7 @@
     aepFilesCacheAt: 0,
     selectedAepPath: "",
     nextSaveVersions: {},
+    resolvedWorkRoots: {},
     rows: [],
     activeTab: "watch",
     filters: {
@@ -107,7 +108,7 @@
           templates: templates,
           aeRender: mergeObjects(defaultAeRender, fs.existsSync(aeRenderPath) ? parseSimpleYaml(fs.readFileSync(aeRenderPath, "utf8")) : {}),
           naming: mergeObjects(defaultNaming, fs.existsSync(namingPath) ? parseSimpleYaml(fs.readFileSync(namingPath, "utf8")) : {}),
-          shots: loadShotContexts(String(anchors.project_root || ""), String(anchors.project_name || entry.name))
+          shots: loadShotContexts(String(anchors.project_root || ""), String(anchors.project_name || entry.name), templates)
         });
       });
     } catch (error) {
@@ -204,16 +205,21 @@
     });
   }
 
-  function loadShotContexts(projectRoot, projectName) {
+  function loadShotContexts(projectRoot, projectName, templates) {
     var fs = nodeRequire("fs");
     var path = nodeRequire("path");
     var shotsRoot;
+    var fallbackRoot;
     var contexts = [];
     if (!fs || !path || !projectRoot) {
       return contexts;
     }
 
-    shotsRoot = path.join(projectRoot, "shots");
+    shotsRoot = resolveShotsRoot(projectRoot, projectName, templates || {});
+    fallbackRoot = path.join(projectRoot, "shots");
+    if (!fs.existsSync(shotsRoot) && fs.existsSync(fallbackRoot)) {
+      shotsRoot = fallbackRoot;
+    }
     try {
       if (!fs.existsSync(shotsRoot)) {
         return contexts;
@@ -248,6 +254,23 @@
       return contexts;
     }
     return contexts;
+  }
+
+  function resolveShotsRoot(projectRoot, projectName, templates) {
+    var values = {
+      project_root: projectRoot,
+      project_name: projectName,
+      project: projectName
+    };
+    var template = templates.shots_root || "";
+    var shotTemplate;
+    if (!template && templates.shot_root) {
+      shotTemplate = String(templates.shot_root);
+      if (shotTemplate.indexOf("{episode}") !== -1) {
+        template = shotTemplate.split("{episode}", 1)[0].replace(/[\/\\]+$/, "");
+      }
+    }
+    return resolveConfiguredTemplate(template || "{project_root}/shots", values, templates);
   }
 
   async function init() {
@@ -1291,6 +1314,7 @@
   }
 
   function workAepRoot(shotRoot, department) {
+    var backendRoot = resolveWorkAepRootFromBackend(shotRoot, department);
     var project = selectedProject();
     var templates = project ? project.templates || {} : {};
     var tokens = shotTokensFromRoot(shotRoot);
@@ -1307,8 +1331,61 @@
       dcc: "ae",
       tool: "ae"
     };
+    if (backendRoot) {
+      return backendRoot;
+    }
     var shotWork = resolveConfiguredTemplate(templates.shot_work || "{shot_root}/work/{department}/{dcc}", values, templates);
     return joinPath(shotWork, "main");
+  }
+
+  function resolveWorkAepRootFromBackend(shotRoot, department) {
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    var childProcess = nodeRequire("child_process");
+    var project = selectedProject();
+    var tokens = shotTokensFromRoot(shotRoot);
+    var key;
+    var pipelineRoot;
+    var scriptPath;
+    var python;
+    var result;
+    var payload;
+    if (!fs || !pathModule || !childProcess || !project || !project.configDir) {
+      return "";
+    }
+    key = [project.configDir, tokens.episode, tokens.sequence, tokens.shot, department || "anim", "ae", "main"].join("|");
+    if (state.resolvedWorkRoots[key]) {
+      return state.resolvedWorkRoots[key];
+    }
+    pipelineRoot = pathModule.dirname(DEFAULT_CONFIG_ROOT);
+    scriptPath = pathModule.join(pipelineRoot, "scripts", "resolve_ae_work_path.py");
+    if (!fs.existsSync(scriptPath)) {
+      return "";
+    }
+    python = findPythonExecutable(fs, pathModule, pipelineRoot);
+    try {
+      result = childProcess.spawnSync(python, [
+        scriptPath,
+        "--config-dir", project.configDir,
+        "--episode", tokens.episode,
+        "--sequence", tokens.sequence,
+        "--shot", tokens.shot,
+        "--department", department || "anim",
+        "--dcc", "ae",
+        "--option", "main"
+      ], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+    } catch (error) {
+      return "";
+    }
+    if (!result || result.status !== 0) {
+      return "";
+    }
+    payload = parseLastJsonLine(result.stdout);
+    if (payload && payload.ok && payload.work_root) {
+      state.resolvedWorkRoots[key] = String(payload.work_root).replace(/\\/g, "/");
+      return state.resolvedWorkRoots[key];
+    }
+    return "";
   }
 
   function selectedShotRoots() {
@@ -1832,6 +1909,34 @@
       guard += 1;
     }
     return resolved.replace(/\\/g, "/");
+  }
+
+  function findPythonExecutable(fs, pathModule, pipelineRoot) {
+    var candidates = [
+      (typeof process !== "undefined" && process.env) ? process.env.SMARTPIPELINE_PYTHON : "",
+      pathModule.join(pathModule.dirname(pipelineRoot), "smarttools", "python", "python.exe"),
+      pathModule.join(pipelineRoot, "runtime", "python", "python.exe"),
+      pathModule.join(pipelineRoot, ".venv", "Scripts", "python.exe"),
+      "python"
+    ];
+    var i;
+    for (i = 0; i < candidates.length; i += 1) {
+      if (candidates[i] && (candidates[i] === "python" || fs.existsSync(candidates[i]))) {
+        return candidates[i];
+      }
+    }
+    return "python";
+  }
+
+  function parseLastJsonLine(text) {
+    var lines = String(text || "").trim().split(/\r?\n/);
+    var i;
+    for (i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        return JSON.parse(lines[i]);
+      } catch (error) {}
+    }
+    return {};
   }
 
   function selectedProjectName() {

@@ -40,6 +40,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.rows: list[ReviewShotStatus] = []
         self.current_filter = "ALL"
         self.pending_jobs: list[dict] = []
+        self.queue_jobs: list[dict] = []
         self.active_job: dict | None = None
         self.worker_process: QtCore.QProcess | None = None
         self.job_counter = 0
@@ -404,7 +405,23 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             queue_header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeToContents)
         queue_header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
         queue_header.setSectionResizeMode(6, QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.queue_table, 1)
+        self.queue_table.itemSelectionChanged.connect(self._show_selected_job_details)
+        self.job_queue_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.job_queue_splitter.setChildrenCollapsible(False)
+        self.job_queue_splitter.addWidget(self.queue_table)
+        detail_group = QtWidgets.QGroupBox("Job Details / Error Details")
+        detail_layout = QtWidgets.QVBoxLayout(detail_group)
+        detail_layout.setContentsMargins(7, 7, 7, 7)
+        self.job_detail_text = QtWidgets.QPlainTextEdit()
+        self.job_detail_text.setReadOnly(True)
+        self.job_detail_text.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.job_detail_text.setPlaceholderText(
+            "Select a Job Queue row to inspect its full result or error."
+        )
+        detail_layout.addWidget(self.job_detail_text)
+        self.job_queue_splitter.addWidget(detail_group)
+        self.job_queue_splitter.setSizes([510, 230])
+        layout.addWidget(self.job_queue_splitter, 1)
         return page
 
     def _build_review_tab(self) -> QtWidgets.QWidget:
@@ -437,12 +454,21 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.review_actions_btn.setText("Review Actions")
         self.review_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         menu = QtWidgets.QMenu(self.review_actions_btn)
-        menu.addAction("Rebuild Selected Layers")
-        menu.addAction("Rebuild All Layers")
-        menu.addAction("Ignore Cache and Submit")
+        self.rebuild_selected_layers_action = menu.addAction("Rebuild Selected Layers")
+        self.rebuild_all_layers_action = menu.addAction("Rebuild All Layers")
+        self.ignore_cache_submit_action = menu.addAction("Ignore Cache and Submit")
         menu.addSeparator()
         menu.addAction("View Source Manifest")
         self.review_actions_btn.setMenu(menu)
+        self.rebuild_selected_layers_action.triggered.connect(
+            self._set_rebuild_selected_layers
+        )
+        self.rebuild_all_layers_action.triggered.connect(
+            self._set_rebuild_all_layers
+        )
+        self.ignore_cache_submit_action.triggered.connect(
+            self._ignore_cache_and_submit
+        )
         self.review_status_label = QtWidgets.QLabel("Select a shot")
         actions.addWidget(self.review_actions_btn)
         actions.addStretch(1)
@@ -1224,16 +1250,26 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             f"Shot Composition {assembly_path.parent.name if assembly_path else 'draft'} / "
             f"{layer_count} layers"
         )
-        definitions_ready = bool(assembly_path and layers_path)
+        task = self.task_combo.currentText() or "main"
+        readiness = self.service.review_definition_validation(
+            identity,
+            self.department_combo.currentText(),
+            task,
+        )
+        settings_path = readiness.get("playblast_settings_path")
+        settings_version = (
+            settings_path.parent.name if settings_path else "missing"
+        )
+        definitions_ready = bool(readiness.get("ready"))
         self.submit_review_btn.setEnabled(enabled and definitions_ready)
         if not definitions_ready:
-            missing = []
-            if not assembly_path:
-                missing.append("Shot Composition")
-            if not layers_path:
-                missing.append("Review Layer Definition")
             self.review_status_label.setText(
-                "Publish in Shot Manager: " + ", ".join(missing)
+                "Review validation: " + "; ".join(readiness.get("errors") or [])
+            )
+        else:
+            self.review_status_label.setText(
+                f"Shot Composition {assembly_path.parent.name} / "
+                f"{layer_count} layers / playblast_settings {settings_version}"
             )
 
     def _review_submission_changes(self) -> None:
@@ -1249,13 +1285,106 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         layers = self.service.layer_definition(
             status.identity, self.department_combo.currentText()
         )
+        readiness = self.service.review_definition_validation(
+            status.identity,
+            self.department_combo.currentText(),
+            self.task_combo.currentText() or "main",
+        )
+        settings = readiness.get("playblast_settings") or {}
+        settings_path = readiness.get("playblast_settings_path")
+        setting_rows = []
+        for row in settings.get("rows") or []:
+            if not row.get("enabled", True):
+                continue
+            setting_rows.append(
+                f"  {row.get('layer') or row.get('display_layer')}: "
+                f"{row.get('camera') or '-'} / "
+                f"{row.get('width') or 0}x{row.get('height') or 0} / "
+                f"{row.get('start')}-{row.get('end')} / "
+                f"{row.get('output_format') or 'png'}"
+            )
         message = (
             f"Review Profile: {profile['id']} ({profile.get('image_format', 'png').upper()})\n"
             f"Delivery Profile: {delivery['id']} ({delivery.get('codec', '-')})\n"
             f"Layers: {len(layers.get('layers') or [])}\n"
-            "Exact HIT/MISS results are calculated from JSON snapshots when the job starts."
+            f"playblast_settings: {settings_path.parent.name if settings_path else 'missing'}\n"
+            + ("\n".join(setting_rows) + "\n" if setting_rows else "")
+            + "Exact HIT/MISS results are calculated from JSON snapshots when the job starts."
         )
         QtWidgets.QMessageBox.information(self, "Review Changes", message)
+
+    def _set_review_cache_policy(
+        self, policy: str, layers: list[str] | None = None
+    ) -> bool:
+        status = self._selected_status()
+        if not status:
+            QtWidgets.QMessageBox.information(
+                self, "Review Actions", "Select a shot first."
+            )
+            return False
+        identity = status.identity
+        key = (identity.episode, identity.sequence, identity.shot)
+        settings = self._review_submission_profiles.setdefault(key, {})
+        settings["review_cache_policy"] = str(policy)
+        settings["rebuild_layers"] = list(layers or [])
+        label = {
+            "rebuild_all": "Next Submit: rebuild all Review Layers",
+            "rebuild_selected": (
+                "Next Submit: rebuild " + ", ".join(layers or [])
+            ),
+            "ignore_all": "Submitting without Construct or Layer cache",
+        }.get(policy, "Next Submit: use cache")
+        self.review_status_label.setText(label)
+        self.footer_label.setText(label)
+        return True
+
+    def _set_rebuild_all_layers(self) -> None:
+        self._set_review_cache_policy("rebuild_all")
+
+    def _set_rebuild_selected_layers(self) -> None:
+        status = self._selected_status()
+        if not status:
+            QtWidgets.QMessageBox.information(
+                self, "Review Actions", "Select a shot first."
+            )
+            return
+        definition = self.service.layer_definition(
+            status.identity, self.department_combo.currentText()
+        )
+        names = [
+            str(layer.get("slug") or layer.get("name") or "")
+            for layer in (definition.get("layers") or [])
+            if str(layer.get("slug") or layer.get("name") or "")
+        ]
+        if not names:
+            QtWidgets.QMessageBox.information(
+                self, "Review Actions", "No published Review Layers were found."
+            )
+            return
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Rebuild Selected Layers")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.addWidget(QtWidgets.QLabel("Select layers to rebuild on the next Submit."))
+        layer_list = QtWidgets.QListWidget()
+        layer_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        layer_list.addItems(names)
+        layer_list.selectAll()
+        layout.addWidget(layer_list)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        selected = [item.text() for item in layer_list.selectedItems()]
+        if selected:
+            self._set_review_cache_policy("rebuild_selected", selected)
+
+    def _ignore_cache_and_submit(self) -> None:
+        if self._set_review_cache_policy("ignore_all"):
+            self._submit_for_review()
 
     def _submit_for_review(self) -> None:
         status = self._selected_status()
@@ -1267,17 +1396,17 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         workflow = self.service.review_workflow(status.identity)
         _assembly, assembly_path = workflow.latest_assembly()
         _layers, layers_path = workflow.latest_layer_definition()
-        if not assembly_path or not layers_path:
-            missing = []
-            if not assembly_path:
-                missing.append("Shot Composition")
-            if not layers_path:
-                missing.append("Review Layer Definition")
+        readiness = self.service.review_definition_validation(
+            status.identity,
+            self.department_combo.currentText(),
+            self.task_combo.currentText() or "main",
+        )
+        if not readiness.get("ready"):
             QtWidgets.QMessageBox.information(
                 self,
                 "Submit for Review",
-                "Publish the following in Shot Manager before submitting:\n\n"
-                + "\n".join(f"- {name}" for name in missing),
+                "Resolve the following before submitting:\n\n"
+                + "\n".join(f"- {message}" for message in readiness.get("errors") or []),
             )
             return
         identity = status.identity
@@ -1287,9 +1416,15 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 "review_profile": self.review_profile_combo.currentText(),
                 "delivery_profile": self.delivery_profile_combo.currentText(),
                 "precomp": self.precomp_combo.currentData(),
+                **self._review_submission_profiles.get(
+                    (identity.episode, identity.sequence, identity.shot), {}
+                ),
             }
         }
-        self._enqueue_builds([(identity.episode, identity.sequence, identity.shot)])
+        submission_key = (identity.episode, identity.sequence, identity.shot)
+        self._enqueue_builds([submission_key])
+        # Review Actions are one-shot instructions for the submitted job.
+        self._review_submission_profiles.pop(submission_key, None)
         self.generate_review_check.setChecked(False)
 
     def _selected_status(self) -> ReviewShotStatus | None:
@@ -1557,6 +1692,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             construct_changes = []
             canonical_fingerprint = ""
             reuse_construct = ""
+            review_options = self._review_submission_profiles.get(
+                tuple(raw_identity), {}
+            )
             if scope != "sequence":
                 overrides = self._stage_input_overrides(identity)
                 previous_construct = self.service.shots.load_construct(identity)
@@ -1584,8 +1722,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                             identity, plan.department
                         ),
                     )
-                    cached_construct = workflow.find_canonical_construct(
-                        plan.department, "maya", plan.task, canonical_fingerprint
+                    cached_construct = (
+                        None
+                        if review_options.get("review_cache_policy") == "ignore_all"
+                        else workflow.find_canonical_construct(
+                            plan.department, "maya", plan.task, canonical_fingerprint
+                        )
                     )
                     if cached_construct:
                         output_version = cached_construct["version"]
@@ -1605,7 +1747,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 "version": output_version,
                 "mode": plan.resolved_mode,
                 "generate_review": self.generate_review_check.isChecked(),
-                **self._review_submission_profiles.get(tuple(raw_identity), {}),
+                **review_options,
                 "department": plan.department,
                 "task_name": plan.task,
                 "status_file": str(status_file),
@@ -1621,6 +1763,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 ),
             }
             self.pending_jobs.append(job)
+            self.queue_jobs.append(job)
             self._append_queue_row(job)
         if self.pending_jobs and not self.active_job:
             self._start_next_job()
@@ -1650,6 +1793,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self.queue_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(value)))
         self.main_tabs.setTabText(1, f"Job Queue ({self.queue_table.rowCount()})")
         self.main_tabs.setCurrentIndex(1)
+        self.queue_table.selectRow(row)
 
     def _start_next_job(self) -> None:
         if self.active_job or not self.pending_jobs:
@@ -1729,6 +1873,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 str(job.get("delivery_profile") or "internal"),
                 "--precomp",
                 str(job.get("precomp") or "latest_approved"),
+                "--review-cache-policy",
+                str(job.get("review_cache_policy") or "use"),
+                "--rebuild-layers-json",
+                json.dumps(job.get("rebuild_layers") or []),
                 "--department",
                 job["department"],
                 "--task-name",
@@ -1765,8 +1913,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
     def _read_worker_stderr(self) -> None:
         if not self.worker_process or not self.active_job:
             return
-        text = bytes(self.worker_process.readAllStandardError()).decode(
-            "utf-8", errors="replace"
+        text = self._decode_process_output(
+            bytes(self.worker_process.readAllStandardError())
         )
         self.active_job["stderr"] += text
 
@@ -1861,6 +2009,49 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 item = self.queue_table.item(row, column)
                 if item is not None:
                     item.setToolTip(message)
+        if self.queue_table.currentRow() == row:
+            self._show_selected_job_details()
+
+    def _show_selected_job_details(self) -> None:
+        if not hasattr(self, "job_detail_text"):
+            return
+        row = self.queue_table.currentRow()
+        if row < 0 or row >= len(self.queue_jobs):
+            self.job_detail_text.clear()
+            return
+        job = self.queue_jobs[row]
+        identity = job.get("identity") or ("", "", "")
+        shot = identity[1] if job.get("scope") == "sequence" else "/".join(identity[1:3])
+        message = self._clean_diagnostic_text(job.get("message") or "")
+        stderr = self._clean_diagnostic_text(job.get("stderr") or "")
+        sections = [
+            f"Job: {job.get('id', '')}",
+            f"Shot: {shot}",
+            f"State: {job.get('state', '')}",
+            f"Task: {self._clean_diagnostic_text(job.get('task') or '')}",
+            f"Status File: {job.get('status_file', '')}",
+        ]
+        if message:
+            sections.extend(["", "Message / Traceback:", message])
+        if stderr and stderr not in message:
+            sections.extend(["", "Worker stderr:", stderr])
+        self.job_detail_text.setPlainText("\n".join(sections))
+
+    @staticmethod
+    def _decode_process_output(payload: bytes) -> str:
+        if not payload:
+            return ""
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return payload.decode("cp932", errors="replace")
+
+    @staticmethod
+    def _clean_diagnostic_text(value: str) -> str:
+        text = str(value or "")
+        # U+FFFD cannot be restored, but replacing it makes the damaged portion
+        # explicit while preserving the readable exception and traceback.
+        return text.replace("\ufffd", "[unreadable byte]")
 
     @staticmethod
     def _job_file_name(job: dict) -> str:

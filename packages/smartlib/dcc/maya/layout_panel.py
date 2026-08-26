@@ -71,6 +71,8 @@ def apply_camera_display_defaults(mode: str = "selected", pattern_text: str = ""
     for camera in cameras:
         _set_attr_if_exists(camera, "displayResolution", True)
         _set_attr_if_exists(camera, "displayGateMask", True)
+        _set_attr_if_exists(camera, "displayGateMaskOpacity", 0.7)
+        _set_color_attr_if_exists(camera, "displayGateMaskColor", 0.7, 0.7, 0.7)
         _set_attr_if_exists(camera, "displayFilmGate", False)
         _set_attr_if_exists(camera, "filmFit", 3)
         _set_attr_if_exists(camera, "nearClipPlane", 0.1)
@@ -85,6 +87,23 @@ def set_resolution_gate(mode: str = "selected", enabled: bool = True, pattern_te
 
 def set_gate_mask(mode: str = "selected", enabled: bool = True, pattern_text: str = "") -> int:
     return _set_camera_attr_for_mode(mode, "displayGateMask", enabled, pattern_text)
+
+
+def set_gate_mask_opacity(mode: str = "selected", value: float = 0.7, pattern_text: str = "") -> int:
+    return _set_camera_attr_for_mode(mode, "displayGateMaskOpacity", float(value), pattern_text)
+
+
+def set_gate_mask_color(
+    mode: str = "selected",
+    color: tuple[float, float, float] = (0.7, 0.7, 0.7),
+    pattern_text: str = "",
+) -> int:
+    cmds = _maya_cmds()
+    cameras = _camera_shapes_for_mode(cmds, mode, pattern_text)
+    red, green, blue = [max(0.0, min(1.0, float(channel))) for channel in color]
+    for camera in cameras:
+        _set_color_attr_if_exists(camera, "displayGateMaskColor", red, green, blue)
+    return len(cameras)
 
 
 def set_film_fit_overscan(mode: str = "selected", pattern_text: str = "") -> int:
@@ -370,6 +389,20 @@ def _set_attr_if_exists(node: str, attr: str, value: Any) -> bool:
         return True
     except Exception:
         return False
+
+
+def _set_color_attr_if_exists(node: str, attr: str, red: float, green: float, blue: float) -> bool:
+    cmds = _maya_cmds()
+    full_attr = f"{node}.{attr}"
+    if not cmds.objExists(full_attr):
+        return False
+    for kwargs in ({"type": "double3"}, {}):
+        try:
+            cmds.setAttr(full_attr, red, green, blue, **kwargs)
+            return True
+        except Exception:
+            pass
+    return False
 
 
 def _smart_gate_guide_shapes(cmds: Any) -> list[str]:

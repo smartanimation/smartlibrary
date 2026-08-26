@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 
+from smartlib.apps.smart_ingest import service as smart_ingest_service
 from smartlib.apps.smart_ingest.service import IngestMetadata, SmartIngestService
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
@@ -142,6 +144,45 @@ def test_vendor_delivery_is_planned_as_intake(tmp_path: Path) -> None:
     assert item.target_path == project_root / "production" / "intake" / "studioA" / "20260824" / "delivery.zip"
 
 
+def test_ingest_completion_posts_google_chat_notification_from_secrets(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    smartprojects = tmp_path / "smartprojects"
+    write_config(config_dir, project_root)
+    smartprojects.mkdir()
+    (smartprojects / "secrets.yml").write_text(
+        "\n".join(
+            [
+                "smart_ingest:",
+                "  google_chat_webhook_url: 'https://chat.example.test/webhook'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    source = project_root / "incoming" / "assets" / "20260605_01" / "kuma_model_render_v001.fbx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"fbx")
+    posted: list[tuple[str, dict]] = []
+    original_post_json = smart_ingest_service._post_json
+    previous_studio_dir = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG_DIR")
+    os.environ["SMARTPIPELINE_STUDIO_CONFIG_DIR"] = str(smartprojects)
+    smart_ingest_service._post_json = lambda url, payload: posted.append((url, payload)) or {}
+    try:
+        service = SmartIngestService(ProjectConfig(config_dir))
+        service.ingest_selected(service.auto_plan())
+    finally:
+        smart_ingest_service._post_json = original_post_json
+        if previous_studio_dir is None:
+            os.environ.pop("SMARTPIPELINE_STUDIO_CONFIG_DIR", None)
+        else:
+            os.environ["SMARTPIPELINE_STUDIO_CONFIG_DIR"] = previous_studio_dir
+
+    assert posted
+    assert posted[0][0] == "https://chat.example.test/webhook"
+    assert "Smart Ingest completed" in posted[0][1]["text"]
+    assert "Copied: 1" in posted[0][1]["text"]
+
+
 def test_fbm_companion_is_hidden_and_ingested_with_parent_fbx(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     write_config(tmp_path / "config", project_root)
@@ -185,7 +226,7 @@ def test_auto_plan_editorial_copy_uses_data_root(tmp_path: Path) -> None:
     assert item.action == "copy"
     assert item.target_type == "Editorial"
     assert item.target_path is not None
-    assert "editorial/data/ep001/sq010/offline/v001/ep001_sq010.mov" in item.target_path.as_posix()
+    assert "production/editorial/data/ep001/sq010/offline/v001/ep001_sq010.mov" in item.target_path.as_posix()
 
 
 def test_client_editorial_delivery_is_split_by_role_and_indexed(tmp_path: Path) -> None:
@@ -219,7 +260,7 @@ def test_client_editorial_delivery_is_split_by_role_and_indexed(tmp_path: Path) 
     }
 
     result = service.ingest_selected(items)
-    editorial_root = project_root / "editorial" / "data" / "ep02" / "s027"
+    editorial_root = project_root / "production" / "editorial" / "data" / "ep02" / "s027"
     edit_root = editorial_root / "edit_source"
     offline_root = editorial_root / "offline"
     edit_manifest = read_json(edit_root / "v001" / "manifest.json")

@@ -1,6 +1,7 @@
 """Reusable Smart Preflight validation framework."""
 
 from .engine import PreflightEngine
+from .manifest import PreflightManifestStore
 from .models import (
     CheckResult,
     OutputDefinition,
@@ -16,6 +17,7 @@ __all__ = [
     "OutputDefinition",
     "PreflightContext",
     "PreflightEngine",
+    "PreflightManifestStore",
     "PreflightProfile",
     "PreflightReport",
     "Severity",

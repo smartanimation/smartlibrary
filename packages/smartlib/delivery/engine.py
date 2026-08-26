@@ -138,19 +138,26 @@ class DeliveryEngine:
         index_path = delivery_root / "delivery_index.json"
         data = read_json(index_path, {}) or {}
         rows = list(data.get("deliveries") or [])
-        rows.append(
-            {
+        entity_type = str(plan.metadata.get("entity_type") or "shot")
+        entity_id = str(plan.metadata.get("entity_id") or getattr(plan.context, "code", ""))
+        row = {
                 "delivery_id": str(plan.metadata.get("delivery_id") or plan.job_id),
                 "job_id": plan.job_id,
                 "party_type": "client",
                 "party": str(plan.metadata.get("client") or ""),
                 "delivery_batch": str(plan.metadata.get("delivery_batch") or ""),
                 "archive": archive.relative_to(delivery_root).as_posix(),
-                "shots": [f"{plan.context.episode}_{plan.context.sequence}_{plan.context.shot}"],
-                "review_version": f"v{plan.context.version:03d}",
+                "entity_type": entity_type,
+                "entity_id": entity_id,
                 "status": "READY",
             }
-        )
+        if entity_type == "shot":
+            row["shots"] = [entity_id]
+            row["review_version"] = f"v{plan.context.version:03d}"
+        else:
+            row["assets"] = [entity_id]
+            row["asset_version"] = f"v{plan.context.version:03d}"
+        rows.append(row)
         write_json(index_path, {"schema": "smart_delivery_index/v1", "deliveries": rows})
 
     def _write_failed_result(self, plan: DeliveryPlan, results: list[ValidationResult]) -> DeliveryResult:

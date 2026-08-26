@@ -56,6 +56,7 @@ templates:
   shots_root: "{production_root}/shots"
   art_root: "{workspace_root}/art"
   editorial_root: "{workspace_root}/editorial"
+  editorial_data_root: "{production_root}/editorial/data"
   setting_root: "{production_root}/settings"
   delivery_root: "{project_root}/delivery"
   deliveries_vendors_dir: "{delivery_root}/vendors"

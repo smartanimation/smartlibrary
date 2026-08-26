@@ -11,6 +11,7 @@ tests
 !scripts/publish_scene_data.py
 !scripts/publish_precomp.py
 !scripts/validate_scene_data.py
+!scripts/smart_delivery_package.py
 !packages/smartlib/dcc/maya/shot_scene_data.py
 !packages/smartlib/setdress/
 !packages/smartlib/setdress/*.py
@@ -24,6 +25,8 @@ tests
 !packages/smartlib/apps/smart_preflight/*.py
 !packages/smartlib/apps/smart_delivery/
 !packages/smartlib/apps/smart_delivery/*.py
+!packages/smartlib/apps/sequence_manager/
+!packages/smartlib/apps/sequence_manager/*.py
 !packages/smartlib/apps/asset_manager/retarget_publish.py
 !packages/smartlib/apps/asset_manager/construct.py
 !packages/smartlib/dcc/maya/preflight.py
@@ -39,6 +42,8 @@ tests
 !config/delivery/
 !config/delivery/clients/
 !config/delivery/clients/*.yml
+!config/delivery/package_profiles/
+!config/delivery/package_profiles/*.json
 !config/default/preflight.yml
 !config/default/review.yml
 !config/maya/retarget/dli.json
@@ -70,6 +75,7 @@ tests/*
 !tests/test_smart_delivery.py
 !tests/test_review_decisions.py
 !tests/test_delivery_after_effects.py
+!tests/test_vendor_package.py
 !tests/fixtures/
 !tests/fixtures/dandelione_v003.yml
 

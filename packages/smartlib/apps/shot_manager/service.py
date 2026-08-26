@@ -1219,6 +1219,7 @@ class ShotManagerService:
             "episode": identity.episode,
             "sequence": identity.sequence,
             "shot": identity.shot,
+            "shot_root": self.shot_root(identity).as_posix(),
             "department": department,
             "tool": "maya",
             "task": _normalize_work_option(task),
@@ -1376,6 +1377,7 @@ class ShotManagerService:
             "episode": identity.episode,
             "sequence": identity.sequence,
             "shot": identity.shot,
+            "shot_root": self.shot_root(identity).as_posix(),
             "department": department,
             "option": _normalize_work_option(option),
             "version": version_label,
@@ -1442,6 +1444,9 @@ class ShotManagerService:
             requested_take = max(1, int(row.get("take") or 1))
             take_number = requested_take
             camera_name = str(row.get("camera") or "").replace("\\", "|").rsplit("|", 1)[-1]
+            output_format = str(
+                row.get("output_format") or row.get("image_format") or "png"
+            ).lower().lstrip(".")
             output_override = str(row.get("output_override") or "").strip()
             pattern_template = output_override or filename_template
             output = None
@@ -1460,7 +1465,7 @@ class ShotManagerService:
                         "version": f"{requested_version:03d}",
                         "take": f"{take_number:03d}",
                         "frame": "####",
-                        "ext": "png",
+                        "ext": output_format,
                     },
                     default_directory="{shot_root}/output/preview_render/{department}/layers/{preview}/v{version}/t{take}",
                     default_filename=pattern_template.replace("*", "_"),
@@ -1482,6 +1487,13 @@ class ShotManagerService:
                     "frame_range": [int(row.get("start", 1)), int(row.get("end", 1))],
                     "resolution": [int(row.get("width", 1280)), int(row.get("height", 720))],
                     "playblast_preset": str(row.get("preset") or ""),
+                    "overscan": float(row.get("overscan") or 1.0),
+                    "output_format": output_format,
+                    "ae_placeholder": str(
+                        row.get("ae_placeholder")
+                        or row.get("precomp_placeholder")
+                        or clean_group
+                    ),
                 }
             )
         return {
@@ -1569,6 +1581,10 @@ class ShotManagerService:
                 "frame_range": list(group.get("frame_range") or []),
                 "resolution": list(group.get("resolution") or []),
                 "order": int(group.get("order", 0)),
+                "overscan": float(group.get("overscan") or 1.0),
+                "playblast_preset": str(group.get("playblast_preset") or ""),
+                "output_format": str(group.get("output_format") or "png"),
+                "ae_placeholder": str(group.get("ae_placeholder") or group_name),
                 "file_count": file_count,
                 "first_file": first_file.name,
                 "last_file": last_file.name if last_file.is_file() else "",
@@ -1720,6 +1736,10 @@ class ShotManagerService:
                     "camera": str(group.get("camera") or ""),
                     "frame_range": list(group.get("frame_range") or []),
                     "resolution": list(group.get("resolution") or []),
+                    "overscan": float(group.get("overscan") or 1.0),
+                    "playblast_preset": str(group.get("playblast_preset") or ""),
+                    "output_format": str(group.get("output_format") or "png"),
+                    "ae_placeholder": str(group.get("ae_placeholder") or group_name),
                     "file_count": file_count,
                     "first_file": Path(first_file).name,
                     "last_file": Path(last_file).name if last_file else "",
@@ -1771,6 +1791,10 @@ class ShotManagerService:
                 "camera": str(group.get("camera") or ""),
                 "frame_range": list(group.get("frame_range") or []),
                 "resolution": list(group.get("resolution") or []),
+                "overscan": float(group.get("overscan") or 1.0),
+                "playblast_preset": str(group.get("playblast_preset") or ""),
+                "output_format": str(group.get("output_format") or "png"),
+                "ae_placeholder": str(group.get("ae_placeholder") or group_name),
                 "file_count": file_count,
                 "first_file": self._relative_path(package_dir, Path(first_file)) if first_file else "",
                 "last_file": self._relative_path(package_dir, Path(last_file)) if last_file else "",
@@ -1815,6 +1839,7 @@ class ShotManagerService:
             "department": department,
             "version": package_version,
             "package_root": package_dir.as_posix(),
+            "shot_root": self.shot_root(identity).as_posix(),
             "resolution": list((self.project_config.base.get("anchors") or {}).get("resolution") or []),
             "template_project": template_project,
             "source_scene": source_scene_value,
@@ -3815,7 +3840,11 @@ class ShotManagerService:
         version_dir = base_dir / version_label
         version_dir.mkdir(parents=True, exist_ok=True)
 
-        data = dict(payload)
+        data = (
+            _normalized_playblast_settings(payload)
+            if clean_type == "playblast_settings"
+            else dict(payload)
+        )
         data.update(
             {
                 "episode": identity.episode,
@@ -3876,7 +3905,11 @@ class ShotManagerService:
         version_dir = base_dir / version_label
         version_dir.mkdir(parents=True, exist_ok=True)
         output_name = filename or f"{clean_type}.json"
-        data = dict(payload)
+        data = (
+            _normalized_playblast_settings(payload)
+            if clean_type == "playblast_settings"
+            else dict(payload)
+        )
         data.update({
             "episode": identity.episode,
             "sequence": identity.sequence,
@@ -5719,6 +5752,67 @@ class ShotManagerService:
         payload["members"] = members
         return write_json(self.shot_composition_path(identity), payload)
 
+    def publish_review_definitions(
+        self,
+        identity: ShotIdentity,
+        review_layers: dict[str, Any],
+        *,
+        department: str = "anim",
+        comment: str = "",
+    ) -> tuple[Path, Path]:
+        """Publish Shot Composition and Review Layers using the review v1 contract."""
+
+        from smartlib.review.workflow import ReviewWorkflowService
+
+        workflow = ReviewWorkflowService(self.shot_root(identity), self.shot_root(identity))
+        cast_rows = (self.load_cast(identity).get("cast") or {})
+        composition = self.load_shot_composition(identity)
+        members = []
+        for raw in composition.get("members") or []:
+            member = dict(raw or {})
+            uid = str(member.get("uid") or "")
+            cast = cast_rows.get(uid) or {}
+            role = str(member.get("role") or cast.get("role") or "CHA").upper()
+            member.update({
+                "name": str(member.get("name") or uid),
+                "asset": str(member.get("asset") or cast.get("asset") or uid),
+                "variant": str(member.get("variant") or cast.get("variant") or "default"),
+                "namespace": str(member.get("namespace") or cast.get("namespace") or uid),
+                "role": role,
+                "behavior": str(
+                    member.get("behavior")
+                    or cast.get("behavior")
+                    or ("CURVE" if role == "CHA" else "STATIC")
+                ).upper(),
+                "enabled": bool(member.get("enabled", True)),
+            })
+            members.append(member)
+        composition_path = workflow.publish_composition(
+            {"members": members},
+            comment or f"Published from Shot Manager ({department})",
+        )
+
+        layers = []
+        for index, (name, raw) in enumerate(review_layers.items()):
+            layer = dict(raw or {})
+            layer.update({
+                "name": str(name),
+                "slug": str(layer.get("slug") or name),
+                "order": int(layer.get("order", index * 10)),
+                "precomp_placeholder": str(
+                    layer.get("precomp_placeholder")
+                    or (layer.get("ae") or {}).get("template_slot")
+                    or str(name).upper()
+                ),
+                "enabled": bool(layer.get("enabled", True)),
+            })
+            layers.append(layer)
+        layers_path = workflow.publish_layer_definition(
+            {"layers": layers},
+            comment or f"Published from Shot Manager ({department})",
+        )
+        return composition_path, layers_path
+
     def ensure_dependencies_json(self, identity: ShotIdentity | SequenceIdentity) -> Path:
         path = self.dependencies_path(identity)
         if path.exists():
@@ -5754,6 +5848,67 @@ class ShotManagerService:
             / "review_spec"
             / _clean_publish_token(department or "anim")
         )
+
+    def latest_playblast_settings(
+        self,
+        identity: ShotIdentity,
+        department: str = "anim",
+        task: str = "main",
+    ) -> tuple[dict[str, Any], Path | None]:
+        """Return the latest Data Publish that owns Review output settings.
+
+        Review Layer membership is intentionally not resolved here.  Rows are
+        joined to the independently published Review Layer Definition by their
+        Review Layer ID when a Review job is submitted.
+        """
+
+        clean_department = _clean_publish_token(department or "anim")
+        clean_task = _clean_publish_token(task or "main")
+        candidates = (
+            self.shot_data_root(identity)
+            / "playblast_settings"
+            / clean_department
+            / clean_task,
+            # Compatibility with early publishes whose payload target and
+            # directory department did not agree.
+            self.shot_data_root(identity)
+            / "playblast_settings"
+            / clean_department,
+        )
+        for root in candidates:
+            latest = read_json(root / "latest.json", {}) or {}
+            version = str(latest.get("version") or "")
+            version_dir = root / version if version else root
+            path_text = str(latest.get("path") or "")
+            paths = [
+                root / path_text if path_text else Path(),
+                version_dir / "playblast_settings.json",
+                version_dir / "playblast.json",
+            ]
+            for path in paths:
+                if path and path.is_file():
+                    return read_json(path, {}) or {}, path
+
+        # The Data browser is authoritative about which version is latest and
+        # also supports custom folder layouts created by project config.
+        rows = [
+            row
+            for row in self.list_shot_data_versions(identity)
+            if row.latest
+            and str(row.name).replace("\\", "/").startswith("playblast_settings/")
+        ]
+        preferred = [
+            row for row in rows
+            if f"/{clean_department}/" in f"/{str(row.name).lower()}/"
+            or str(row.name).lower().endswith(f"/{clean_department}")
+        ]
+        for row in preferred or rows:
+            version_dir = Path(row.path)
+            for filename in ("playblast_settings.json", "playblast.json"):
+                path = version_dir / filename
+                if path.is_file():
+                    return read_json(path, {}) or {}, path
+        return {}, None
 
     def review_spec_path(
         self,
@@ -5932,6 +6087,26 @@ class ShotManagerService:
         identity: ShotIdentity,
         department: str = "anim",
     ) -> dict[str, dict[str, Any]]:
+        from smartlib.review.workflow import ReviewWorkflowService
+
+        workflow = ReviewWorkflowService(self.shot_root(identity), self.shot_root(identity))
+        published, published_path = workflow.latest_layer_definition()
+        if published_path and published.get("layers"):
+            return {
+                str(layer.get("review_layer_id") or layer.get("slug") or layer.get("name")): {
+                    "members": list(layer.get("members") or []),
+                    "objects": list(layer.get("objects") or []),
+                    "display_layer": str(
+                        layer.get("display_layer")
+                        or layer.get("name")
+                        or layer.get("slug")
+                        or ""
+                    ),
+                    "enabled": bool(layer.get("enabled", True)),
+                }
+                for layer in published.get("layers") or []
+                if layer.get("enabled", True)
+            }
         return _defaulted_review_layers(
             self.load_review_spec(identity, department).get("layers")
         )
@@ -6392,6 +6567,55 @@ def _defaulted_review_layers(review_layers: dict[str, Any] | None = None) -> dic
         merged[normalized_name].setdefault("members", [])
         merged[normalized_name].setdefault("order", len(merged) * 10)
     return merged
+
+
+def _normalized_playblast_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the authoritative Review output contract before publishing."""
+
+    data = dict(payload or {})
+    rows = []
+    for index, raw in enumerate(data.get("rows") or []):
+        row = dict(raw or {})
+        layer_id = str(
+            row.get("review_layer_id") or row.get("layer") or row.get("display_layer") or ""
+        ).strip()
+        if layer_id.lower().startswith("review_"):
+            layer_id = layer_id[7:]
+        layer_id = re.sub(r"[^0-9A-Za-z_.-]+", "_", layer_id).strip("._-")
+        if not layer_id:
+            continue
+        row.update(
+            {
+                "review_layer_id": layer_id,
+                "layer": layer_id,
+                "display_layer": str(row.get("display_layer") or layer_id),
+                "order": int(row.get("order", index)),
+                "ae_placeholder": str(
+                    row.get("ae_placeholder")
+                    or row.get("precomp_placeholder")
+                    or layer_id
+                ),
+                "camera": str(row.get("camera") or ""),
+                "width": int(row.get("width") or 0),
+                "height": int(row.get("height") or 0),
+                "start": int(row.get("start") or 0),
+                "end": int(row.get("end") or 0),
+                "overscan": float(row.get("overscan") or 1.0),
+                "preset": str(row.get("preset") or row.get("playblast_preset") or ""),
+                "output_format": str(
+                    row.get("output_format") or row.get("image_format") or "png"
+                ).lower().lstrip("."),
+                "enabled": bool(row.get("enabled", True)),
+            }
+        )
+        rows.append(row)
+    data["schema"] = "smartpipeline.playblast_settings.v2"
+    data["rows"] = rows
+    data["layer_order"] = [
+        row["review_layer_id"]
+        for row in sorted(rows, key=lambda value: int(value.get("order", 0)))
+    ]
+    return data
 
 
 def _normalize_role(value: Any) -> str:

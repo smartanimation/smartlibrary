@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from smartlib.core.output_resolver import OutputPathResolver
-from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
+from smartlib.core.path_resolver import AssemblyIdentity, AssetIdentity, ProjectPaths
 from smartlib.review.package import build_review_package_plan
 
 
@@ -110,7 +110,6 @@ def test_project_paths_support_separate_work_roots(tmp_path):
             "asset_work": "{workspace_root}/assets/{category}/{group}/{asset_name}/{variant}/work/{department}",
         },
     )
-
     assert paths.shot_work_dir("ep02", "s027", "c001", "anim", "maya") == (
         tmp_path / "workspace" / "ep02" / "s027" / "c001" / "work" / "anim" / "maya"
     )
@@ -120,6 +119,20 @@ def test_project_paths_support_separate_work_roots(tmp_path):
         tmp_path / "workspace" / "assets" / "characters" / "hero" / "alice"
         / "winter" / "work" / "model"
     )
+
+
+def test_project_paths_resolve_editorial_data_under_production(tmp_path):
+    default_paths = ProjectPaths(
+        tmp_path,
+        templates={"production_root": "{project_root}/production"},
+    )
+    configured_paths = ProjectPaths(
+        tmp_path,
+        templates={"editorial_data_root": "{project_root}/custom/editorial_data"},
+    )
+
+    assert default_paths.editorial_data_root() == tmp_path / "production/editorial/data"
+    assert configured_paths.editorial_data_root() == tmp_path / "custom/editorial_data"
 
 
 def test_project_paths_partition_workspace_by_shot_department(tmp_path):
@@ -167,6 +180,37 @@ def test_project_paths_use_default_workspace_partition_for_asset_root(tmp_path):
     assert paths.asset_work_dir(identity, "model") == (
         tmp_path / "workspace/cg/assets/characters/main/OBN/default/work/model"
     )
+
+
+def test_project_paths_resolve_common_work_contract(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={
+            "workspace_root": "{project_root}/workspace",
+            "assembly_work_root": "{workspace_root}/{workspace_partition}/assemblies/{category}/{group}/{asset_name}/{variant}/work",
+            "assembly_work": "{assembly_work_root}/{department}/{dcc}",
+            "asset_work_root": "{workspace_root}/{workspace_partition}/assets/{category}/{group}/{asset_name}/{variant}/work",
+            "asset_work": "{asset_work_root}/{department}",
+            "shot_work_root": "{workspace_root}/{workspace_partition}/shots/{episode}/{sequence}/{shot}/work",
+            "shot_work": "{shot_work_root}/{department}",
+            "sequence_work_root": "{workspace_root}/{workspace_partition}/sequences/{episode}/{sequence}/work",
+            "sequence_work": "{sequence_work_root}/{department}",
+        },
+        shot_dept_partitions={"default": "cg"},
+    )
+
+    assert paths.assembly_work_dir(
+        AssemblyIdentity("BG", "main", "Room", "default"), "layout", "maya"
+    ) == tmp_path / "workspace/cg/assemblies/BG/main/Room/default/work/layout/maya"
+    assert paths.asset_work_dir(
+        AssetIdentity("CH", "main", "DLI", "default"), "rig", "maya"
+    ) == tmp_path / "workspace/cg/assets/CH/main/DLI/default/work/rig"
+    assert paths.shot_work_dir(
+        "ep02", "s027", "c001", "anim", "maya"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/work/anim"
+    assert paths.sequence_work_dir(
+        "ep02", "s027", "layout", "maya"
+    ) == tmp_path / "workspace/cg/sequences/ep02/s027/work/layout"
 
 
 def test_project_paths_reject_literal_unresolved_folder_tokens(tmp_path):

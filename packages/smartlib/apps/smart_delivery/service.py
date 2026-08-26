@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Iterable
 
 from smartlib.apps.shot_manager import ShotIdentity, ShotManagerService
-from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.config_loader import ProjectConfig, load_config, studio_config_path
 from smartlib.core.metadata import read_json
-from smartlib.delivery import DeliveryEngine, DeliveryInput, DeliveryPlanner, DeliveryProfile, ShotContext
+from smartlib.delivery import (
+    AssetContext, DeliveryEngine, DeliveryInput, DeliveryPlanner, DeliveryProfile,
+    PackageProfile, ShotContext, VendorPackageBuilder,
+)
+from smartlib.core.versioning import parse_version
 from smartlib.review.decisions import ReviewDecisionService
 from smartlib.delivery.after_effects import AfterEffectsDeliveryAdapter
 
@@ -21,10 +25,114 @@ class SmartDeliveryService:
     def __init__(self, config_dir: str | Path):
         self.config = ProjectConfig(config_dir)
         self.shots = ShotManagerService(self.config)
-        self.profile_path = Path(config_dir) / "delivery" / "clients" / "dandelione_v003.yml"
-        if not self.profile_path.is_file():
-            raise FileNotFoundError(f"Client Delivery Profile was not found: {self.profile_path}")
+        self.profile_path = self._resolve_profile_path(Path(config_dir))
         self.profile = DeliveryProfile.load(self.profile_path)
+
+    def package_profile_names(self) -> list[str]:
+        root = Path(__file__).resolve().parents[4] / "config" / "delivery" / "package_profiles"
+        return [path.stem for path in sorted(root.glob("*.json"))]
+
+    def delivery_preferences(self) -> dict:
+        path = studio_config_path()
+        data = load_config(path) if path else {}
+        configured = dict(data.get("smart_delivery") or {})
+        return {
+            "package_profile": str(configured.get("package_profile") or "vendor"),
+            "vendor": str(configured.get("vendor") or "vendor"),
+            "asset_workflow": str(configured.get("asset_workflow") or "Package ZIP"),
+            "shot_workflow": str(configured.get("shot_workflow") or "Package ZIP"),
+            "output_template": str(configured.get("output_template") or
+                                   "{project_root}/incoming/vendors/{vendor}/{delivery_batch}/{entity}.zip"),
+        }
+
+    def manifest_delivery_defaults(self, manifest_path: str | Path) -> dict:
+        path = Path(manifest_path)
+        data = read_json(path, None)
+        if not isinstance(data, dict):
+            raise ValueError(f"Context manifest is not valid JSON: {path}")
+        context = dict(data.get("context") or {})
+        target = dict(data.get("target") or {})
+        metadata = dict(context.get("metadata") or {})
+        kind = str(data.get("package_type") or context.get("kind") or context.get("name") or "asset").lower()
+        category = str(target.get("category") or data.get("category") or metadata.get("category") or "")
+        group = str(target.get("group") or data.get("group") or metadata.get("group") or "main")
+        entity = str(target.get("asset") or data.get("asset") or context.get("entity") or metadata.get("asset") or "")
+        variant = str(target.get("variant") or data.get("variant") or metadata.get("variant") or "default")
+        scene = str((data.get("source_inputs") or {}).get("scene") or data.get("source_scene") or context.get("scene_path") or "")
+        if not scene:
+            for row in data.get("resolved_representations") or []:
+                if str((row or {}).get("publish_type") or "") != "current_scene": continue
+                files = dict((row or {}).get("files") or {})
+                scene = str(files.get("ma") or files.get("mb") or "")
+                if scene: break
+        if kind == "shot":
+            return {"delivery_type": "Shot", "scene": scene, "episode": str(target.get("episode") or metadata.get("episode") or ""),
+                    "sequence": str(target.get("sequence") or metadata.get("sequence") or ""),
+                    "shot": str(target.get("shot") or metadata.get("shot") or entity), "manifest": path.as_posix()}
+        if not entity:
+            raise ValueError("Manifest does not contain an Asset identity")
+        return {"delivery_type": "Asset", "scene": scene, "category": category or "CH", "group": group,
+                "asset": entity, "variant": variant, "manifest": path.as_posix()}
+
+    def suggested_package_output(self, entity: str, *, profile: str | None = None) -> Path:
+        preferences = self.delivery_preferences()
+        vendor = preferences["vendor"]
+        incoming = (self.config.project_root or Path.cwd()) / "incoming" / "vendors" / vendor
+        date = datetime.now().strftime("%Y%m%d")
+        numbers = []
+        for row in incoming.glob(f"{date}_*") if incoming.is_dir() else []:
+            suffix = row.name.rsplit("_", 1)[-1]
+            if suffix.isdigit(): numbers.append(int(suffix))
+        delivery_batch = f"{date}_{max(numbers, default=0) + 1:02d}"
+        value = preferences["output_template"].format(
+            project_root=(self.config.project_root or Path.cwd()).as_posix(), vendor=vendor,
+            delivery_batch=delivery_batch, entity=entity, profile=profile or preferences["package_profile"],
+        )
+        return Path(value)
+
+    def package_profile(self, name: str) -> PackageProfile:
+        path = Path(__file__).resolve().parents[4] / "config" / "delivery" / "package_profiles" / f"{name}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Smart Delivery package profile was not found: {path}")
+        return PackageProfile.load(path)
+
+    def build_exchange_asset(self, *, profile: str, scene: str | Path,
+                             texture_root: str | Path | None, output: str | Path,
+                             category: str, group: str, asset: str, variant: str,
+                             subset: str = "", comment: str = "", assembly: bool = False):
+        selected = self.package_profile(profile)
+        return VendorPackageBuilder(selected).build_asset(
+            scene=scene, texture_root=texture_root, output=output,
+            project=self.config.project_name, category=category, group=group,
+            asset=asset, variant=variant, subset=subset or None, comment=comment, assembly=assembly,
+        )
+
+    def build_exchange_shot(self, *, profile: str, sources: Iterable[str | Path],
+                            output: str | Path, identity: ShotIdentity,
+                            department: str, subset: str = "", comment: str = ""):
+        selected = self.package_profile(profile)
+        target = {
+            "target_type": "Shot", "project": self.config.project_name,
+            "episode": identity.episode, "sequence": identity.sequence, "shot": identity.shot,
+            "department": department, "subset": subset or selected.asset_subset,
+        }
+        return VendorPackageBuilder(selected).build_shot(
+            sources=sources, output=output, target=target, comment=comment,
+        )
+
+    @staticmethod
+    def _resolve_profile_path(config_dir: Path) -> Path:
+        root = config_dir / "delivery" / "clients"
+        preferred = root / "dandelione_v003.yml"
+        if preferred.is_file():
+            return preferred
+        profiles = sorted((*root.glob("*.yml"), *root.glob("*.yaml"))) if root.is_dir() else []
+        if profiles:
+            return profiles[0]
+        raise FileNotFoundError(
+            "No Client Delivery Profile was found. Expected a .yml file under: "
+            f"{root}"
+        )
 
     def list_shots(self) -> list[ShotIdentity]:
         return self.shots.list_shots()
@@ -162,7 +270,98 @@ class SmartDeliveryService:
             },
         )
 
+    def asset_package_summary(self, manifest_path: str | Path) -> dict:
+        path = Path(manifest_path)
+        data = read_json(path, None)
+        if not isinstance(data, dict):
+            raise ValueError(f"Asset package manifest is not valid JSON: {path}")
+        if data.get("schema") != "smart_ingest.asset_package.v1" or data.get("package_type") != "asset":
+            raise ValueError("Expected smart_ingest.asset_package.v1 with package_type=asset")
+        target = dict(data.get("target") or {})
+        required = ("category", "group", "asset", "variant")
+        missing = [key for key in required if not str(target.get(key) or "").strip()]
+        if missing:
+            raise ValueError(f"Asset package target is missing: {', '.join(missing)}")
+        return {"path": path, "data": data, "target": target}
+
+    def build_asset_package_plan(
+        self,
+        manifest_path: str | Path,
+        *,
+        package_root: str | Path,
+        version: int | None = None,
+    ):
+        summary = self.asset_package_summary(manifest_path)
+        path, data, target = summary["path"], summary["data"], summary["target"]
+        inferred_version = parse_version(path.parent.name) or 1
+        delivery = dict(data.get("delivery") or {})
+        task = str(delivery.get("received_from") or "client")
+        context = AssetContext(
+            str(target["category"]), str(target["group"]), str(target["asset"]),
+            str(target.get("variant") or "default"), task, int(version or inferred_version),
+        )
+        inputs: list[DeliveryInput] = []
+        for index, row in enumerate(data.get("files") or []):
+            entry = dict(row or {})
+            role = str(entry.get("role") or "file")
+            relative = Path(str(entry.get("path") or ""))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"Asset package file must be package-relative: {relative}")
+            source = path.parent / relative
+            required = bool(entry.get("required", True))
+            if role == "scene":
+                inputs.append(DeliveryInput(
+                    f"asset.scene.{index}", "asset_scene", source, "asset_scene",
+                    required=required, metadata={"source_role": role},
+                ))
+                continue
+            if role in {"texture", "texture_root"}:
+                files = [source] if source.is_file() else sorted(item for item in source.rglob("*") if item.is_file()) if source.is_dir() else []
+                patterns = [str(value) for value in (entry.get("include_patterns") or []) if str(value)]
+                if patterns and source.is_dir():
+                    files = [
+                        item for item in files
+                        if any(
+                            item.relative_to(source).match(pattern)
+                            or item.relative_to(source).match(pattern.removeprefix("**/"))
+                            for pattern in patterns
+                        )
+                    ]
+                if not files and required:
+                    inputs.append(DeliveryInput(
+                        f"asset.texture.{index}.missing", "asset_texture", source,
+                        "asset_texture", required=True, metadata={"relative_path": relative.name},
+                    ))
+                for item in files:
+                    rel = item.relative_to(source).as_posix() if source.is_dir() else item.name
+                    inputs.append(DeliveryInput(
+                        f"asset.texture.{index}.{rel}", "asset_texture", item,
+                        "asset_texture", required=required,
+                        metadata={"relative_path": rel, "source_role": role},
+                    ))
+        if not any(item.kind == "asset_scene" for item in inputs):
+            raise ValueError("Asset package manifest has no scene entry")
+        job_id = f"DLV-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8].upper()}"
+        delivery_batch = self._next_delivery_batch()
+        entity_id = f"{context.category}/{context.group}/{context.asset_name}/{context.variant}"
+        delivery_id = f"{job_id}-{context.code}"
+        staging_root = self.shots.paths.delivery_staging_root() / job_id
+        archive_root = self.shots.paths.delivery_root() / "client" / self.profile.client / delivery_batch
+        return DeliveryPlanner(self.profile).plan(
+            context, inputs, staging_root, job_id=job_id,
+            metadata={
+                "entity_type": "asset", "entity_id": entity_id,
+                "source_ingest_manifest": path.as_posix(), "client": self.profile.client,
+                "source_ingest_manifest_data": data,
+                "delivery_batch": delivery_batch, "delivery_id": delivery_id,
+                "archive_root": archive_root.as_posix(),
+                "deployment_root": Path(package_root).as_posix(),
+            },
+        )
+
     def execute(self, plan, *, ffmpeg: str = ""):
+        if isinstance(plan.context, AssetContext):
+            return DeliveryEngine().construct(plan, ffmpeg=ffmpeg, after_effects_adapter=None)
         return DeliveryEngine().construct(
             plan,
             ffmpeg=ffmpeg,

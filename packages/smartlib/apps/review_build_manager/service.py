@@ -139,6 +139,79 @@ class ReviewBuildManagerService:
     ) -> Path:
         return self.review_workflow(identity).publish_layer_definition(payload, comment)
 
+    def review_definition_validation(
+        self,
+        identity: ShotIdentity,
+        department: str = "anim",
+        task: str = "main",
+    ) -> dict:
+        workflow = self.review_workflow(identity)
+        _assembly, assembly_path = workflow.latest_assembly()
+        layers, layers_path = workflow.latest_layer_definition()
+        settings, settings_path = self.shots.latest_playblast_settings(
+            identity, department, task
+        )
+        def normalized_id(value) -> str:
+            text = str(value or "").strip()
+            if text.lower().startswith("review_"):
+                text = text[7:]
+            return "".join(
+                char if char.isalnum() or char in "_.-" else "_" for char in text
+            ).strip("._-").lower()
+
+        definition_ids = {
+            normalized_id(layer.get("review_layer_id") or layer.get("slug") or layer.get("name"))
+            for layer in (layers.get("layers") or [])
+            if layer.get("enabled", True)
+        }
+        rows = [dict(row or {}) for row in (settings.get("rows") or []) if row.get("enabled", True)]
+        setting_id_list = [
+            normalized_id(row.get("review_layer_id") or row.get("layer") or row.get("display_layer"))
+            for row in rows
+        ]
+        setting_ids = set(setting_id_list)
+        errors = []
+        if not assembly_path:
+            errors.append("Shot Composition is not published.")
+        if not layers_path:
+            errors.append("Review Layer Definition is not published.")
+        if not settings_path:
+            errors.append(f"playblast_settings is not published for {department}/{task}.")
+        if not definition_ids:
+            errors.append("Review Layer Definition has no enabled layers.")
+        if not setting_ids:
+            errors.append("playblast_settings has no enabled rows.")
+        duplicate_ids = sorted({value for value in setting_id_list if setting_id_list.count(value) > 1})
+        for layer_id in duplicate_ids:
+            errors.append(f"Duplicate playblast_settings Review Layer ID: {layer_id}")
+        for layer_id in sorted(definition_ids - setting_ids):
+            errors.append(f"playblast_settings row is missing: {layer_id}")
+        for layer_id in sorted(setting_ids - definition_ids):
+            errors.append(f"Review Layer Definition is missing: {layer_id}")
+        for row in rows:
+            layer_id = str(row.get("layer") or row.get("display_layer") or "<unknown>")
+            if not str(row.get("display_layer") or "").strip():
+                errors.append(f"Display Layer is missing: {layer_id}")
+            if not str(row.get("camera") or "").strip():
+                errors.append(f"Camera is missing: {layer_id}")
+            if int(row.get("width") or 0) <= 0 or int(row.get("height") or 0) <= 0:
+                errors.append(f"Resolution is invalid: {layer_id}")
+            if int(row.get("end") or 0) < int(row.get("start") or 0):
+                errors.append(f"Frame Range is invalid: {layer_id}")
+            output_format = str(
+                row.get("output_format") or row.get("image_format") or "png"
+            ).lower().lstrip(".")
+            if output_format not in {"png", "jpg", "jpeg", "exr"}:
+                errors.append(f"Output Format is unsupported: {layer_id}={output_format}")
+        return {
+            "ready": not errors,
+            "errors": errors,
+            "assembly_path": assembly_path,
+            "layer_definition_path": layers_path,
+            "playblast_settings_path": settings_path,
+            "playblast_settings": settings,
+        }
+
     def asset_context_profiles(self) -> list[str]:
         try:
             from smartlib.apps.asset_manager.context import AssetContextService

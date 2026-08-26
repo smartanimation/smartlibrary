@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from .models import DeliveryInput, DeliveryItem, DeliveryPlan, ShotContext
+from .models import AssetContext, DeliveryInput, DeliveryItem, DeliveryPlan, ShotContext
 from .profile import DeliveryProfile
 
 
@@ -13,7 +13,7 @@ class DeliveryPlanner:
 
     def plan(
         self,
-        context: ShotContext,
+        context: ShotContext | AssetContext,
         inputs: list[DeliveryInput],
         package_root: str | Path,
         *,

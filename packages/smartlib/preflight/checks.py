@@ -218,11 +218,21 @@ def no_asset_references(adapter, _context: PreflightContext) -> CheckResult:
     return _result(Severity.PASS, "The asset scene contains no references.")
 
 
-def meshes_have_uvs(adapter, _context: PreflightContext) -> CheckResult:
-    meshes = tuple(adapter.meshes_without_uvs())
+def meshes_have_uvs(adapter, context: PreflightContext) -> CheckResult:
+    if _is_background_asset(context):
+        return _result(
+            Severity.PASS,
+            f"Skipped for background profile: {_asset_profile(context)}",
+        )
+    if not adapter.object_set_exists("cache_geo_set"):
+        return _result(
+            Severity.PASS,
+            "Skipped because cache_geo_set is unavailable; reported by cache_geo_set check.",
+        )
+    meshes = tuple(adapter.meshes_without_uvs("cache_geo_set"))
     if meshes:
-        return _result(Severity.ERROR, "Meshes without UVs were found.", meshes)
-    return _result(Severity.PASS, "All meshes have UVs.")
+        return _result(Severity.ERROR, "Publish meshes without UVs were found.", meshes)
+    return _result(Severity.PASS, "All cache_geo_set meshes have UVs.")
 
 
 def texture_files_exist(adapter, _context: PreflightContext) -> CheckResult:

@@ -279,9 +279,19 @@ def extract_thumbnail_from_mov(
         return False, f"Movie was not found: {source}"
     target = Path(thumbnail_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    command = [ffmpeg, "-y", "-i", str(source), "-frames:v", "1", "-q:v", "2", str(target)]
+    command = [
+        ffmpeg, "-y", "-i", str(source), "-frames:v", "1", "-update", "1",
+        "-q:v", "2", str(target),
+    ]
     try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     except Exception as exc:
         return False, str(exc)
     if result.returncode != 0:

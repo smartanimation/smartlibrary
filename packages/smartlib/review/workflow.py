@@ -314,25 +314,30 @@ class ReviewWorkflowService:
         result = {"schema": "smartpipeline.review_layers.v1", "layers": []}
         slugs: set[str] = set()
         for index, raw in enumerate(payload.get("layers") or []):
-            layer = dict(raw or {})
-            name = str(layer.get("name") or f"Layer {index + 1}")
-            slug = safe_slug(layer.get("slug") or name)
+            incoming = dict(raw or {})
+            name = str(incoming.get("name") or incoming.get("review_layer_id") or f"Layer {index + 1}")
+            slug = safe_slug(incoming.get("slug") or incoming.get("review_layer_id") or name)
             if slug in slugs:
                 raise ValueError(f"Duplicate Review Layer slug: {slug}")
             slugs.add(slug)
-            members = [str(value) for value in (layer.get("members") or [])]
+            members = [str(value) for value in (incoming.get("members") or [])]
             missing = [value for value in members if known and value not in known]
             if missing:
                 raise ValueError(f"Unknown Shot Composition members in {name}: {', '.join(missing)}")
-            layer["uid"] = str(layer.get("uid") or f"layer-{uuid.uuid4()}")
-            layer["name"] = name
-            layer["slug"] = slug
-            layer["members"] = members
-            layer["enabled"] = bool(layer.get("enabled", True))
-            layer["order"] = int(layer.get("order", index * 10))
-            layer["precomp_placeholder"] = str(
-                layer.get("precomp_placeholder") or slug.upper()
-            )
+            # Review Layer Definition owns identity/display-layer membership
+            # only. Camera, order, placeholder, resolution and all other
+            # output behavior belong to the versioned playblast_settings Data
+            # Publish and are resolved at submit time.
+            layer = {
+                "uid": str(incoming.get("uid") or f"layer-{uuid.uuid4()}"),
+                "review_layer_id": slug,
+                "name": name,
+                "slug": slug,
+                "display_layer": str(incoming.get("display_layer") or name),
+                "members": members,
+                "objects": list(incoming.get("objects") or []),
+                "enabled": bool(incoming.get("enabled", True)),
+            }
             result["layers"].append(layer)
         return result
 
@@ -418,15 +423,21 @@ class ReviewWorkflowService:
         return content_fingerprint(dependencies), dependencies
 
     def find_layer_cache(
-        self, department: str, layer_slug: str, fingerprint: str
+        self,
+        department: str,
+        layer_slug: str,
+        fingerprint: str,
+        *,
+        force_miss: bool = False,
     ) -> LayerCacheResult:
         root = self.layer_root(department, layer_slug)
-        for number in sorted(_versions(root), reverse=True):
-            version = format_version(number)
-            manifest = root / version / "review_layer.json"
-            data = read_json(manifest, {}) or {}
-            if data.get("fingerprint") == fingerprint and data.get("state") == "COMPLETE":
-                return LayerCacheResult("HIT", version, manifest.parent, fingerprint, manifest)
+        if not force_miss:
+            for number in sorted(_versions(root), reverse=True):
+                version = format_version(number)
+                manifest = root / version / "review_layer.json"
+                data = read_json(manifest, {}) or {}
+                if data.get("fingerprint") == fingerprint and data.get("state") == "COMPLETE":
+                    return LayerCacheResult("HIT", version, manifest.parent, fingerprint, manifest)
         version = format_version(next_version(_versions(root)))
         return LayerCacheResult("MISS", version, root / version, fingerprint)
 

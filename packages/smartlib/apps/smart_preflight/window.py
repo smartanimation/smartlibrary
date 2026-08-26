@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import os
+
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
 
-from smartlib.preflight import PreflightContext, PreflightEngine, Severity, profile_for_context
+from smartlib.preflight import (
+    PreflightContext,
+    PreflightEngine,
+    PreflightManifestStore,
+    Severity,
+    profile_for_context,
+)
 
 
 COLORS = {
@@ -28,6 +36,8 @@ class SmartPreflightWindow(QtWidgets.QMainWindow):
         self.report = None
         self.results = {}
         self.output_checks = {}
+        self.delivery_window = None
+        self.manifest_path = None
         self.setWindowFlag(QtCore.Qt.Tool, True)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         self.setWindowTitle(f"Smart Preflight - {self.profile.label}")
@@ -102,10 +112,13 @@ class SmartPreflightWindow(QtWidgets.QMainWindow):
         root.addWidget(self.footer_label)
         actions = QtWidgets.QHBoxLayout()
         self.run_btn = QtWidgets.QPushButton("Run All Checks")
+        self.delivery_btn = QtWidgets.QPushButton("Open in Smart Delivery")
         self.publish_btn = QtWidgets.QPushButton()
         self.run_btn.clicked.connect(self.run_all)
+        self.delivery_btn.clicked.connect(self._open_in_smart_delivery)
         self.publish_btn.clicked.connect(self._publish)
         actions.addWidget(self.run_btn)
+        actions.addWidget(self.delivery_btn)
         actions.addWidget(self.publish_btn)
         root.addLayout(actions)
 
@@ -142,6 +155,8 @@ class SmartPreflightWindow(QtWidgets.QMainWindow):
             selected_outputs=self.selected_outputs(),
             on_progress=self._on_progress,
         )
+        self.manifest_path = None
+        self._save_manifest()
         self.run_btn.setEnabled(True)
         self._refresh_summary()
         self._update_publish_state()
@@ -240,6 +255,7 @@ class SmartPreflightWindow(QtWidgets.QMainWindow):
         self.profile = profile_for_context(self.context)
         self.engine = PreflightEngine(self.adapter, self.profile)
         self.report = None
+        self.manifest_path = None
         self.setWindowTitle(f"Smart Preflight - {self.profile.label}")
         self._populate()
 
@@ -249,6 +265,7 @@ class SmartPreflightWindow(QtWidgets.QMainWindow):
 
     def _outputs_changed(self):
         self.report = None
+        self.manifest_path = None
         self.summary_label.setText("Outputs changed — run checks again")
         self._update_footer()
         self._update_publish_state()
@@ -256,6 +273,11 @@ class SmartPreflightWindow(QtWidgets.QMainWindow):
     def _update_publish_state(self):
         ready = bool(self.report) and not self.report.blocked and callable(self.publisher)
         self.publish_btn.setEnabled(ready)
+        self.delivery_btn.setEnabled(bool(self.report) and not self.report.blocked)
+        self.delivery_btn.setToolTip(
+            "" if self.delivery_btn.isEnabled()
+            else "Run Preflight and resolve all errors before connecting Smart Delivery."
+        )
         if not callable(self.publisher):
             self.publish_btn.setToolTip("No publish service is connected yet.")
         elif self.report and self.report.blocked:
@@ -266,6 +288,46 @@ class SmartPreflightWindow(QtWidgets.QMainWindow):
     def _publish(self):
         if self.report and not self.report.blocked and callable(self.publisher):
             self.publisher(self.report)
+
+    def _open_in_smart_delivery(self):
+        if not self.report or self.report.blocked:
+            return
+        data_root = str(self.context.metadata.get("data_root") or "")
+        if not data_root:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Smart Delivery",
+                "The Asset/Shot data root could not be resolved; the Preflight manifest cannot be saved.",
+            )
+            return
+        try:
+            if not self.manifest_path:
+                self.manifest_path = PreflightManifestStore(data_root).write(self.report)
+            from smartlib.apps.smart_delivery.window import SmartDeliveryWindow
+            from smartlib.core.config_loader import default_config_dir
+
+            self.delivery_window = SmartDeliveryWindow(
+                os.environ.get("PROJECT_CONFIG_DIR") or default_config_dir(),
+                parent=self.parentWidget(),
+            )
+            self.delivery_window.load_context_manifest(self.manifest_path)
+            self.delivery_window.show()
+            self.delivery_window.raise_()
+            self.delivery_window.activateWindow()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Smart Delivery", str(exc))
+
+    def _save_manifest(self):
+        """Persist every completed attempt so other managers can inspect its result."""
+        if not self.report:
+            return
+        data_root = str(self.context.metadata.get("data_root") or "")
+        if not data_root:
+            return
+        try:
+            self.manifest_path = PreflightManifestStore(data_root).write(self.report)
+        except OSError as exc:
+            self.footer_label.setToolTip(f"Could not save Preflight manifest: {exc}")
 
     def _item_for_key(self, key):
         for index in range(self.check_tree.topLevelItemCount()):

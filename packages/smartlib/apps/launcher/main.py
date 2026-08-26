@@ -70,12 +70,20 @@ def apply_project_context_env(env, *, project_name, project_root, config_dir, so
     env["SMARTPIPELINE_TOOLS"] = SMARTPIPELINE_TOOLS
     env["SMART_PROJECT"] = str(project_name or "")
     env["SMART_PROJECT_ROOT"] = str(project_root or "")
+    env["SMART_REVIEW_PROJECT"] = str(project_name or "")
+    env["SMART_REVIEW_PROJECT_ROOT"] = str(project_root or "")
+    env["SMART_REVIEW_CONFIG_DIR"] = str(config_dir or "")
+    env["SMART_REVIEW_PROJECT_CONFIG_ROOT"] = os.path.dirname(str(config_dir or "")) if config_dir else PROJECTS_ROOT
     env["PROJECT_NAME"] = str(project_name or "")
     env["PROJECT_ROOT"] = str(project_root or "")
     env["SMART_CONTEXT_SOURCE"] = str(source or "")
     env["SMART_EPISODE"] = str(episode or "")
     env["SMART_SEQUENCE"] = str(sequence or "")
     env["SMART_SHOT"] = str(shot or "")
+    if not any(env.get(name) for name in ("CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "CREDENTIALS_DIR")):
+        configured_credentials = project_credentials_path(config_dir, project_root)
+        if configured_credentials:
+            env["CREDENTIALS_PATH"] = configured_credentials
 
 
 def write_ae_context(context):
@@ -233,7 +241,21 @@ def runtime_python_path():
     return sys.executable
 
 
-def credentials_path_for_sync():
+def project_credentials_path(config_dir, project_root=""):
+    base_config = load_yml(os.path.join(str(config_dir or ""), "templates_base.yml"))
+    raw_value = str(
+        ((base_config.get("google_sheets") or {}).get("credentials_path") or "")
+    ).strip()
+    if not raw_value:
+        return ""
+    candidate = format_config_value(raw_value, str(project_root or ""))
+    candidate = os.path.normpath(os.path.expandvars(os.path.expanduser(candidate.strip().strip('"'))))
+    if os.path.isdir(candidate):
+        candidate = os.path.join(candidate, "credentials.json")
+    return candidate
+
+
+def credentials_path_for_sync(config_dir="", project_root=""):
     raw_value = (
         os.environ.get("CREDENTIALS_PATH")
         or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
@@ -245,6 +267,10 @@ def credentials_path_for_sync():
         if os.path.isdir(candidate):
             candidate = os.path.join(candidate, "credentials.json")
         return candidate
+
+    configured = project_credentials_path(config_dir, project_root)
+    if configured:
+        return configured
 
     appdata = os.environ.get("APPDATA")
     if appdata:
@@ -575,7 +601,10 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.asset_sync_signal.emit("Asset sheet: not configured")
             return
 
-        credentials = credentials_path_for_sync()
+        credentials = credentials_path_for_sync(
+            cfg_dir,
+            (base_cfg.get("anchors") or {}).get("project_root", self.projectroot),
+        )
         if not credentials or not os.path.isfile(credentials):
             cache_path = os.path.join(cfg_dir, ".cache", "asset_list.json")
             if os.path.exists(cache_path):
@@ -625,11 +654,23 @@ class SmartLauncher(QtWidgets.QMainWindow):
     @QtCore.Slot(str)
     def _show_asset_sync_status(self, message):
         if hasattr(self.ui, "info_label"):
+            detail = str(message or "").strip()
+            normalized = detail.lower()
+            synced = (
+                "sync failed" not in normalized
+                and any(
+                    marker in normalized
+                    for marker in ("synced", "up to date", "checked")
+                )
+            )
+            status = "Synced" if synced else "Not synced"
+            color = "#77d66b" if synced else "#e57373"
             current = self.ui.info_label.text()
             lines = current.split("<br>") if current else []
             lines = [line for line in lines if not line.startswith("ASSETS:")]
-            lines.append(f"ASSETS: <span style='color: #aaaaaa;'>{message}</span>")
+            lines.append(f"ASSETS: <span style='color: {color};'>{status}</span>")
             self.ui.info_label.setText("<br>".join(lines))
+            self.ui.info_label.setToolTip(detail)
 
     def launch_selected(self):
         """アプリ起動：個別設定のパスを最優先し、batはクリーンに起動する"""
@@ -780,7 +821,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Launch failed: {e}")
 
-    def launch_openrv_player(self, *, cfg_dir, project_name, project_root):
+    def launch_openrv_player(self, *, cfg_dir, project_name, project_root, show_smart_review=False):
         rv_path = resolve_openrv_executable(cfg_dir, project_root)
         if not rv_path:
             QtWidgets.QMessageBox.warning(
@@ -800,6 +841,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
             config_dir=cfg_dir,
             source="launcher",
         )
+        if show_smart_review:
+            env["SMART_REVIEW_SHOW_PANEL"] = "1"
         env["OPENRV_PATH"] = rv_path
         env["RV_PATH"] = rv_path
         rv_support_roots = [
@@ -997,7 +1040,19 @@ class SmartLauncher(QtWidgets.QMainWindow):
         )
 
     def launch_current_project_smart_review(self):
-        self.launch_current_project_openrv()
+        cfg_dir = self.current_project_config_dir()
+        if not cfg_dir:
+            QtWidgets.QMessageBox.warning(self, "Smart Review", "Select a project first.")
+            return
+        display_project = self.ui.projectCombo.currentText()
+        base_cfg = load_yml(os.path.join(cfg_dir, "templates_base.yml"))
+        anchors = base_cfg.get("anchors", {})
+        self.launch_openrv_player(
+            cfg_dir=cfg_dir,
+            project_name=anchors.get("project_name", display_project),
+            project_root=anchors.get("project_root", self.projectroot),
+            show_smart_review=True,
+        )
 
     def launch_current_project_usdview(self):
         cfg_dir = self.current_project_config_dir()

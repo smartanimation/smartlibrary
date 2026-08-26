@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from smartlib.apps.review_build_manager import worker
+from smartlib.apps.shot_manager.service import BuildPreviewItem
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.review import ae
 
@@ -37,9 +38,122 @@ def test_review_relink_creates_queue_from_configured_final_comp(
     assert 'var finalCompNames = ["final", "render_final", "anim_final"]' in script
     assert "projectItem instanceof CompItem" in script
     assert "queue.items.add(outputComp)" in script
-    assert "queue.item(q).comp === outputComp" in script
+    assert "while (queue.numItems > 0)" in script
     assert "currentName === normalizedName(requested[n])" in script
     assert "Published project has no Render Queue item" not in script
+
+
+def test_camera_for_layer_matches_full_dag_path_leaf() -> None:
+    cameras = ["|camera_grp|cam_CHA_FIX", "|camera_grp|cam"]
+
+    assert worker._camera_for_layer(cameras, "BGA", "cam") == "|camera_grp|cam"
+    assert (
+        worker._camera_for_layer(cameras, "CHA", "cam_CHA_FIX")
+        == "|camera_grp|cam_CHA_FIX"
+    )
+
+
+def test_camera_for_layer_accepts_namespace_and_maya_numeric_suffix() -> None:
+    cameras = ["|camera_grp|shotCamera:cam1"]
+
+    assert (
+        worker._camera_for_layer(cameras, "BGA", "cam")
+        == "|camera_grp|shotCamera:cam1"
+    )
+
+
+def test_review_layer_contract_joins_definition_and_playblast_settings() -> None:
+    contracts = worker._resolved_review_layer_contracts(
+        layer_definition={
+            "layers": [
+                {
+                    "review_layer_id": "CHA",
+                    "display_layer": "CHA_display",
+                    "members": ["dli"],
+                    "enabled": True,
+                }
+            ]
+        },
+        playblast_settings={
+            "layer_order": ["CHA"],
+            "rows": [
+                {
+                    "layer": "CHA",
+                    "display_layer": "CHA_display",
+                    "camera": "cam_CHA_FIX",
+                    "width": 1766,
+                    "height": 1836,
+                    "start": 278,
+                    "end": 411,
+                    "overscan": 1.1,
+                    "preset": "layout_lighting",
+                    "output_format": "png",
+                    "ae_placeholder": "CHA_INPUT",
+                }
+            ],
+        },
+        assembly_by_uid={"dli": {"uid": "dli", "name": "DLI_main"}},
+    )
+
+    assert contracts["CHA"]["members"] == ["DLI_main"]
+    assert contracts["CHA"]["camera"] == {"name": "cam_CHA_FIX"}
+    assert contracts["CHA"]["resolution"] == {"width": 1766, "height": 1836}
+    assert contracts["CHA"]["export_frame_range"] == [278, 411]
+    assert contracts["CHA"]["precomp_placeholder"] == "CHA_INPUT"
+    assert contracts["CHA"]["overscan"] == 1.1
+
+
+def test_review_layer_contract_does_not_take_output_settings_from_definition() -> None:
+    contracts = worker._resolved_review_layer_contracts(
+        layer_definition={
+            "layers": [{
+                "name": "BGA", "members": ["room"],
+                "camera": {"name": "stale_camera"},
+                "resolution": {"width": 1, "height": 1},
+            }]
+        },
+        playblast_settings={
+            "rows": [{
+                "layer": "BGA", "display_layer": "BGA", "camera": "cam",
+                "width": 1280, "height": 720, "start": 278, "end": 411,
+            }]
+        },
+        assembly_by_uid={"room": {"name": "Room_main"}},
+    )
+
+    assert contracts["BGA"]["camera"] == {"name": "cam"}
+    assert contracts["BGA"]["resolution"] == {"width": 1280, "height": 720}
+
+
+def test_construct_snapshot_rig_path_overrides_worker_reresolution(
+    tmp_path: Path,
+) -> None:
+    resolved_proxy = tmp_path / "proxy" / "asset.mb"
+    pinned_anim = tmp_path / "anim" / "asset.mb"
+    resolved_proxy.parent.mkdir()
+    pinned_anim.parent.mkdir()
+    resolved_proxy.write_bytes(b"proxy")
+    pinned_anim.write_bytes(b"anim")
+    preview = [
+        BuildPreviewItem(
+            cast_key="JIN_main", asset="JIN", variant="default",
+            namespace="JIN", role="CHA", review_layer="CHA",
+            asset_publish="approved", required=True, status="resolved",
+            publish_path=str(resolved_proxy),
+        )
+    ]
+    snapshot = {
+        "components": [{
+            "component_type": "rig", "name": "JIN_main",
+            "namespace": "JIN", "path": str(pinned_anim),
+            "required": True, "enabled": True,
+        }]
+    }
+
+    locked = worker._lock_preview_to_construct_rigs(preview, snapshot)
+
+    assert locked[0].publish_path == str(pinned_anim)
+    assert locked[0].status == "resolved"
 
 
 def test_after_effects_resolver_prefers_explicit_review_build_registration(

@@ -39,8 +39,8 @@ def test_ingested_editorial_latest_files_are_resolved(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     _write_config(config_dir, project_root)
-    edit_root = project_root / "editorial" / "data" / "ep02" / "s027" / "edit_source"
-    offline_root = project_root / "editorial" / "data" / "ep02" / "s027" / "offline"
+    edit_root = project_root / "production" / "editorial" / "data" / "ep02" / "s027" / "edit_source"
+    offline_root = project_root / "production" / "editorial" / "data" / "ep02" / "s027" / "offline"
     for version in ("v001", "v002"):
         version_dir = edit_root / version
         version_dir.mkdir(parents=True)
@@ -67,7 +67,7 @@ def test_ingested_editorial_identities_ignore_files_and_sort(tmp_path: Path) -> 
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     _write_config(config_dir, project_root)
-    data_root = project_root / "editorial" / "data"
+    data_root = project_root / "production" / "editorial" / "data"
     for episode, sequence in (("ep03", "s010"), ("ep02", "s027"), ("ep02", "s001")):
         (data_root / episode / sequence).mkdir(parents=True)
     (data_root / "README.txt").write_text("not an episode", encoding="utf-8")
@@ -326,7 +326,7 @@ def test_latest_shot_media_is_resolved_per_shot(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     _write_config(config_dir, project_root)
-    root = project_root / "editorial" / "data" / "ep02" / "s027" / "shot_media"
+    root = project_root / "production" / "editorial" / "data" / "ep02" / "s027" / "shot_media"
     expected = []
     for shot in ("c001", "c002"):
         for version in ("v001", "v002"):

@@ -114,9 +114,15 @@ def apply_animation_curves_from_file(
     *,
     namespace: str | None = None,
     clear_existing: bool = True,
+    strict_destinations: bool = True,
 ) -> dict[str, Any]:
     data = read_animation_curve_json(path)
-    return apply_animation_curve_data(data, namespace=namespace, clear_existing=clear_existing)
+    return apply_animation_curve_data(
+        data,
+        namespace=namespace,
+        clear_existing=clear_existing,
+        strict_destinations=strict_destinations,
+    )
 
 
 def apply_animation_curve_data(
@@ -124,11 +130,12 @@ def apply_animation_curve_data(
     *,
     namespace: str | None = None,
     clear_existing: bool = True,
+    strict_destinations: bool = True,
 ) -> dict[str, Any]:
     cmds = _maya_cmds()
     report = remap_animation_curve_destinations(data, namespace=namespace)
     missing = [item for item in report if item["state"] != "FOUND"]
-    if missing:
+    if missing and strict_destinations:
         raise AnimationCurveApplyError(
             f"Animation curve destination remap failed: {len(missing)} missing destinations.",
             report=report,
@@ -136,7 +143,11 @@ def apply_animation_curve_data(
 
     applied_destinations = 0
     applied_keys = 0
-    report_by_source = {item["source"]: item["target"] for item in report}
+    report_by_source = {
+        item["source"]: item["target"]
+        for item in report
+        if item["state"] == "FOUND"
+    }
     for curve in data.get("curves") or []:
         keys = curve.get("keys") or []
         if not keys:
@@ -161,6 +172,7 @@ def apply_animation_curve_data(
     return {
         "applied_destinations": applied_destinations,
         "applied_keys": applied_keys,
+        "missing_destinations": len(missing),
         "report": report,
     }
 
@@ -178,8 +190,13 @@ def collect_animation_curves_for_cast(
     if not root_node:
         raise RuntimeError(f"Controller root was not found: {namespace}:{controller_root}")
     members = _controller_members(cmds, root_node)
-    curves = _anim_curves_from_members(cmds, members)
-    data = _collect_curves_from_nodes(cmds, curves, source_workfile=source_workfile)
+    curve_destinations = _anim_curve_destinations_from_members(cmds, members)
+    data = _collect_curves_from_nodes(
+        cmds,
+        curve_destinations,
+        source_workfile=source_workfile,
+        destination_overrides=curve_destinations,
+    )
     data.update(
         {
             "cast_key": cast_key,
@@ -192,7 +209,13 @@ def collect_animation_curves_for_cast(
     return data
 
 
-def _collect_curves_from_nodes(cmds: Any, curve_nodes, *, source_workfile: str | Path = "") -> dict[str, Any]:
+def _collect_curves_from_nodes(
+    cmds: Any,
+    curve_nodes,
+    *,
+    source_workfile: str | Path = "",
+    destination_overrides: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
     curves = []
     for curve in sorted(set(curve_nodes or [])):
         if not cmds.objExists(curve) or cmds.nodeType(curve) not in ANIM_CURVE_TYPES:
@@ -204,7 +227,10 @@ def _collect_curves_from_nodes(cmds: Any, curve_nodes, *, source_workfile: str |
             {
                 "curve": curve,
                 "type": cmds.nodeType(curve),
-                "destinations": _curve_destinations(cmds, curve),
+                "destinations": sorted(
+                    (destination_overrides or {}).get(curve)
+                    or _curve_destinations(cmds, curve)
+                ),
                 "infinity": _curve_infinity(cmds, curve),
                 "weighted_tangents": _curve_weighted_tangents(cmds, curve),
                 "keys": keys,
@@ -246,18 +272,67 @@ def _controller_members(cmds: Any, root_node: str) -> list[str]:
 
 
 def _anim_curves_from_members(cmds: Any, members) -> list[str]:
-    curves = set()
+    return sorted(_anim_curve_destinations_from_members(cmds, members))
+
+
+def _anim_curve_destinations_from_members(cmds: Any, members) -> dict[str, set[str]]:
+    """Resolve controller curves through Maya's reference/edit connection graph.
+
+    A referenced rig can serialize an animation connection as
+    ``animCurve.output -> referenceNode.phl[index]``.  Asking only for direct
+    animCurve connections on the controller therefore omits most channels.
+    Querying history per controller plug preserves the real destination while
+    still limiting export to members of the controller set.
+    """
+
+    destinations: dict[str, set[str]] = {}
     for member in _long_names(cmds, members or []):
         nodes = [member]
         nodes.extend(_safe_descendents(cmds, member))
         for node in nodes:
-            connections = cmds.listConnections(
-                node,
-                source=True,
-                destination=False,
-                type="animCurve",
-            ) or []
-            curves.update(connections)
+            for plug in _animated_candidate_plugs(cmds, node):
+                curves = _upstream_anim_curves(cmds, plug)
+                for curve in curves:
+                    destinations.setdefault(curve, set()).add(plug)
+    return destinations
+
+
+def _animated_candidate_plugs(cmds: Any, node: str) -> list[str]:
+    attributes: set[str] = set()
+    for kwargs in ({"keyable": True}, {"channelBox": True}):
+        try:
+            attributes.update(cmds.listAttr(node, **kwargs) or [])
+        except RuntimeError:
+            continue
+    return [f"{node}.{attribute}" for attribute in sorted(attributes)]
+
+
+def _upstream_anim_curves(cmds: Any, plug: str) -> list[str]:
+    curves: set[str] = set()
+    try:
+        direct = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            type="animCurve",
+            skipConversionNodes=True,
+        ) or []
+        curves.update(direct)
+    except (RuntimeError, TypeError):
+        pass
+
+    # listHistory follows reference-node proxy plugs and animation blend nodes
+    # which direct type-filtered listConnections calls do not reliably cross.
+    try:
+        history = cmds.listHistory(plug, pruneDagObjects=True) or []
+    except (RuntimeError, TypeError):
+        history = []
+    for node in history:
+        try:
+            if cmds.nodeType(node) in ANIM_CURVE_TYPES:
+                curves.add(node)
+        except RuntimeError:
+            continue
     return sorted(curves)
 
 
