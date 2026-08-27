@@ -1761,9 +1761,10 @@ def _sequence_shot_rows(project_root: Path, episode: str, sequence: str) -> list
 
 
 def _latest_storyreel_root(project_root: Path, episode: str, sequence: str) -> Path | None:
+    paths = configured_project_paths(project_root)
     publish_roots = (
-        project_root / "workspace" / "editorial" / "publish" / episode / sequence,
-        project_root / "editorial" / "publish" / episode / sequence,
+        paths.editorial_sequence_publish_root(episode, sequence),
+        *paths.legacy_editorial_sequence_publish_roots(episode, sequence),
     )
     for publish_root in publish_roots:
         latest = read_json(publish_root / "latest.json", {}) or {}

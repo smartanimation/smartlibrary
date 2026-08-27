@@ -20,6 +20,7 @@ import time
 
 from smartlib.core.config_loader import ProjectConfig, deep_merge
 from smartlib.core.metadata import read_json, write_json
+from smartlib.core.path_resolver import ProjectPaths
 from smartlib.core.versioning import format_version, next_version, parse_version
 
 
@@ -180,13 +181,38 @@ class LayerCacheResult:
 class ReviewWorkflowService:
     """Version and cache operations for one shot."""
 
-    def __init__(self, shot_root: str | Path, workspace_shot_root: str | Path):
+    def __init__(
+        self,
+        shot_root: str | Path,
+        workspace_shot_root: str | Path,
+        *,
+        render_root: str | Path | None = None,
+        output_root: str | Path | None = None,
+        paths: ProjectPaths | None = None,
+        identity: tuple[str, str, str] | None = None,
+    ):
         self.shot_root = Path(shot_root)
         self.workspace_shot_root = Path(workspace_shot_root)
+        self.resolved_render_root = Path(
+            render_root or self.workspace_shot_root / "render"
+        )
+        self.resolved_output_root = Path(
+            output_root or self.workspace_shot_root / "output"
+        )
+        self.paths = paths
+        self.identity = identity
+
+    def _resolved(self, method: str, *args: str) -> Path | None:
+        if self.paths is None or self.identity is None:
+            return None
+        resolver = getattr(self.paths, method)
+        return Path(resolver(*self.identity, *args))
 
     @property
     def composition_root(self) -> Path:
-        return self.shot_root / "data" / "shot_composition"
+        return self._resolved("shot_composition_data_root") or (
+            self.shot_root / "data" / "shot_composition"
+        )
 
     @property
     def assembly_root(self) -> Path:
@@ -195,13 +221,25 @@ class ReviewWorkflowService:
 
     @property
     def layer_definition_root(self) -> Path:
-        return self.shot_root / "data" / "review_layers"
+        return self._resolved("shot_review_layers_data_root") or (
+            self.shot_root / "data" / "review_layers"
+        )
 
     @property
     def precomp_root(self) -> Path:
-        return self.shot_root / "publish" / "precomp"
+        return self._resolved("shot_precomp_publish_root") or (
+            self.shot_root / "publish" / "precomp"
+        )
 
     def construct_root(self, department: str, dcc: str = "maya", task: str = "main") -> Path:
+        resolved = self._resolved(
+            "shot_review_construct_root",
+            safe_slug(department),
+            safe_slug(dcc),
+            safe_slug(task),
+        )
+        if resolved is not None:
+            return resolved
         return (
             self.workspace_shot_root / "build" / "review" / safe_slug(department)
             / safe_slug(dcc) / safe_slug(task)
@@ -258,13 +296,33 @@ class ReviewWorkflowService:
 
     @property
     def jobs_root(self) -> Path:
-        return self.workspace_shot_root / "jobs" / "review"
+        return self._resolved("shot_review_jobs_root") or (
+            self.workspace_shot_root / "jobs" / "review"
+        )
 
     def layer_root(self, department: str, layer_slug: str) -> Path:
-        return self.shot_root / "render" / safe_slug(department) / "layers" / safe_slug(layer_slug)
+        resolved = self._resolved(
+            "shot_render_layers_root", safe_slug(department)
+        )
+        if resolved is not None:
+            return resolved / safe_slug(layer_slug)
+        return (
+            self.resolved_render_root
+            / safe_slug(department)
+            / "layers"
+            / safe_slug(layer_slug)
+        )
 
     def review_root(self, department: str, profile: str) -> Path:
-        return self.shot_root / "review" / safe_slug(department) / safe_slug(profile)
+        resolved = self._resolved(
+            "shot_review_output_root",
+            safe_slug(department),
+            safe_slug(profile),
+        )
+        if resolved is not None:
+            return resolved
+        del department
+        return self.resolved_output_root / "review" / safe_slug(profile)
 
     def review_destination_root(
         self,

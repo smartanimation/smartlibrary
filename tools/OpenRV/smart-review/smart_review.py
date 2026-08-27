@@ -80,25 +80,39 @@ def _project_config_roots(repo_root):
 
 
 def _production_root(project_root):
-    project_root = Path(project_root)
-    repo_root = _repo_root()
-    for config_root in _project_config_roots(repo_root):
-        if not config_root.exists():
-            continue
-        for config in config_root.glob("*/templates_base.yml"):
-            text = _read_text(config)
-            root_match = re.search(r"(?m)^\s*project_root:\s*[\"']?([^\"'\r\n]+)", text)
-            if not root_match or Path(root_match.group(1).strip()) != project_root:
-                continue
-            match = re.search(r"(?m)^\s*production_root:\s*[\"']?([^\"'\r\n]+)", text)
-            if match:
-                value = match.group(1).strip().replace("{project_root}", str(project_root))
-                return Path(value)
-    return project_root / "production"
+    return _project_paths(project_root).production_root()
 
 
 def _entity_root(project_root, name):
-    return _production_root(project_root) / name
+    paths = _project_paths(project_root)
+    resolvers = {
+        "assets": paths.assets_root,
+        "shots": paths.shots_root,
+        "sequences": paths.sequences_root,
+    }
+    try:
+        return resolvers[str(name)]()
+    except KeyError as exc:
+        raise ValueError("Unsupported resolver entity root: %s" % name) from exc
+
+
+def _project_paths(project_root):
+    packages = _repo_root() / "packages"
+    if str(packages) not in sys.path:
+        sys.path.insert(0, str(packages))
+    from smartlib.core.config_loader import ProjectConfig
+    from smartlib.core.path_resolver import configured_project_paths
+
+    requested = Path(project_root)
+    for config_root in _project_config_roots(_repo_root()):
+        if not config_root.exists():
+            continue
+        for base_file in config_root.glob("*/templates_base.yml"):
+            config = ProjectConfig(base_file.parent)
+            configured = config.project_root
+            if configured is not None and configured == requested:
+                return configured_project_paths(requested, config)
+    return configured_project_paths(requested, None)
 
 
 def _read_text(path):
@@ -537,10 +551,12 @@ def _story_reel_media(project_root, episode, sequence, shot):
 
 
 def _shot_review_base(project_root, episode, sequence, shot, dept, profile):
-    shot_root = _entity_root(project_root, "shots") / episode / sequence / shot
+    paths = _project_paths(project_root)
     if profile == "publish":
-        return shot_root / "publish" / "review" / dept
-    return shot_root / "review" / dept / profile
+        return paths.shot_review_publish_root(episode, sequence, shot, dept)
+    return paths.shot_review_output_root(
+        episode, sequence, shot, dept, profile
+    )
 
 
 def _latest_shot_review(project_root, episode, sequence, shot, dept, profile="publish"):

@@ -111,9 +111,9 @@ Render Layer Materialの連番生成に成功しただけでは、Review素材�
 │  └─ {dept}/
 │     └─ layers/
 │        ├─ CHA/
-│        │  └─ v001/
+│        │  └─ v001/  # 連番名とoutput_t###.jsonでTakeを識別
 │        └─ BGA/
-│           └─ v001/
+│           └─ v001/  # 連番名とoutput_t###.jsonでTakeを識別
 │
 ├─ review/
 │  └─ review_build/
@@ -178,4 +178,3 @@ API名は既存Resolverの実装を正とし、上記は責務を示す例であ
 - 規則を変更する場合は、この文書のStatus、Decision date、該当セクションおよび移行方針を同時に更新する。
 - 一時的な例外は暗黙に実装せず、理由、対象、終了条件を文書化する。
 - 既存Resolverの設定は完了済みとして扱い、具体的な不具合または明示的な変更要求がない限り再設計しない。
-

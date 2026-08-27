@@ -284,9 +284,12 @@ class SmartSequenceBuilderService:
 
     def _resolve_storyreel(self, identity: SequenceIdentity) -> Path | None:
         roots = [
-            self.project_root / "workspace" / "editorial" / "publish" / identity.episode / identity.sequence,
-            self.project_root / "editorial" / "publish" / identity.episode / identity.sequence,
-            self.project_root / "editorial" / identity.episode / identity.sequence,
+            self.shots.paths.editorial_sequence_publish_root(
+                identity.episode, identity.sequence
+            ),
+            *self.shots.paths.legacy_editorial_sequence_publish_roots(
+                identity.episode, identity.sequence
+            ),
         ]
         for root in roots:
             latest = read_json(root / "latest.json", {}) or {}

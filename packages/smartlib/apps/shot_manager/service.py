@@ -299,13 +299,13 @@ class ShotManagerService:
         resolver = getattr(self.paths, "shot_publish_root", None)
         return resolver(identity.episode, identity.sequence, identity.shot) if resolver else self.shot_root(identity) / "publish"
 
-    def shot_output_root(self, identity: ShotIdentity) -> Path:
+    def shot_output_root(self, identity: ShotIdentity, department: str = "") -> Path:
         resolver = getattr(self.paths, "shot_output_root", None)
-        return resolver(identity.episode, identity.sequence, identity.shot) if resolver else self.shot_root(identity) / "output"
+        return resolver(identity.episode, identity.sequence, identity.shot, department) if resolver else self.shot_root(identity) / "output"
 
-    def shot_render_root(self, identity: ShotIdentity) -> Path:
+    def shot_render_root(self, identity: ShotIdentity, department: str = "") -> Path:
         resolver = getattr(self.paths, "shot_render_root", None)
-        return resolver(identity.episode, identity.sequence, identity.shot) if resolver else self.shot_root(identity) / "render"
+        return resolver(identity.episode, identity.sequence, identity.shot, department) if resolver else self.shot_root(identity) / "render"
 
     def sequence_workspace_root(self, episode: str, sequence: str) -> Path:
         return self.paths.sequence_workspace_root(episode, sequence)
@@ -1413,7 +1413,9 @@ class ShotManagerService:
         clean_department = _clean_publish_token(
             department or str(settings.get("department") or "default")
         )
-        base_dir = self.shot_output_root(identity) / "preview_render" / clean_department
+        base_dir = self.paths.shot_render_layers_root(
+            identity.episode, identity.sequence, identity.shot, clean_department
+        )
         groups = []
         used_groups: set[str] = set()
         filename_template = str(
@@ -1456,6 +1458,9 @@ class ShotManagerService:
                     "__preview_render_override__" if output_override else "preview_render",
                     {
                         "shot_root": self.shot_root(identity).as_posix(),
+                        "shot_render_root": self.shot_render_root(
+                            identity, clean_department
+                        ).as_posix(),
                         "episode": identity.episode,
                         "sequence": identity.sequence,
                         "shot": identity.shot,
@@ -1467,10 +1472,13 @@ class ShotManagerService:
                         "frame": "####",
                         "ext": output_format,
                     },
-                    default_directory="{shot_root}/output/preview_render/{department}/layers/{preview}/v{version}/t{take}",
+                    default_directory="{shot_render_root}/{department}/layers/{preview}/v{version}",
                     default_filename=pattern_template.replace("*", "_"),
                 )
-                if not output.directory.exists():
+                output_record = output.directory / f"output_{take_label}.json"
+                if not output_record.exists() and not any(
+                    output.directory.glob(output.filename.replace("####", "*"))
+                ):
                     break
                 take_number += 1
             pattern = output.filename
@@ -1482,6 +1490,7 @@ class ShotManagerService:
                     "version": version_label,
                     "take": take_label,
                     "output_dir": str(output.directory),
+                    "output_record": f"output_{take_label}.json",
                     "pattern": pattern,
                     "camera": str(row.get("camera") or ""),
                     "frame_range": [int(row.get("start", 1)), int(row.get("end", 1))],
@@ -1594,14 +1603,15 @@ class ShotManagerService:
                 else "",
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
             }
-            written.append(write_json(output_dir / "output.json", output_data))
-            group_base = output_dir.parent.parent
+            output_record = str(group.get("output_record") or f"output_{take_label}.json")
+            written.append(write_json(output_dir / output_record, output_data))
+            group_base = output_dir.parent
             write_json(
                 group_base / "latest.json",
                 {
                     "version": version_label,
                     "take": take_label,
-                    "path": f"{version_label}/{take_label}/output.json",
+                    "path": f"{version_label}/{output_record}",
                 },
             )
             versions_path = group_base / "versions.json"
@@ -1650,16 +1660,16 @@ class ShotManagerService:
         department: str = "anim",
     ) -> dict[str, dict[str, Any]]:
         """Return validated latest non-published output metadata by layer."""
-        layers_root = (
-            self.shot_root(identity)
-            / "output"
-            / "preview_render"
-            / _clean_publish_token(department or "anim")
-            / "layers"
+        clean_department = _clean_publish_token(department or "anim")
+        layers_root = self.paths.shot_render_layers_root(
+            identity.episode, identity.sequence, identity.shot, clean_department
         )
         if not layers_root.is_dir():
-            legacy_root = layers_root.parent / "groups"
-            layers_root = legacy_root if legacy_root.is_dir() else layers_root
+            legacy_root = self.paths.legacy_preview_render_layers_root(
+                identity.episode, identity.sequence, identity.shot, clean_department
+            )
+            legacy_groups = legacy_root.parent / "groups"
+            layers_root = legacy_root if legacy_root.is_dir() else legacy_groups
         outputs: dict[str, dict[str, Any]] = {}
         if not layers_root.is_dir():
             return outputs
@@ -1915,18 +1925,19 @@ class ShotManagerService:
     ) -> Path:
         """Promote the latest output take for each Review Layer to publish."""
         clean_department = _clean_publish_token(department or "anim")
-        output_base = (
-            self.shot_root(identity)
-            / "output"
-            / "preview_render"
-            / clean_department
+        output_layers = self.paths.shot_render_layers_root(
+            identity.episode, identity.sequence, identity.shot, clean_department
         )
-        output_layers = output_base / "layers"
         if not output_layers.is_dir():
-            output_layers = output_base / "groups"
+            legacy_layers = self.paths.legacy_preview_render_layers_root(
+                identity.episode, identity.sequence, identity.shot, clean_department
+            )
+            output_layers = (
+                legacy_layers if legacy_layers.is_dir() else legacy_layers.parent / "groups"
+            )
         if not output_layers.is_dir():
             raise RuntimeError(
-                f"Preview Render output was not found: {output_base / 'layers'}"
+                f"Preview Render output was not found: {output_layers}"
             )
         publish_base = (
             self.shot_root(identity)
@@ -4203,7 +4214,9 @@ class ShotManagerService:
             self._status_from_camera_publishes(root / "publish" / "camera"),
             self._status_from_latest(
                 "editorial",
-                self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence,
+                self.paths.editorial_sequence_publish_root(
+                    identity.episode, identity.sequence
+                ),
             ),
             self._status_from_sequence_timing(identity),
         ]
@@ -4706,7 +4719,11 @@ class ShotManagerService:
             "context_version": context_version,
             "context_profile": context_profile,
             "context_stage_policy": context_stage_policy,
-            "editorial": self._relative_to_project(self.paths.project_root / "editorial" / "publish" / identity.episode / identity.sequence / "latest.json"),
+            "editorial": self._relative_to_project(
+                self.paths.editorial_sequence_publish_root(
+                    identity.episode, identity.sequence
+                ) / "latest.json"
+            ),
             "comment": comment,
         }
         override_data = deepcopy(overrides or {})

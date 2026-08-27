@@ -55,9 +55,16 @@ class ReviewBuildManagerService:
         self.review_profiles = ReviewProfileService(project_config)
 
     def review_workflow(self, identity: ShotIdentity) -> ReviewWorkflowService:
+        workspace_shot_root = self.shots.paths.shot_workspace_root(
+            identity.episode, identity.sequence, identity.shot
+        )
         return ReviewWorkflowService(
             self.shots.shot_root(identity),
-            self.shots.shot_build_root(identity).parent,
+            workspace_shot_root,
+            render_root=self.shots.shot_render_root(identity),
+            output_root=self.shots.shot_output_root(identity),
+            paths=self.shots.paths,
+            identity=(identity.episode, identity.sequence, identity.shot),
         )
 
     def review_profile_ids(self) -> list[str]:

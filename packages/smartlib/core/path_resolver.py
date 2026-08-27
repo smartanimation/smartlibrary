@@ -50,6 +50,36 @@ class ProjectPaths:
         template = self._template("editorial_data_root")
         return self._path_from_template(template) if template else self.production_root() / "editorial" / "data"
 
+    def editorial_root(self) -> Path:
+        template = self._template("editorial_root")
+        return self._path_from_template(template) if template else self.production_root() / "editorial"
+
+    def editorial_work_root(self) -> Path:
+        template = self._template("editorial_work_root")
+        return self._path_from_template(template) if template else self.editorial_root() / "work"
+
+    def editorial_publish_root(self) -> Path:
+        template = self._template("editorial_publish_root")
+        return self._path_from_template(template) if template else self.editorial_root() / "publish"
+
+    def editorial_sequence_publish_root(self, episode: str, sequence: str) -> Path:
+        template = self._template("editorial_sequence_publish_root")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence
+            )
+        return self.editorial_publish_root() / episode / sequence
+
+    def legacy_editorial_sequence_publish_roots(
+        self, episode: str, sequence: str
+    ) -> tuple[Path, ...]:
+        """Resolve pre-contract Editorial publish locations for read compatibility."""
+        return (
+            self.workspace_root() / "editorial" / "publish" / episode / sequence,
+            self.project_root / "editorial" / "publish" / episode / sequence,
+            self.project_root / "editorial" / episode / sequence,
+        )
+
     def workspace_partition(self, department: str) -> str:
         department_name = str(department or "").strip()
         configured = self.shot_dept_partitions or {}
@@ -380,20 +410,156 @@ class ProjectPaths:
     def shot_publish_root(self, episode: str, sequence: str, shot: str) -> Path:
         return self._shot_area_root("shot_publish_root", episode, sequence, shot, "publish")
 
-    def shot_output_root(self, episode: str, sequence: str, shot: str) -> Path:
-        return self._shot_area_root("shot_output_root", episode, sequence, shot, "output")
+    def shot_workspace_root(
+        self, episode: str, sequence: str, shot: str, department: str = ""
+    ) -> Path:
+        template = self._template("shot_workspace_root")
+        if template:
+            return self._path_from_template(
+                template,
+                episode=episode,
+                sequence=sequence,
+                seq=sequence,
+                shot=shot,
+                department=department,
+                dept=department,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return (
+            self.workspace_root()
+            / self.workspace_partition(department)
+            / "shots"
+            / episode
+            / sequence
+            / shot
+        )
 
-    def shot_render_root(self, episode: str, sequence: str, shot: str) -> Path:
-        return self._shot_area_root("shot_render_root", episode, sequence, shot, "render")
+    def shot_output_root(
+        self, episode: str, sequence: str, shot: str, department: str = ""
+    ) -> Path:
+        return self._shot_area_root(
+            "shot_output_root", episode, sequence, shot, "output", department
+        )
+
+    def shot_render_root(
+        self, episode: str, sequence: str, shot: str, department: str = ""
+    ) -> Path:
+        return self._shot_area_root(
+            "shot_render_root", episode, sequence, shot, "render", department
+        )
+
+    def shot_review_root(
+        self, episode: str, sequence: str, shot: str, department: str = ""
+    ) -> Path:
+        return self._shot_area_root(
+            "shot_review_root", episode, sequence, shot, "review", department
+        )
+
+    def shot_render_layers_root(
+        self, episode: str, sequence: str, shot: str, department: str
+    ) -> Path:
+        template = self._template("shot_render_layers_root")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=department, dept=department,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return self.shot_render_root(episode, sequence, shot, department) / department / "layers"
+
+    def shot_render_layer_version_dir(
+        self, episode: str, sequence: str, shot: str, department: str,
+        layer: str, version: str,
+    ) -> Path:
+        template = self._template("shot_render_layer_version")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=department, dept=department, layer=layer, version=version,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return self.shot_render_layers_root(episode, sequence, shot, department) / layer / version
+
+    def shot_review_build_dir(
+        self, episode: str, sequence: str, shot: str, department: str,
+        version: str, take: str,
+    ) -> Path:
+        template = self._template("shot_review_build")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=department, dept=department, version=version, take=take,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return self.shot_review_root(episode, sequence, shot, department) / "review_build" / version / take
+
+    def shot_composition_data_root(self, episode: str, sequence: str, shot: str) -> Path:
+        """Resolve the version container for Shot Composition data."""
+        return self.shot_data_root(episode, sequence, shot) / "shot_composition"
+
+    def shot_review_layers_data_root(self, episode: str, sequence: str, shot: str) -> Path:
+        """Resolve the version container for Review Layer definitions."""
+        return self.shot_data_root(episode, sequence, shot) / "review_layers"
+
+    def shot_precomp_publish_root(self, episode: str, sequence: str, shot: str) -> Path:
+        """Resolve the shot-wide PreComp publish container (no department axis)."""
+        return self.shot_publish_root(episode, sequence, shot) / "precomp"
+
+    def shot_review_construct_root(
+        self, episode: str, sequence: str, shot: str, department: str,
+        dcc: str = "maya", task: str = "main",
+    ) -> Path:
+        """Resolve the canonical, reusable Review construct container."""
+        return self.shot_build_root(episode, sequence, shot, department) / "review" / department / dcc / task
+
+    def shot_review_jobs_root(
+        self, episode: str, sequence: str, shot: str, department: str = ""
+    ) -> Path:
+        """Resolve transient Review worker jobs for a shot."""
+        return self.shot_workspace_root(episode, sequence, shot, department) / "jobs" / "review"
+
+    def shot_review_output_root(
+        self, episode: str, sequence: str, shot: str, department: str,
+        audience: str,
+    ) -> Path:
+        """Resolve the submission container for an Internal/Client audience."""
+        return self.shot_output_root(
+            episode, sequence, shot, department
+        ) / "review" / audience
+
+    def shot_review_publish_root(
+        self, episode: str, sequence: str, shot: str, department: str
+    ) -> Path:
+        return self.shot_publish_root(
+            episode, sequence, shot
+        ) / "review" / department
+
+    def shot_animation_review_output_root(
+        self, episode: str, sequence: str, shot: str, department: str
+    ) -> Path:
+        return self.shot_output_root(
+            episode, sequence, shot, department
+        ) / "review" / "animation"
+
+    def legacy_preview_render_layers_root(
+        self, episode: str, sequence: str, shot: str, department: str
+    ) -> Path:
+        """Resolve the pre-architecture Preview Render location for read compatibility."""
+        return self.shot_root(episode, sequence, shot) / "output" / "preview_render" / department / "layers"
 
     def _shot_area_root(
-        self, template_name: str, episode: str, sequence: str, shot: str, fallback: str
+        self, template_name: str, episode: str, sequence: str, shot: str,
+        fallback: str, department: str = ""
     ) -> Path:
         template = self._template(template_name)
         if template:
             return self._path_from_template(
-                template, episode=episode, sequence=sequence, seq=sequence, shot=shot
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=department, dept=department,
+                workspace_partition=self.workspace_partition(department),
             )
+        if template_name in {"shot_output_root", "shot_render_root", "shot_review_root"}:
+            return self.shot_workspace_root(episode, sequence, shot, department) / fallback
         return self.shot_root(episode, sequence, shot) / fallback
 
     def legacy_shot_work_dir(self, episode: str, sequence: str, shot: str, department: str) -> Path:

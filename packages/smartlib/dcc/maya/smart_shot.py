@@ -280,7 +280,9 @@ def official_editorial_shots(project_config: ProjectConfig) -> list[EditorialSho
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
     episode, sequence = scene_episode_sequence(project_root)
-    latest = project_root / "editorial" / "publish" / episode / sequence / "latest.json"
+    latest = configured_project_paths(
+        project_root, project_config
+    ).editorial_sequence_publish_root(episode, sequence) / "latest.json"
     latest_data = read_json(latest, {}) or {}
     path_text = str(latest_data.get("path") or "").strip()
     editorial_json = (latest.parent / path_text) if path_text else None
@@ -519,7 +521,9 @@ def export_all_layout_preview(
     version_label = main_version_dir.name
     main_version_dir.mkdir(parents=True, exist_ok=True)
 
-    editorial_latest = project_root / "editorial" / "publish" / episode / sequence / "latest.json"
+    editorial_latest = paths.editorial_sequence_publish_root(
+        episode, sequence
+    ) / "latest.json"
     editorial_latest_data = read_json(editorial_latest, {}) or {}
     editorial_otio = ""
     if editorial_latest_data.get("version"):

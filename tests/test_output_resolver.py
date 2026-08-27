@@ -1,3 +1,6 @@
+import ast
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -5,6 +8,9 @@ import pytest
 from smartlib.core.output_resolver import OutputPathResolver
 from smartlib.core.path_resolver import AssemblyIdentity, AssetIdentity, ProjectPaths
 from smartlib.review.package import build_review_package_plan
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Config:
@@ -161,6 +167,38 @@ def test_project_paths_partition_workspace_by_shot_department(tmp_path):
     ) == tmp_path / "workspace/drawing/ep02/s027/build/drawing/clipstudio/main/v002"
 
 
+def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={
+            "workspace_root": "{project_root}/workspace",
+            "shot_workspace_root": "{workspace_root}/{workspace_partition}/shots/{episode}/{sequence}/{shot}",
+            "shot_render_root": "{shot_workspace_root}/render",
+            "shot_render_layers_root": "{shot_render_root}/{department}/layers",
+            "shot_render_layer_version": "{shot_render_layers_root}/{layer}/{version}",
+            "shot_review_root": "{shot_workspace_root}/review",
+            "shot_review_build": "{shot_review_root}/review_build/{version}/{take}",
+        },
+        shot_dept_partitions={"default": "cg"},
+    )
+
+    assert paths.shot_render_layer_version_dir(
+        "ep02", "s027", "c001", "anim", "CHA", "v002"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/render/anim/layers/CHA/v002"
+    assert paths.shot_review_build_dir(
+        "ep02", "s027", "c001", "anim", "v003", "t004"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/review/review_build/v003/t004"
+    assert paths.shot_review_output_root(
+        "ep02", "s027", "c001", "anim", "internal"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/output/review/internal"
+    assert paths.shot_animation_review_output_root(
+        "ep02", "s027", "c001", "anim"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/output/review/animation"
+    assert paths.shot_precomp_publish_root(
+        "ep02", "s027", "c001"
+    ) == tmp_path / "production/shots/ep02/s027/c001/publish/precomp"
+
+
 def test_project_paths_use_default_workspace_partition_for_asset_root(tmp_path):
     paths = ProjectPaths(
         tmp_path,
@@ -256,3 +294,76 @@ def test_review_package_accepts_resolved_publish_root(tmp_path):
     )
 
     assert plan.version_dir == publish_root / "review" / "anim" / "v001" / "t001"
+
+
+def _runtime_source(relative: str) -> str:
+    return (REPOSITORY_ROOT / relative).read_text(encoding="utf-8")
+
+
+def _runtime_function_source(relative: str, name: str) -> str:
+    source = _runtime_source(relative)
+    tree = ast.parse(source)
+    node = next(
+        item for item in tree.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.name == name
+    )
+    return ast.get_source_segment(source, node) or ""
+
+
+def test_review_runtime_boundaries_use_semantic_path_resolver_api():
+    service = _runtime_source(
+        "packages/smartlib/apps/review_build_manager/service.py"
+    )
+    worker = _runtime_source(
+        "packages/smartlib/apps/review_build_manager/worker.py"
+    )
+
+    assert "paths=self.shots.paths" in service
+    assert "shot_precomp_publish_root(" in worker
+    assert "shot_animation_review_output_root(" in worker
+    assert 'shot_publish_root(identity) / "precomp"' not in worker
+    assert 'shot_output_root(identity) / "review"' not in worker
+
+
+def test_rv_uses_path_resolver_for_project_and_review_roots():
+    rv = "tools/OpenRV/smart-review/smart_review.py"
+    production = _runtime_function_source(rv, "_production_root")
+    review = _runtime_function_source(rv, "_shot_review_base")
+
+    assert "_project_paths(project_root).production_root()" in production
+    assert "replace(" not in production
+    assert "shot_review_publish_root(" in review
+    assert "shot_review_output_root(" in review
+    assert ' / "publish" / "review"' not in review
+
+
+def test_ae_and_render_graph_only_forward_resolved_review_build_paths():
+    ae = _runtime_source("packages/smartlib/review/ae.py")
+    render_graph = _runtime_source("packages/smartlib/dcc/maya/render_graph.py")
+
+    assert "SMART_AE_MANIFEST" in ae
+    assert "manifest_path" in ae
+    assert "resolve_review_build_package(" in render_graph
+    assert 'shot_root / "review" / "review_build"' not in render_graph
+
+
+def test_runtime_has_no_production_hierarchy_outside_resolvers():
+    audit_path = REPOSITORY_ROOT / "tools" / "audit_unresolved_paths.py"
+    spec = importlib.util.spec_from_file_location("path_resolver_audit", audit_path)
+    assert spec is not None and spec.loader is not None
+    audit = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = audit
+    spec.loader.exec_module(audit)
+
+    findings = audit.dedupe(
+        finding
+        for path in audit.runtime_files()
+        for finding in audit.scan_file(path)
+    )
+    violations = [
+        f"{finding.path}:{finding.line}: {finding.snippet}"
+        for finding in findings
+        if finding.severity == "P1"
+    ]
+    assert violations == []

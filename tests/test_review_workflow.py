@@ -248,7 +248,7 @@ def test_formal_review_contains_only_final_artifacts(tmp_path: Path) -> None:
         review_data={"shot": "c001"},
         source_manifest={"inputs": {"Character": {"version": "v019"}}},
     )
-    assert destination == tmp_path / "shot" / "review" / "anim" / "internal" / "v001"
+    assert destination == tmp_path / "workspace" / "output" / "review" / "internal" / "v001"
     assert {path.name for path in destination.iterdir()} == {
         "review.mov", "thumbnail.jpg", "review.json", "source_manifest.json"
     }

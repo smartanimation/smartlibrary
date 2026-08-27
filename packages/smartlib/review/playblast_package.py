@@ -9,6 +9,7 @@ from string import Formatter
 from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig, expand_config_tokens
+from smartlib.core.path_resolver import ProjectPaths
 
 
 FRAME_TOKEN = "####"
@@ -95,6 +96,8 @@ def resolve_review_build_package(
     *,
     area: str,
     shot_root: str | Path,
+    episode: str = "",
+    sequence: str = "",
     shot: str,
     dept: str,
     version: str,
@@ -110,9 +113,33 @@ def resolve_review_build_package(
         "version": normalize_version(version),
         "take": normalize_take(take),
     }
-    root_key = f"{area}_review_build"
-    root_template = str(((package.get("roots") or {}).get(root_key)) or "{shot_root}/output/review/{dept}/review_build/{version}/{take}")
-    root = Path(_format(root_template, values))
+    if area == "output" and episode and sequence:
+        paths_resolver = ProjectPaths(
+            Path(project_config.project_root or Path(shot_root).anchor),
+            templates=project_config.templates,
+            project_name=project_config.project_name,
+            shot_dept_partitions={
+                str(key): str(value)
+                for key, value in (
+                    project_config.base.get("shot_dept_partitions") or {}
+                ).items()
+            },
+        )
+        root = paths_resolver.shot_review_build_dir(
+            episode,
+            sequence,
+            values["shot"],
+            values["dept"],
+            values["version"],
+            values["take"],
+        )
+    else:
+        root_key = f"{area}_review_build"
+        root_template = str(
+            ((package.get("roots") or {}).get(root_key))
+            or "{shot_root}/publish/review/{dept}/review_build/{version}/{take}"
+        )
+        root = Path(_format(root_template, values))
     paths = package.get("paths") or {}
     return ReviewBuildPackagePaths(
         root=root,

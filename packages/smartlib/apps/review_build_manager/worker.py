@@ -528,7 +528,9 @@ def _latest_preview_render_contract(shot_service, identity, department: str) -> 
 def _latest_review_project(shot_service, identity, department: str) -> Path | None:
     # New shot-wide PreComp publish.  Department remains metadata, not a path
     # axis, so a compositor can publish the next version for the whole shot.
-    precomp_root = shot_service.shot_publish_root(identity) / "precomp"
+    precomp_root = shot_service.paths.shot_precomp_publish_root(
+        identity.episode, identity.sequence, identity.shot
+    )
     precomp_candidates = sorted(
         precomp_root.glob("v*/aftereffects/precomp.aep"),
         key=lambda path: int(path.parents[1].name[1:])
@@ -1939,7 +1941,9 @@ def run(args) -> int:
     _write_status(status_path, state="BUILDING", progress=8, task="Resolve")
     plan = shot_service.animation_review_build_plan(identity)
     source_version = str(plan.get("package_version") or "")
-    output_root = shot_service.shot_output_root(identity) / "review" / "animation"
+    output_root = shot_service.paths.shot_animation_review_output_root(
+        identity.episode, identity.sequence, identity.shot, "anim"
+    )
     output_dir = output_root / args.output_version
     plan["source_package_version"] = source_version
     plan["output_version"] = args.output_version

@@ -2,7 +2,7 @@ playblast_package:
   roots:
     output: "{shot_root}/output/review/{dept}/{layer}/{version}/{take}"
     publish: "{shot_root}/publish/review/{dept}/{layer}/{version}/{take}"
-    output_review_build: "{shot_root}/output/review/{dept}/review_build/{version}/{take}"
+    output_review_build: "{shot_review_build_root}/{version}/{take}"
     publish_review_build: "{shot_root}/publish/review/{dept}/review_build/{version}/{take}"
   paths:
     mov: "mov/{shot}_{dept}_{version}_{take}.mov"

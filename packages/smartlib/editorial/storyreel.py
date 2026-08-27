@@ -163,7 +163,9 @@ class StoryreelBuilder:
         raise FileNotFoundError(f"ffmpeg.exe was not found: {path}")
 
     def _latest_cut_manifest(self) -> Path:
-        publish_root = self.project_root / "editorial" / "publish"
+        publish_root = configured_project_paths(
+            self.project_root, self.project_config
+        ).editorial_publish_root()
         legacy = publish_root / "cut" / "latest.json"
         candidates = [path for path in publish_root.glob("*/*/latest.json") if path.is_file()]
         if legacy.exists():

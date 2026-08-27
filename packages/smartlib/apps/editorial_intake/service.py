@@ -5,6 +5,7 @@ from pathlib import Path
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
+from smartlib.core.path_resolver import configured_project_paths
 from smartlib.editorial import EditorialIntakeRequest, EditorialIntakeResult, EditorialIntakeService, StoryreelBuilder
 
 
@@ -41,10 +42,11 @@ class SmartEditorialIntakeService:
         if project_root is None:
             raise RuntimeError("project_root is not set in templates_base.yml")
         self.project_root = project_root
+        self.paths = configured_project_paths(project_root, project_config)
 
     @property
     def editorial_work_root(self) -> Path:
-        return self.project_root / "editorial" / "work"
+        return self.paths.editorial_work_root()
 
     @property
     def incoming_editorial_dir(self) -> Path:

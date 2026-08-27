@@ -12,6 +12,7 @@ from smartlib.apps.common.asset_cards import (
     configure_asset_card_list,
 )
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.path_resolver import configured_project_paths
 
 
 def _qt_modules():
@@ -1059,7 +1060,9 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
 
     def _bp_published_assets(self) -> list[dict[str, str]]:
         root = Path(self.project_config.project_root or "")
-        assets_root = root / "assets"
+        assets_root = configured_project_paths(
+            root, self.project_config
+        ).assets_root()
         if not assets_root.exists():
             return []
         rows: list[dict[str, str]] = []

@@ -79,6 +79,8 @@ def summarize_animation_curve_data(data: dict[str, Any]) -> dict[str, Any]:
         "curve_count": len(curves),
         "key_count": key_count,
         "destination_count": destination_count,
+        "static_value_count": len(data.get("static_values") or []),
+        "controller_count": int(data.get("controller_count") or 0),
         "frame_range": [frame_min, frame_max] if frame_min is not None and frame_max is not None else [],
         "source_workfile": data.get("source_workfile", ""),
         "comment": data.get("comment", ""),
@@ -151,6 +153,13 @@ def apply_animation_curve_data(
                 for plug, curves in duplicate_destinations.items()
             ],
         )
+    static_report = _apply_static_values(
+        cmds,
+        data.get("static_values") or [],
+        source_namespace=str(data.get("namespace") or ""),
+        target_namespace=namespace,
+        strict=strict_destinations,
+    )
     report = remap_animation_curve_destinations(data, namespace=namespace)
     missing = [item for item in report if item["state"] != "FOUND"]
     if missing and strict_destinations:
@@ -161,6 +170,7 @@ def apply_animation_curve_data(
 
     applied_destinations = 0
     applied_keys = 0
+    skipped_report: list[dict[str, Any]] = []
     report_by_source = {
         item["source"]: item["target"]
         for item in report
@@ -173,6 +183,17 @@ def apply_animation_curve_data(
         for source_plug in curve.get("destinations") or []:
             target_plug = report_by_source.get(str(source_plug))
             if not target_plug:
+                continue
+            existing_sources = _non_animation_incoming_sources(cmds, target_plug)
+            if existing_sources:
+                skipped_report.append(
+                    {
+                        "source": str(source_plug),
+                        "target": target_plug,
+                        "state": "SKIPPED_EXISTING_CONNECTION",
+                        "existing_sources": existing_sources,
+                    }
+                )
                 continue
             if clear_existing:
                 try:
@@ -190,7 +211,13 @@ def apply_animation_curve_data(
     return {
         "applied_destinations": applied_destinations,
         "applied_keys": applied_keys,
+        "applied_static_values": sum(
+            item.get("state") == "APPLIED" for item in static_report
+        ),
+        "skipped_destinations": len(skipped_report),
         "missing_destinations": len(missing),
+        "static_report": static_report,
+        "skipped_report": skipped_report,
         "report": report,
     }
 
@@ -204,18 +231,29 @@ def collect_animation_curves_for_cast(
     source_workfile: str | Path = "",
 ) -> dict[str, Any]:
     cmds = _maya_cmds()
+    animation_layers = _non_base_animation_layers(cmds)
+    if animation_layers:
+        raise RuntimeError(
+            "Animation Layers are not allowed for Animation Curve publish. "
+            "Merge them into BaseAnimation before publishing: "
+            + ", ".join(animation_layers)
+        )
     root_node = _resolve_controller_root(cmds, namespace, controller_root)
     if not root_node:
         raise RuntimeError(f"Controller root was not found: {namespace}:{controller_root}")
     members = _controller_members(cmds, root_node)
-    curve_destinations = _anim_curve_destinations_from_members(
+    controller_nodes = _contract_nodes(
         cmds,
         members,
-        # Some rigs register controller groups rather than every controller in
-        # allRigSet. Descendants therefore remain necessary, but the namespace
-        # is the ownership boundary; cast_key is only the publish target name.
         traverse_descendants=True,
         namespace=namespace,
+    )
+    curve_destinations = _anim_curve_destinations_from_members(
+        cmds,
+        controller_nodes,
+        traverse_descendants=False,
+        namespace=namespace,
+        controller_nodes_only=True,
     )
     duplicate_destinations = _duplicate_destination_map(curve_destinations)
     if duplicate_destinations:
@@ -227,6 +265,15 @@ def collect_animation_curves_for_cast(
             "Animation curve export found ambiguous destination connections: "
             f"{details}"
         )
+    static_values = _collect_static_values(
+        cmds,
+        controller_nodes,
+        animated_destinations={
+            destination
+            for destinations in curve_destinations.values()
+            for destination in destinations
+        },
+    )
     data = _collect_curves_from_nodes(
         cmds,
         curve_destinations,
@@ -239,7 +286,18 @@ def collect_animation_curves_for_cast(
             "asset": asset,
             "namespace": namespace,
             "controller_root": root_node,
-            "controller_count": len(members),
+            "controller_count": len(
+                {
+                    destination.rsplit(".", 1)[0]
+                    for destinations in curve_destinations.values()
+                    for destination in destinations
+                }
+            ),
+            "curve_contract": "direct_controller_curves/v1",
+            "animation_layers": [],
+            "controller_contract": controller_nodes,
+            "static_values": static_values,
+            "static_value_count": len(static_values),
         }
     )
     return data
@@ -317,6 +375,8 @@ def _anim_curve_destinations_from_members(
     *,
     traverse_descendants: bool = False,
     namespace: str = "",
+    controller_nodes_only: bool = False,
+    animatable_dag_only: bool = False,
 ) -> dict[str, set[str]]:
     """Resolve controller curves through Maya's reference/edit connection graph.
 
@@ -335,11 +395,218 @@ def _anim_curve_destinations_from_members(
         for node in nodes:
             if namespace and not _node_belongs_to_namespace(node, namespace):
                 continue
+            if controller_nodes_only and not _is_controller_node(cmds, node):
+                continue
+            if animatable_dag_only and not _is_animatable_dag_node(cmds, node):
+                continue
             for plug in _animated_candidate_plugs(cmds, node):
                 curves = _upstream_anim_curves(cmds, plug)
                 for curve in curves:
                     destinations.setdefault(curve, set()).add(plug)
     return destinations
+
+
+def _non_base_animation_layers(cmds: Any) -> list[str]:
+    try:
+        layers = [str(layer) for layer in (cmds.ls(type="animLayer") or [])]
+    except (RuntimeError, TypeError, ValueError):
+        return []
+    try:
+        root = str(cmds.animLayer(query=True, root=True) or "")
+    except (RuntimeError, TypeError, ValueError):
+        root = ""
+    base_layers = {name for name in (root, "BaseAnimation") if name}
+    return sorted(layer for layer in layers if layer and layer not in base_layers)
+
+
+def _is_controller_node(cmds: Any, node: str) -> bool:
+    """Recognize animator-facing controls while excluding internal rig DAG nodes."""
+
+    if _has_controller_name(node):
+        return True
+    leaf = str(node or "").rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+    if leaf.startswith(
+        (
+            "A_",
+            "Adrv_",
+            "C_",
+            "J_",
+            "N_",
+            "Null_",
+            "ObjectSpace_",
+            "PMX_",
+            "offset_",
+            "rotationSpace_",
+        )
+    ):
+        return False
+    return _has_controller_shape(cmds, node)
+
+
+def _has_controller_name(node: str) -> bool:
+    leaf = str(node or "").rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+    return bool(re.match(r"^(?:CTL(?!DRV|NULL)|ctl)(?:_|[A-Z0-9])", leaf))
+
+
+def _has_controller_shape(cmds: Any, node: str) -> bool:
+    try:
+        shapes = cmds.listRelatives(node, shapes=True, fullPath=True) or []
+    except (RuntimeError, TypeError, ValueError):
+        shapes = []
+    for shape in shapes:
+        try:
+            if cmds.nodeType(shape) == "nurbsCurve":
+                return True
+        except (RuntimeError, TypeError, ValueError):
+            continue
+    return False
+
+
+def _is_animatable_dag_node(cmds: Any, node: str) -> bool:
+    try:
+        return cmds.nodeType(node) in {"transform", "joint"}
+    except (RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _contract_nodes(
+    cmds: Any,
+    members,
+    *,
+    traverse_descendants: bool,
+    namespace: str,
+) -> list[str]:
+    nodes: set[str] = set()
+    for member in _long_names(cmds, members or []):
+        candidates = [(member, True)]
+        if traverse_descendants:
+            candidates.extend((node, False) for node in _safe_descendents(cmds, member))
+        for node, is_member in candidates:
+            if namespace and not _node_belongs_to_namespace(node, namespace):
+                continue
+            recognized = (
+                _is_controller_node(cmds, node)
+                if is_member
+                else _has_controller_shape(cmds, node)
+            )
+            if _is_animatable_dag_node(cmds, node) and recognized:
+                nodes.add(str(node))
+    # Some production rigs omit valid CTL nodes from allRigSet entirely.
+    # Namespace-scoped name discovery fills those holes without admitting
+    # internal LocalSpace/Guide transforms merely because they have a curve
+    # shape.
+    try:
+        namespace_transforms = cmds.ls(type="transform", long=True) or []
+    except (RuntimeError, TypeError, ValueError):
+        namespace_transforms = []
+    for node in namespace_transforms:
+        if (
+            _node_belongs_to_namespace(str(node), namespace)
+            and _has_controller_name(str(node))
+            and _has_controller_shape(cmds, str(node))
+        ):
+            nodes.add(str(node))
+    return sorted(nodes)
+
+
+def _collect_static_values(
+    cmds: Any,
+    nodes: list[str],
+    *,
+    animated_destinations: set[str],
+) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    for node in nodes:
+        for plug in _static_candidate_plugs(cmds, node):
+            if plug in animated_destinations:
+                continue
+            try:
+                if not cmds.getAttr(plug, settable=True):
+                    continue
+                value = cmds.getAttr(plug)
+            except (RuntimeError, TypeError, ValueError):
+                continue
+            normalized = _json_scalar(value)
+            if normalized is None:
+                continue
+            attribute = plug.rsplit(".", 1)[-1]
+            try:
+                defaults = cmds.attributeQuery(attribute, node=node, listDefault=True) or []
+            except (RuntimeError, TypeError, ValueError):
+                defaults = []
+            if defaults and _static_values_equal(normalized, _json_scalar(defaults[0])):
+                continue
+            try:
+                attribute_type = str(cmds.getAttr(plug, type=True) or "")
+            except (RuntimeError, TypeError, ValueError):
+                attribute_type = ""
+            values.append(
+                {
+                    "destination": plug,
+                    "value": normalized,
+                    "type": attribute_type,
+                }
+            )
+    return values
+
+
+def _json_scalar(value: Any) -> bool | int | float | str | None:
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        return _json_scalar(value[0])
+    return None
+
+
+def _static_values_equal(left: Any, right: Any, tolerance: float = 1.0e-8) -> bool:
+    if isinstance(left, (int, float, bool)) and isinstance(right, (int, float, bool)):
+        return abs(float(left) - float(right)) <= tolerance
+    return left == right
+
+
+def _apply_static_values(
+    cmds: Any,
+    static_values: list[dict[str, Any]],
+    *,
+    source_namespace: str,
+    target_namespace: str | None,
+    strict: bool,
+) -> list[dict[str, Any]]:
+    report: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for item in static_values:
+        source = str(item.get("destination") or "")
+        target = _remap_plug(
+            source,
+            source_namespace,
+            target_namespace if target_namespace is not None else source_namespace,
+        )
+        if not target or not cmds.objExists(target):
+            report.append({"source": source, "target": target, "state": "MISSING"})
+            missing.append(target or source)
+            continue
+        try:
+            if item.get("type") == "string":
+                cmds.setAttr(target, str(item.get("value") or ""), type="string")
+            else:
+                cmds.setAttr(target, item.get("value"))
+            report.append({"source": source, "target": target, "state": "APPLIED"})
+        except (RuntimeError, TypeError, ValueError) as exc:
+            report.append(
+                {
+                    "source": source,
+                    "target": target,
+                    "state": "FAILED",
+                    "error": str(exc),
+                }
+            )
+            missing.append(target)
+    if missing and strict:
+        raise AnimationCurveApplyError(
+            f"Static controller state apply failed: {len(missing)} destinations.",
+            report=report,
+        )
+    return report
 
 
 def _node_belongs_to_namespace(node: str, namespace: str) -> bool:
@@ -357,12 +624,59 @@ def _node_belongs_to_namespace(node: str, namespace: str) -> bool:
 
 def _animated_candidate_plugs(cmds: Any, node: str) -> list[str]:
     attributes: set[str] = set()
+    for kwargs in (
+        {"keyable": True},
+        {"channelBox": True},
+        {"connectable": True, "scalar": True},
+    ):
+        try:
+            attributes.update(cmds.listAttr(node, **kwargs) or [])
+        except (RuntimeError, TypeError, ValueError):
+            continue
+    plugs = {f"{node}.{attribute}" for attribute in attributes}
+    plugs.update(_incoming_destination_plugs(cmds, node))
+    return sorted(plugs)
+
+
+def _static_candidate_plugs(cmds: Any, node: str) -> list[str]:
+    attributes: set[str] = set()
     for kwargs in ({"keyable": True}, {"channelBox": True}):
         try:
             attributes.update(cmds.listAttr(node, **kwargs) or [])
         except (RuntimeError, TypeError, ValueError):
             continue
-    return [f"{node}.{attribute}" for attribute in sorted(attributes)]
+    plugs = {f"{node}.{attribute}" for attribute in attributes}
+    plugs.update(_incoming_destination_plugs(cmds, node))
+    return sorted(plugs)
+
+
+def _incoming_destination_plugs(cmds: Any, node: str) -> list[str]:
+    """Return exact plugs on *node* that have incoming connections."""
+
+    try:
+        connections = cmds.listConnections(
+            node,
+            source=True,
+            destination=False,
+            plugs=True,
+            connections=True,
+            skipConversionNodes=False,
+        ) or []
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return []
+    node_leaf = str(node).rsplit("|", 1)[-1]
+    destinations: set[str] = set()
+    for value in connections:
+        plug = str(value)
+        plug_node, separator, attribute = plug.partition(".")
+        if not separator:
+            continue
+        # Maya can return a short plug even when the queried controller is a
+        # long DAG path. Normalize it back to the contract node so it is not
+        # discarded and later remaps consistently during Apply.
+        if plug_node == node or plug_node.rsplit("|", 1)[-1] == node_leaf:
+            destinations.add(f"{node}.{attribute}")
+    return sorted(destinations)
 
 
 def _upstream_anim_curves(cmds: Any, plug: str) -> list[str]:
@@ -420,8 +734,41 @@ def _incoming_source_plugs(cmds: Any, plug: str) -> list[str]:
             skipConversionNodes=False,
         ) or []
     except (RuntimeError, TypeError, ValueError):
+        sources = []
+    # Reference edits are not always reported by listConnections from the
+    # referenced destination. connectionInfo resolves the exact source (often
+    # a reference-node placeHolderList plug) without broadening to node history.
+    try:
+        source = cmds.connectionInfo(plug, sourceFromDestination=True)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        source = ""
+    if source:
+        sources.append(source)
+    return sorted({str(source) for source in sources if "." in str(source)})
+
+
+def _non_animation_incoming_sources(cmds: Any, plug: str) -> list[str]:
+    try:
+        sources = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            plugs=True,
+            skipConversionNodes=False,
+        ) or []
+    except (RuntimeError, TypeError, ValueError):
         return []
-    return [str(source) for source in sources if "." in str(source)]
+    blockers = []
+    for source in sources:
+        source_plug = str(source)
+        source_node = source_plug.rsplit(".", 1)[0]
+        try:
+            source_type = cmds.nodeType(source_node)
+        except (RuntimeError, TypeError, ValueError):
+            source_type = ""
+        if source_type not in ANIM_CURVE_TYPES:
+            blockers.append(source_plug)
+    return sorted(set(blockers))
 
 
 def _duplicate_destination_map(
@@ -464,14 +811,16 @@ def _remap_plug(source_plug: str, source_namespace: str, target_namespace: str |
 
 def _remap_node_namespace(node: str, source_namespace: str, target_namespace: str) -> str:
     parts = node.split("|")
-    leaf = parts[-1]
-    if source_namespace and leaf.startswith(f"{source_namespace}:"):
-        leaf = f"{target_namespace}:{leaf[len(source_namespace) + 1:]}"
-    elif ":" in leaf:
-        leaf = f"{target_namespace}:{leaf.split(':', 1)[1]}"
-    else:
-        leaf = f"{target_namespace}:{leaf}"
-    parts[-1] = leaf
+    for index, part in enumerate(parts):
+        if not part:
+            continue
+        if source_namespace and part.startswith(f"{source_namespace}:"):
+            parts[index] = f"{target_namespace}:{part[len(source_namespace) + 1:]}"
+        elif index == len(parts) - 1:
+            if ":" in part:
+                parts[index] = f"{target_namespace}:{part.split(':', 1)[1]}"
+            else:
+                parts[index] = f"{target_namespace}:{part}"
     return "|".join(parts)
 
 
