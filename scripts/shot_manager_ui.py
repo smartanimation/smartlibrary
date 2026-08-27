@@ -4739,10 +4739,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 source_workfile=source_workfile,
             )
             if not curve_data.get("curves"):
+                namespace = cast_row["namespace"] or cast_row["cast_key"]
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Export Animation Curves",
-                    f"No animation curves were found for {cast_row['cast_key']}.",
+                    f"No animation curves were found in namespace {namespace}.",
                 )
                 return
             path = self.service.export_animation_curves_data(

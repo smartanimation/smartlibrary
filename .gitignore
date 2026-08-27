@@ -8,6 +8,8 @@ delete
 old
 tests
 *.*
+!AGENTS.md
+!docs/architecture/*.md
 !scripts/publish_scene_data.py
 !scripts/publish_precomp.py
 !scripts/validate_scene_data.py

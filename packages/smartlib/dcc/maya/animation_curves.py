@@ -133,6 +133,24 @@ def apply_animation_curve_data(
     strict_destinations: bool = True,
 ) -> dict[str, Any]:
     cmds = _maya_cmds()
+    duplicate_destinations = _duplicate_curve_destinations(data.get("curves") or [])
+    if duplicate_destinations:
+        details = ", ".join(
+            f"{plug} ({len(curves)} curves)"
+            for plug, curves in list(duplicate_destinations.items())[:5]
+        )
+        raise AnimationCurveApplyError(
+            "Animation curve data has ambiguous destinations and cannot be applied: "
+            f"{details}",
+            report=[
+                {
+                    "target": plug,
+                    "state": "AMBIGUOUS",
+                    "curves": curves,
+                }
+                for plug, curves in duplicate_destinations.items()
+            ],
+        )
     report = remap_animation_curve_destinations(data, namespace=namespace)
     missing = [item for item in report if item["state"] != "FOUND"]
     if missing and strict_destinations:
@@ -190,7 +208,25 @@ def collect_animation_curves_for_cast(
     if not root_node:
         raise RuntimeError(f"Controller root was not found: {namespace}:{controller_root}")
     members = _controller_members(cmds, root_node)
-    curve_destinations = _anim_curve_destinations_from_members(cmds, members)
+    curve_destinations = _anim_curve_destinations_from_members(
+        cmds,
+        members,
+        # Some rigs register controller groups rather than every controller in
+        # allRigSet. Descendants therefore remain necessary, but the namespace
+        # is the ownership boundary; cast_key is only the publish target name.
+        traverse_descendants=True,
+        namespace=namespace,
+    )
+    duplicate_destinations = _duplicate_destination_map(curve_destinations)
+    if duplicate_destinations:
+        details = ", ".join(
+            f"{plug} ({len(curves)} curves)"
+            for plug, curves in list(duplicate_destinations.items())[:5]
+        )
+        raise RuntimeError(
+            "Animation curve export found ambiguous destination connections: "
+            f"{details}"
+        )
     data = _collect_curves_from_nodes(
         cmds,
         curve_destinations,
@@ -275,7 +311,13 @@ def _anim_curves_from_members(cmds: Any, members) -> list[str]:
     return sorted(_anim_curve_destinations_from_members(cmds, members))
 
 
-def _anim_curve_destinations_from_members(cmds: Any, members) -> dict[str, set[str]]:
+def _anim_curve_destinations_from_members(
+    cmds: Any,
+    members,
+    *,
+    traverse_descendants: bool = False,
+    namespace: str = "",
+) -> dict[str, set[str]]:
     """Resolve controller curves through Maya's reference/edit connection graph.
 
     A referenced rig can serialize an animation connection as
@@ -288,8 +330,11 @@ def _anim_curve_destinations_from_members(cmds: Any, members) -> dict[str, set[s
     destinations: dict[str, set[str]] = {}
     for member in _long_names(cmds, members or []):
         nodes = [member]
-        nodes.extend(_safe_descendents(cmds, member))
+        if traverse_descendants:
+            nodes.extend(_safe_descendents(cmds, member))
         for node in nodes:
+            if namespace and not _node_belongs_to_namespace(node, namespace):
+                continue
             for plug in _animated_candidate_plugs(cmds, node):
                 curves = _upstream_anim_curves(cmds, plug)
                 for curve in curves:
@@ -297,17 +342,37 @@ def _anim_curve_destinations_from_members(cmds: Any, members) -> dict[str, set[s
     return destinations
 
 
+def _node_belongs_to_namespace(node: str, namespace: str) -> bool:
+    """Return whether the DAG leaf belongs to namespace or one nested below it."""
+
+    expected = str(namespace or "").strip(":")
+    if not expected:
+        return True
+    leaf = str(node or "").rsplit("|", 1)[-1]
+    if ":" not in leaf:
+        return False
+    node_namespace = leaf.rsplit(":", 1)[0].strip(":")
+    return node_namespace == expected or node_namespace.startswith(f"{expected}:")
+
+
 def _animated_candidate_plugs(cmds: Any, node: str) -> list[str]:
     attributes: set[str] = set()
     for kwargs in ({"keyable": True}, {"channelBox": True}):
         try:
             attributes.update(cmds.listAttr(node, **kwargs) or [])
-        except RuntimeError:
+        except (RuntimeError, TypeError, ValueError):
             continue
     return [f"{node}.{attribute}" for attribute in sorted(attributes)]
 
 
 def _upstream_anim_curves(cmds: Any, plug: str) -> list[str]:
+    """Resolve anim curves through exact incoming plug connections.
+
+    ``listHistory(plug)`` is deliberately not used here. Maya promotes that
+    query to node history for several referenced rigs, which makes every curve
+    on a controller appear to drive every attribute on that controller.
+    """
+
     curves: set[str] = set()
     try:
         direct = cmds.listConnections(
@@ -318,22 +383,73 @@ def _upstream_anim_curves(cmds: Any, plug: str) -> list[str]:
             skipConversionNodes=True,
         ) or []
         curves.update(direct)
-    except (RuntimeError, TypeError):
+    except (RuntimeError, TypeError, ValueError):
         pass
 
-    # listHistory follows reference-node proxy plugs and animation blend nodes
-    # which direct type-filtered listConnections calls do not reliably cross.
-    try:
-        history = cmds.listHistory(plug, pruneDagObjects=True) or []
-    except (RuntimeError, TypeError):
-        history = []
-    for node in history:
-        try:
-            if cmds.nodeType(node) in ANIM_CURVE_TYPES:
-                curves.add(node)
-        except RuntimeError:
+    pending = [plug]
+    visited: set[str] = set()
+    while pending:
+        current_plug = pending.pop()
+        if current_plug in visited:
             continue
+        visited.add(current_plug)
+        for source_plug in _incoming_source_plugs(cmds, current_plug):
+            source_node = source_plug.rsplit(".", 1)[0]
+            try:
+                source_type = cmds.nodeType(source_node)
+            except (RuntimeError, TypeError, ValueError):
+                continue
+            if source_type in ANIM_CURVE_TYPES:
+                curves.add(source_node)
+            else:
+                # Reference proxy attributes (for example ``refRN.phl[3]``)
+                # have another exact incoming connection. Following that plug
+                # preserves the destination channel without widening to all
+                # history on the reference node.
+                pending.append(source_plug)
     return sorted(curves)
+
+
+def _incoming_source_plugs(cmds: Any, plug: str) -> list[str]:
+    try:
+        sources = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            plugs=True,
+            skipConversionNodes=False,
+        ) or []
+    except (RuntimeError, TypeError, ValueError):
+        return []
+    return [str(source) for source in sources if "." in str(source)]
+
+
+def _duplicate_destination_map(
+    curve_destinations: dict[str, set[str]],
+) -> dict[str, list[str]]:
+    destination_curves: dict[str, list[str]] = {}
+    for curve, destinations in curve_destinations.items():
+        for destination in destinations:
+            destination_curves.setdefault(str(destination), []).append(str(curve))
+    return {
+        destination: sorted(set(curves))
+        for destination, curves in destination_curves.items()
+        if len(set(curves)) > 1
+    }
+
+
+def _duplicate_curve_destinations(
+    curves: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    return _duplicate_destination_map(
+        {
+            str(curve.get("curve") or f"curve_{index}"): {
+                str(destination)
+                for destination in curve.get("destinations") or []
+            }
+            for index, curve in enumerate(curves)
+        }
+    )
 
 
 def _remap_plug(source_plug: str, source_namespace: str, target_namespace: str | None) -> str:

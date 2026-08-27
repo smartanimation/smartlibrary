@@ -13,3 +13,7 @@ python -m smartlib.apps.launcher
 ```
 
 During production deployment, the same package can also be exposed by `PYTHONPATH` without installing it.
+
+## Architecture
+
+- [Review Artifact Lifecycle](docs/architecture/review-artifact-lifecycle.md): Review Layer Material、Playblast Settings、PreComp、Review Build、OutputおよびPath Resolverの規則。
