@@ -324,6 +324,22 @@ class SmartSequenceBuilderService:
             if root.is_file():
                 return root
             if root.exists():
+                latest = read_json(root / "latest.json", {}) or {}
+                version = str(latest.get("version") or "").strip()
+                latest_path = Path(str(latest.get("path") or "").strip())
+                if version:
+                    version_root = root / version
+                    if latest_path.name:
+                        candidate = version_root / latest_path.name
+                        if candidate.is_file() and candidate.suffix.lower() in extensions:
+                            return candidate
+                    match = next(
+                        (
+                            path for path in sorted(version_root.glob("*"))
+                            if path.is_file() and path.suffix.lower() in extensions
+                        ),
+                        None,
+                    )
                 match = next((path for path in sorted(root.rglob("*")) if path.is_file() and path.suffix.lower() in extensions), None)
                 if match:
                     return match

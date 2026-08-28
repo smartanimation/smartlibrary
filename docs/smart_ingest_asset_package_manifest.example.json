@@ -1,0 +1,62 @@
+{
+  "schema": "smart_ingest.asset_package.v1",
+  "package_type": "asset",
+  "delivery": {
+    "source": "client",
+    "received_from": "ANM",
+    "delivery_date": "YYYYMMDD",
+    "comment": "Client supplied assembly scene for Smart Ingest validation."
+  },
+  "target": {
+    "target_type": "Asset",
+    "project": "ELCD",
+    "category": "CH",
+    "group": "main",
+    "asset": "YOU",
+    "variant": "default",
+    "department": "assembly",
+    "subset": "client",
+    "format": "mb"
+  },
+  "main_file": "scene/YOU.mb",
+  "source_inputs": {
+    "scene": "I:/ELCD/asset/CH/main/YOU/rig/ANM/YOU.mb",
+    "texture_root": "I:/ELCD/asset/CH/main/YOU/texture/ANM"
+  },
+  "files": [
+    {
+      "role": "scene",
+      "path": "scene/YOU.mb",
+      "source": "I:/ELCD/asset/CH/main/YOU/rig/ANM/YOU.mb",
+      "required": true
+    },
+    {
+      "role": "texture_root",
+      "path": "sourceimages",
+      "source": "I:/ELCD/asset/CH/main/YOU/texture/ANM",
+      "required": false,
+      "include_patterns": [
+        "**/*.exr",
+        "**/*.tx",
+        "**/*.png",
+        "**/*.tif",
+        "**/*.tiff",
+        "**/*.jpg",
+        "**/*.jpeg",
+        "**/*.psd"
+      ]
+    }
+  ],
+  "ingest": {
+    "copy_mode": "expand_package",
+    "preserve_relative_paths": true,
+    "version_policy": "next",
+    "expected_target_root": "production/assets/CH/main/YOU/default/data/assembly/client/v###",
+    "open_scene_file": "scene/YOU.mb",
+    "write_indexes": [
+      "manifest.json",
+      "latest.json",
+      "versions.json"
+    ]
+  }
+}

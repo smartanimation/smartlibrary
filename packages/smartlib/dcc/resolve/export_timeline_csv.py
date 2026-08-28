@@ -84,7 +84,7 @@ def export_current_timeline_csv(
     shot_step: int = 10,
     shot_padding: int = 4,
     shot_naming_profile: str | None = None,
-    cut_start_frame: int = 1001,
+    cut_start_frame: int | None = None,
 ) -> Path:
     """Export the current Resolve timeline video track for Editorial Intake."""
 
@@ -104,7 +104,11 @@ def export_current_timeline_csv(
         end = int(item.GetEnd()) - 1
         source_start = int(_call_or_default(item, "GetSourceStart", 0))
         source_end = int(_call_or_default(item, "GetSourceEnd", source_start + max(0, end - start))) - 1
-        cut_in = cut_start_frame + (start - timeline_start)
+        cut_in = (
+            start
+            if cut_start_frame is None
+            else cut_start_frame + (start - timeline_start)
+        )
         cut_out = cut_in + max(0, end - start)
         shot_number = shot_start + index * shot_step
         rows.append(
@@ -149,7 +153,7 @@ def export_current_timeline_to_work(
     shot_step: int = 10,
     shot_padding: int = 4,
     shot_naming_profile: str | None = None,
-    cut_start_frame: int = 1001,
+    cut_start_frame: int | None = None,
 ) -> Path:
     rule = shot_naming_rule(project_config, profile_name=shot_naming_profile, prefix=shot_prefix, start=shot_start, step=shot_step, padding=shot_padding)
     version_dir = next_editorial_work_version_dir(project_config, episode, sequence)
@@ -178,7 +182,7 @@ def export_marker_events_to_work(
     work_dir: str | Path | None = None,
     handle_head: int = 8,
     handle_tail: int = 8,
-    cut_start_frame: int = 1001,
+    cut_start_frame: int | None = None,
     shot_prefix: str = "sh",
     shot_start: int = 10,
     shot_step: int = 10,
@@ -267,7 +271,7 @@ def marker_event_rows(
     sequence: str,
     handle_head: int = 8,
     handle_tail: int = 8,
-    cut_start_frame: int = 1001,
+    cut_start_frame: int | None = None,
     shot_prefix: str = "sh",
     shot_start: int = 10,
     shot_step: int = 10,
@@ -278,7 +282,8 @@ def marker_event_rows(
     if not markers:
         raise RuntimeError("No timeline markers found. Run Markers > New Cutting Marker first.")
     frame_keys = sorted(markers.keys(), key=lambda value: int(float(value)))
-    timeline_start = int(float(frame_keys[0]))
+    first_marker_frame = int(float(frame_keys[0]))
+    timeline_start = _timeline_start_frame(timeline)
     rows = []
     sequence_counts: dict[str, int] = {}
     for index, frame_key in enumerate(frame_keys, start=1):
@@ -292,7 +297,11 @@ def marker_event_rows(
         shot = _format_shot_code(shot_prefix, shot_start + sequence_index * shot_step, shot_padding)
         source_in = int(custom.get("source_in") or 0)
         source_out = int(custom.get("source_out") or max(0, source_in + duration - 1))
-        cut_in = cut_start_frame + (frame - timeline_start)
+        cut_in = (
+            _absolute_marker_frame(frame, timeline_start)
+            if cut_start_frame is None
+            else cut_start_frame + (frame - first_marker_frame)
+        )
         segments = _marker_editorial_segments(custom, cut_in, duration, source_in, source_out)
         rows.append(
             {
@@ -658,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shot-start", type=int, default=10)
     parser.add_argument("--shot-step", type=int, default=10)
     parser.add_argument("--shot-padding", type=int, default=4)
-    parser.add_argument("--cut-start-frame", type=int, default=1001)
+    parser.add_argument("--cut-start-frame", type=int)
     args = parser.parse_args(argv)
     path = export_current_timeline_csv(
         args.output,
@@ -1348,6 +1357,12 @@ def _timeline_start_frame(timeline: Any) -> int:
         return int(timeline.GetStartFrame())
     except Exception:
         return 0
+def _absolute_marker_frame(frame: int, timeline_start: int) -> int:
+    return timeline_start + frame
+
+
+
+
 
 
 def _add_marker(

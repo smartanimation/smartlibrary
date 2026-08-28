@@ -1,0 +1,15 @@
+templates:
+  assembly_root: "{assemblies_root}/{category}/{group}/{assembly_name}"
+  assembly_data_root: "{assembly_root}/{variant}/data"
+  assembly_publish_root: "{assembly_root}/{variant}/publish"
+  assembly_work_root: "{workspace_root}/{workspace_partition}/assemblies/{category}/{group}/{assembly_name}/{variant}/work"
+  assembly_work: "{assembly_work_root}/{department}/{dcc}"
+
+assembly_depts:
+  - layout
+  - setdress
+
+assembly_purposes:
+  - blockout
+  - layout
+  - render

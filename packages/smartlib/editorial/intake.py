@@ -428,7 +428,7 @@ class EditorialIntakeService:
         episode, sequence = _publish_identity(events, "", "")
         sequence_root = configured_project_paths(
             self.project_root, self.project_config
-        ).sequence_root(episode, sequence)
+        ).sequence_workspace_root(episode, sequence)
         version_dir = sequence_root / "data" / "audio" / publish_dir.name
         output = version_dir / f"{episode}_{sequence}.wav"
         version_dir.mkdir(parents=True, exist_ok=True)

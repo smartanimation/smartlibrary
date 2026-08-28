@@ -378,7 +378,7 @@ def test_export_ae_slots_build_data_uses_common_review_build_root(tmp_path, monk
 
     assert len(manifests) == 1
     manifest_path = Path(manifests[0])
-    assert manifest_path.as_posix().endswith("output/review/layout/review_build/v001/t001/shot010_layout_build_v001_t001.json")
+    assert manifest_path.as_posix().endswith("review/review_build/v001/t001/shot010_layout_build_v001_t001.json")
     manifest = read_json(manifest_path, {})
     assert [row["layer"] for row in manifest["layers"]] == ["CHA", "BGA"]
     assert "CHA/v001/t001/images/" in manifest["layers"][0]["image_sequence"]
@@ -455,7 +455,7 @@ def test_build_ae_slots_launches_configured_after_effects(tmp_path, monkeypatch)
     assert calls[0][2]["SMART_SEQUENCE"] == "sq010"
     assert calls[0][2]["SMART_SHOT"] == "shot010"
     log = Path(results[0]["log"])
-    assert Path(results[0]["manifest"]).as_posix().endswith("output/review/layout/review_build/v001/t001/shot010_layout_build_v001_t001.json")
+    assert Path(results[0]["manifest"]).as_posix().endswith("review/review_build/v001/t001/shot010_layout_build_v001_t001.json")
     assert log.exists()
     log_text = log.read_text(encoding="utf-8")
     assert "Opening After Effects" in log_text

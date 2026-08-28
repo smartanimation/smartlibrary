@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1760">
+<rect width="100%" height="100%" fill="#f5f6f8"/>
+<style>text{font-family:Consolas,monospace;fill:#17202a}.h{font-size:30px;font-weight:bold}.s{font-size:20px}.r{font-size:17px}</style>
+<text x="35" y="48" class="h">Path Resolver Audit</text>
+<text x="35" y="82" class="s">P0: 43   P1: 0   P2: 106   Showing: 45/149</text>
+<text x="35" y="125" class="r" fill="#b42318">P0  bat/run_editorial_intake.bat:17  [absolute-path]  echo   %~nx0 template D:\Projects\STKB\incoming\editorial\events_template.csv</text>
+<text x="35" y="159" class="r" fill="#b42318">P0  bat/run_editorial_intake.bat:18  [absolute-path]  echo   %~nx0 intake --csv D:\Projects\STKB\incoming\editorial\events.csv --mov D:\Projects\STKB\incoming\editorial\offline.mov --co</text>
+<text x="35" y="193" class="r" fill="#b42318">P0  packages/smartlib/apps/asset_assembly/ui.py:490  [absolute-path]  QtWidgets.QMessageBox.information(self, &quot;Capture Viewport Thumbnail&quot;, f&quot;Updated thumbnail:\n{path}&quot;)</text>
+<text x="35" y="227" class="r" fill="#b42318">P0  packages/smartlib/apps/asset_assembly/ui.py:686  [absolute-path]  QtWidgets.QMessageBox.information(self, &quot;Create Thumbnail&quot;, f&quot;Created thumbnail:\n{path}&quot;)</text>
+<text x="35" y="261" class="r" fill="#b42318">P0  packages/smartlib/apps/editorial_intake/service.py:218  [absolute-path]  raise ValueError(&quot;Editorial preflight failed:\n- &quot; + &quot;\n- &quot;.join(errors))</text>
+<text x="35" y="295" class="r" fill="#b42318">P0  packages/smartlib/apps/launcher/main.py:559  [absolute-path]  lines.append(f&quot;ROOT: &lt;a href=&#x27;file:///{self.projectroot}&#x27; style=&#x27;color: #55aaff; text-decoration: none;&#x27;&gt;{self.projectr</text>
+<text x="35" y="329" class="r" fill="#b42318">P0  packages/smartlib/apps/review_build_manager/window.py:1408  [absolute-path]  &quot;Resolve the following before submitting:\n\n&quot;</text>
+<text x="35" y="363" class="r" fill="#b42318">P0  packages/smartlib/apps/review_build_manager/window.py:1526  [absolute-path]  f&quot;Created a new Work version:\n{path}&quot;,</text>
+<text x="35" y="397" class="r" fill="#b42318">P0  packages/smartlib/apps/review_build_manager/worker.py:640  [absolute-path]  &quot;  function normalizedName(value) { return String(value || &#x27;&#x27;).replace(/[\\u200B-\\u200D\\uFEFF]/g, &#x27;&#x27;).r</text>
+<text x="35" y="431" class="r" fill="#b42318">P0  packages/smartlib/apps/set_dress/ui.py:397  [absolute-path]  self, &quot;Publish Set Dress&quot;, f&quot;Published:\n{published}&quot;</text>
+<text x="35" y="465" class="r" fill="#b42318">P0  packages/smartlib/apps/shot_manager/service.py:635  [absolute-path]  if not source or source.lower().startswith(&quot;package://&quot;):</text>
+<text x="35" y="499" class="r" fill="#b42318">P0  packages/smartlib/apps/shot_manager/service.py:3258  [absolute-path]  &quot;USD Skel animation is incompatible with the Asset USD:\n- &quot;</text>
+<text x="35" y="533" class="r" fill="#b42318">P0  packages/smartlib/apps/shot_manager/service.py:5334  [absolute-path]  return f&quot;shot://{rel}&quot;</text>
+<text x="35" y="567" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_casting/service.py:222  [absolute-path]  return f&quot;https://docs.google.com/spreadsheets/d/{sheet_id}/export?{urlencode(query)}&quot;</text>
+<text x="35" y="601" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_casting/ui.py:886  [absolute-path]  QtWidgets.QMessageBox.information(self, &quot;Add Selected to Cast&quot;, f&quot;Added {len(rows)} cast rows:\n{path}&quot;)</text>
+<text x="35" y="635" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_delivery/window.py:144  [absolute-path]  candidate = Path(str(scene).replace(&quot;/rig/ANM/&quot;, &quot;/texture/ANM/&quot;).replace(&quot;\\rig\\ANM\\&quot;, &quot;\\texture\\ANM\\&quot;))</text>
+<text x="35" y="669" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_delivery/window.py:236  [absolute-path]  f&quot;Resolved from source manifest:\n{manifest}\n\nConfirm every source, then run Dry Run.&quot;</text>
+<text x="35" y="703" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_ingest/main.py:519  [absolute-path]  QtWidgets.QMessageBox.warning(self, label, f&quot;Path was not found:\n{path}&quot;)</text>
+<text x="35" y="737" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_ingest/main.py:636  [absolute-path]  QtWidgets.QMessageBox.warning(self, label, f&quot;Folder was not found:\n{folder}&quot;)</text>
+<text x="35" y="771" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_ingest/main.py:677  [absolute-path]  message += &quot;\n\nErrors:\n&quot; + &quot;\n&quot;.join(errors)</text>
+<text x="35" y="805" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_playblast/ui.py:1029  [absolute-path]  f&quot;Image sequence exported:\n{output_text}\n\n{summary}&quot;,</text>
+<text x="35" y="839" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_playblast/ui.py:1133  [absolute-path]  f&quot;Manifest:\n{path}&quot;,</text>
+<text x="35" y="873" class="r" fill="#b42318">P0  packages/smartlib/apps/smart_playblast/ui.py:1158  [absolute-path]  QtWidgets.QMessageBox.warning(self, &quot;Open Output Folder&quot;, f&quot;Folder was not found:\n{folder}&quot;)</text>
+<text x="35" y="907" class="r" fill="#b42318">P0  packages/smartlib/apps/viewer/service.py:318  [absolute-path]  Path(&quot;C:/Program Files/ShotGrid/RV-2023.0.2/src/python&quot;),</text>
+<text x="35" y="941" class="r" fill="#b42318">P0  packages/smartlib/dcc/houdini/crowd_kinefx.py:2423  [absolute-path]  _add_note(parent, &quot;character_fbx&quot;, f&quot;Import character FBX with KineFX:\n{_as_posix(files.character_fbx)}&quot;)</text>
+<text x="35" y="975" class="r" fill="#b42318">P0  packages/smartlib/dcc/houdini/crowd_kinefx.py:2451  [absolute-path]  f&quot;A File SOP was created so the FBX path is still visible:\n{_as_posix(path)}&quot;,</text>
+<text x="35" y="1009" class="r" fill="#b42318">P0  packages/smartlib/dcc/houdini/crowd_kinefx.py:2454  [absolute-path]  _add_note(parent, f&quot;{label}_fbx&quot;, f&quot;Import animation FBX with KineFX:\n{_as_posix(path)}&quot;)</text>
+<text x="35" y="1043" class="r" fill="#b42318">P0  packages/smartlib/dcc/houdini/crowd_kinefx.py:2740  [absolute-path]  &quot;Agent/Crowd migration path:\n&quot;</text>
+<text x="35" y="1077" class="r" fill="#b42318">P0  packages/smartlib/dcc/houdini/crowd_kinefx.py:2900  [absolute-path]  &quot;OUT_BEHAVIOR_AGENT_POINTS contains only agent points with normalized attrs:\n&quot;</text>
+<text x="35" y="1111" class="r" fill="#b42318">P0  packages/smartlib/dcc/houdini/crowd_kinefx.py:2946  [absolute-path]  &quot;It preserves behavior attributes and adds crowd-friendly aliases:\n&quot;</text>
+<text x="35" y="1145" class="r" fill="#b42318">P0  packages/smartlib/dcc/houdini/crowd_kinefx.py:3352  [absolute-path]  &quot;The node reads agent_crowd_pipeline/OUT_CROWD_CLIP_STATE_DRIVER and uses the first agent point:\n&quot;</text>
+<text x="35" y="1179" class="r" fill="#b42318">P0  packages/smartlib/dcc/maya/asset_assembly.py:1959  [absolute-path]  f&quot;asset://{component.get(&#x27;category&#x27;)}/{component.get(&#x27;group&#x27;)}/{component.get(&#x27;asset&#x27;)}/&quot;</text>
+<text x="35" y="1213" class="r" fill="#b42318">P0  packages/smartlib/dcc/maya/asset_context.py:68  [absolute-path]  f&quot;Context snapshot was written, but Maya could not restore the previous scene:\n&quot;</text>
+<text x="35" y="1247" class="r" fill="#b42318">P0  packages/smartlib/dcc/maya/asset_context.py:158  [absolute-path]  raise RuntimeError(&quot;Context USD Skel validation failed:\n- &quot; + &quot;\n- &quot;.join(issues))</text>
+<text x="35" y="1281" class="r" fill="#b42318">P0  packages/smartlib/dcc/maya/asset_context.py:189  [absolute-path]  &quot;Context payload validation failed:\n- &quot; + &quot;\n- &quot;.join(validation[&quot;issues&quot;])</text>
+<text x="35" y="1315" class="r" fill="#b42318">P0  packages/smartlib/dcc/maya/startup/userSetup.py:13  [absolute-path]  or &quot;P:/dev/smartlibrary&quot;</text>
+<text x="35" y="1349" class="r" fill="#b42318">P0  packages/smartlib/dcc/maya/usd_skel.py:25  [absolute-path]  raise RuntimeError(&quot;USD Skel validation failed:\n- &quot; + &quot;\n- &quot;.join(issues))</text>
+<text x="35" y="1383" class="r" fill="#b42318">P0  packages/smartlib/dcc/maya/usd_skel.py:72  [absolute-path]  &quot;Published USD Skel validation failed:\n- &quot;</text>
+<text x="35" y="1417" class="r" fill="#b42318">P0  packages/smartlib/dcc/resolve/export_timeline_ui.py:340  [absolute-path]  f&quot;Reference:\n{reference}\n\n&quot;</text>
+<text x="35" y="1451" class="r" fill="#b42318">P0  packages/smartlib/dcc/resolve/export_timeline_ui.py:341  [absolute-path]  f&quot;Offline:\n{movie}&quot;,</text>
+<text x="35" y="1485" class="r" fill="#b42318">P0  packages/smartlib/dcc/resolve/export_timeline_ui.py:360  [absolute-path]  f&quot;Expected:\neditorial/data/{episode}/{sequence}/edit_source/v###/*.{reference_type}&quot;,</text>
+<text x="35" y="1519" class="r" fill="#b42318">P0  packages/smartlib/dcc/resolve/menu/Smart_Editorial_Export.py:13  [absolute-path]  return Path(&quot;P:/dev/smartlibrary&quot;)</text>
+<text x="35" y="1553" class="r" fill="#b42318">P0  packages/smartlib/delivery/after_effects.py:128  [absolute-path]  &quot;  function clean(value) { return String(value || &#x27;&#x27;).replace(/[\\u200B-\\u200D\\uFEFF]/g, &#x27;&#x27;).replace(/\\s+/g, &#x27;&#x27;)</text>
+<text x="35" y="1587" class="r" fill="#475467">P2  packages/smartlib/apps/asset_assembly/ui.py:1109  [manual-production-path]  variant_dir / &quot;publish&quot; / &quot;model&quot; / &quot;render&quot; / &quot;latest.json&quot;,</text>
+<text x="35" y="1621" class="r" fill="#475467">P2  packages/smartlib/apps/asset_assembly/ui.py:1115  [manual-production-path]  variant_dir / &quot;publish&quot; / &quot;usd&quot;,</text>
+</svg>

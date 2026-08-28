@@ -186,3 +186,34 @@ def test_recipe_inputs_define_default_enabled_components(tmp_path: Path) -> None
     assert enabled["cast"]
     assert not enabled["mocap"]
     assert plan.can_build
+
+
+def test_sequence_audio_uses_latest_manifest_version(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    service = SmartSequenceBuilderService(_config(tmp_path / "config", project_root))
+    sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
+    _json(
+        sequence_root / "sequence.json",
+        {
+            "episode": "ep02",
+            "sequence": "s027",
+            "shots": [{"shot": "c001", "cut_in": 278, "cut_out": 411}],
+        },
+    )
+    _json(sequence_root / "cast.json", {"cast": {}})
+    audio_root = sequence_root / "data" / "audio"
+    for version in ("v004", "v005"):
+        path = audio_root / version / "ep02_s027.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(version.encode("ascii"))
+    _json(
+        audio_root / "latest.json",
+        {
+            "version": "v005",
+            "path": "production/sequences/ep02/s027/data/audio/v005/ep02_s027.wav",
+        },
+    )
+
+    plan = service.plan("ep02", "s027")
+    audio = next(item for item in plan.inputs if item.key == "audio")
+    assert Path(audio.path) == audio_root / "v005" / "ep02_s027.wav"

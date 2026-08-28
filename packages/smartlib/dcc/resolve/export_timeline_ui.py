@@ -51,7 +51,6 @@ class ResolveTimelineExportWindow:
         self.handle_head_var = tk.IntVar(value=12)
         self.handle_tail_var = tk.IntVar(value=12)
         self.track_var = tk.IntVar(value=1)
-        self.cut_start_var = tk.IntVar(value=1001)
         self.shot_naming_profile_var = tk.StringVar(value="")
         self.create_folders_var = tk.BooleanVar(value=True)
         self.storyreel_var = tk.BooleanVar(value=True)
@@ -115,8 +114,7 @@ class ResolveTimelineExportWindow:
         self._labeled_spin(options, "handle_head", self.handle_head_var, 0, 0, 999)
         self._labeled_spin(options, "handle_tail", self.handle_tail_var, 1, 0, 999)
         self._labeled_spin(options, "track_index", self.track_var, 2, 1, 99)
-        self._labeled_spin(options, "cut_start_frame", self.cut_start_var, 3, 0, 999999)
-        self._labeled_combo(options, "shot_naming", self.shot_naming_profile_var, 4, "shot_naming_combo", self._shot_naming_changed)
+        self._labeled_combo(options, "shot_naming", self.shot_naming_profile_var, 3, "shot_naming_combo", self._shot_naming_changed)
 
         ttk.Checkbutton(
             frame,
@@ -227,7 +225,6 @@ class ResolveTimelineExportWindow:
                 work_dir=self._selected_work_dir(),
                 handle_head=self.handle_head_var.get(),
                 handle_tail=self.handle_tail_var.get(),
-                cut_start_frame=self.cut_start_var.get(),
                 shot_naming_profile=self.shot_naming_profile_var.get().strip() or None,
                 manifest_data=manifest_data,
             )
@@ -470,7 +467,6 @@ class ResolveTimelineExportWindow:
             "handle_head": self.handle_head_var.get(),
             "handle_tail": self.handle_tail_var.get(),
             "track_index": self.track_var.get(),
-            "cut_start_frame": self.cut_start_var.get(),
             "shot_naming_profile": self.shot_naming_profile_var.get().strip(),
         }
         if self.selected_movie_path:
@@ -664,7 +660,6 @@ class ResolveTimelineExportWindow:
             ("handle_head", self.handle_head_var, 0, 999),
             ("handle_tail", self.handle_tail_var, 0, 999),
             ("track_index", self.track_var, 1, 99),
-            ("cut_start_frame", self.cut_start_var, 0, 999999),
         )
         for key, variable, minimum, maximum in integer_options:
             try:

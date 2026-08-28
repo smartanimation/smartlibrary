@@ -14,6 +14,21 @@ python -m smartlib.apps.launcher
 
 During production deployment, the same package can also be exposed by `PYTHONPATH` without installing it.
 
+### Tests
+
+Use the repository runner so every task uses the same Python and keeps pytest
+temporary data outside the repository:
+
+```powershell
+.\scripts\run_pytest.ps1
+```
+
+Arguments are passed to pytest, for example
+`.\scripts\run_pytest.ps1 tests\test_output_resolver.py -q`. The runner checks
+the shell, the repository `.venv` Python, and pytest in that order. Prepare a
+missing environment with `py -3.12 -m venv .venv`, then
+`.\.venv\Scripts\python.exe -m pip install -e ".[dev]"`.
+
 ## Architecture
 
 - [Review Artifact Lifecycle](docs/architecture/review-artifact-lifecycle.md): Review Layer Material、Playblast Settings、PreComp、Review Build、OutputおよびPath Resolverの規則。

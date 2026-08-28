@@ -99,13 +99,17 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.incoming_tree)
 
         filter_header = QtWidgets.QLabel("Filter (Target Type)")
+        filter_header.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        filter_header.customContextMenuRequested.connect(self._show_filter_context_menu)
         layout.addWidget(filter_header)
         self.target_filter_checks: dict[str, QtWidgets.QCheckBox] = {}
         for label, hint in TARGET_FILTERS:
             row = QtWidgets.QHBoxLayout()
             check = QtWidgets.QCheckBox(label)
             check.setChecked(True)
-            check.stateChanged.connect(self.auto_plan)
+            check.stateChanged.connect(self._target_filter_changed)
+            check.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            check.customContextMenuRequested.connect(self._show_filter_context_menu)
             row.addWidget(check)
             row.addStretch()
             row.addWidget(QtWidgets.QLabel(hint))
@@ -193,6 +197,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.history_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.history_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.history_table.setShowGrid(False)
+        self.history_table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.history_table.customContextMenuRequested.connect(self._show_history_context_menu)
         header = self.history_table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Interactive)
@@ -488,10 +494,12 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         if index.isValid() and index.row() != self.current_row:
             self.table.selectRow(index.row())
         item = self._current_item()
-        if not item:
-            return
 
         menu = QtWidgets.QMenu(self.table)
+        select_all = menu.addAction("Select All")
+        select_none = menu.addAction("Deselect All")
+        invert_selection = menu.addAction("Invert Selection")
+        menu.addSeparator()
         open_source = menu.addAction(
             self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon),
             "Open Source in Explorer",
@@ -500,14 +508,21 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon),
             "Open Target Folder",
         )
-        open_target.setEnabled(item.target_path is not None)
+        open_source.setEnabled(item is not None)
+        open_target.setEnabled(item is not None and item.target_path is not None)
         menu.addSeparator()
         ignore = menu.addAction(
             self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogDiscardButton),
             "Mark Not CG / Ignore Selected",
         )
         selected = menu.exec(self.table.viewport().mapToGlobal(position))
-        if selected == open_source:
+        if selected == select_all:
+            self._set_incoming_checked("all")
+        elif selected == select_none:
+            self._set_incoming_checked("none")
+        elif selected == invert_selection:
+            self._set_incoming_checked("invert")
+        elif selected == open_source:
             self.open_source_folder()
         elif selected == open_target:
             self.open_target_folder()
@@ -546,6 +561,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                     target_type = str(data.get("target_type") or "")
                     if target_filter != "All" and not self._history_type_matches(target_type, target_filter):
                         continue
+                    if not self._history_passes_target_filters(data):
+                        continue
                     searchable = " ".join(
                         str(data.get(key) or "")
                         for key in ("source_path", "source", "output_path", "target_type")
@@ -563,6 +580,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
                     continue
                 target_type = str(data.get("target_type") or "")
                 if target_filter != "All" and not self._history_type_matches(target_type, target_filter):
+                    continue
+                if not self._history_passes_target_filters(data):
                     continue
                 searchable = " ".join(
                     str(data.get(key) or "")
@@ -610,6 +629,107 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
     @staticmethod
     def _display_target_type(target_type: str) -> str:
         return "Intake" if target_type == "Vendor" else target_type
+
+    def _history_passes_target_filters(self, data: dict) -> bool:
+        enabled = {key for key, checkbox in self.target_filter_checks.items() if checkbox.isChecked()}
+        return self._history_filter_key(data) in enabled
+
+    def _history_filter_key(self, data: dict) -> str:
+        target_type = str(data.get("target_type") or "").lower()
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        output_path = Path(str(data.get("output_path") or data.get("source_path") or ""))
+        file_type = output_path.suffix.lower().lstrip(".")
+        subset = str(metadata.get("subset") or "").lower()
+        department = str(metadata.get("department") or "").lower()
+        status = str(data.get("status") or data.get("state") or "").lower()
+        if status == "ignored" or target_type == "ignored":
+            return "others"
+        if target_type in {"rejected", "reject"}:
+            return "rejected"
+        if target_type == "shot" and (department == "audio" or file_type == "wav"):
+            return "audio"
+        if target_type == "editorial" and subset == "storyreel":
+            return "storyreel"
+        if target_type == "vendor":
+            return "intake"
+        if target_type in {"asset", "shot", "editorial", "intake", "design", "reference"}:
+            return target_type
+        return "others"
+
+    def _show_filter_context_menu(self, position: QtCore.QPoint) -> None:
+        sender = self.sender()
+        menu = QtWidgets.QMenu(self)
+        select_all = menu.addAction("Select All")
+        select_none = menu.addAction("Deselect All")
+        invert_selection = menu.addAction("Invert Selection")
+        selected = menu.exec(sender.mapToGlobal(position) if isinstance(sender, QtWidgets.QWidget) else QtGui.QCursor.pos())
+        if selected == select_all:
+            self._set_filter_checks("all")
+        elif selected == select_none:
+            self._set_filter_checks("none")
+        elif selected == invert_selection:
+            self._set_filter_checks("invert")
+
+    def _set_filter_checks(self, mode: str) -> None:
+        for checkbox in self.target_filter_checks.values():
+            checkbox.blockSignals(True)
+            if mode == "all":
+                checkbox.setChecked(True)
+            elif mode == "none":
+                checkbox.setChecked(False)
+            elif mode == "invert":
+                checkbox.setChecked(not checkbox.isChecked())
+            checkbox.blockSignals(False)
+        self._target_filter_changed()
+
+    def _target_filter_changed(self) -> None:
+        self.auto_plan()
+        self._refresh_history()
+
+    def _show_history_context_menu(self, position: QtCore.QPoint) -> None:
+        menu = QtWidgets.QMenu(self.history_table)
+        select_all = menu.addAction("Select All")
+        select_none = menu.addAction("Deselect All")
+        invert_selection = menu.addAction("Invert Selection")
+        selected = menu.exec(self.history_table.viewport().mapToGlobal(position))
+        if selected == select_all:
+            self.history_table.selectAll()
+        elif selected == select_none:
+            self.history_table.clearSelection()
+        elif selected == invert_selection:
+            self._invert_table_row_selection(self.history_table)
+
+    def _set_incoming_checked(self, mode: str) -> None:
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item is None:
+                    continue
+                checked = item.checkState() == QtCore.Qt.CheckState.Checked
+                if mode == "all":
+                    item.setCheckState(QtCore.Qt.CheckState.Checked)
+                elif mode == "none":
+                    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+                elif mode == "invert":
+                    item.setCheckState(QtCore.Qt.CheckState.Unchecked if checked else QtCore.Qt.CheckState.Checked)
+        finally:
+            self.table.blockSignals(False)
+        self._sync_checkboxes_to_items()
+        self._update_summary()
+
+    @staticmethod
+    def _invert_table_row_selection(table: QtWidgets.QTableWidget) -> None:
+        selected_rows = {index.row() for index in table.selectionModel().selectedRows()}
+        table.clearSelection()
+        selection_model = table.selectionModel()
+        flags = QtCore.QItemSelectionModel.SelectionFlag.Select | QtCore.QItemSelectionModel.SelectionFlag.Rows
+        for row in range(table.rowCount()):
+            if row in selected_rows:
+                continue
+            first = table.model().index(row, 0)
+            last = table.model().index(row, table.columnCount() - 1)
+            selection_model.select(QtCore.QItemSelection(first, last), flags)
 
     def _history_paths(self) -> tuple[Path | None, Path | None]:
         row = self.history_table.currentRow()

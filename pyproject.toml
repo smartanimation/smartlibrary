@@ -9,10 +9,12 @@ description = "Production pipeline toolkit for CG and animation workflows."
 requires-python = ">=3.10"
 dependencies = [
     "pyaaf2>=1.7,<2",
+    "PyYAML>=6,<7",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "PySide6>=6.8,<7",
     "pytest>=9,<10",
 ]
 
@@ -30,3 +32,4 @@ where = ["packages"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:cacheprovider"
+testpaths = ["tests"]

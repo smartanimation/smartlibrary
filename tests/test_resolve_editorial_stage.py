@@ -392,6 +392,9 @@ def test_marker_in_out_controls_events_and_allows_transition_overlap() -> None:
                 8: {"duration": 5, "name": "s027"},
             }
 
+        def GetStartFrame(self):
+            return 86400
+
     class Project:
         def GetCurrentTimeline(self):
             return Timeline()
@@ -414,6 +417,17 @@ def test_marker_in_out_controls_events_and_allows_transition_overlap() -> None:
     assert [(row["cut_in"], row["cut_out"]) for row in rows] == [
         (1001, 1010),
         (1009, 1013),
+    ]
+
+    auto_rows = marker_event_rows(
+        resolve_app=Resolve(),
+        episode="ep02",
+        sequence="s027",
+    )
+
+    assert [(row["cut_in"], row["cut_out"]) for row in auto_rows] == [
+        (86400, 86409),
+        (86408, 86412),
     ]
 
 
@@ -732,9 +746,16 @@ def test_intake_extracts_sequence_audio_for_sequence_recipe(tmp_path: Path, monk
 
     output = service.write_sequence_audio(events, source, publish_dir)
 
-    expected_root = service.shots.paths.sequence_root("ep02", "s027") / "data" / "audio"
+    expected_root = service.shots.paths.sequence_workspace_root("ep02", "s027") / "data" / "audio"
     assert output == expected_root / "v004" / "ep02_s027.wav"
     latest = json.loads((expected_root / "latest.json").read_text())
     assert latest["version"] == "v004"
     assert latest["cut_in"] == 1001
     assert latest["cut_out"] == 1150
+
+
+def test_marker_frame_remains_relative_when_offset_exceeds_timeline_start() -> None:
+    from smartlib.dcc.resolve.export_timeline_csv import _absolute_marker_frame
+
+    assert _absolute_marker_frame(0, 278) == 278
+    assert _absolute_marker_frame(354, 278) == 632

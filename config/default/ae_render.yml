@@ -1,0 +1,11 @@
+final_comp:
+  name: final
+  fallback_names: render_final,anim_final
+render_queue:
+  render_settings_template: Best Settings
+  render_settings_template_aliases: 最良設定,最高設定
+  output_module_template: Apple ProRes 422 Proxy
+  output_module_template_aliases: Apple ProRes 422 Prox,ProRes 422 Proxy,QuickTime Apple ProRes 422 Proxy
+  audio_output: true
+  quality: best
+  output_path: "{shot_root}/output/review/{dept}/{version_label}/{take_label}/mov/{output_filename}"

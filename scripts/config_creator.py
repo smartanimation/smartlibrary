@@ -81,6 +81,19 @@ def merge_dicts(base, override):
     return result
 
 
+def normalize_maya_timeline_settings(settings=None):
+    """Return the supported Maya timeline policy with stable defaults."""
+    data = settings if isinstance(settings, dict) else {}
+    mode = str(data.get("mode") or "normalized").strip().lower()
+    if mode not in {"normalized", "editorial"}:
+        mode = "normalized"
+    try:
+        normalized_start = int(data.get("normalized_start", 1001))
+    except (TypeError, ValueError):
+        normalized_start = 1001
+    return {"mode": mode, "normalized_start": normalized_start}
+
+
 def registration_id(source_id, existing_ids):
     """Return a stable, unique id for another registration of a tool."""
     base = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(source_id or "software").strip())
@@ -105,10 +118,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("Project Config Creator")
         #self.setMinimumWidth(1100); self.setMinimumHeight(900)
-        
+
         # OSのアイコンを取得するためのプロバイダー
         self.icon_provider = QtWidgets.QFileIconProvider()
-        
+
         self.target_project = target_project
         self.software_configs = {} # sid をキーに設定データを保持
         self.context_configs = {}
@@ -190,6 +203,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         command_layout.addWidget(self.revert_btn)
         command_layout.addWidget(self.save_btn)
         main_layout.addLayout(command_layout)
+
+    def _update_maya_timeline_controls(self, _index=None):
+        mode = str(self.maya_timeline_mode.currentData() or "normalized")
+        self.maya_timeline_start.setEnabled(mode == "normalized")
 
     def setup_preflight_tab(self):
         page = QtWidgets.QWidget()
@@ -832,6 +849,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         allowed_tokens = {
             "project_root", "project_name", "project", "workspace_root",
             "shot_root", "shot_work_root", "shot_work", "shot_build_root", "shot_build",
+            "shot_render_root",
             "sequence_build_root", "sequence_build", "asset_root", "asset_work_root", "asset_work",
             "episode", "sequence", "seq", "shot", "category", "group",
             "asset", "asset_name", "variant", "department", "dept",
@@ -1172,7 +1190,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(page)
         left_layout = QtWidgets.QVBoxLayout()
-        
+
         icon_size = QtCore.QSize(24, 24)
         list_style = "QListWidget::item { height: 32px; }"
 
@@ -1182,11 +1200,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.global_list.setIconSize(icon_size)
         self.global_list.setStyleSheet(list_style)
         left_layout.addWidget(self.global_list)
-        
+
         self.add_to_proj_btn = QtWidgets.QPushButton("▼ Add to Project ▼")
         self.add_to_proj_btn.clicked.connect(self.add_to_selected)
         left_layout.addWidget(self.add_to_proj_btn)
-        
+
         # 下段
         left_layout.addWidget(QtWidgets.QLabel("<b>Project Custom / Enabled</b>"))
         self.selected_list = QtWidgets.QListWidget()
@@ -1207,7 +1225,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         review_build_layout.addRow("Review Build After Effects:", self.review_build_ae_combo)
         left_layout.addLayout(review_build_layout)
-        
+
         sel_btns = QtWidgets.QHBoxLayout()
         self.rem_soft_btn = QtWidgets.QPushButton("▲ Remove ▲")
         self.rem_soft_btn.clicked.connect(self.remove_from_selected)
@@ -1270,7 +1288,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             "Comma separated plug-in names. Profiles: core, work_stage, rend_stage, update."
         )
         plugin_note.setWordWrap(True)
-        
+
         right_layout.addWidget(QtWidgets.QLabel("Software Settings:"))
         right_layout.addWidget(self.software_settings_table, 1)
         right_layout.addLayout(settings_btns)
@@ -1280,7 +1298,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         right_layout.addWidget(QtWidgets.QLabel("Build Plugin Profiles:"))
         right_layout.addWidget(self.plugin_profile_table)
         right_layout.addWidget(plugin_note)
-        
+
         layout.addLayout(left_layout, 1); layout.addLayout(right_layout, 2)
         return page
 
@@ -1304,7 +1322,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
         if icon:
             item.setIcon(icon)
-        
+
         list_widget.addItem(item)
         return item
 
@@ -1316,7 +1334,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.env_tree.clear()
             self.plugin_profile_table.setRowCount(0)
             return
-            
+
         soft_id = current.text()
         if soft_id not in self.software_configs:
             proj_dir = os.path.join(PROJECTS_ROOT, self.name_input.text().strip())
@@ -1331,7 +1349,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 )
             else:
                 self.software_configs[soft_id] = default_config
-        
+
         self._populate_tree(self.software_configs[soft_id])
 
     def add_to_selected(self):
@@ -1343,13 +1361,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             for i in range(self.selected_list.count())
         ]
         sid = registration_id(source_id, existing_ids)
-            
+
         master_data = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         master_info = master_data.get(source_id, {})
-        
+
         # アイコンまたはパスからアイコン付きアイテムを作成
         self._add_item_with_icon(self.selected_list, sid, master_info.get('icon', ""), master_info.get('path', ""))
-        
+
         default_path = os.path.join(DEFAULT_DIR, f"software_{source_id}.yml")
         base_config = copy.deepcopy(load_yml(default_path))
         base_config['path'] = master_info.get('path', "")
@@ -1357,7 +1375,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         base_config['source_software'] = source_id
         if sid != source_id:
             base_config['name'] = f"{master_info.get('name', source_id)} ({sid})"
-        
+
         self.software_configs[sid] = base_config
         self.selected_list.setCurrentRow(self.selected_list.count() - 1)
         self._populate_tree(self.software_configs[sid])
@@ -1376,7 +1394,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
             # カスタムツールはパスからアイコンを抽出
             self._add_item_with_icon(self.selected_list, sid, "", p)
-            
+
             self.software_configs[sid] = {
                 'path': p.replace("\\", "/"),
                 'icon': "",
@@ -2176,7 +2194,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 )
                 return
             google_inputs[google_labels[key]] = value
-        
+
         proj_dir = os.path.join(PROJECTS_ROOT, name); os.makedirs(proj_dir, exist_ok=True)
         existing_config = load_yml(os.path.join(proj_dir, "templates_base.yml"))
         config = {
@@ -2188,6 +2206,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             'asset_depts': [self.asset_depts_list["list"].item(i).text() for i in range(self.asset_depts_list["list"].count())],
             'templates': {},
             'template_files': self._template_files_from_ui(),
+            'maya_timeline': {
+                'mode': str(self.maya_timeline_mode.currentData() or 'normalized'),
+                'normalized_start': self.maya_timeline_start.value(),
+            },
         }
         review_build_maya = str(
             self.review_build_maya_combo.currentData() or ""
@@ -2216,13 +2238,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             google_sheets.pop(GOOGLE_CREDENTIALS_PATH_KEY, None)
         if google_sheets:
             config['google_sheets'] = google_sheets
-        
+
         for i in range(self.selected_list.count()):
             sid = self.selected_list.item(i).text()
             config['enabled_softwares'].append(sid)
             if sid in self.software_configs:
                 save_yml(os.path.join(proj_dir, f"software_{sid}.yml"), self.software_configs[sid])
-        
+
         # Anchors/Templates の保存 (省略せず記述)
         res = [1920, 1080]
         for r in range(a_tab.rowCount()):
@@ -2283,13 +2305,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.name_input.setText(project_name)
         root = data.get('anchors', {}).get('project_root', "")
         if root: self.path_input.setText(os.path.dirname(root).replace("\\", "/"))
-        
+
         # リスト初期化
         self.global_list.clear(); self.selected_list.clear()
         master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
         for sid in sorted(master.keys()):
             self._add_item_with_icon(self.global_list, sid, master[sid].get('icon', ""), master[sid].get('path', ""))
-            
+
         for sid in data.get('enabled_softwares', []):
             p = os.path.join(proj_dir, f"software_{sid}.yml")
             project_conf = load_yml(p) if os.path.exists(p) else {}
@@ -2298,7 +2320,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             conf = merge_dicts(default_conf, project_conf)
             self._add_item_with_icon(self.selected_list, sid, conf.get('icon', ""), conf.get('path', ""))
             self.software_configs[sid] = conf
-            
+
         self._apply_data_to_ui(data)
         self._append_domain_path_templates(proj_dir)
         naming = merge_dicts(
@@ -2704,10 +2726,36 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         recipe_layout.addWidget(recipe_help)
         recipe_layout.addStretch(1)
 
+        timeline_widget = QtWidgets.QWidget()
+        timeline_layout = QtWidgets.QVBoxLayout(timeline_widget)
+        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        timeline_layout.addWidget(QtWidgets.QLabel("Maya Timeline"))
+        self.maya_timeline_mode = QtWidgets.QComboBox()
+        self.maya_timeline_mode.addItem("Normalized (fixed start frame)", "normalized")
+        self.maya_timeline_mode.addItem("Editorial (use cut frames)", "editorial")
+        timeline_layout.addWidget(self.maya_timeline_mode)
+        self.maya_timeline_start = QtWidgets.QSpinBox()
+        self.maya_timeline_start.setRange(-999999, 999999)
+        self.maya_timeline_start.setValue(1001)
+        self.maya_timeline_start.setToolTip(
+            "Start frame used when Maya Timeline Mode is Normalized."
+        )
+        timeline_layout.addWidget(self.maya_timeline_start)
+        self.maya_timeline_mode.currentIndexChanged.connect(
+            self._update_maya_timeline_controls
+        )
+        timeline_help = QtWidgets.QLabel(
+            "Normalized uses the start frame above. Editorial retains cut frames."
+        )
+        timeline_help.setWordWrap(True)
+        timeline_layout.addWidget(timeline_help)
+        timeline_layout.addStretch(1)
+
         layout.addWidget(department_widget, 1)
         layout.addWidget(task_widget, 1)
         layout.addWidget(partition_widget, 1)
         layout.addWidget(recipe_widget, 1)
+        layout.addWidget(timeline_widget, 1)
 
         add_department.clicked.connect(
             lambda: self._add_editable_list_item(
@@ -2862,6 +2910,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             else: self.env_tree.takeTopLevelItem(self.env_tree.indexOfTopLevelItem(i))
 
     def _apply_data_to_ui(self, data):
+        maya_timeline = normalize_maya_timeline_settings(data.get("maya_timeline"))
+        timeline_index = self.maya_timeline_mode.findData(maya_timeline["mode"])
+        self.maya_timeline_mode.setCurrentIndex(
+            timeline_index if timeline_index >= 0 else 0
+        )
+        self.maya_timeline_start.setValue(maya_timeline["normalized_start"])
+        self._update_maya_timeline_controls()
         review_build = data.get("review_build") or {}
         self._refresh_review_build_maya_combo(review_build.get("maya_software"))
         self._refresh_review_build_ae_combo(
