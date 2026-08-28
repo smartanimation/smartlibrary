@@ -1469,6 +1469,7 @@ def _apply_construct_animation_curves(project_root: Path, construct_data: dict |
         )
     if direct_components:
         _store_animation_curve_apply_report(reports)
+        _validate_animation_curve_apply_reports(reports)
         return reports
 
     # Compatibility for older constructs where curves were only linked from
@@ -1493,6 +1494,7 @@ def _apply_construct_animation_curves(project_root: Path, construct_data: dict |
                 )
             )
     _store_animation_curve_apply_report(reports)
+    _validate_animation_curve_apply_reports(reports)
     return reports
 
 
@@ -1508,6 +1510,30 @@ def _store_animation_curve_apply_report(reports: list[dict]) -> None:
         )
     except Exception:
         pass
+
+
+def _validate_animation_curve_apply_reports(reports: list[dict]) -> None:
+    """Reject a Curve component when none of its published values resolved."""
+
+    failed = []
+    for index, report in enumerate(reports):
+        missing = int(report.get("missing_destinations") or 0)
+        handled = sum(
+            int(report.get(key) or 0)
+            for key in (
+                "applied_destinations",
+                "applied_static_values",
+                "skipped_destinations",
+            )
+        )
+        if missing and handled == 0:
+            failed.append(f"component {index + 1}: {missing} destinations missing")
+    if failed:
+        raise RuntimeError(
+            "Animation Curve data resolved no scene destinations ("
+            + "; ".join(failed)
+            + "). Check the referenced Rig namespace and DAG hierarchy."
+        )
 
 
 def _shot_data_from_anim_input(anim_input: dict) -> dict:

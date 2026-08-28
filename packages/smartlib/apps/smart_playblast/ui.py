@@ -294,17 +294,10 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         playblast_font.setPointSize(max(16, playblast_font.pointSize() + 6))
         playblast_font.setBold(True)
         self.playblast_button.setFont(playblast_font)
-        publish_actions = QtWidgets.QHBoxLayout()
-        self.publish_preview_button = QtWidgets.QPushButton(
-            "Publish Preview Render"
-        )
-        self.publish_preview_button.setEnabled(False)
-        publish_actions.addWidget(self.publish_preview_button)
         root.addWidget(QtWidgets.QLabel("Output"))
         root.addWidget(self.filename_label)
         self.status = QtWidgets.QLabel("")
         root.addWidget(self.status)
-        root.addLayout(publish_actions)
         root.addWidget(self.playblast_button)
 
         self._apply_button_icons()
@@ -337,7 +330,6 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self.output_override.editingFinished.connect(self._apply_properties)
         self.solo_button.clicked.connect(self.preview_solo)
         self.playblast_button.clicked.connect(self.playblast)
-        self.publish_preview_button.clicked.connect(self.publish_preview_render)
         self.table.itemChanged.connect(lambda *_: self._save_scene_settings())
         self.table.rowsReordered.connect(self._rows_reordered)
         self.table.customContextMenuRequested.connect(self._show_table_context_menu)
@@ -709,7 +701,6 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
 
     def _refresh_publish_availability(self):
         outputs = self._latest_preview_outputs()
-        self.publish_preview_button.setEnabled(bool(outputs))
         return outputs
 
     def match_latest_outputs(self, row=None):
@@ -796,7 +787,6 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             (self.delete_button, QtWidgets.QStyle.SP_TrashIcon),
             (self.preset_preview_button, QtWidgets.QStyle.SP_BrowserReload),
             (self.solo_button, QtWidgets.QStyle.SP_ComputerIcon),
-            (self.publish_preview_button, QtWidgets.QStyle.SP_DialogApplyButton),
             (self.playblast_button, QtWidgets.QStyle.SP_MediaPlay),
         )
         for button, standard_pixmap in icon_map:
@@ -965,13 +955,17 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         if not self.identity:
             QtWidgets.QMessageBox.warning(self, "Smart Playblast", "Select a shot.")
             return
-        rows = [self._row(row) for row in range(self.table.rowCount()) if self._row(row)["enabled"]]
-        if not rows:
-            QtWidgets.QMessageBox.warning(self, "Smart Playblast", "Enable at least one Review Layer.")
-            return
         try:
             import maya.cmds as cmds
             from smartlib.dcc.maya.review_playblast import export_preview_render_groups
+
+            rows = [
+                self._row(row)
+                for row in range(self.table.rowCount())
+                if self._row(row)["enabled"]
+            ]
+            if not rows:
+                raise RuntimeError("Enable at least one Review Layer.")
 
             created = self._sync_review_display_layers()
             rows = [
@@ -1020,13 +1014,13 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self._last_results = exported
             self._last_preview_render_plan = plan
             self._last_output_dir = str(output_dirs[-1])
-            self.publish_preview_button.setEnabled(True)
             self._save_scene_settings()
             output_text = "\n".join(str(path) for path in output_dirs)
             QtWidgets.QMessageBox.information(
                 self,
                 "Smart Playblast",
-                f"Image sequence exported:\n{output_text}\n\n{summary}",
+                f"Image sequence exported:\n{output_text}\n\n{summary}\n\n"
+                "Export Playblast Settings Data from Shot Manager next.",
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Smart Playblast Failed", str(exc))
@@ -1101,42 +1095,6 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             )
             self.status.setText(str(exc))
             return None
-
-    def publish_preview_render(self):
-        if not self.identity:
-            return
-        if not self._latest_preview_outputs():
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Publish Preview Render",
-                "No valid Preview Render output was found. "
-                "Run Playblast Image Sequence first.",
-            )
-            return
-        if not self.save_review_spec():
-            return
-        try:
-            path = self.service.publish_preview_render_outputs(
-                self.identity,
-                department=self.department.currentText() or "anim",
-                comment="Published from Smart Playblast",
-                groups=[
-                    self._row(row)["layer"]
-                    for row in range(self.table.rowCount())
-                    if self._row(row)["enabled"]
-                ],
-            )
-            self.status.setText(f"Preview Render Manifest published: {path}")
-            QtWidgets.QMessageBox.information(
-                self,
-                "Preview Render Published",
-                f"Manifest:\n{path}",
-            )
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self, "Publish Preview Render Failed", str(exc)
-            )
-            self.status.setText(str(exc))
 
     def _sync_review_display_layers(self):
         from smartlib.dcc.maya.shot_builder import create_review_display_layers

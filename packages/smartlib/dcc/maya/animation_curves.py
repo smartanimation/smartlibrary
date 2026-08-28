@@ -99,6 +99,7 @@ def remap_animation_curve_destinations(
     for curve in data.get("curves") or []:
         for source_plug in curve.get("destinations") or []:
             target_plug = _remap_plug(str(source_plug), source_namespace, target_namespace)
+            target_plug = _resolve_scene_plug(cmds, target_plug)
             state = "FOUND" if cmds.objExists(target_plug) else "MISSING"
             report.append(
                 {
@@ -581,6 +582,7 @@ def _apply_static_values(
             source_namespace,
             target_namespace if target_namespace is not None else source_namespace,
         )
+        target = _resolve_scene_plug(cmds, target)
         if not target or not cmds.objExists(target):
             report.append({"source": source, "target": target, "state": "MISSING"})
             missing.append(target or source)
@@ -822,6 +824,35 @@ def _remap_node_namespace(node: str, source_namespace: str, target_namespace: st
             else:
                 parts[index] = f"{target_namespace}:{part}"
     return "|".join(parts)
+
+
+def _resolve_scene_plug(cmds: Any, plug: str) -> str:
+    """Resolve a published plug after a Build template adds parent groups.
+
+    Animation Curve publishes retain the source scene's full DAG path. During
+    construction a referenced Rig root may be parented below a template group
+    such as ``assets_grp``. The namespace-relative DAG suffix remains stable,
+    so accept it only when it identifies exactly one scene node.
+    """
+
+    if not plug or cmds.objExists(plug):
+        return plug
+    node, separator, attribute = plug.partition(".")
+    if not separator or not node.startswith("|"):
+        return plug
+    leaf = node.rsplit("|", 1)[-1]
+    try:
+        matches = cmds.ls(leaf, long=True, objectsOnly=True) or []
+    except (RuntimeError, TypeError, ValueError):
+        return plug
+    suffix_matches = []
+    for match in matches:
+        candidate_node = str(match)
+        candidate_plug = f"{candidate_node}.{attribute}"
+        if candidate_node.endswith(node) and cmds.objExists(candidate_plug):
+            suffix_matches.append(candidate_plug)
+    unique = sorted(set(suffix_matches))
+    return unique[0] if len(unique) == 1 else plug
 
 
 def _apply_tangents(cmds: Any, plug: str, keys: list[dict[str, Any]], *, weighted_tangents: Any = None) -> None:

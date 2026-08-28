@@ -1,3 +1,304 @@
+var JSON = JSON || {};
+
+(function (json) {
+  function parser(source) {
+    var text = String(source || "");
+    var at = 0;
+    var ch = " ";
+
+    function fail(message) {
+      throw new Error("Invalid JSON: " + message + " at " + Math.max(0, at - 1));
+    }
+
+    function next(expected) {
+      if (expected && expected !== ch) {
+        fail("Expected '" + expected + "' instead of '" + ch + "'");
+      }
+      ch = text.charAt(at);
+      at += 1;
+      return ch;
+    }
+
+    function white() {
+      while (ch && ch <= " ") {
+        next();
+      }
+    }
+
+    function parseString() {
+      var value = "";
+      var code;
+      var hex;
+      var i;
+      if (ch !== "\"") {
+        fail("Expected string");
+      }
+      while (next()) {
+        if (ch === "\"") {
+          next();
+          return value;
+        }
+        if (ch === "\\") {
+          next();
+          if (ch === "u") {
+            code = 0;
+            for (i = 0; i < 4; i += 1) {
+              hex = parseInt(next(), 16);
+              if (!isFinite(hex)) {
+                fail("Invalid unicode escape");
+              }
+              code = code * 16 + hex;
+            }
+            value += String.fromCharCode(code);
+          } else if (ch === "b") {
+            value += "\b";
+          } else if (ch === "f") {
+            value += "\f";
+          } else if (ch === "n") {
+            value += "\n";
+          } else if (ch === "r") {
+            value += "\r";
+          } else if (ch === "t") {
+            value += "\t";
+          } else if (ch === "\"" || ch === "\\" || ch === "/") {
+            value += ch;
+          } else {
+            fail("Invalid escape");
+          }
+        } else {
+          value += ch;
+        }
+      }
+      fail("Unterminated string");
+    }
+
+    function parseNumber() {
+      var value = "";
+      var number;
+      if (ch === "-") {
+        value = "-";
+        next("-");
+      }
+      while (ch >= "0" && ch <= "9") {
+        value += ch;
+        next();
+      }
+      if (ch === ".") {
+        value += ".";
+        while (next() && ch >= "0" && ch <= "9") {
+          value += ch;
+        }
+      }
+      if (ch === "e" || ch === "E") {
+        value += ch;
+        next();
+        if (ch === "-" || ch === "+") {
+          value += ch;
+          next();
+        }
+        while (ch >= "0" && ch <= "9") {
+          value += ch;
+          next();
+        }
+      }
+      number = Number(value);
+      if (!isFinite(number)) {
+        fail("Invalid number");
+      }
+      return number;
+    }
+
+    function parseWord() {
+      if (ch === "t") {
+        next("t");
+        next("r");
+        next("u");
+        next("e");
+        return true;
+      }
+      if (ch === "f") {
+        next("f");
+        next("a");
+        next("l");
+        next("s");
+        next("e");
+        return false;
+      }
+      if (ch === "n") {
+        next("n");
+        next("u");
+        next("l");
+        next("l");
+        return null;
+      }
+      fail("Unexpected token");
+    }
+
+    function parseArray() {
+      var result = [];
+      next("[");
+      white();
+      if (ch === "]") {
+        next("]");
+        return result;
+      }
+      while (ch) {
+        result.push(parseValue());
+        white();
+        if (ch === "]") {
+          next("]");
+          return result;
+        }
+        next(",");
+        white();
+      }
+      fail("Unterminated array");
+    }
+
+    function parseObject() {
+      var result = {};
+      var key;
+      next("{");
+      white();
+      if (ch === "}") {
+        next("}");
+        return result;
+      }
+      while (ch) {
+        key = parseString();
+        white();
+        next(":");
+        result[key] = parseValue();
+        white();
+        if (ch === "}") {
+          next("}");
+          return result;
+        }
+        next(",");
+        white();
+      }
+      fail("Unterminated object");
+    }
+
+    function parseValue() {
+      white();
+      if (ch === "{") {
+        return parseObject();
+      }
+      if (ch === "[") {
+        return parseArray();
+      }
+      if (ch === "\"") {
+        return parseString();
+      }
+      if (ch === "-" || (ch >= "0" && ch <= "9")) {
+        return parseNumber();
+      }
+      return parseWord();
+    }
+
+    next();
+    var result = parseValue();
+    white();
+    if (ch) {
+      fail("Unexpected trailing content");
+    }
+    return result;
+  }
+
+  function quote(value) {
+    var escapes = {
+      "\b": "\\b",
+      "\t": "\\t",
+      "\n": "\\n",
+      "\f": "\\f",
+      "\r": "\\r",
+      "\"": "\\\"",
+      "\\": "\\\\"
+    };
+    return "\"" + String(value).replace(/[\\\"\u0000-\u001f\u007f-\u009f]/g, function (character) {
+      var escaped = escapes[character];
+      var code;
+      if (escaped) {
+        return escaped;
+      }
+      code = character.charCodeAt(0).toString(16);
+      return "\\u" + ("0000" + code).slice(-4);
+    }) + "\"";
+  }
+
+  function stringifier(value) {
+    var stack = [];
+
+    function contains(reference) {
+      var i;
+      for (i = 0; i < stack.length; i += 1) {
+        if (stack[i] === reference) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function encode(current, inArray) {
+      var type = typeof current;
+      var parts;
+      var key;
+      var encoded;
+      var i;
+      if (current === null) {
+        return "null";
+      }
+      if (type === "string") {
+        return quote(current);
+      }
+      if (type === "number") {
+        return isFinite(current) ? String(current) : "null";
+      }
+      if (type === "boolean") {
+        return current ? "true" : "false";
+      }
+      if (type === "undefined" || type === "function") {
+        return inArray ? "null" : undefined;
+      }
+      if (current && typeof current.toJSON === "function") {
+        return encode(current.toJSON(), inArray);
+      }
+      if (contains(current)) {
+        throw new Error("Converting circular structure to JSON");
+      }
+      stack.push(current);
+      parts = [];
+      if (current instanceof Array) {
+        for (i = 0; i < current.length; i += 1) {
+          parts.push(encode(current[i], true));
+        }
+        stack.pop();
+        return "[" + parts.join(",") + "]";
+      }
+      for (key in current) {
+        if (current.hasOwnProperty(key)) {
+          encoded = encode(current[key], false);
+          if (encoded !== undefined) {
+            parts.push(quote(key) + ":" + encoded);
+          }
+        }
+      }
+      stack.pop();
+      return "{" + parts.join(",") + "}";
+    }
+
+    return encode(value, false);
+  }
+
+  if (typeof json.parse !== "function") {
+    json.parse = parser;
+  }
+  if (typeof json.stringify !== "function") {
+    json.stringify = stringifier;
+  }
+}(JSON));
+
 var SmartAEBrowser = SmartAEBrowser || {};
 
 (function () {
@@ -125,6 +426,36 @@ var SmartAEBrowser = SmartAEBrowser || {};
       return false;
     }
     return true;
+  }
+
+  function itemParentName(item) {
+    try {
+      return item.parentFolder ? String(item.parentFolder.name || "") : "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function footageFileSnapshot(item) {
+    var file;
+    var path = getFootagePath(item);
+    var info = pathVersionTake(path);
+    if (!path) {
+      return null;
+    }
+    file = File(path);
+    return {
+      name: String(item.name || ""),
+      layer: itemParentName(item),
+      path: path,
+      sourcePath: path,
+      version: info.version,
+      take: info.take,
+      exists: file.exists,
+      modified: file.exists ? String(file.modified.getTime()) : "",
+      size: file.exists ? file.length : 0,
+      isSequence: !(item.mainSource && item.mainSource.isStill === true)
+    };
   }
 
   function env(name) {
@@ -388,6 +719,10 @@ var SmartAEBrowser = SmartAEBrowser || {};
 
   function ensureComp(name, width, height, duration, fps, folder) {
     var comp = findComp(name);
+    width = Math.max(4, Math.round(parseNumber(width, 1920)));
+    height = Math.max(4, Math.round(parseNumber(height, 1080)));
+    duration = Math.max(1 / 24, parseNumber(duration, 1));
+    fps = Math.max(1, parseNumber(fps, 24));
     if (!comp) {
       comp = app.project.items.addComp(name, width, height, 1.0, duration, fps);
     }
@@ -491,10 +826,24 @@ var SmartAEBrowser = SmartAEBrowser || {};
     }
     match = text.match(/resolution\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]/i);
     if (match) {
-      return [Number(match[1]), Number(match[2])];
+      return normalizedResolution([match[1], match[2]]);
     }
     match = text.match(/resolution\s*:\s*(?:\r?\n)\s*-\s*(\d+)\s*(?:\r?\n)\s*-\s*(\d+)/i);
-    return match ? [Number(match[1]), Number(match[2])] : [];
+    return match ? normalizedResolution([match[1], match[2]]) : [];
+  }
+
+  function normalizedResolution(value) {
+    var width;
+    var height;
+    if (!value || value.length < 2) {
+      return [];
+    }
+    width = Number(value[0]);
+    height = Number(value[1]);
+    if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
+      return [];
+    }
+    return [Math.round(width), Math.round(height)];
   }
 
   function buildTiming(data, items, shot) {
@@ -502,19 +851,17 @@ var SmartAEBrowser = SmartAEBrowser || {};
     var editorial = shot.editorial || {};
     var range = frameRangeFrom(editorial.frame_range || shot.frame_range, parseNumber(editorial.cut_in || shot.cut_in, 1), parseNumber(editorial.cut_out || shot.cut_out, 1));
     var fps = parseNumber(editorial.fps || shot.fps || data.fps, 24);
-    var finalResolution = readProjectResolution(data);
+    var finalResolution = normalizedResolution(data.resolution);
     var stageResolution = [];
     var i;
-    if (!finalResolution.length && shot.resolution && shot.resolution.length >= 2) {
-      finalResolution = [Number(shot.resolution[0]), Number(shot.resolution[1])];
+    if (!finalResolution.length) {
+      finalResolution = normalizedResolution(shot.resolution);
     }
-    if (!finalResolution.length && data.resolution && data.resolution.length >= 2) {
-      finalResolution = [Number(data.resolution[0]), Number(data.resolution[1])];
+    if (!finalResolution.length) {
+      finalResolution = readProjectResolution(data);
     }
     for (i = 0; i < items.length && !stageResolution.length; i += 1) {
-      if (items[i].resolution && items[i].resolution.length >= 2) {
-        stageResolution = [Number(items[i].resolution[0]), Number(items[i].resolution[1])];
-      }
+      stageResolution = normalizedResolution(items[i].resolution);
     }
     if (!finalResolution.length) {
       finalResolution = stageResolution.length ? stageResolution : [1920, 1080];
@@ -536,7 +883,7 @@ var SmartAEBrowser = SmartAEBrowser || {};
   }
 
   function previewRenderBuildItems(data, manifestFile) {
-    var rawItems = data.items || [];
+    var rawItems = (data.items && data.items.length) ? data.items : (data.rows || []);
     var groups = data.layers || data.groups || {};
     var order = data.layer_order || data.group_order || [];
     var byName = {};
@@ -584,6 +931,68 @@ var SmartAEBrowser = SmartAEBrowser || {};
     return result.sort(function (a, b) {
       return a.order - b.order;
     });
+  }
+
+  function validatePlayblastSettingsReceipts(data) {
+    var items = data.items || [];
+    var errors = [];
+    var receiptFile;
+    var receipt;
+    var firstFile;
+    var lastFile;
+    var range;
+    var resolution;
+    var expectedCount;
+    var item;
+    var i;
+    if (data.schema !== "smartpipeline.render_manifest.v1") {
+      return errors;
+    }
+    if (!items.length) {
+      return ["Playblast Settings has no material items."];
+    }
+    for (i = 0; i < items.length; i += 1) {
+      item = items[i] || {};
+      receiptFile = File(String(item.receipt_path || ""));
+      if (!receiptFile.exists) {
+        errors.push("Receipt is missing: " + (item.layer || receiptFile.fsName));
+        continue;
+      }
+      try {
+        receipt = JSON.parse(readFile(receiptFile));
+      } catch (error) {
+        errors.push("Receipt is invalid: " + receiptFile.fsName);
+        continue;
+      }
+      if (String(receipt.status || "") !== "complete") {
+        errors.push("Material is not complete: " + (item.layer || receiptFile.fsName));
+      }
+      if (String(receipt.settings_fingerprint || "") !== String(data.fingerprint || "")) {
+        errors.push("Receipt belongs to different Playblast Settings: " + (item.layer || receiptFile.fsName));
+      }
+      firstFile = File(String(item.first_frame_file || item.sourcePath || ""));
+      if (!firstFile.exists) {
+        errors.push("First frame is missing: " + firstFile.fsName);
+      }
+      lastFile = File(joinPath(receiptFile.parent.fsName, String(receipt.last_file || "")));
+      if (receipt.last_file && !lastFile.exists) {
+        errors.push("Last frame is missing: " + lastFile.fsName);
+      }
+      range = item.frame_range || [];
+      expectedCount = range.length >= 2
+        ? Math.max(1, Number(range[1]) - Number(range[0]) + 1)
+        : 0;
+      if (expectedCount && Number(receipt.file_count || 0) !== expectedCount) {
+        errors.push("Frame count differs from Playblast Settings: " + (item.layer || receiptFile.fsName));
+      }
+      resolution = item.resolution || [];
+      if (resolution.length >= 2
+          && (Number((receipt.resolution || [])[0]) !== Number(resolution[0])
+            || Number((receipt.resolution || [])[1]) !== Number(resolution[1]))) {
+        errors.push("Resolution differs from Playblast Settings: " + (item.layer || receiptFile.fsName));
+      }
+    }
+    return errors;
   }
 
   function shouldImportAsSequence(row) {
@@ -1145,6 +1554,10 @@ var SmartAEBrowser = SmartAEBrowser || {};
 
     try {
       data = JSON.parse(readFile(manifestFile));
+      errors = validatePlayblastSettingsReceipts(data);
+      if (errors.length) {
+        return stringify({ error: errors.join("\n"), errors: errors });
+      }
       templateFile = File(String(data.template_project || ""));
       if (templateFile.exists) {
         app.open(templateFile);
@@ -1244,6 +1657,30 @@ var SmartAEBrowser = SmartAEBrowser || {};
     }
 
     return stringify(snapshots);
+  };
+
+  SmartAEBrowser.snapshotProjectFootage = function () {
+    var rows = [];
+    var item;
+    var row;
+    var i;
+
+    if (!app.project) {
+      return stringify({ hasProject: false, items: rows });
+    }
+
+    for (i = 1; i <= app.project.numItems; i += 1) {
+      item = app.project.item(i);
+      if (!isFootageItem(item)) {
+        continue;
+      }
+      row = footageFileSnapshot(item);
+      if (row) {
+        rows.push(row);
+      }
+    }
+
+    return stringify({ hasProject: true, items: rows });
   };
 
   SmartAEBrowser.replaceAssets = function (mappingsJson) {

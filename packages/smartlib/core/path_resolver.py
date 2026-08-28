@@ -404,6 +404,40 @@ class ProjectPaths:
             )
         return self.shot_build_root(episode, sequence, shot, department) / department / dcc / task / version
 
+    def shot_construct_build_manifests(
+        self,
+        episode: str,
+        sequence: str,
+        shot: str,
+        department: str = "",
+    ) -> tuple[Path, ...]:
+        """List Construct build manifests for a shot across DCCs and tasks."""
+        departments = [department] if department else [
+            "",
+            *(self.shot_dept_partitions or {}).keys(),
+        ]
+        canonical_roots = {
+            self.shot_build_root(episode, sequence, shot, name)
+            for name in departments
+        }
+        compatibility_roots = {
+            self.workspace_root() / episode / sequence / shot / "build",
+            self.shot_output_root(episode, sequence, shot) / "scene_build",
+        }
+        patterns = (
+            "*/*/*/v*/build_manifest.json",
+            "*/*/v*/build_manifest.json",
+        )
+        manifests = {
+            manifest
+            for root in (*canonical_roots, *compatibility_roots)
+            if root.is_dir()
+            for pattern in patterns
+            for manifest in root.glob(pattern)
+            if manifest.is_file()
+        }
+        return tuple(sorted(manifests, key=lambda path: str(path).lower()))
+
     def shot_data_root(self, episode: str, sequence: str, shot: str) -> Path:
         return self._shot_area_root("shot_data_root", episode, sequence, shot, "data")
 

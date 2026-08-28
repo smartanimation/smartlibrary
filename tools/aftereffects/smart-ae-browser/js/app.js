@@ -353,6 +353,7 @@
     });
     elements.refreshOutputsButton.addEventListener("click", function () {
       clearAepCache();
+      refreshManifestCatalog(false);
       refreshOutputStatus();
     });
     elements.replaceAllButton.addEventListener("click", replaceAll);
@@ -483,6 +484,13 @@
   function refreshManifestCatalog(showStatus) {
     var manifests = collectReviewBuildManifests();
     var added = 0;
+    var manifestIds = {};
+    manifests.forEach(function (manifest) {
+      manifestIds[manifest.id] = true;
+    });
+    state.manifests = state.manifests.filter(function (manifest) {
+      return !manifestMatchesFilters(manifest) || manifestIds[manifest.id];
+    });
     manifests.forEach(function (manifest) {
       if (!state.manifests.some(function (item) { return item.id === manifest.id; })) {
         added += 1;
@@ -494,55 +502,80 @@
     persistState();
     render();
     if (showStatus) {
-      setStatus(manifests.length ? "Manifest list refreshed: " + manifests.length + " build file" + (manifests.length === 1 ? "" : "s") + " found" : "No review build manifests found for the selected shot");
+      setStatus(manifests.length ? "Manifest list refreshed: " + manifests.length + " render manifest" + (manifests.length === 1 ? "" : "s") + " found" : "No render manifests found for the selected shot");
     }
     return added;
   }
 
   function collectReviewBuildManifests() {
-    var fs = nodeRequire("fs");
-    var pathModule = nodeRequire("path");
-    var manifests = [];
-    var maxFiles = 200;
-    if (!fs || !pathModule) {
-      return manifests;
-    }
-
-    selectedShotRoots().forEach(function (shotRoot) {
-      var shotContext = shotContextForRoot(shotRoot) || {};
-      ["output", "publish"].forEach(function (area) {
-        var reviewRoot = pathModule.join(shotRoot, area, "review");
-        if (!fs.existsSync(reviewRoot)) {
-          return;
-        }
-        try {
-          fs.readdirSync(reviewRoot, { withFileTypes: true }).forEach(function (deptEntry) {
-            var buildRoot;
-            if (!deptEntry.isDirectory() || manifests.length >= maxFiles) {
-              return;
-            }
-            buildRoot = pathModule.join(reviewRoot, deptEntry.name, "review_build");
-            scanReviewBuildRoot(buildRoot, Object.assign({}, shotContext, { department: deptEntry.name, area: area }), manifests, maxFiles);
-          });
-        } catch (error) {
-          return;
-        }
-      });
-      scanPreviewRenderManifests(
-        pathModule.join(shotRoot, "publish", "preview_render"),
-        shotContext,
-        manifests,
-        maxFiles
-      );
-    });
-
+    var manifests = collectResolvedRenderManifests();
     manifests.sort(function (a, b) {
       return String(b.exportedAt || "").localeCompare(String(a.exportedAt || ""));
     });
     return manifests;
   }
 
-  function scanPreviewRenderManifests(root, context, manifests, maxFiles) {
+  function collectResolvedRenderManifests() {
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    var childProcess = nodeRequire("child_process");
+    var project = selectedProject();
+    var pipelineRoot;
+    var scriptPath;
+    var python;
+    var rows = {};
+    if (!fs || !pathModule || !childProcess || !project || !project.configDir) {
+      return [];
+    }
+    pipelineRoot = pathModule.dirname(DEFAULT_CONFIG_ROOT);
+    scriptPath = pathModule.join(pipelineRoot, "scripts", "list_ae_render_manifests.py");
+    if (!fs.existsSync(scriptPath)) {
+      return [];
+    }
+    python = findPythonExecutable(fs, pathModule, pipelineRoot);
+    selectedShotContexts().forEach(function (context) {
+      var result;
+      var payload;
+      try {
+        result = childProcess.spawnSync(python, [
+          scriptPath,
+          "--config-dir", project.configDir,
+          "--episode", context.episode,
+          "--sequence", context.sequence,
+          "--shot", context.shot,
+          "--department", currentDepartment(),
+          "--task", "main"
+        ], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+      } catch (error) {
+        return;
+      }
+      if (!result || result.status !== 0) {
+        return;
+      }
+      payload = parseLastJsonLine(result.stdout);
+      asArray(payload.manifests || []).forEach(function (entry) {
+        var manifest = normalizeManifest(entry.data || {}, entry.path || "", entry.context || context);
+        if (manifest.path) {
+          rows[manifest.path] = manifest;
+        }
+      });
+    });
+    return Object.keys(rows).map(function (path) { return rows[path]; });
+  }
+
+  function selectedShotContexts() {
+    var rows = [];
+    state.projects.forEach(function (project) {
+      (project.shots || []).forEach(function (context) {
+        if (matchesFilters(context)) {
+          rows.push(context);
+        }
+      });
+    });
+    return rows;
+  }
+
+  function scanRenderManifestManifests(root, context, manifests, maxFiles) {
     var fs = nodeRequire("fs");
     var pathModule = nodeRequire("path");
     if (!fs || !pathModule || !root || !fs.existsSync(root)) {
@@ -550,43 +583,86 @@
     }
     try {
       fs.readdirSync(root, { withFileTypes: true }).forEach(function (departmentEntry) {
-        var packagesRoot;
+        var departmentRoot;
         if (!departmentEntry.isDirectory() || manifests.length >= maxFiles) {
           return;
         }
-        packagesRoot = pathModule.join(root, departmentEntry.name, "packages");
-        if (!fs.existsSync(packagesRoot)) {
-          return;
-        }
-        fs.readdirSync(packagesRoot, { withFileTypes: true }).forEach(function (versionEntry) {
+        departmentRoot = pathModule.join(root, departmentEntry.name);
+        fs.readdirSync(departmentRoot, { withFileTypes: true }).forEach(function (taskEntry) {
+          var taskRoot;
+          var latestPath;
+          var latest;
           var manifestPath;
           var data;
-          var stat;
-          if (!versionEntry.isDirectory() || manifests.length >= maxFiles) {
+          var items;
+          var complete;
+          if (!taskEntry.isDirectory() || manifests.length >= maxFiles) {
             return;
           }
-          manifestPath = pathModule.join(packagesRoot, versionEntry.name, "render_manifest.json");
-          if (!fs.existsSync(manifestPath)) {
+          taskRoot = pathModule.join(departmentRoot, taskEntry.name);
+          latestPath = pathModule.join(taskRoot, "latest.json");
+          if (!fs.existsSync(latestPath)) {
             return;
           }
           try {
+            latest = JSON.parse(fs.readFileSync(latestPath, "utf8"));
+            manifestPath = pathModule.join(taskRoot, String(latest.path || ""));
             data = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
           } catch (error) {
             return;
           }
-          if (!data || data.schema !== "preview_render_manifest/v1") {
+          if (!data || data.schema !== "smartpipeline.render_manifest.v1") {
             return;
           }
-          try {
-            stat = fs.statSync(manifestPath);
-            data.exported_at = data.exported_at || formatDate(stat.mtime);
-          } catch (error) {}
+          items = Array.isArray(data.items) ? data.items : [];
+          complete = items.length > 0;
+          items.forEach(function (item) {
+            var receipt;
+            var firstFile;
+            var lastFile;
+            var range;
+            var resolution;
+            var expectedCount;
+            try {
+              receipt = JSON.parse(fs.readFileSync(String(item.receipt_path || ""), "utf8"));
+              firstFile = String(item.first_frame_file || item.sourcePath || "");
+              lastFile = pathModule.join(
+                pathModule.dirname(String(item.receipt_path || "")),
+                String(receipt.last_file || "")
+              );
+              range = item.frame_range || [];
+              resolution = item.resolution || [];
+              expectedCount = range.length >= 2
+                ? Math.max(1, Number(range[1]) - Number(range[0]) + 1)
+                : 0;
+              if (receipt.status !== "complete"
+                  || String(receipt.settings_fingerprint || "") !== String(data.fingerprint || "")
+                  || !firstFile
+                  || !fs.existsSync(firstFile)
+                  || (receipt.last_file && !fs.existsSync(lastFile))
+                  || (expectedCount && Number(receipt.file_count || 0) !== expectedCount)
+                  || (resolution.length >= 2
+                    && (Number((receipt.resolution || [])[0]) !== Number(resolution[0])
+                      || Number((receipt.resolution || [])[1]) !== Number(resolution[1])))) {
+                complete = false;
+                return;
+              }
+              item.status = "ready";
+              item.file_count = Number(receipt.file_count || 0);
+            } catch (error) {
+              complete = false;
+            }
+          });
+          if (!complete) {
+            return;
+          }
+          data.material_status = "complete";
           manifests.push(normalizeManifest(
             data,
             manifestPath.replace(/\\/g, "/"),
             Object.assign({}, context, {
               department: departmentEntry.name,
-              area: "publish"
+              area: "data"
             })
           ));
         });
@@ -929,10 +1005,10 @@
       var publishedFirstFrame = resolveManifestPath(latestManifest || manifest, latestItem.first_frame_file || "");
       var versionInfo = extractVersionTake(sourcePath || manifest.path || outputPath);
       var latestInfo = extractVersionTake(publishedOutputPath || outputPath || sourcePath);
-      var version = item.version || versionInfo.version || manifest.version || "";
-      var latestVersion = latestItem.version || latestItem.latestVersion || latestItem.outputVersion || latestInfo.version || version;
-      var take = item.take || versionInfo.take || "";
-      var latestTake = latestItem.take || latestItem.latestTake || latestItem.outputTake || latestAvailableTake(publishedOutputPath || outputPath || manifest.path) || latestInfo.take || take;
+      var version = normalizeVersionToken(item.version || versionInfo.version || manifest.version || "");
+      var latestVersion = normalizeVersionToken(latestItem.version || latestItem.latestVersion || latestItem.outputVersion || latestInfo.version || version);
+      var take = normalizeTake(item.take || versionInfo.take || "");
+      var latestTake = normalizeTake(latestItem.take || latestItem.latestTake || latestItem.outputTake || latestAvailableTake(publishedOutputPath || outputPath || manifest.path) || latestInfo.take || take);
       var latestOutputPath = publishedOutputPath || outputPath;
       var latestFirstFrame = publishedFirstFrame || resolveManifestPath(manifest, item.first_frame_file || "");
       var checkPath = latestFirstFrame || latestOutputPath || resolveManifestPath(manifest, item.checkPath || "") || outputPath;
@@ -967,18 +1043,164 @@
     });
   }
 
+  function rowsFromCurrentFootage(footages) {
+    var fallbackContext = selectedShotContext() || getContext(getSelectedManifest() || {});
+    var seen = {};
+    var rows = [];
+    asArray(footages).forEach(function (footage, index) {
+      var row = normalizeFootageRow(footage, fallbackContext, index);
+      var key;
+      if (!row || isIgnoredFootageRow(row)) {
+        return;
+      }
+      key = [row.name.toLowerCase(), cleanFilePath(row.sourcePath).toLowerCase()].join("|");
+      if (seen[key]) {
+        return;
+      }
+      seen[key] = true;
+      rows.push(row);
+    });
+    return rows.sort(function (a, b) {
+      return naturalCompare(a.name || "", b.name || "");
+    });
+  }
+
+  function normalizeFootageRow(footage, fallbackContext, index) {
+    var sourcePath = cleanFilePath(footage.sourcePath || footage.path || "");
+    var context = getContext({ path: sourcePath, sourcePath: sourcePath, name: footage.name || footage.layer || "" }, fallbackContext || {});
+    var layer = inferFootageLayer(footage, sourcePath);
+    var department = inferFootageDepartment(sourcePath) || currentDepartment();
+    var latest = latestManifestItemForFootage(layer, context, department);
+    var latestItem = latest ? latest.item : null;
+    var latestManifest = latest ? latest.manifest : null;
+    var versionInfo = extractVersionTake(sourcePath || footage.name || "");
+    var latestOutputPath = latestItem
+      ? resolveManifestPath(latestManifest, latestItem.outputPath || latestItem.output || latestItem.path || latestItem.latestPath || latestItem.image_sequence || latestItem.first_frame_file || "")
+      : sourcePath;
+    var latestFirstFrame = latestItem ? resolveManifestPath(latestManifest, latestItem.first_frame_file || latestItem.first_file || "") : "";
+    var latestInfo = extractVersionTake(latestOutputPath || latestFirstFrame || sourcePath);
+    var version = normalizeVersionToken(footage.version || versionInfo.version || "");
+    var take = normalizeTake(footage.take || versionInfo.take || "");
+    var latestVersion = latestItem ? normalizeVersionToken(latestItem.version || latestItem.latestVersion || latestItem.outputVersion || latestInfo.version || version) : version;
+    var latestTake = latestItem ? normalizeTake(latestItem.take || latestItem.latestTake || latestItem.outputTake || latestAvailableTake(latestOutputPath) || latestInfo.take || take) : take;
+    var currentLabel = versionTakeLabel(version, take);
+    var latestLabel = versionTakeLabel(latestVersion, latestTake);
+    var status = footage.exists === false ? "missing" : inferStatus(currentLabel, latestLabel, latestOutputPath || sourcePath);
+    return {
+      id: "footage-" + (footage.name || layer || index),
+      name: layer || footage.name || basename(sourcePath) || "footage-" + (index + 1),
+      sourcePath: sourcePath,
+      outputPath: latestOutputPath || sourcePath,
+      currentOutputPath: sourcePath,
+      checkPath: latestFirstFrame || latestOutputPath || sourcePath,
+      version: version,
+      latestVersion: latestVersion,
+      take: take,
+      latestTake: latestTake,
+      currentLabel: currentLabel,
+      latestLabel: latestLabel,
+      status: status,
+      exists: footage.exists,
+      modified: footage.modified || "",
+      size: footage.size || 0,
+      project: context.project,
+      episode: context.episode,
+      sequence: context.sequence,
+      shot: context.shot
+    };
+  }
+
+  function isIgnoredFootageRow(row) {
+    var extension = String(row.sourcePath || "").split(".").pop().toLowerCase();
+    var name = String(row.name || "").toLowerCase();
+    if (!row.sourcePath) {
+      return true;
+    }
+    if (/^(wav|wave|mp3|aif|aiff|m4a|aac|ogg)$/.test(extension)) {
+      return true;
+    }
+    return name === "audio";
+  }
+
+  function latestManifestItemForFootage(layer, context, department) {
+    var targetLayer = normalizeLayerKey(layer);
+    var candidates;
+    var found = null;
+    if (!targetLayer) {
+      return null;
+    }
+    candidates = state.manifests.filter(function (manifest) {
+      var manifestContext;
+      if (manifest.schema !== "smartpipeline.render_manifest.v1") {
+        return false;
+      }
+      manifestContext = getContext(manifest, context || {});
+      return (!context.project || manifestContext.project === context.project)
+        && (!context.episode || manifestContext.episode === context.episode)
+        && (!context.sequence || manifestContext.sequence === context.sequence)
+        && (!context.shot || manifestContext.shot === context.shot)
+        && (!department || String(manifest.department || "").toLowerCase() === String(department || "").toLowerCase());
+    });
+    candidates.sort(function (a, b) {
+      var aVersion = Number(String(a.version || "").replace(/\D/g, "")) || 0;
+      var bVersion = Number(String(b.version || "").replace(/\D/g, "")) || 0;
+      return bVersion - aVersion || manifestSortTime(b) - manifestSortTime(a);
+    });
+    candidates.some(function (manifest) {
+      return collectManifestItems(manifest).some(function (item) {
+        if (normalizeLayerKey(item.layer || item.name || item.id || item.output_id) !== targetLayer) {
+          return false;
+        }
+        found = { manifest: manifest, item: item };
+        return true;
+      });
+    });
+    return found;
+  }
+
+  function inferFootageLayer(footage, sourcePath) {
+    var path = String(sourcePath || "").replace(/\\/g, "/");
+    var file = basename(path);
+    var match = path.match(/\/layers\/([^\/]+)/i);
+    if (match && !/^v\d{2,5}$/i.test(match[1]) && !isTakeFolder(match[1])) {
+      return match[1];
+    }
+    match = file.match(/_([A-Za-z0-9]+)_v\d{2,5}[_\-.](?:t|take)?\d{1,5}/i);
+    if (match) {
+      return match[1];
+    }
+    if (footage.layer && !/^(layers|audio|30_footage|footage)$/i.test(String(footage.layer))) {
+      return String(footage.layer);
+    }
+    return String(footage.name || "");
+  }
+
+  function inferFootageDepartment(sourcePath) {
+    var path = String(sourcePath || "").replace(/\\/g, "/");
+    var match = path.match(/\/(?:render|preview_render)\/([^\/]+)\/(?:layers|packages)\//i);
+    if (match) {
+      return match[1];
+    }
+    match = path.match(/\/publish\/preview_render\/([^\/]+)\//i);
+    return match ? match[1] : "";
+  }
+
+  function normalizeLayerKey(value) {
+    return String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+  }
+
   function latestPreviewRenderManifest(manifest) {
     var context;
     var department;
     var candidates;
-    if (!manifest || manifest.schema !== "preview_render_manifest/v1") {
+    if (!manifest || manifest.schema !== "smartpipeline.render_manifest.v1") {
       return null;
     }
     context = getContext(manifest);
     department = String(manifest.department || "").toLowerCase();
     candidates = state.manifests.filter(function (candidate) {
       var candidateContext;
-      if (candidate.schema !== "preview_render_manifest/v1") {
+      if (candidate.schema !== "smartpipeline.render_manifest.v1") {
         return false;
       }
       candidateContext = getContext(candidate);
@@ -1026,7 +1248,7 @@
       });
     }
 
-    ["items", "outputs", "assets", "renders"].forEach(function (key) {
+    ["items", "rows", "outputs", "assets", "renders"].forEach(function (key) {
       items = items.concat(asArray(manifest[key] || []));
     });
     asArray(manifest.layers || []).forEach(function (layer) {
@@ -1126,6 +1348,23 @@
 
   function extractVersion(value) {
     return extractVersionTake(value).version;
+  }
+
+  function normalizeVersionToken(value) {
+    var text = String(value || "").trim();
+    var match;
+    if (!text) {
+      return "";
+    }
+    match = text.match(/^v0*(\d+)$/i);
+    if (match) {
+      return "v" + String(Number(match[1])).padStart(3, "0");
+    }
+    match = text.match(/^0*(\d+)$/);
+    if (match) {
+      return "v" + String(Number(match[1])).padStart(3, "0");
+    }
+    return text;
   }
 
   function extractVersionTake(value) {
@@ -1421,7 +1660,11 @@
       manifest ? manifest.package_root : "",
       state.selectedAepPath
     ].join("/");
-    var match = text.replace(/\\/g, "/").match(/\/(?:work|output|publish)\/(?:review\/)?([^\/]+)\/(?:ae|v\d+)/i);
+    var match = text.replace(/\\/g, "/").match(/\/data\/render_manifest\/([^\/]+)\//i);
+    if (match) {
+      return match[1];
+    }
+    match = text.replace(/\\/g, "/").match(/\/(?:work|output|publish)\/(?:review\/)?([^\/]+)\/(?:ae|v\d+)/i);
     return match ? match[1] : "anim";
   }
 
@@ -2013,6 +2256,8 @@
     var rows;
     var current;
     var latest;
+    var currentLabels;
+    var latestLabels;
     if (!elements.takeSummary) {
       return;
     }
@@ -2027,9 +2272,29 @@
       elements.takeSummary.textContent = "";
       return;
     }
+    currentLabels = uniqueValues(rows.map(function (row) { return row.currentLabel || versionTakeLabel(row.version, row.take); }));
+    latestLabels = uniqueValues(rows.map(function (row) { return row.latestLabel || versionTakeLabel(row.latestVersion, row.latestTake); }));
+    if (currentLabels.length === 1 && latestLabels.length === 1 && currentLabels[0] && latestLabels[0]) {
+      elements.takeSummary.textContent = "Current " + currentLabels[0] + " -> Latest " + latestLabels[0];
+      return;
+    }
     current = maxTake(rows.map(function (row) { return row.take; }));
     latest = maxTake(rows.map(function (row) { return row.latestTake || row.take; }));
     elements.takeSummary.textContent = current && latest ? "Current " + shortTake(current) + " -> Latest " + shortTake(latest) : "";
+  }
+
+  function uniqueValues(values) {
+    var seen = {};
+    var result = [];
+    values.forEach(function (value) {
+      value = String(value || "");
+      if (!value || seen[value]) {
+        return;
+      }
+      seen[value] = true;
+      result.push(value);
+    });
+    return result;
   }
 
   function maxTake(values) {
@@ -2089,10 +2354,12 @@
       project: data.project || data.projectName || data.show || context.project || "",
       projectRoot: data.projectRoot || context.projectRoot || "",
       configDir: data.configDir || context.configDir || "",
+      shot_root: data.shot_root || data.shotRoot || context.shotRoot || "",
       episode: data.episode || data.ep || context.episode || "",
       sequence: data.sequence || data.seq || context.sequence || "",
       shot: data.shot || data.sh || context.shot || "",
       department: data.department || data.dept || context.department || "",
+      task: data.task || data.subset || context.task || "",
       path: path || data.path || name,
       package_root: data.package_root || data.packageRoot || context.publishRoot || "",
       publishRoot: data.publishRoot || context.publishRoot || "",
@@ -2104,7 +2371,8 @@
       exportedAt: data.exportedAt || data.exported_at || data.createdAt || data.created_at || "",
       renderer: data.renderer || data.renderEngine || data.render_engine || "smart render",
       version: data.version || extractVersion(name) || "",
-      items: asArray(data.items || data.outputs || data.assets || data.renders || [])
+      items: asArray(data.items || data.rows || data.outputs || data.assets || data.renders || []),
+      rows: asArray(data.rows || [])
     };
   }
 
@@ -2151,23 +2419,27 @@
     openSettings();
   }
 
-  function handleBuildButton() {
+  async function handleBuildButton() {
     var manifest = getSelectedManifest();
     if (!manifest) {
       setStatus("Select an AE build manifest first");
       return;
     }
-    if (isAeBuildManifest(manifest)) {
-      runSelectedManifestBuild(manifest);
-      return;
+    try {
+      if (isAeBuildManifest(manifest)) {
+        await runSelectedManifestBuild(manifest);
+        return;
+      }
+      buildFromSelectedManifest(true);
+    } catch (error) {
+      setStatus("Build failed: " + error.message);
     }
-    buildFromSelectedManifest(true);
   }
 
   function isAeBuildManifest(manifest) {
     var manifestPath = String(manifest.path || "");
     return manifest.schema === "smart_render_ae_build"
-      || manifest.schema === "preview_render_manifest/v1"
+      || manifest.schema === "smartpipeline.render_manifest.v1"
       || /(?:review_build\.json|_build_v\d{2,5}_\d{1,5}\.json)$/i.test(manifestPath);
   }
 
@@ -2452,22 +2724,37 @@
 
   async function runSelectedManifestBuild(manifest) {
     setStatus("Running AE build: " + basename(manifest.path));
-    var hostMethod = manifest.schema === "preview_render_manifest/v1"
+    var hostMethod = manifest.schema === "smartpipeline.render_manifest.v1"
       ? "buildPreviewRenderManifest"
       : "runAeBuildManifest";
     var result = await window.SmartCEPBridge.callHost(hostMethod, { path: manifest.path }, "");
     var payload;
+    var message;
+    if (!result) {
+      setStatus("Build failed: After Effects returned no response");
+      return;
+    }
     try {
       payload = result ? JSON.parse(result) : {};
     } catch (error) {
-      payload = {};
+      setStatus("Build failed: " + String(result).slice(0, 240));
+      return;
     }
     if (payload.error) {
-      setStatus("Build failed: " + payload.error);
+      message = payload.error;
+      if (payload.method) {
+        message += " [" + payload.method + (payload.line ? ":" + payload.line : "") + "]";
+      }
+      setStatus("Build failed: " + message);
+      return;
+    }
+    if (payload.ok === false) {
+      message = (payload.errors || []).filter(Boolean).join("; ");
+      setStatus("Build failed: " + (message || "After Effects did not complete the build"));
       return;
     }
     buildFromSelectedManifest(false);
-    setStatus("Build executed: " + basename(manifest.path));
+    setStatus("Build executed: " + basename(manifest.path) + (payload.imported !== undefined ? " / " + payload.imported + " footage" : ""));
   }
 
   async function renderFinalComp() {
@@ -2492,7 +2779,33 @@
     setStatus(payload.warning ? "Rendered with warning: " + payload.warning : "Rendered " + basename(context.outputPath) + " / " + (payload.outputModuleTemplate || payload.outputModuleName || context.outputModuleTemplate) + (payload.format ? " / " + payload.format : ""));
   }
 
+  async function refreshProjectFootageRows() {
+    var result = await window.SmartCEPBridge.callHost("snapshotProjectFootage", undefined, "");
+    var payload;
+    var footages;
+    if (!result) {
+      return false;
+    }
+    try {
+      payload = JSON.parse(result);
+    } catch (error) {
+      return false;
+    }
+    if (!payload || payload.hasProject === false) {
+      return false;
+    }
+    footages = payload.items || payload;
+    state.rows = rowsFromCurrentFootage(footages);
+    return true;
+  }
+
   async function refreshOutputStatus() {
+    var usedProjectFootage = await refreshProjectFootageRows();
+    if (usedProjectFootage) {
+      renderRows();
+      return;
+    }
+
     if (!state.rows.length) {
       renderRows();
       return;
@@ -2586,15 +2899,59 @@
     }
   }
 
-  function copyManifestPath() {
+  async function copyManifestPath() {
     var manifest = getSelectedManifest();
     if (!manifest) {
       return;
     }
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(manifest.path);
+    if (await copyTextToClipboard(manifest.path)) {
+      setStatus("Manifest path copied");
+      return;
     }
-    setStatus("Manifest path copied");
+    setStatus("Manifest path copy failed");
+  }
+
+  async function copyTextToClipboard(text) {
+    var textarea;
+    var copied = false;
+    var childProcess;
+    if (!text) {
+      return false;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (error) {}
+    }
+    try {
+      textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "readonly");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      copied = document.execCommand && document.execCommand("copy");
+    } catch (error) {
+      copied = false;
+    } finally {
+      if (textarea && textarea.parentNode) {
+        textarea.parentNode.removeChild(textarea);
+      }
+    }
+    if (copied) {
+      return true;
+    }
+    childProcess = nodeRequire("child_process");
+    if (childProcess) {
+      try {
+        return childProcess.spawnSync("clip.exe", [], { input: text, encoding: "utf8" }).status === 0;
+      } catch (error) {}
+    }
+    return false;
   }
 
   function startPolling() {

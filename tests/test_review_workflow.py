@@ -6,7 +6,11 @@ import pytest
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
-from smartlib.apps.shot_manager.service import _normalized_playblast_settings
+from smartlib.apps.shot_manager.service import (
+    ShotIdentity,
+    ShotManagerService,
+    _normalized_playblast_settings,
+)
 from smartlib.review.workflow import (
     ReviewProfileService,
     ReviewWorkflowService,
@@ -126,6 +130,76 @@ def test_playblast_settings_owns_review_output_contract() -> None:
     assert row["overscan"] == 1.05
     assert row["output_format"] == "png"
     assert row["ae_placeholder"] == "BEAR"
+
+
+def test_render_manifest_export_requires_completed_material_outputs(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "templates_base.yml").write_text(
+        "\n".join([
+            "anchors:",
+            "  project_name: TEST",
+            f"  project_root: '{project_root.as_posix()}'",
+            "shot_dept_partitions:",
+            "  default: cg",
+        ]),
+        encoding="utf-8",
+    )
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep01", "sq01", "sh0010")
+
+    payload = {
+        "rows": [{
+            "layer": "CHA", "display_layer": "CHA", "camera": "cam_CHA",
+            "width": 1280, "height": 720, "start": 1001, "end": 1001,
+            "version": 2, "take": 3, "enabled": True,
+        }]
+    }
+    with pytest.raises(RuntimeError, match="not complete"):
+        service.export_shot_scene_data(
+            identity, "render_manifest", payload,
+            target="anim", subset="main", filename="render_manifest.json",
+        )
+
+    plan = service.plan_preview_render_publish(identity, payload, department="anim")
+    group = plan["groups"][0]
+    output_dir = Path(group["output_dir"])
+    output_dir.mkdir(parents=True)
+    image = output_dir / group["pattern"].replace("####", "1001")
+    image.write_bytes(b"png")
+    service.record_preview_render_outputs(
+        plan,
+        {"CHA": {
+            "file_count": 1,
+            "first_file": image.as_posix(),
+            "last_file": image.as_posix(),
+        }},
+    )
+
+    path = service.export_shot_scene_data(
+        identity,
+        "render_manifest",
+        payload,
+        target="anim",
+        subset="main",
+        filename="render_manifest.json",
+    )
+
+    settings = read_json(path)
+    row = settings["rows"][0]
+    item = settings["items"][0]
+    assert settings["status"] == "complete"
+    assert settings["fingerprint"]
+    assert row["output_dir"].endswith(
+        "/workspace/cg/shots/ep01/sq01/sh0010/render/anim/layers/CHA/v002"
+    )
+    assert row["receipt_path"].endswith("/v002/output_t003.json")
+    assert item["first_frame_file"].endswith("_v002_t003_1001.png")
+
+    receipt = read_json(row["receipt_path"])
+    assert receipt["settings_fingerprint"] == settings["fingerprint"]
+    assert receipt["settings_path"] == path.as_posix()
 
 
 def test_review_construct_versions_are_independent_from_normal_builds(tmp_path: Path) -> None:

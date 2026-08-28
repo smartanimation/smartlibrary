@@ -1256,7 +1256,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self.department_combo.currentText(),
             task,
         )
-        settings_path = readiness.get("playblast_settings_path")
+        settings_path = readiness.get("render_manifest_path")
         settings_version = (
             settings_path.parent.name if settings_path else "missing"
         )
@@ -1269,7 +1269,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         else:
             self.review_status_label.setText(
                 f"Shot Composition {assembly_path.parent.name} / "
-                f"{layer_count} layers / playblast_settings {settings_version}"
+                f"{layer_count} layers / render_manifest {settings_version}"
             )
 
     def _review_submission_changes(self) -> None:
@@ -1290,8 +1290,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self.department_combo.currentText(),
             self.task_combo.currentText() or "main",
         )
-        settings = readiness.get("playblast_settings") or {}
-        settings_path = readiness.get("playblast_settings_path")
+        settings = readiness.get("render_manifest") or {}
+        settings_path = readiness.get("render_manifest_path")
         setting_rows = []
         for row in settings.get("rows") or []:
             if not row.get("enabled", True):
@@ -1307,7 +1307,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             f"Review Profile: {profile['id']} ({profile.get('image_format', 'png').upper()})\n"
             f"Delivery Profile: {delivery['id']} ({delivery.get('codec', '-')})\n"
             f"Layers: {len(layers.get('layers') or [])}\n"
-            f"playblast_settings: {settings_path.parent.name if settings_path else 'missing'}\n"
+            f"render_manifest: {settings_path.parent.name if settings_path else 'missing'}\n"
             + ("\n".join(setting_rows) + "\n" if setting_rows else "")
             + "Exact HIT/MISS results are calculated from JSON snapshots when the job starts."
         )

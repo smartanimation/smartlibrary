@@ -903,7 +903,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             light_item.setData(QtCore.Qt.UserRole, "light")
             self.data_type_list.addItem(light_item)
             playblast_item = QtWidgets.QListWidgetItem("Playblast Settings")
-            playblast_item.setData(QtCore.Qt.UserRole, "playblast_settings")
+            playblast_item.setData(QtCore.Qt.UserRole, "render_manifest")
             self.data_type_list.addItem(playblast_item)
             preview_render_item = QtWidgets.QListWidgetItem("Review Spec")
             preview_render_item.setData(QtCore.Qt.UserRole, "review_spec")
@@ -2346,7 +2346,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             ("animation", "Animation Curves"),
             ("camera", "Camera"),
             ("light", "Light"),
-            ("playblast_settings", "Playblast Settings"),
+            ("render_manifest", "Render Manifest"),
             ("review_spec", "Review Spec"),
             ("set_dress_data", "Set Dress Work Data"),
         )
@@ -2419,7 +2419,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 if self.active_sequence_identity else {"cast": {}}
             )
             self.populate_data_cast_list(cast_data)
-        elif data_type in {"review_spec", "playblast_settings"}:
+        elif data_type in {"review_spec", "render_manifest"}:
             self._populate_preview_render_targets()
         elif data_type in {"camera", "light"}:
             self._populate_scene_data_targets(data_type)
@@ -2430,14 +2430,15 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
     def _update_data_action_visibility(self) -> None:
         data_type = self._current_data_type()
         is_animation = data_type == "animation_curve"
-        is_scene_data = data_type in {"camera", "light", "playblast_settings"}
+        is_scene_data = data_type in {"camera", "light", "render_manifest"}
+        is_applicable_scene_data = data_type in {"camera", "light"}
         for button in (
             self.publish_animation_curves_btn,
             self.apply_animation_curves_btn,
         ):
             button.setVisible(is_animation)
         self.export_scene_data_btn.setVisible(is_scene_data)
-        self.apply_scene_data_btn.setVisible(is_scene_data)
+        self.apply_scene_data_btn.setVisible(is_applicable_scene_data)
         self.build_animation_package_btn.setVisible(False)
         if hasattr(self, "data_target_label"):
             labels = {
@@ -2446,7 +2447,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 "set_dress_data": "Package :",
                 "camera": "Root :",
                 "light": "Root :",
-                "playblast_settings": "Department :",
+                "render_manifest": "Department :",
             }
             self.data_target_label.setText(labels.get(data_type, "Name :"))
 
@@ -3725,16 +3726,20 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             current_item = QtWidgets.QListWidgetItem("Current Construct")
             current_item.setData(QtCore.Qt.UserRole, {"mode": "current"})
             self.construct_scene_list.addItem(current_item)
-            department = self.work_dept_combo.currentText().strip() or None
-            task = self._current_shot_task()
+            scene_items = []
             for build in self.service.list_construct_build_scenes(
                 identity,
-                department=department or "",
-                task=task,
+                department="",
+                task="",
             ):
                 state = str(build.get("validation_state") or "UNKNOWN").upper()
                 version = str(build.get("version") or "")
-                label = f"[{state}] {version} {Path(str(build.get('path') or '')).name}"
+                build_department = str(build.get("department") or "-")
+                build_task = str(build.get("task") or "-")
+                label = (
+                    f"[{state}] {build_department}/{build_task} {version} "
+                    f"{Path(str(build.get('path') or '')).name}"
+                )
                 item = QtWidgets.QListWidgetItem(label)
                 item.setToolTip(str(build.get("path") or ""))
                 item.setData(QtCore.Qt.UserRole, build)
@@ -3742,18 +3747,18 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     item.setForeground(QtGui.QColor("#80c98d"))
                 else:
                     item.setForeground(QtGui.QColor("#d47b70"))
-                self.construct_scene_list.addItem(item)
-            option = self._current_shot_option()
-            option_arg = None if option == "all" else option
-            for work_file in self.service.list_shot_work_files(
-                identity,
-                department=department,
-                option=option_arg,
-                task=task,
-            ):
-                item = QtWidgets.QListWidgetItem(work_file.file)
+                path = Path(str(build.get("path") or ""))
+                updated = path.stat().st_mtime if path.is_file() else 0
+                scene_items.append((updated, str(path).lower(), item))
+            for work_file in self.service.list_shot_construct_work_files(identity):
+                label = f"[WORK] {work_file.department}/{work_file.task} {work_file.file}"
+                item = QtWidgets.QListWidgetItem(label)
                 item.setToolTip(work_file.path)
                 item.setData(QtCore.Qt.UserRole, {"mode": "work", "path": work_file.path})
+                path = Path(work_file.path)
+                updated = path.stat().st_mtime if path.is_file() else 0
+                scene_items.append((updated, str(path).lower(), item))
+            for _updated, _path, item in sorted(scene_items, reverse=True):
                 self.construct_scene_list.addItem(item)
             target_row = 0
             for row in range(self.construct_scene_list.count()):
@@ -5127,7 +5132,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return
         try:
             import maya.cmds as cmds
-            if data_type == "playblast_settings":
+            if data_type == "render_manifest":
                 from smartlib.dcc.maya.review_playblast import load_scene_playblast_settings
 
                 payload = load_scene_playblast_settings(cmds)
@@ -5135,7 +5140,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     raise RuntimeError("Smart Playblast settings were not found in the current scene.")
                 kwargs = dict(
                     target=self._data_target_token(target), subset="main",
-                    filename="playblast_settings.json",
+                    filename="render_manifest.json",
                     source_workfile=cmds.file(query=True, sceneName=True) or "",
                     comment=comment.strip(),
                 )
@@ -5200,13 +5205,6 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             )
             return
         try:
-            if data_type == "playblast_settings":
-                from smartlib.core.metadata import read_json
-                from smartlib.dcc.maya.review_playblast import save_scene_playblast_settings
-
-                save_scene_playblast_settings(read_json(path, {}) or {})
-                self.status_label.setText(f"Applied {title}: {path}")
-                return
             from smartlib.dcc.maya.shot_scene_data import import_scene_component_package
 
             result = import_scene_component_package(path)

@@ -17,9 +17,11 @@ Mayaから生成される、AE Build前のレイヤー別連番素材。CHA、BG
 - Smart AE BrowserのReplace Queueが更新対象として参照する。
 - `output`には保存しない。
 
-### Playblast Settings
+### Render Manifest
 
-AE Buildの入力Manifest。何をどの条件でAEへ投入するかを定義する。
+Maya、Houdini、BlenderなどのDCCに依存しないAE Build入力Manifest。
+標準ファイル名は`render_manifest.json`、Schemaは
+`smartpipeline.render_manifest.v1`とする。
 
 次の情報を所有する。
 
@@ -33,6 +35,15 @@ AE Buildの入力Manifest。何をどの条件でAEへ投入するかを定義�
 - Playblast Presetなど、素材生成とAE Buildに必要な入力条件
 
 Scale、Position、Anchor Pointおよび確定した構図は所有しない。
+
+Smart Playblastはシーン内設定を使用してRender Layer Materialを生成し、各Layerの
+生成結果をVersionディレクトリの`output_t###.json`へReceiptとして記録する。
+Receiptは実フレーム数、解像度、先頭・末尾ファイルを所有する。
+
+Render Manifestは、必要な全LayerのReceiptと実ファイルが揃った後にのみ、
+Shot Managerの`Export Data`からVersion化できる。Export時に実際のVersion、Take、
+連番パターン、Receiptパスを取り込み、Settings VersionとFingerprintを各Receiptへ
+関連付ける。AE BuildはManifestとすべてのReceiptが一致する場合だけ開始できる。
 
 ### PreComp
 
@@ -78,7 +89,7 @@ InternalまたはClientへ実際に提出したチェック成果物。
 ```text
 Render Layer Material生成
         ↓
-Playblast Settingsを入力として初回AE Build
+Render Manifestを入力として初回AE Build
         ↓
 各素材を中央へ初期配置
         ↓
@@ -90,6 +101,23 @@ Review Buildを生成・検証
         ↓
 InternalまたはClient向け成果物をOutput
 ```
+
+運用上の順序は次のとおり。
+
+```text
+Smart Playblastが連番を生成
+        ↓
+Layerごとにoutput_t###.jsonを記録（complete）
+        ↓
+Shot ManagerでRender ManifestをExport Data
+        ↓
+Smart AE BrowserがSettings・Receipt・実ファイルを照合
+        ↓
+初回AE Build
+```
+
+`Publish Preview Render`および`preview_render_manifest`はこの運用では生成しない。
+AE Buildの入力Manifestは`render_manifest.json`を正本とする。
 
 Render Layer Materialの連番生成に成功しただけでは、Review素材としての成功とは判定しない。キャラクターと背景の解像度が異なる場合があるため、AE Build後の合成状態で解像度、構図、フレーム範囲、前後関係を確認する。
 

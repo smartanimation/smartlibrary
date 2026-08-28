@@ -284,7 +284,9 @@ class AssetContextService:
         is_maya_snapshot = assembled_suffix in {".ma", ".mb"}
         scene_path = None
         if is_maya_snapshot:
-            scene_path = version_dir / f"asset{assembled_suffix}"
+            scene_path = version_dir / self._published_scene_name(
+                assembly.identity, assembled_suffix
+            )
             scene_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(assembled.scene_path, scene_path)
         usd_path = (
@@ -298,7 +300,7 @@ class AssetContextService:
         )
         if scene_path is None:
             scene_path = self._write_maya_usd_wrapper(
-                version_dir / "asset.ma",
+                version_dir / self._published_scene_name(assembly.identity, ".ma"),
                 usd_path,
                 assembly.identity.name,
             )
@@ -362,6 +364,15 @@ class AssetContextService:
             encoding="utf-8",
         )
         return target
+
+    @staticmethod
+    def _published_scene_name(identity: AssetIdentity, suffix: str) -> str:
+        """Return the canonical Maya filename for a published Context Pack."""
+
+        extension = str(suffix or "").strip().lower()
+        if extension and not extension.startswith("."):
+            extension = f".{extension}"
+        return f"{identity.name}_{identity.variant or 'default'}{extension}"
 
     @staticmethod
     def _write_asset_usd(assembly: AssetContextAssembly, target: Path) -> Path:
@@ -710,11 +721,18 @@ class AssetContextService:
         publish_record = read_json(latest_version_dir / "publish.json", {}) or {}
         publish_files = publish_record.get("files") or {}
         assembled = self.current_assembly(assembly)
-        requires_maya_scene = bool(assembled and assembled.scene_path.suffix.lower() in {".ma", ".mb"})
-        if requires_maya_scene:
-            scene_name = str(publish_files.get("ma") or publish_files.get("mb") or "")
-            if not scene_name or not (latest_version_dir / Path(scene_name).name).exists():
-                return True
+        scene_name = str(publish_files.get("ma") or publish_files.get("mb") or "")
+        scene_suffix = (
+            assembled.scene_path.suffix.lower()
+            if assembled and assembled.scene_path.suffix.lower() in {".ma", ".mb"}
+            else ".ma"
+        )
+        expected_scene_name = self._published_scene_name(assembly.identity, scene_suffix)
+        if (
+            Path(scene_name).name != expected_scene_name
+            or not (latest_version_dir / expected_scene_name).exists()
+        ):
+            return True
         if not (latest_version_dir / "asset.usda").exists():
             return True
         composition = publish_record.get("composition") or {}
@@ -755,7 +773,9 @@ class AssetContextService:
         if not source:
             raise RuntimeError("Context pack has no Maya scene representation to write an asset scene.")
         scene_suffix = source.suffix.lower() if source.suffix.lower() in {".ma", ".mb"} else ".ma"
-        scene_path = version_dir / f"asset{scene_suffix}"
+        scene_path = version_dir / self._published_scene_name(
+            assembly.identity, scene_suffix
+        )
         scene_path.parent.mkdir(parents=True, exist_ok=True)
         if maya_scene_builder:
             maya_scene_builder(source, scene_path)

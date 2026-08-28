@@ -384,7 +384,7 @@ class ReviewWorkflowService:
                 raise ValueError(f"Unknown Shot Composition members in {name}: {', '.join(missing)}")
             # Review Layer Definition owns identity/display-layer membership
             # only. Camera, order, placeholder, resolution and all other
-            # output behavior belong to the versioned playblast_settings Data
+            # output behavior belongs to the versioned Render Manifest Data
             # Publish and are resolved at submit time.
             layer = {
                 "uid": str(incoming.get("uid") or f"layer-{uuid.uuid4()}"),

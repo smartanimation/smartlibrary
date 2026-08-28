@@ -820,6 +820,34 @@ def test_latest_shot_camera_falls_back_to_direct_publish(tmp_path: Path) -> None
     project_root = tmp_path / "project"
     write_config(config_dir, project_root)
     service = ShotManagerService(ProjectConfig(config_dir))
+
+
+def test_normalized_maya_timeline_starts_at_configured_frame(tmp_path: Path) -> None:
+    config_dir = tmp_path / "normalized_config"
+    project_root = tmp_path / "project"
+    write_config(config_dir, project_root)
+    service = ShotManagerService(ProjectConfig(config_dir))
+
+    assert service._anim_work_range(278, 411, [8, 8]) == [1001, 1150]
+
+
+def test_editorial_maya_timeline_preserves_cut_frames(tmp_path: Path) -> None:
+    config_dir = tmp_path / "editorial_config"
+    project_root = tmp_path / "project"
+    write_config(config_dir, project_root)
+    templates = config_dir / "templates_base.yml"
+    templates.write_text(
+        templates.read_text(encoding="utf-8")
+        + "\nmaya_timeline:\n  mode: editorial\n  normalized_start: 1001\n",
+        encoding="utf-8",
+    )
+    service = ShotManagerService(ProjectConfig(config_dir))
+    work_range = service._anim_work_range(278, 411, [8, 8])
+
+    assert work_range == [270, 419]
+    assert service._anim_cut_range_in_work(
+        work_range, 278, 411, [8, 8]
+    ) == [278, 411]
     identity = ShotIdentity("ep001", "sq010", "sh0010")
     camera_root = (
         service.shot_root(identity)

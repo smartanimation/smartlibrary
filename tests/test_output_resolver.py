@@ -167,6 +167,43 @@ def test_project_paths_partition_workspace_by_shot_department(tmp_path):
     ) == tmp_path / "workspace/drawing/ep02/s027/build/drawing/clipstudio/main/v002"
 
 
+def test_project_paths_lists_shot_construct_builds_across_tasks(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={
+            "workspace_root": "{project_root}/workspace",
+            "shot_build_root": (
+                "{workspace_root}/{workspace_partition}/"
+                "{episode}/{sequence}/{shot}/build"
+            ),
+            "shot_build": (
+                "{shot_build_root}/{department}/{dcc}/{task}/{version}"
+            ),
+            "shot_output_root": (
+                "{project_root}/production/shots/"
+                "{episode}/{sequence}/{shot}/output"
+            ),
+        },
+        shot_dept_partitions={"default": "cg", "drawing": "drawing"},
+    )
+    expected = []
+    for department, task, version in (
+        ("anim", "main", "v001"),
+        ("anim", "precomp", "v002"),
+        ("drawing", "main", "v003"),
+    ):
+        manifest = paths.shot_build_dir(
+            "ep02", "s027", "c001", department, "maya", task, version
+        ) / "build_manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}", encoding="utf-8")
+        expected.append(manifest)
+
+    assert set(
+        paths.shot_construct_build_manifests("ep02", "s027", "c001")
+    ) == set(expected)
+
+
 def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
     paths = ProjectPaths(
         tmp_path,

@@ -268,7 +268,7 @@ def _review_layer_id(value: object) -> str:
 def _resolved_review_layer_contracts(
     *,
     layer_definition: dict,
-    playblast_settings: dict,
+    render_manifest: dict,
     assembly_by_uid: dict[str, dict],
 ) -> dict[str, dict]:
     """Join membership and output behavior by Review Layer ID."""
@@ -286,11 +286,11 @@ def _resolved_review_layer_contracts(
 
     order_values = [
         _review_layer_id(value).lower()
-        for value in (playblast_settings.get("layer_order") or [])
+        for value in (render_manifest.get("layer_order") or [])
     ]
     order_by_id = {value: index for index, value in enumerate(order_values) if value}
     resolved = {}
-    for row_index, raw in enumerate(playblast_settings.get("rows") or []):
+    for row_index, raw in enumerate(render_manifest.get("rows") or []):
         row = dict(raw or {})
         if not row.get("enabled", True):
             continue
@@ -1158,14 +1158,14 @@ def _run_scene_construction(
         for layer in layer_definition.get("layers") or []
         if layer.get("enabled", True)
     }
-    playblast_settings, playblast_settings_path = shot_service.latest_playblast_settings(
+    render_manifest, render_manifest_path = shot_service.latest_render_manifest(
         identity,
         plan.department,
         plan.task,
     )
     dynamic_layers = _resolved_review_layer_contracts(
         layer_definition=layer_definition,
-        playblast_settings=playblast_settings,
+        render_manifest=render_manifest,
         assembly_by_uid=assembly_by_uid,
     )
     review_contract = shot_service.load_cast(identity)
@@ -1246,8 +1246,8 @@ def _run_scene_construction(
                 "construct": construct_data,
                 "assembly": assembly_definition,
                 "layer_definition": layer_definition,
-                "playblast_settings": playblast_settings,
-                "playblast_settings_path": str(playblast_settings_path or ""),
+                "render_manifest": render_manifest,
+                "render_manifest_path": str(render_manifest_path or ""),
                 "created_at": datetime.now().isoformat(timespec="seconds"),
             },
         )
@@ -1278,21 +1278,21 @@ def _run_scene_construction(
         if isinstance(profile_resolution, (list, tuple)) and len(profile_resolution) >= 2:
             width, height = int(profile_resolution[0]), int(profile_resolution[1])
         layer_contracts = dynamic_layers
-        if not playblast_settings_path:
+        if not render_manifest_path:
             raise RuntimeError(
-                "Published playblast_settings Data was not found for "
+                "Exported render_manifest Data was not found for "
                 f"{plan.department}/{plan.task}. Publish it from Smart Playblast before Submit for Review."
             )
         if not layer_contracts:
             definition_ids = sorted(definition_layers)
             setting_ids = sorted(
                 _review_layer_id(row.get("layer") or row.get("display_layer"))
-                for row in (playblast_settings.get("rows") or [])
+                for row in (render_manifest.get("rows") or [])
                 if row.get("enabled", True)
             )
             raise RuntimeError(
                 "Review Layer ID join failed between Review Layer Definition and "
-                "playblast_settings. "
+                "render_manifest. "
                 f"Definition={definition_ids}; Settings={setting_ids}"
             )
         specs = []
@@ -1563,10 +1563,10 @@ def _run_scene_construction(
                 "construct_version": args.output_version,
                 "assembly": assembly_definition,
                 "layer_definition": layer_definition,
-                "playblast_settings": {
-                    "version": str(playblast_settings.get("version") or ""),
-                    "path": str(playblast_settings_path or ""),
-                    "fingerprint": content_fingerprint(playblast_settings),
+                "render_manifest": {
+                    "version": str(render_manifest.get("version") or ""),
+                    "path": str(render_manifest_path or ""),
+                    "fingerprint": content_fingerprint(render_manifest),
                 },
                 "layers": review_layers,
                 "precomp": str(published_review_project),
@@ -1613,7 +1613,7 @@ def _run_scene_construction(
                 "construct_version": args.output_version,
                 "source_construct": str(scene_path),
                 "review_layer_definition": str(layer_definition_path or ""),
-                "playblast_settings": str(playblast_settings_path or ""),
+                "render_manifest": str(render_manifest_path or ""),
                 "output_dir": str(submitted_dir),
                 "scene": str(scene_path),
                 "scene_path": str(scene_path),
@@ -1661,7 +1661,7 @@ def _run_scene_construction(
         "review_project": str(review_project) if review_project else "",
         "review_movie": str(review_movie) if review_movie and review_movie.is_file() else "",
         "review_layer_definition": str(layer_definition_path or ""),
-        "playblast_settings": str(playblast_settings_path or ""),
+        "render_manifest": str(render_manifest_path or ""),
         "build_overrides": build_overrides,
         "canonical_fingerprint": str(args.canonical_fingerprint or ""),
         "canonical_reused": canonical_reused,

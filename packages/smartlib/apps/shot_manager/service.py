@@ -342,6 +342,16 @@ class ShotManagerService:
             department, dcc, task, version,
         )
 
+    def shot_construct_build_manifests(
+        self, identity: ShotIdentity, department: str = ""
+    ) -> tuple[Path, ...]:
+        return self.paths.shot_construct_build_manifests(
+            identity.episode,
+            identity.sequence,
+            identity.shot,
+            department,
+        )
+
     def legacy_shot_build_root(self, identity: ShotIdentity) -> Path:
         return self.shot_output_root(identity) / "scene_build"
 
@@ -1034,6 +1044,30 @@ class ShotManagerService:
                         )
         return sorted(files, key=lambda item: (item.department, item.task, item.option, item.version, item.take, item.file.lower()), reverse=True)
 
+    def list_shot_construct_work_files(
+        self, identity: ShotIdentity, tool_name: str = "maya"
+    ) -> list[ShotWorkFile]:
+        """List all shot Work scenes across departments and tasks."""
+        files_by_path: dict[str, ShotWorkFile] = {}
+        for department in self.shot_departments:
+            for task in self.shot_tasks(department):
+                for item in self.list_shot_work_files(
+                    identity,
+                    department=department,
+                    option=None,
+                    tool_name=tool_name,
+                    task=task,
+                ):
+                    files_by_path[item.path] = item
+        return sorted(
+            files_by_path.values(),
+            key=lambda item: (
+                Path(item.path).stat().st_mtime if Path(item.path).is_file() else 0,
+                item.path.lower(),
+            ),
+            reverse=True,
+        )
+
     def list_sequence_work_files(
         self,
         identity: SequenceIdentity,
@@ -1248,30 +1282,18 @@ class ShotManagerService:
         records = []
         department_filter = _normalize_work_option(department) if department else ""
         task_filter = _normalize_work_option(task) if task else ""
-        roots = [
-            (self.shot_build_root(identity, department_filter), "*/*/*/v*/build_manifest.json"),
-            (self.shot_build_root(identity, department_filter), "*/*/v*/build_manifest.json"),
-            (self.unpartitioned_shot_build_root(identity), "*/*/*/v*/build_manifest.json"),
-            (self.unpartitioned_shot_build_root(identity), "*/*/v*/build_manifest.json"),
-            (self.legacy_shot_build_root(identity), "*/*/v*/build_manifest.json"),
-        ]
-        for manifest_path in (
-            manifest_path
-            for root, pattern in roots
-            for manifest_path in (root.glob(pattern) if root.is_dir() else [])
+        for manifest_path in self.shot_construct_build_manifests(
+            identity, department_filter
         ):
             manifest = read_json(manifest_path, {}) or {}
-            relative_parts = manifest_path.relative_to(
-                next(root for root, _pattern in roots if manifest_path.is_relative_to(root))
-            ).parts
             build_department = _normalize_work_option(
-                str(manifest.get("department") or relative_parts[0])
+                str(manifest.get("department") or "")
             )
             build_task = _normalize_work_option(
-                str(manifest.get("task") or relative_parts[-3])
+                str(manifest.get("task") or "main")
             )
             build_dcc = _normalize_work_option(
-                str(manifest.get("dcc") or (relative_parts[1] if len(relative_parts) >= 5 else "maya"))
+                str(manifest.get("dcc") or "maya")
             )
             if department_filter and build_department != department_filter:
                 continue
@@ -1302,10 +1324,8 @@ class ShotManagerService:
         return sorted(
             records,
             key=lambda item: (
-                int(str(item.get("version") or "v000")[1:])
-                if str(item.get("version") or "")[1:].isdigit()
-                else -1,
                 str(item.get("updated") or ""),
+                str(item.get("path") or "").lower(),
             ),
             reverse=True,
         )
@@ -1452,8 +1472,17 @@ class ShotManagerService:
             output_override = str(row.get("output_override") or "").strip()
             pattern_template = output_override or filename_template
             output = None
+            reserved_output_dir = str(row.get("output_dir") or "").strip()
+            reserved_pattern = str(row.get("output_pattern") or "").strip()
             while True:
                 take_label = f"t{take_number:03d}"
+                if reserved_output_dir and reserved_pattern:
+                    output_directory = Path(reserved_output_dir)
+                    pattern = Path(reserved_pattern).name
+                    output_record_name = Path(
+                        str(row.get("receipt_path") or f"output_{take_label}.json")
+                    ).name
+                    break
                 output = self.output_resolver.resolve(
                     "__preview_render_override__" if output_override else "preview_render",
                     {
@@ -1475,13 +1504,30 @@ class ShotManagerService:
                     default_directory="{shot_render_root}/{department}/layers/{preview}/v{version}",
                     default_filename=pattern_template.replace("*", "_"),
                 )
-                output_record = output.directory / f"output_{take_label}.json"
+                # The common ProjectPaths resolver owns the physical Render Layer
+                # location. A naming config may customize the filename, but must
+                # not redirect layer material under the production shot root.
+                output_directory = (
+                    output.directory
+                    if output_override
+                    else self.paths.shot_render_layer_version_dir(
+                        identity.episode,
+                        identity.sequence,
+                        identity.shot,
+                        clean_department,
+                        clean_group,
+                        version_label,
+                    )
+                )
+                output_record = output_directory / f"output_{take_label}.json"
                 if not output_record.exists() and not any(
-                    output.directory.glob(output.filename.replace("####", "*"))
+                    output_directory.glob(output.filename.replace("####", "*"))
                 ):
                     break
                 take_number += 1
-            pattern = output.filename
+            if not reserved_output_dir:
+                pattern = output.filename
+                output_record_name = f"output_{take_label}.json"
             groups.append(
                 {
                     "group": clean_group,
@@ -1489,8 +1535,8 @@ class ShotManagerService:
                     "order": order,
                     "version": version_label,
                     "take": take_label,
-                    "output_dir": str(output.directory),
-                    "output_record": f"output_{take_label}.json",
+                    "output_dir": output_directory.as_posix(),
+                    "output_record": output_record_name,
                     "pattern": pattern,
                     "camera": str(row.get("camera") or ""),
                     "frame_range": [int(row.get("start", 1)), int(row.get("end", 1))],
@@ -1503,6 +1549,9 @@ class ShotManagerService:
                         or row.get("precomp_placeholder")
                         or clean_group
                     ),
+                    "settings_version": str(settings.get("version") or settings.get("settings_version") or ""),
+                    "settings_fingerprint": str(settings.get("fingerprint") or ""),
+                    "settings_path": str(settings.get("manifest_path") or ""),
                 }
             )
         return {
@@ -1602,6 +1651,10 @@ class ShotManagerService:
                 if source_scene
                 else "",
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "status": "complete",
+                "settings_version": str(group.get("settings_version") or ""),
+                "settings_fingerprint": str(group.get("settings_fingerprint") or ""),
+                "settings_path": str(group.get("settings_path") or ""),
             }
             output_record = str(group.get("output_record") or f"output_{take_label}.json")
             written.append(write_json(output_dir / output_record, output_data))
@@ -3841,7 +3894,7 @@ class ShotManagerService:
     ) -> Path:
         """Write a DCC scene component as versioned shot data."""
         clean_type = _clean_publish_token(data_type)
-        if clean_type not in {"camera", "light", "playblast_settings"}:
+        if clean_type not in {"camera", "light", "render_manifest"}:
             raise ValueError(f"Unsupported shot scene data type: {data_type}")
         clean_target = _clean_publish_token(target or "main")
         clean_subset = _clean_publish_token(subset or "main")
@@ -3852,8 +3905,14 @@ class ShotManagerService:
         version_dir.mkdir(parents=True, exist_ok=True)
 
         data = (
-            _normalized_playblast_settings(payload)
-            if clean_type == "playblast_settings"
+            self._prepare_playblast_settings_manifest(
+                identity,
+                payload,
+                department=clean_target,
+                task=clean_subset,
+                settings_version=version_label,
+            )
+            if clean_type == "render_manifest"
             else dict(payload)
         )
         data.update(
@@ -3868,9 +3927,24 @@ class ShotManagerService:
                 "comment": comment,
             }
         )
+        if clean_type == "render_manifest":
+            data["fingerprint"] = _playblast_settings_fingerprint(data)
         if source_workfile:
             data["source_workfile"] = self._relative_to_project(Path(source_workfile))
-        output_path = write_json(version_dir / output_name, data)
+        output_path = version_dir / output_name
+        if clean_type == "render_manifest":
+            data["manifest_path"] = output_path.as_posix()
+        output_path = write_json(output_path, data)
+        if clean_type == "render_manifest":
+            for item in data.get("items") or []:
+                receipt_path = Path(str(item.get("receipt_path") or ""))
+                receipt = read_json(receipt_path, {}) or {}
+                receipt.update({
+                    "settings_version": version_label,
+                    "settings_fingerprint": data["fingerprint"],
+                    "settings_path": output_path.as_posix(),
+                })
+                write_json(receipt_path, receipt)
         write_json(
             version_dir / "data.json",
             {
@@ -3886,6 +3960,103 @@ class ShotManagerService:
         write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/{output_name}"})
         self._update_versions(base_dir / "versions.json", version_label)
         return output_path
+
+    def _prepare_playblast_settings_manifest(
+        self,
+        identity: ShotIdentity,
+        payload: dict[str, Any],
+        *,
+        department: str,
+        task: str,
+        settings_version: str,
+    ) -> dict[str, Any]:
+        """Create an AE input manifest from successfully generated materials."""
+
+        data = _normalized_playblast_settings(payload)
+        data["department"] = department
+        data["task"] = task
+        outputs = self.latest_preview_render_outputs(identity, department=department)
+        rows = []
+        items = []
+        for row in data.get("rows") or []:
+            layer_id = str(row.get("review_layer_id") or row.get("layer") or "")
+            output = outputs.get(layer_id) or outputs.get(_clean_publish_token(layer_id))
+            if not output:
+                raise RuntimeError(
+                    f"Playblast output is not complete for Review Layer: {layer_id}"
+                )
+            resolved = dict(row)
+            output_dir = Path(str(output.get("output_dir") or ""))
+            pattern = str(output.get("pattern") or "")
+            receipt = Path(str(output.get("output_json") or ""))
+            first_file = output_dir / str(output.get("first_file") or "")
+            frame_range = list(output.get("frame_range") or [])
+            resolution = list(output.get("resolution") or [])
+            expected_count = (
+                max(1, int(frame_range[1]) - int(frame_range[0]) + 1)
+                if len(frame_range) >= 2
+                else 0
+            )
+            if expected_count and int(output.get("file_count") or 0) != expected_count:
+                raise RuntimeError(f"Playblast frame count is incomplete: {layer_id}")
+            resolved.update(
+                {
+                    "version": int(str(output.get("version") or "v001")[1:]),
+                    "take": int(str(output.get("take") or "t001")[1:]),
+                    "output_dir": output_dir.as_posix(),
+                    "output_pattern": (output_dir / pattern).as_posix(),
+                    "receipt_path": receipt.as_posix(),
+                    "material_status": "complete",
+                }
+            )
+            rows.append(resolved)
+            items.append(
+                {
+                    "id": layer_id,
+                    "name": layer_id,
+                    "layer": layer_id,
+                    "order": int(resolved.get("order", len(items))),
+                    "status": "ready",
+                    "sourcePath": first_file.as_posix(),
+                    "first_frame_file": first_file.as_posix(),
+                    "outputPath": (output_dir / pattern).as_posix(),
+                    "image_sequence": (output_dir / pattern).as_posix(),
+                    "receipt_path": receipt.as_posix(),
+                    "version": str(output.get("version") or ""),
+                    "take": str(output.get("take") or ""),
+                    "camera": str(output.get("camera") or ""),
+                    "frame_range": frame_range,
+                    "resolution": resolution,
+                    "file_count": int(output.get("file_count") or 0),
+                }
+            )
+        data.update(
+            {
+                "schema": "smartpipeline.render_manifest.v1",
+                "name": f"{identity.shot}_{department}_render_manifest_{settings_version}",
+                "source": {"dcc": "maya", "generator": "smart_playblast"},
+                "project": self.project_config.project_name,
+                "projectRoot": self.project_config.project_root.as_posix()
+                if self.project_config.project_root
+                else "",
+                "configDir": self.project_config.config_dir.as_posix(),
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "shot_root": self.shot_root(identity).as_posix(),
+                "resolution": list(
+                    (self.project_config.base.get("anchors") or {}).get("resolution")
+                    or []
+                ),
+                "settings_version": settings_version,
+                "status": "complete",
+                "rows": rows,
+                "items": items,
+                "layer_order": [item["layer"] for item in items],
+                "exported_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        return data
 
     def export_sequence_scene_data(
         self,
@@ -5262,14 +5433,19 @@ class ShotManagerService:
             return [int(handles[0] or 0), int(handles[1] or 0)]
         return [0, 0]
 
-    @staticmethod
-    def _anim_work_range(cut_in: Any, cut_out: Any, handles: list[int]) -> list[int | None]:
+    def _anim_work_range(self, cut_in: Any, cut_out: Any, handles: list[int]) -> list[int | None]:
         try:
             duration = int(cut_out) - int(cut_in) + 1
         except (TypeError, ValueError):
             return [None, None]
         total = max(1, duration + int(handles[0]) + int(handles[1]))
-        return [1001, 1001 + total - 1]
+        policy = self.project_config.base.get("maya_timeline") or {}
+        mode = str(policy.get("mode") or "normalized").strip().lower()
+        if mode == "editorial":
+            start = int(cut_in) - int(handles[0])
+        else:
+            start = int(policy.get("normalized_start") or 1001)
+        return [start, start + total - 1]
 
     @staticmethod
     def _anim_cut_range_in_work(
@@ -5866,7 +6042,7 @@ class ShotManagerService:
             / _clean_publish_token(department or "anim")
         )
 
-    def latest_playblast_settings(
+    def latest_render_manifest(
         self,
         identity: ShotIdentity,
         department: str = "anim",
@@ -5883,13 +6059,13 @@ class ShotManagerService:
         clean_task = _clean_publish_token(task or "main")
         candidates = (
             self.shot_data_root(identity)
-            / "playblast_settings"
+            / "render_manifest"
             / clean_department
             / clean_task,
             # Compatibility with early publishes whose payload target and
             # directory department did not agree.
             self.shot_data_root(identity)
-            / "playblast_settings"
+            / "render_manifest"
             / clean_department,
         )
         for root in candidates:
@@ -5899,12 +6075,13 @@ class ShotManagerService:
             path_text = str(latest.get("path") or "")
             paths = [
                 root / path_text if path_text else Path(),
-                version_dir / "playblast_settings.json",
-                version_dir / "playblast.json",
+                version_dir / "render_manifest.json",
             ]
             for path in paths:
                 if path and path.is_file():
-                    return read_json(path, {}) or {}, path
+                    data = read_json(path, {}) or {}
+                    data["manifest_path"] = path.as_posix()
+                    return data, path
 
         # The Data browser is authoritative about which version is latest and
         # also supports custom folder layouts created by project config.
@@ -5912,7 +6089,7 @@ class ShotManagerService:
             row
             for row in self.list_shot_data_versions(identity)
             if row.latest
-            and str(row.name).replace("\\", "/").startswith("playblast_settings/")
+            and str(row.name).replace("\\", "/").startswith("render_manifest/")
         ]
         preferred = [
             row for row in rows
@@ -5921,11 +6098,22 @@ class ShotManagerService:
         ]
         for row in preferred or rows:
             version_dir = Path(row.path)
-            for filename in ("playblast_settings.json", "playblast.json"):
+            for filename in ("render_manifest.json",):
                 path = version_dir / filename
                 if path.is_file():
-                    return read_json(path, {}) or {}, path
+                    data = read_json(path, {}) or {}
+                    data["manifest_path"] = path.as_posix()
+                    return data, path
         return {}, None
+
+    def latest_playblast_settings(
+        self,
+        identity: ShotIdentity,
+        department: str = "anim",
+        task: str = "main",
+    ) -> tuple[dict[str, Any], Path | None]:
+        """Deprecated API alias; exported cross-DCC data is Render Manifest."""
+        return self.latest_render_manifest(identity, department, task)
 
     def review_spec_path(
         self,
@@ -6633,6 +6821,26 @@ def _normalized_playblast_settings(payload: dict[str, Any]) -> dict[str, Any]:
         for row in sorted(rows, key=lambda value: int(value.get("order", 0)))
     ]
     return data
+
+
+def _playblast_settings_fingerprint(payload: dict[str, Any]) -> str:
+    """Return the immutable plan identity shared by Settings and receipts."""
+
+    data = {
+        "schema": "smartpipeline.render_manifest.v1",
+        "episode": str(payload.get("episode") or ""),
+        "sequence": str(payload.get("sequence") or ""),
+        "shot": str(payload.get("shot") or ""),
+        "department": str(payload.get("department") or payload.get("target") or ""),
+        "task": str(payload.get("task") or payload.get("subset") or ""),
+        "settings_version": str(payload.get("settings_version") or payload.get("version") or ""),
+        "layer_order": list(payload.get("layer_order") or []),
+        "rows": list(payload.get("rows") or []),
+    }
+    encoded = json.dumps(
+        data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _normalize_role(value: Any) -> str:

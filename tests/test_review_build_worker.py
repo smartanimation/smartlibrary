@@ -62,7 +62,7 @@ def test_camera_for_layer_accepts_namespace_and_maya_numeric_suffix() -> None:
     )
 
 
-def test_review_layer_contract_joins_definition_and_playblast_settings() -> None:
+def test_review_layer_contract_joins_definition_and_render_manifest() -> None:
     contracts = worker._resolved_review_layer_contracts(
         layer_definition={
             "layers": [
@@ -74,7 +74,7 @@ def test_review_layer_contract_joins_definition_and_playblast_settings() -> None
                 }
             ]
         },
-        playblast_settings={
+        render_manifest={
             "layer_order": ["CHA"],
             "rows": [
                 {
@@ -112,7 +112,7 @@ def test_review_layer_contract_does_not_take_output_settings_from_definition() -
                 "resolution": {"width": 1, "height": 1},
             }]
         },
-        playblast_settings={
+        render_manifest={
             "rows": [{
                 "layer": "BGA", "display_layer": "BGA", "camera": "cam",
                 "width": 1280, "height": 720, "start": 278, "end": 411,

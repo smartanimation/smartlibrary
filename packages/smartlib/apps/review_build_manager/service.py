@@ -155,7 +155,7 @@ class ReviewBuildManagerService:
         workflow = self.review_workflow(identity)
         _assembly, assembly_path = workflow.latest_assembly()
         layers, layers_path = workflow.latest_layer_definition()
-        settings, settings_path = self.shots.latest_playblast_settings(
+        settings, settings_path = self.shots.latest_render_manifest(
             identity, department, task
         )
         def normalized_id(value) -> str:
@@ -183,16 +183,16 @@ class ReviewBuildManagerService:
         if not layers_path:
             errors.append("Review Layer Definition is not published.")
         if not settings_path:
-            errors.append(f"playblast_settings is not published for {department}/{task}.")
+            errors.append(f"render_manifest is not exported for {department}/{task}.")
         if not definition_ids:
             errors.append("Review Layer Definition has no enabled layers.")
         if not setting_ids:
-            errors.append("playblast_settings has no enabled rows.")
+            errors.append("render_manifest has no enabled rows.")
         duplicate_ids = sorted({value for value in setting_id_list if setting_id_list.count(value) > 1})
         for layer_id in duplicate_ids:
-            errors.append(f"Duplicate playblast_settings Review Layer ID: {layer_id}")
+            errors.append(f"Duplicate render_manifest Review Layer ID: {layer_id}")
         for layer_id in sorted(definition_ids - setting_ids):
-            errors.append(f"playblast_settings row is missing: {layer_id}")
+            errors.append(f"render_manifest row is missing: {layer_id}")
         for layer_id in sorted(setting_ids - definition_ids):
             errors.append(f"Review Layer Definition is missing: {layer_id}")
         for row in rows:
@@ -215,8 +215,8 @@ class ReviewBuildManagerService:
             "errors": errors,
             "assembly_path": assembly_path,
             "layer_definition_path": layers_path,
-            "playblast_settings_path": settings_path,
-            "playblast_settings": settings,
+            "render_manifest_path": settings_path,
+            "render_manifest": settings,
         }
 
     def asset_context_profiles(self) -> list[str]:

@@ -9,7 +9,11 @@ Review関連実装の正本は[`docs/architecture/review-artifact-lifecycle.md`]
 - `output`: InternalまたはClientへ実際に提出した成果物のみ。
 - `publish/precomp`: 承認済みPreComp Project。
 - `PreComp`: CHA、BGAなどのPreCompを内包し、Scale、Position、構図を確定したReview Project AEP。
-- Playblast SettingsにScale、Positionまたは確定した構図を保存しない。
+- Render ManifestにScale、Positionまたは確定した構図を保存しない。
+- Mayaシーン内のPlayblast SettingsはDCCローカルな書き出しドラフトとし、
+  AE Build入力には使用しない。
+- DCC共通のAE Build入力は`render_manifest.json`
+  (`smartpipeline.render_manifest.v1`)とする。
 - 初回AE Buildは素材を中央へ配置する。
 - Scale、Positionおよび構図の確定はPreCompタスクが所有する。
 
@@ -25,4 +29,3 @@ Review関連実装の正本は[`docs/architecture/review-artifact-lifecycle.md`]
 ## Conflict Handling
 
 依頼内容が上記規則または正本のアーキテクチャ文書と矛盾する場合、実装前に矛盾点と影響範囲を説明して確認する。
-

@@ -73,3 +73,9 @@ templates:
 
   # さらにその下の階層も必要なら追加
   tool_dir: "{setting_root}/tools"
+
+maya_timeline:
+  # normalized: Maya work ranges start at normalized_start.
+  # editorial: Maya cut ranges retain the Editorial cut_in/cut_out values.
+  mode: normalized
+  normalized_start: 1001

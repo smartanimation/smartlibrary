@@ -12,6 +12,7 @@ tests
 !docs/architecture/*.md
 !scripts/publish_scene_data.py
 !scripts/publish_precomp.py
+!scripts/list_ae_render_manifests.py
 !scripts/validate_scene_data.py
 !scripts/smart_delivery_package.py
 !packages/smartlib/dcc/maya/shot_scene_data.py
