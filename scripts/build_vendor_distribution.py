@@ -143,12 +143,28 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _smarttools_dependency(source_library: Path) -> dict[str, str]:
+    import yaml
+
+    path = source_library / "config" / "distribution" / "smarttools-runtime.yml"
+    with path.open("r", encoding="utf-8") as stream:
+        data = yaml.safe_load(stream) or {}
+    return {
+        "version": str(data["version"]),
+        "platform": str(data["platform"]),
+        "artifact": str(data["artifact"]),
+    }
+
+
 def build_distribution(args: argparse.Namespace) -> Path:
     source_library = args.source_library.resolve()
     source_projects = args.source_projects.resolve()
     source_tools = args.source_tools.resolve()
     output_root = args.output_root.resolve()
-    for source in (source_library, source_projects, source_tools):
+    sources = [source_library, source_projects]
+    if args.tools_mode == "copy":
+        sources.append(source_tools)
+    for source in sources:
         if (
             output_root == source
             or output_root in source.parents
@@ -163,10 +179,11 @@ def build_distribution(args: argparse.Namespace) -> Path:
     tools = staging / "smarttools"
     try:
         library.mkdir(parents=True)
-        tools.mkdir(parents=True)
         _copy_required(source_library, library, LIBRARY_DIRS)
         _copy_required(source_library, library, LIBRARY_FILES)
-        _copy_required(source_tools, tools, TOOLS_DIRS)
+        if args.tools_mode == "copy":
+            tools.mkdir(parents=True)
+            _copy_required(source_tools, tools, TOOLS_DIRS)
         _write_launcher(library)
 
         if args.projects == "all":
@@ -199,7 +216,6 @@ def build_distribution(args: argparse.Namespace) -> Path:
             "source": {
                 "smartlibrary": source_library.as_posix(),
                 "smartprojects": source_projects.as_posix(),
-                "smarttools": source_tools.as_posix(),
             },
             "profile": "vendor-minimal",
             "included_tools": [
@@ -209,21 +225,27 @@ def build_distribution(args: argparse.Namespace) -> Path:
                 "Preflight Validation",
             ],
             "excluded_tool_runtimes": ["ffmpeg", "maya", "openrv", "usd"],
+            "smarttools_runtime": _smarttools_dependency(source_library),
             "trees": {
                 "smartlibrary": _tree_summary(library),
                 "smartprojects": _tree_summary(projects),
-                "smarttools": _tree_summary(tools),
             },
         }
+        if args.tools_mode == "copy":
+            manifest["source"]["smarttools"] = source_tools.as_posix()
+            manifest["trees"]["smarttools"] = _tree_summary(tools)
         manifest["launcher_sha256"] = _sha256(library / "SmartLauncher.bat")
         (staging / "distribution.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
+        replace_names = ["smartlibrary"]
+        if args.tools_mode == "copy":
+            replace_names.append("smarttools")
         existing = [
             output_root / name
-            for name in ("smartlibrary", "smarttools")
+            for name in replace_names
             if (output_root / name).exists()
         ]
         if existing and not args.replace:
@@ -235,7 +257,7 @@ def build_distribution(args: argparse.Namespace) -> Path:
             for target in existing:
                 shutil.move(str(target), backup / target.name)
 
-        for name in ("smartlibrary", "smarttools"):
+        for name in replace_names:
             shutil.move(str(staging / name), output_root / name)
         destination_projects = output_root / "smartprojects"
         if not destination_projects.exists():
@@ -264,6 +286,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-library", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--source-projects", type=Path, default=Path(__file__).resolve().parents[2] / "smartprojects")
     parser.add_argument("--source-tools", type=Path, default=Path(__file__).resolve().parents[2] / "smarttools")
+    parser.add_argument(
+        "--tools-mode",
+        choices=("external", "copy"),
+        default="external",
+        help="Keep SmartTools as an external versioned Runtime, or copy it for legacy bundles.",
+    )
     parser.add_argument("--projects", choices=("none", "studio", "all"), default="studio")
     parser.add_argument("--studio-id", default="vendor_test")
     parser.add_argument("--studio-name", default="Vendor Test")
