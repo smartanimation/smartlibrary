@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependency
+        run: python -m pip install "PyYAML>=6,<7"
+
+      - name: Read SmartTools Runtime dependency
+        id: runtime
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, pathlib, yaml
+          data = yaml.safe_load(pathlib.Path("config/distribution/smarttools-runtime.yml").read_text())
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"tag={data['release_tag']}\n")
+              stream.write(f"artifact={data['artifact']}\n")
+          PY
+
+      - name: Verify SmartTools Runtime Release
+        shell: bash
+        run: |
+          assets="$(gh release view "${{ steps.runtime.outputs.tag }}" --json assets --jq '.assets[].name')"
+          grep -Fx "${{ steps.runtime.outputs.artifact }}" <<<"$assets"
+          grep -Fx "${{ steps.runtime.outputs.artifact }}.sha256" <<<"$assets"
+
+      - name: Build SmartPipeline Release
+        run: python scripts/build_smartlibrary_release.py --version "${{ env.RELEASE_TAG }}" --output-dir dist
+
+      - name: Verify SmartPipeline Release
+        shell: bash
+        run: |
+          python scripts/verify_smartlibrary_release.py \
+            --artifact "dist/smartpipeline-${RELEASE_TAG}-windows-x64.zip" \
+            --checksum "dist/smartpipeline-${RELEASE_TAG}-windows-x64.zip.sha256"
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          gh release create "${RELEASE_TAG}" \
+            "dist/smartpipeline-${RELEASE_TAG}-windows-x64.zip" \
+            "dist/smartpipeline-${RELEASE_TAG}-windows-x64.zip.sha256" \
+            --verify-tag \
+            --generate-notes \
+            --title "SmartPipeline ${RELEASE_TAG}"

@@ -2,6 +2,7 @@ schema: smartpipeline.smarttools-runtime.v1
 version: 1.0.0
 platform: windows-x64
 artifact: smarttools-runtime-windows-x64-1.0.0.zip
+release_tag: smarttools-runtime-v1.0.0
 
 layout:
   - python
