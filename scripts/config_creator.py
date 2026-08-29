@@ -9,6 +9,7 @@ from PySide6 import QtWidgets, QtCore, QtGui
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PIPELINE_ROOT = os.path.normpath(os.path.join(CURRENT_DIR, ".."))
 SMARTPROJECTS_ROOT = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG_DIR") or os.path.normpath(os.path.join(PIPELINE_ROOT, "..", "smartprojects"))
+STUDIO_CONFIG_PATH = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG") or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
 PROJECTS_ROOT = os.environ.get("SMARTPIPELINE_PROJECT_CONFIG_ROOT") or os.path.join(SMARTPROJECTS_ROOT, "config")
 DEFAULT_DIR = os.path.join(PIPELINE_ROOT, "config", "default")
 GLOBAL_SOFT_PATH = os.path.join(DEFAULT_DIR, "software_settings.yml")
@@ -114,9 +115,11 @@ def source_software_id(registration_id_value, config=None):
 class ConfigCreatorApp(QtWidgets.QMainWindow):
     config_saved = QtCore.Signal()
 
-    def __init__(self, target_project=None):
+    def __init__(self, target_project=None, config_mode=None):
         super().__init__()
-        self.setWindowTitle("Project Config Creator")
+        self.config_mode = str(config_mode or os.environ.get("SMARTPIPELINE_CONFIG_MODE") or "internal").strip().lower()
+        self.vendor_mode = self.config_mode == "vendor"
+        self.setWindowTitle("Studio Config Creator" if self.vendor_mode else "Project Config Creator")
         #self.setMinimumWidth(1100); self.setMinimumHeight(900)
 
         # OSのアイコンを取得するためのプロバイダー
@@ -136,7 +139,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._current_output_key = None
 
         self.setup_ui()
+        self._load_studio_editor()
 
+        if self.vendor_mode:
+            return
         if self.target_project:
             self.load_project_config(self.target_project)
         else:
@@ -160,6 +166,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         main_layout.addLayout(form)
 
         self.tabs = QtWidgets.QTabWidget()
+        self.studio_tab = self.setup_studio_tab()
         self.soft_tab = self.setup_software_tab()
         self.anchors_table = self.create_anchors_page()
         self.shot_depts_list = self.create_shot_departments_page()
@@ -175,6 +182,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.resolvers_tab = self.setup_resolvers_tab()
         self.review_tab = self.setup_review_tab()
 
+        self.tabs.addTab(self.studio_tab, "Studio")
         self.tabs.addTab(self.soft_tab, "Softwares")
         self.tabs.addTab(self.anchors_table["widget"], "Anchors")
         self.tabs.addTab(self.shot_depts_list["widget"], "Shot Depts")
@@ -191,6 +199,20 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.path_input.textChanged.connect(self._refresh_template_files_table)
         main_layout.addWidget(self.tabs)
 
+        if self.vendor_mode:
+            self.name_input.setVisible(False)
+            self.path_input.setVisible(False)
+            self.browse_btn.setVisible(False)
+            for row in range(form.rowCount()):
+                label = form.itemAt(row, QtWidgets.QFormLayout.LabelRole)
+                field = form.itemAt(row, QtWidgets.QFormLayout.FieldRole)
+                if label and label.widget():
+                    label.widget().setVisible(False)
+                if field and field.widget():
+                    field.widget().setVisible(False)
+            while self.tabs.count() > 1:
+                self.tabs.removeTab(1)
+
         command_layout = QtWidgets.QHBoxLayout()
         command_layout.addStretch()
         self.revert_btn = QtWidgets.QPushButton("Revert")
@@ -203,6 +225,66 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         command_layout.addWidget(self.revert_btn)
         command_layout.addWidget(self.save_btn)
         main_layout.addLayout(command_layout)
+
+    def setup_studio_tab(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(page)
+        self.studio_id_input = QtWidgets.QLineEdit()
+        self.studio_id_input.setPlaceholderText("vendor_a")
+        self.studio_name_input = QtWidgets.QLineEdit()
+        self.studio_name_input.setPlaceholderText("Vendor A")
+        self.studio_role_combo = QtWidgets.QComboBox()
+        self.studio_role_combo.addItem("Internal", "internal")
+        self.studio_role_combo.addItem("Vendor", "vendor")
+        layout.addRow("Studio ID:", self.studio_id_input)
+        layout.addRow("Studio Name:", self.studio_name_input)
+        layout.addRow("Role:", self.studio_role_combo)
+        note = QtWidgets.QLabel("Studio ID is used in delivery paths. Use lowercase letters, numbers, '_' or '-'.")
+        note.setWordWrap(True)
+        layout.addRow(note)
+        self.save_studio_btn = QtWidgets.QPushButton("Save Studio")
+        self.save_studio_btn.clicked.connect(self._save_studio_from_ui)
+        layout.addRow(self.save_studio_btn)
+        return page
+
+    def _load_studio_editor(self):
+        data = load_yml(STUDIO_CONFIG_PATH)
+        studio = dict(data.get("studio") or {})
+        legacy = dict(data.get("smart_delivery") or {})
+        studio_id = str(studio.get("id") or legacy.get("vendor") or "").strip()
+        self.studio_id_input.setText(studio_id)
+        self.studio_name_input.setText(str(studio.get("name") or studio_id).strip())
+        role = str(studio.get("role") or "internal").strip().lower()
+        index = self.studio_role_combo.findData(role)
+        self.studio_role_combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _save_studio_config(self):
+        studio_id = self.studio_id_input.text().strip()
+        studio_name = self.studio_name_input.text().strip()
+        if not studio_id and not studio_name and not self.vendor_mode:
+            return
+        if not studio_id:
+            raise ValueError("Studio ID is required.")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", studio_id):
+            raise ValueError("Studio ID must start with a lowercase letter or number and contain only lowercase letters, numbers, '_' or '-'.")
+        if not studio_name:
+            raise ValueError("Studio Name is required.")
+        data = load_yml(STUDIO_CONFIG_PATH)
+        data.setdefault("schema", "smartpipeline.studio.v1")
+        data["studio"] = {
+            "id": studio_id,
+            "name": studio_name,
+            "role": str(self.studio_role_combo.currentData() or "internal"),
+        }
+        save_yml(STUDIO_CONFIG_PATH, data)
+
+    def _save_studio_from_ui(self):
+        try:
+            self._save_studio_config()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Studio Configuration Failed", str(exc))
+            return
+        QtWidgets.QMessageBox.information(self, "Saved", "Studio configuration saved.")
 
     def _update_maya_timeline_controls(self, _index=None):
         mode = str(self.maya_timeline_mode.currentData() or "normalized")
@@ -2148,6 +2230,16 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         save_yml(path, data)
 
     def save_config(self):
+        try:
+            self._save_studio_config()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Studio Configuration Failed", str(exc))
+            return
+        if self.vendor_mode:
+            self.config_saved.emit()
+            QtWidgets.QMessageBox.information(self, "Saved", "Studio configuration saved.")
+            self.close()
+            return
         self._save_tree_to_memory()
         name = self.name_input.text().strip()
         base = self.path_input.text().strip()

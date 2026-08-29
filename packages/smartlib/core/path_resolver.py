@@ -42,6 +42,28 @@ class ProjectPaths:
         template = self._template("delivery_root")
         return self._path_from_template(template) if template else self.project_root / "delivery"
 
+    def delivery_vendors_root(self) -> Path:
+        template = self._template("deliveries_vendors_dir")
+        return self._path_from_template(template) if template else self.delivery_root() / "vendors"
+
+    def delivery_vendor_root(self, studio_id: str) -> Path:
+        template = self._template("delivery_vendor_root")
+        if template:
+            return self._path_from_template(template, studio_id=studio_id)
+        return self.delivery_vendors_root() / studio_id
+
+    def delivery_vendor_batch(self, studio_id: str, delivery_batch: str) -> Path:
+        template = self._template("delivery_vendor_batch")
+        if template:
+            return self._path_from_template(template, studio_id=studio_id, delivery_batch=delivery_batch)
+        return self.delivery_vendor_root(studio_id) / delivery_batch
+
+    def delivery_vendor_package(self, studio_id: str, delivery_batch: str, entity: str) -> Path:
+        template = self._template("delivery_vendor_package")
+        if template:
+            return self._path_from_template(template, studio_id=studio_id, delivery_batch=delivery_batch, entity=entity)
+        return self.delivery_vendor_batch(studio_id, delivery_batch) / f"{entity}.zip"
+
     def delivery_staging_root(self) -> Path:
         template = self._template("delivery_staging_root")
         return self._path_from_template(template) if template else self.workspace_root() / "delivery"

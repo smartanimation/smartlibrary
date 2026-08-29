@@ -920,14 +920,20 @@ class SmartLauncher(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Error", f"削除中にエラーが発生しました:\n{e}")
 
     def open_config_creator(self):
-        self.creator_win = config_creator.ConfigCreatorApp()
+        studio_path = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG") or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
+        studio = load_yml(studio_path).get("studio") or {}
+        mode = "vendor" if str(studio.get("role") or "").lower() == "vendor" else "internal"
+        self.creator_win = config_creator.ConfigCreatorApp(config_mode=mode)
         self.creator_win.config_saved.connect(self.refresh_projects)
         self.creator_win.show()
 
     def open_config_creator_edit(self):
         folder_name = self.project_map.get(self.ui.projectCombo.currentText())
         if folder_name:
-            self.creator_win = config_creator.ConfigCreatorApp(target_project=folder_name)
+            studio_path = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG") or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
+            studio = load_yml(studio_path).get("studio") or {}
+            mode = "vendor" if str(studio.get("role") or "").lower() == "vendor" else "internal"
+            self.creator_win = config_creator.ConfigCreatorApp(target_project=folder_name, config_mode=mode)
             self.creator_win.config_saved.connect(self.refresh_projects)
             self.creator_win.show()
 
