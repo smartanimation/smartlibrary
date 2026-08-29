@@ -46,6 +46,18 @@ def save_yml(path, data):
     with open(path, 'w', encoding='utf-8') as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
+
+def allowed_launcher_tools(studio_config):
+    """Return an allowlist for SmartTools, or None when every tool is allowed."""
+    data = studio_config if isinstance(studio_config, dict) else {}
+    role = str((data.get("studio") or {}).get("role") or "internal").strip().lower()
+    configured = (data.get("launcher") or {}).get("allowed_tools")
+    if isinstance(configured, (list, tuple, set)):
+        return {str(tool).strip().lower() for tool in configured if str(tool).strip()}
+    if role == "vendor":
+        return {"smart_delivery"}
+    return None
+
 def is_maya_software(soft_id, exe_path):
     name = str(soft_id or "").lower()
     exe_name = os.path.basename(str(exe_path or "")).lower()
@@ -373,6 +385,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Smart Launcher")
+        self.studio_config = load_yml(os.path.join(SMARTPROJECTS_ROOT, "studio.yml"))
+        self.allowed_smart_tools = allowed_launcher_tools(self.studio_config)
         self.load_ui()
         self.project_map = {}
         self.projectroot = ""
@@ -571,7 +585,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
             source_id = project_info.get("source_software") or soft_id
             if not is_openrv_software(source_id):
                 enabled.append(soft_id)
-        if hasattr(self, "usdview_action"):
+        if getattr(self, "usdview_action", None) is not None:
             usdview_path = resolve_configured_tool(cfg_dir, self.projectroot, "usdview")
             self.usdview_action.setEnabled(bool(usdview_path))
             self.usdview_action.setToolTip(
@@ -944,6 +958,13 @@ class SmartLauncher(QtWidgets.QMainWindow):
         return os.path.join(PROJECTS_ROOT, folder_name)
 
     def launch_smart_tool(self, tool_name):
+        if not self.is_smart_tool_allowed(tool_name):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "SmartTools",
+                f"{tool_name} is not enabled by the studio Launcher policy.",
+            )
+            return
         cfg_dir = self.current_project_config_dir()
         if not cfg_dir:
             QtWidgets.QMessageBox.warning(self, "SmartTools", "Select a project first.")
@@ -1129,41 +1150,41 @@ class SmartLauncher(QtWidgets.QMainWindow):
         script = os.path.join(SCRIPTS_DIR, "init_project.py")
         threading.Thread(target=lambda: (subprocess.run([sys.executable, script], env=env), self.setup_finished_signal.emit()), daemon=True).start()
 
+    def is_smart_tool_allowed(self, tool_name):
+        return (
+            self.allowed_smart_tools is None
+            or str(tool_name).strip().lower() in self.allowed_smart_tools
+        )
+
     def setup_menus(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("FILE")
         tools_menu = menubar.addMenu("SmartTools")
-        asset_action = tools_menu.addAction("Asset Manager", lambda: self.launch_smart_tool("asset_manager"))
-        asset_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirIcon))
-        assembly_action = tools_menu.addAction("Assembly Manager", lambda: self.launch_smart_tool("assembly_manager"))
-        assembly_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogListView))
-        sequence_action = tools_menu.addAction("Sequence Manager", lambda: self.launch_smart_tool("sequence_manager"))
-        sequence_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
-        ingest_action = tools_menu.addAction("Smart Ingest", lambda: self.launch_smart_tool("smart_ingest"))
-        ingest_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DriveHDIcon))
-        casting_action = tools_menu.addAction("Smart Casting", lambda: self.launch_smart_tool("smart_casting"))
-        casting_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
-        shot_action = tools_menu.addAction("Shot Manager", lambda: self.launch_smart_tool("shot_manager"))
-        shot_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon))
-        review_build_action = tools_menu.addAction(
-            "Review Build Manager",
-            lambda: self.launch_smart_tool("review_build_manager"),
+        tool_specs = (
+            ("asset_manager", "Asset Manager", QtWidgets.QStyle.StandardPixmap.SP_DirIcon),
+            ("assembly_manager", "Assembly Manager", QtWidgets.QStyle.StandardPixmap.SP_FileDialogListView),
+            ("sequence_manager", "Sequence Manager", QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView),
+            ("smart_ingest", "Smart Ingest", QtWidgets.QStyle.StandardPixmap.SP_DriveHDIcon),
+            ("smart_casting", "Smart Casting", QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton),
+            ("shot_manager", "Shot Manager", QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon),
+            ("review_build_manager", "Review Build Manager", QtWidgets.QStyle.StandardPixmap.SP_MediaPlay),
+            ("smart_delivery", "Smart Delivery", QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton),
         )
-        review_build_action.setIcon(
-            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay)
-        )
-        delivery_action = tools_menu.addAction(
-            "Smart Delivery",
-            lambda: self.launch_smart_tool("smart_delivery"),
-        )
-        delivery_action.setIcon(
-            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton)
-        )
-        smart_review_action = tools_menu.addAction("Smart Review", self.launch_current_project_smart_review)
-        smart_review_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
-        self.usdview_action = tools_menu.addAction("Open USD in usdview", self.launch_current_project_usdview)
-        self.usdview_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView))
-        self.usdview_action.setEnabled(False)
+        for tool_id, label, icon_type in tool_specs:
+            if not self.is_smart_tool_allowed(tool_id):
+                continue
+            action = tools_menu.addAction(
+                label, lambda _checked=False, name=tool_id: self.launch_smart_tool(name)
+            )
+            action.setIcon(self.style().standardIcon(icon_type))
+        if self.is_smart_tool_allowed("smart_review"):
+            smart_review_action = tools_menu.addAction("Smart Review", self.launch_current_project_smart_review)
+            smart_review_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.usdview_action = None
+        if self.is_smart_tool_allowed("usdview"):
+            self.usdview_action = tools_menu.addAction("Open USD in usdview", self.launch_current_project_usdview)
+            self.usdview_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView))
+            self.usdview_action.setEnabled(False)
         
         # 1. New Project
         new_action = file_menu.addAction("New Project", self.open_config_creator)

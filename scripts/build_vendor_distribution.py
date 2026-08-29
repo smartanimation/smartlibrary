@@ -85,6 +85,9 @@ def _write_default_studio(path: Path, studio_id: str, studio_name: str, role: st
         f"  id: {studio_id}\n"
         f"  name: {studio_name}\n"
         f"  role: {role}\n"
+        "launcher:\n"
+        "  allowed_tools:\n"
+        "    - smart_delivery\n"
         "anchors:\n"
         "  smartpipeline_root: '{smartpipeline_root}'\n"
         "  smartpipeline_tools: '{smartpipeline_tools}'\n"
@@ -104,6 +107,10 @@ def _overlay_studio_identity(path: Path, studio_id: str, studio_name: str, role:
         data = yaml.safe_load(stream) or {}
     data.setdefault("schema", "smartpipeline.studio.v1")
     data["studio"] = {"id": studio_id, "name": studio_name, "role": role}
+    if role == "vendor":
+        launcher = dict(data.get("launcher") or {})
+        launcher.setdefault("allowed_tools", ["smart_delivery"])
+        data["launcher"] = launcher
     anchors = dict(data.get("anchors") or {})
     anchors["smartpipeline_root"] = "{smartpipeline_root}"
     anchors["smartpipeline_tools"] = "{smartpipeline_tools}"
