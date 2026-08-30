@@ -1275,6 +1275,12 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.usdview_action.setEnabled(False)
         
         if self.is_vendor_studio():
+            studio_action = file_menu.addAction(
+                "Studio Settings...", self.open_config_creator
+            )
+            studio_action.setIcon(
+                self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogInfoView)
+            )
             import_action = file_menu.addAction(
                 "Import Project Config...", self.import_project_config_archive
             )
