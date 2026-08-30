@@ -7,6 +7,12 @@ import threading
 import shutil
 from PySide6 import QtWidgets, QtCore, QtGui, QtUiTools
 
+from smartlib.apps.launcher.project_config_transfer import (
+    export_project_config,
+    import_project_config,
+    inspect_project_config_archive,
+)
+
 # 自作モジュールのインポート
 try:
     from scripts import config_creator 
@@ -1156,6 +1162,66 @@ class SmartLauncher(QtWidgets.QMainWindow):
             or str(tool_name).strip().lower() in self.allowed_smart_tools
         )
 
+    def is_vendor_studio(self):
+        studio = (self.studio_config or {}).get("studio") or {}
+        return str(studio.get("role") or "internal").strip().lower() == "vendor"
+
+    def export_current_project_config(self):
+        config_dir = self.current_project_config_dir()
+        if not config_dir:
+            QtWidgets.QMessageBox.warning(self, "Export Project Config", "Select a project first.")
+            return
+        project = os.path.basename(config_dir)
+        archive, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export Project Config",
+            f"{project}-smartproject.zip",
+            "SmartProject Archives (*.zip)",
+        )
+        if not archive:
+            return
+        if not archive.lower().endswith(".zip"):
+            archive += ".zip"
+        try:
+            exported = export_project_config(config_dir, archive, project)
+            QtWidgets.QMessageBox.information(
+                self, "Export Project Config", f"Project config exported:\n{exported}"
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Export Project Config", str(exc))
+
+    def import_project_config_archive(self):
+        archive, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Import Project Config",
+            "",
+            "SmartProject Archives (*.zip)",
+        )
+        if not archive:
+            return
+        try:
+            project = inspect_project_config_archive(archive)["project"]
+            target = os.path.join(PROJECTS_ROOT, project)
+            replace = False
+            if os.path.exists(target):
+                answer = QtWidgets.QMessageBox.question(
+                    self,
+                    "Replace Project Config",
+                    f"Project config '{project}' already exists. Replace it?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.No,
+                )
+                if answer != QtWidgets.QMessageBox.Yes:
+                    return
+                replace = True
+            imported = import_project_config(archive, PROJECTS_ROOT, replace=replace)
+            self.refresh_projects()
+            QtWidgets.QMessageBox.information(
+                self, "Import Project Config", f"Project config installed:\n{imported}"
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Import Project Config", str(exc))
+
     def setup_menus(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("FILE")
@@ -1186,10 +1252,23 @@ class SmartLauncher(QtWidgets.QMainWindow):
             self.usdview_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView))
             self.usdview_action.setEnabled(False)
         
-        # 1. New Project
-        new_action = file_menu.addAction("New Project", self.open_config_creator)
-        new_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon))
-        new_action.setShortcut("Ctrl+N")
+        if self.is_vendor_studio():
+            import_action = file_menu.addAction(
+                "Import Project Config...", self.import_project_config_archive
+            )
+            import_action.setIcon(
+                self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogOpenButton)
+            )
+        else:
+            new_action = file_menu.addAction("New Project", self.open_config_creator)
+            new_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon))
+            new_action.setShortcut("Ctrl+N")
+            export_action = file_menu.addAction(
+                "Export Current Project Config...", self.export_current_project_config
+            )
+            export_action.setIcon(
+                self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton)
+            )
         
         # 2. Run Pipeline Setup
         # 直接 self.run_pipeline_setup を指定します。
@@ -1201,9 +1280,9 @@ class SmartLauncher(QtWidgets.QMainWindow):
         
         file_menu.addSeparator()
         
-        # 3. Delete Current Project
-        del_action = file_menu.addAction("Delete Current Project", self.delete_current_project)
-        del_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_TrashIcon))
+        if not self.is_vendor_studio():
+            del_action = file_menu.addAction("Delete Current Project", self.delete_current_project)
+            del_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_TrashIcon))
         
         # 4. Refresh
         ref_action = file_menu.addAction("Refresh", self.refresh_projects)
