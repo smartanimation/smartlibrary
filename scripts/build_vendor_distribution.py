@@ -88,6 +88,9 @@ def _write_default_studio(path: Path, studio_id: str, studio_name: str, role: st
         "launcher:\n"
         "  allowed_tools:\n"
         "    - smart_delivery\n"
+        "maya:\n"
+        "  allowed_features:\n"
+        "    - smart_preflight\n"
         "anchors:\n"
         "  smartpipeline_root: '{smartpipeline_root}'\n"
         "  smartpipeline_tools: '{smartpipeline_tools}'\n"
@@ -111,6 +114,9 @@ def _overlay_studio_identity(path: Path, studio_id: str, studio_name: str, role:
         launcher = dict(data.get("launcher") or {})
         launcher.setdefault("allowed_tools", ["smart_delivery"])
         data["launcher"] = launcher
+        maya = dict(data.get("maya") or {})
+        maya.setdefault("allowed_features", ["smart_preflight"])
+        data["maya"] = maya
     anchors = dict(data.get("anchors") or {})
     anchors["smartpipeline_root"] = "{smartpipeline_root}"
     anchors["smartpipeline_tools"] = "{smartpipeline_tools}"

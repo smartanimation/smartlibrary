@@ -112,6 +112,58 @@ DEFAULT_MENU_CONFIG = {
 }
 
 
+def allowed_maya_features(studio_config):
+    """Return a Maya feature allowlist, or None when every feature is allowed."""
+    data = studio_config if isinstance(studio_config, dict) else {}
+    role = str((data.get("studio") or {}).get("role") or "internal").strip().lower()
+    configured = (data.get("maya") or {}).get("allowed_features")
+    if isinstance(configured, (list, tuple, set)):
+        return {
+            str(feature).strip().lower()
+            for feature in configured
+            if str(feature).strip()
+        }
+    if role == "vendor":
+        return {"smart_preflight"}
+    return None
+
+
+def _studio_maya_features():
+    try:
+        from smartlib.core.config_loader import load_config, studio_config_path
+        path = studio_config_path()
+        data = load_config(path) if path else {}
+    except Exception:
+        data = {}
+    return allowed_maya_features(data)
+
+
+def _feature_id(command_path: str) -> str:
+    name = str(command_path or "").strip().rsplit(".", 1)[-1].lower()
+    return name[5:] if name.startswith("show_") else name
+
+
+def _is_feature_allowed(command_path: str, allowed=None) -> bool:
+    policy = _studio_maya_features() if allowed is None else allowed
+    return policy is None or _feature_id(command_path) in policy
+
+
+def _filter_allowed_items(items, allowed):
+    filtered = []
+    for item in _menu_items_from_config(items):
+        candidate = dict(item)
+        children = candidate.get("items")
+        if isinstance(children, (list, dict)):
+            child_items = _filter_allowed_items(children, allowed)
+            if not child_items:
+                continue
+            candidate["items"] = child_items
+        elif not _is_feature_allowed(candidate.get("command"), allowed):
+            continue
+        filtered.append(candidate)
+    return filtered
+
+
 def _root() -> Path:
     return Path(
         os.environ.get("SMARTPIPELINE_ROOT")
@@ -237,6 +289,13 @@ def _resolve_command(path: str):
 
 
 def _run_command(path: str) -> None:
+    if not _is_feature_allowed(path):
+        try:
+            import maya.cmds as cmds
+            cmds.warning(f"SmartMenu command is disabled by the studio policy: {path}")
+        except ImportError:
+            pass
+        return
     command = _resolve_command(path)
     if not callable(command):
         try:
@@ -300,20 +359,21 @@ def _menu_items_from_config(items) -> list[dict]:
 
 def _build_configured_menu(cmds, main_window: str) -> str:
     data = _load_menu_config()
+    allowed = _studio_maya_features()
     menu_data = data.get("maya_menu") or {}
     label = str(menu_data.get("label") or MENU_LABEL)
     menu = cmds.menu(MENU_NAME, label=label, parent=main_window, tearOff=True)
     categories = menu_data.get("categories") or {}
     if isinstance(categories, dict):
         for category_label, items in categories.items():
-            normalized_items = _menu_items_from_config(items)
+            normalized_items = _filter_allowed_items(items, allowed)
             if not normalized_items:
                 continue
             submenu = cmds.menuItem(label=str(category_label), parent=menu, subMenu=True, tearOff=True)
             for item in normalized_items:
                 _add_menu_item(cmds, submenu, item)
     elif isinstance(categories, list):
-        for item in categories:
+        for item in _filter_allowed_items(categories, allowed):
             _add_menu_item(cmds, menu, item)
     cmds.menuItem(divider=True, parent=menu)
     cmds.menuItem(label="Reload SmartMenu", parent=menu, command=lambda *_args: reload_smart_menu())
