@@ -99,7 +99,9 @@ def apply_project_context_env(env, *, project_name, project_root, config_dir, so
     env["SMART_SEQUENCE"] = str(sequence or "")
     env["SMART_SHOT"] = str(shot or "")
     if not any(env.get(name) for name in ("CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "CREDENTIALS_DIR")):
-        configured_credentials = project_credentials_path(config_dir, project_root)
+        configured_credentials = studio_credentials_path() or project_credentials_path(
+            config_dir, project_root
+        )
         if configured_credentials:
             env["CREDENTIALS_PATH"] = configured_credentials
 
@@ -259,6 +261,24 @@ def runtime_python_path():
     return sys.executable
 
 
+def studio_credentials_path():
+    studio_config = load_yml(
+        os.environ.get("SMARTPIPELINE_STUDIO_CONFIG")
+        or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
+    )
+    raw_value = str(
+        ((studio_config.get("google_sheets") or {}).get("credentials_path") or "")
+    ).strip()
+    if not raw_value:
+        return ""
+    candidate = os.path.normpath(
+        os.path.expandvars(os.path.expanduser(raw_value.strip().strip('"')))
+    )
+    if os.path.isdir(candidate):
+        candidate = os.path.join(candidate, "credentials.json")
+    return candidate
+
+
 def project_credentials_path(config_dir, project_root=""):
     base_config = load_yml(os.path.join(str(config_dir or ""), "templates_base.yml"))
     raw_value = str(
@@ -286,7 +306,9 @@ def credentials_path_for_sync(config_dir="", project_root=""):
             candidate = os.path.join(candidate, "credentials.json")
         return candidate
 
-    configured = project_credentials_path(config_dir, project_root)
+    configured = studio_credentials_path() or project_credentials_path(
+        config_dir, project_root
+    )
     if configured:
         return configured
 

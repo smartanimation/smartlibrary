@@ -40,6 +40,33 @@ def test_project_credentials_path_and_environment_priority(tmp_path: Path, monke
     assert credentials_path() == explicit
 
 
+def test_studio_credentials_take_priority_over_legacy_project_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    studio_path = tmp_path / "smartprojects" / "studio.yml"
+    studio_path.parent.mkdir()
+    studio_path.write_text(
+        "google_sheets:\n"
+        "  credentials_path: '%APPDATA%/studio-credentials.json'\n",
+        encoding="utf-8",
+    )
+    project_dir = tmp_path / "smartprojects" / "config" / "TEST"
+    project_dir.mkdir(parents=True)
+    (project_dir / "templates_base.yml").write_text(
+        "google_sheets:\n"
+        "  credentials_path: '{project_root}/legacy.json'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SMARTPIPELINE_STUDIO_CONFIG", str(studio_path))
+    monkeypatch.setenv("PROJECT_CONFIG_DIR", str(project_dir))
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    for name in ("CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "CREDENTIALS_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert credentials_path() == tmp_path / "appdata" / "studio-credentials.json"
+
+
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")

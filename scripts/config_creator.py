@@ -239,6 +239,17 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         layout.addRow("Studio ID:", self.studio_id_input)
         layout.addRow("Studio Name:", self.studio_name_input)
         layout.addRow("Role:", self.studio_role_combo)
+        credentials_row = QtWidgets.QHBoxLayout()
+        self.google_credentials_path_edit = QtWidgets.QLineEdit()
+        self.google_credentials_path_edit.setPlaceholderText("%APPDATA%/credentials.json")
+        self.google_credentials_path_edit.setToolTip(
+            "Only the path is saved to studio.yml. The credential file itself is not copied."
+        )
+        credentials_row.addWidget(self.google_credentials_path_edit, 1)
+        credentials_browse = QtWidgets.QPushButton("Browse")
+        credentials_browse.clicked.connect(self._browse_google_credentials_file)
+        credentials_row.addWidget(credentials_browse)
+        layout.addRow("Google Credentials File:", credentials_row)
         note = QtWidgets.QLabel("Studio ID is used in delivery paths. Use lowercase letters, numbers, '_' or '-'.")
         note.setWordWrap(True)
         layout.addRow(note)
@@ -257,6 +268,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         role = str(studio.get("role") or "internal").strip().lower()
         index = self.studio_role_combo.findData(role)
         self.studio_role_combo.setCurrentIndex(index if index >= 0 else 0)
+        google_sheets = data.get("google_sheets") or {}
+        self.google_credentials_path_edit.setText(
+            str(google_sheets.get(GOOGLE_CREDENTIALS_PATH_KEY) or "")
+        )
 
     def _save_studio_config(self):
         studio_id = self.studio_id_input.text().strip()
@@ -276,6 +291,16 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             "name": studio_name,
             "role": str(self.studio_role_combo.currentData() or "internal"),
         }
+        google_sheets = dict(data.get("google_sheets") or {})
+        credentials_path = self.google_credentials_path_edit.text().strip()
+        if credentials_path:
+            google_sheets[GOOGLE_CREDENTIALS_PATH_KEY] = credentials_path
+        else:
+            google_sheets.pop(GOOGLE_CREDENTIALS_PATH_KEY, None)
+        if google_sheets:
+            data["google_sheets"] = google_sheets
+        else:
+            data.pop("google_sheets", None)
         save_yml(STUDIO_CONFIG_PATH, data)
 
     def _save_studio_from_ui(self):
@@ -2323,11 +2348,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             else:
                 google_sheets.pop(f"{prefix}_url", None)
                 google_sheets.pop(f"{prefix}_id", None)
-        credentials_path = self.google_credentials_path_edit.text().strip()
-        if credentials_path:
-            google_sheets[GOOGLE_CREDENTIALS_PATH_KEY] = credentials_path
-        else:
-            google_sheets.pop(GOOGLE_CREDENTIALS_PATH_KEY, None)
+        google_sheets.pop(GOOGLE_CREDENTIALS_PATH_KEY, None)
         if google_sheets:
             config['google_sheets'] = google_sheets
 
@@ -2648,21 +2669,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def create_anchors_page(self):
         page = self.create_table_page("Anchors", ["Key", "Value"])
-        credentials_row = QtWidgets.QHBoxLayout()
-        credentials_row.addWidget(QtWidgets.QLabel("Google Credentials File"))
-        self.google_credentials_path_edit = QtWidgets.QLineEdit()
-        self.google_credentials_path_edit.setPlaceholderText(
-            "%APPDATA%/credentials.json or {project_root}/config/credentials.json"
-        )
-        self.google_credentials_path_edit.setToolTip(
-            "Only the path is saved. The credential file itself is not copied into the project."
-        )
-        credentials_row.addWidget(self.google_credentials_path_edit, 1)
-        credentials_browse = QtWidgets.QPushButton("Browse")
-        credentials_browse.clicked.connect(self._browse_google_credentials_file)
-        credentials_row.addWidget(credentials_browse)
-        page["widget"].layout().insertLayout(0, credentials_row)
-
         preset_row = QtWidgets.QHBoxLayout()
         preset_row.addWidget(QtWidgets.QLabel("Resolution Preset"))
         self.anchor_resolution_preset = QtWidgets.QComboBox()
@@ -3029,9 +3035,6 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 r = tab.rowCount(); tab.insertRow(r)
                 tab.setItem(r, 0, QtWidgets.QTableWidgetItem(k)); tab.setItem(r, 1, QtWidgets.QTableWidgetItem(str(v)))
         google_sheets = data.get('google_sheets') or {}
-        self.google_credentials_path_edit.setText(
-            str(google_sheets.get(GOOGLE_CREDENTIALS_PATH_KEY) or "")
-        )
         for label, prefix in (
             (ASSET_LIST_URL_LABEL, "asset_list"),
             (SHOT_LIST_URL_LABEL, "shot_list"),

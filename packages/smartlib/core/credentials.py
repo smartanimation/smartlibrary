@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from smartlib.core.config_loader import load_config
+from smartlib.core.config_loader import load_config, studio_config_path
 
 
 CREDENTIAL_ENV_VARS = ("CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "CREDENTIALS_DIR")
@@ -41,6 +41,18 @@ def _project_credentials_path() -> Path | None:
     return _credential_file(raw_path)
 
 
+def _studio_credentials_path() -> Path | None:
+    config_path = studio_config_path()
+    if not config_path or not config_path.is_file():
+        return None
+    try:
+        data = load_config(config_path)
+    except OSError:
+        return None
+    raw_path = str((data.get("google_sheets") or {}).get("credentials_path") or "").strip()
+    return _credential_file(raw_path) if raw_path else None
+
+
 def credentials_path() -> Path | None:
     for name in CREDENTIAL_ENV_VARS:
         value = os.environ.get(name)
@@ -48,7 +60,7 @@ def credentials_path() -> Path | None:
             continue
         return _credential_file(value)
 
-    configured = _project_credentials_path()
+    configured = _studio_credentials_path() or _project_credentials_path()
     if configured:
         return configured
 
