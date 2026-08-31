@@ -13,12 +13,6 @@ from smartlib.apps.launcher.project_config_transfer import (
     inspect_project_config_archive,
 )
 
-# 自作モジュールのインポート
-try:
-    from scripts import config_creator 
-except ImportError:
-    import config_creator 
-
 # --- パス設定 ---
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CURRENT_DIR = os.environ.get("SMARTPIPELINE_ROOT") or os.path.abspath(
@@ -965,7 +959,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
         studio_path = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG") or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
         studio = load_yml(studio_path).get("studio") or {}
         mode = "vendor" if str(studio.get("role") or "").lower() == "vendor" else "internal"
-        self.creator_win = config_creator.ConfigCreatorApp(config_mode=mode)
+        creator = self._config_creator_class(mode)
+        self.creator_win = creator(config_mode=mode)
         self.creator_win.config_saved.connect(self.refresh_projects)
         self.creator_win.show()
 
@@ -975,9 +970,21 @@ class SmartLauncher(QtWidgets.QMainWindow):
             studio_path = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG") or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
             studio = load_yml(studio_path).get("studio") or {}
             mode = "vendor" if str(studio.get("role") or "").lower() == "vendor" else "internal"
-            self.creator_win = config_creator.ConfigCreatorApp(target_project=folder_name, config_mode=mode)
+            creator = self._config_creator_class(mode)
+            self.creator_win = creator(target_project=folder_name, config_mode=mode)
             self.creator_win.config_saved.connect(self.refresh_projects)
             self.creator_win.show()
+
+    @staticmethod
+    def _config_creator_class(mode):
+        if mode == "vendor":
+            from smartlib.apps.launcher.vendor_studio_config import ConfigCreatorApp
+            return ConfigCreatorApp
+        try:
+            from scripts.config_creator import ConfigCreatorApp
+        except ImportError:
+            from config_creator import ConfigCreatorApp
+        return ConfigCreatorApp
 
     def current_project_config_dir(self):
         folder_name = self.project_map.get(self.ui.projectCombo.currentText())

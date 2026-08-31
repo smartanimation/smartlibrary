@@ -9,13 +9,13 @@ from pathlib import Path
 
 try:
     from .build_vendor_distribution import (
-        LIBRARY_DIRS, LIBRARY_FILES, _ignore, _smarttools_dependency,
+        _ignore, _smarttools_dependency, copy_vendor_library,
         _write_default_studio, _write_launcher,
     )
     from .smarttools_runtime import sha256
 except ImportError:
     from build_vendor_distribution import (
-        LIBRARY_DIRS, LIBRARY_FILES, _ignore, _smarttools_dependency,
+        _ignore, _smarttools_dependency, copy_vendor_library,
         _write_default_studio, _write_launcher,
     )
     from smarttools_runtime import sha256
@@ -45,11 +45,7 @@ def build(source_root: Path, output_dir: Path, version: str) -> Path:
         staging = Path(temp_value)
         library = staging / "smartlibrary"
         projects = staging / "smartprojects-template"
-        library.mkdir()
-        for name in LIBRARY_DIRS:
-            shutil.copytree(source_root / name, library / name, ignore=_ignore)
-        for name in LIBRARY_FILES:
-            shutil.copy2(source_root / name, library / name)
+        copy_vendor_library(source_root, library)
         _write_launcher(library)
         (library / "VERSION").write_text(version + "\n", encoding="utf-8")
         _write_default_studio(projects / "studio.yml", "vendor_id", "Vendor Name", "vendor")

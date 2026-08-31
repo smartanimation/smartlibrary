@@ -43,10 +43,9 @@ def test_vendor_distribution_external_mode_preserves_smarttools(tmp_path, monkey
     library = tmp_path / "source" / "smartlibrary"
     projects = tmp_path / "source" / "smartprojects"
     output = tmp_path / "output"
-    for name in build_vendor_distribution.LIBRARY_DIRS:
-        (library / name).mkdir(parents=True)
-    for name in build_vendor_distribution.LIBRARY_FILES:
-        (library / name).write_text("test\n", encoding="utf-8")
+    build_vendor_distribution.copy_vendor_library(
+        Path(__file__).resolve().parents[1], library
+    )
     definition = library / "config" / "distribution" / "smarttools-runtime.yml"
     definition.parent.mkdir(parents=True, exist_ok=True)
     definition.write_text(

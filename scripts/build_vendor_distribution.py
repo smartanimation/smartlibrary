@@ -11,8 +11,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-LIBRARY_DIRS = ("packages", "scripts", "config", "resources")
-LIBRARY_FILES = ("README.md", "pyproject.toml")
+VENDOR_PACKAGE_DIRS = (
+    "packages/smartlib/apps/launcher",
+    "packages/smartlib/apps/smart_delivery",
+    "packages/smartlib/apps/smart_preflight",
+    "packages/smartlib/apps/shot_manager",
+    "packages/smartlib/core",
+    "packages/smartlib/delivery",
+    "packages/smartlib/preflight",
+    "packages/smartlib/review",
+)
+VENDOR_PACKAGE_FILES = (
+    "packages/smartlib/__init__.py",
+    "packages/smartlib/apps/__init__.py",
+    "packages/smartlib/dcc/__init__.py",
+    "packages/smartlib/dcc/maya/__init__.py",
+    "packages/smartlib/dcc/maya/preflight.py",
+    "packages/smartlib/dcc/maya/smart_menu.py",
+)
+VENDOR_CONFIG_DIRS = ("config/delivery",)
+VENDOR_CONFIG_FILES = (
+    "config/default/software_settings.yml",
+    "config/distribution/smarttools-runtime.yml",
+)
+VENDOR_STARTUP_DIR = "packages/smartlib/dcc/maya/startup"
 TOOLS_DIRS = ("python", "third_party")
 IGNORED_NAMES = {
     ".git",
@@ -43,6 +65,15 @@ def _copy_required(source_root: Path, destination_root: Path, names: tuple[str, 
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+
+
+def copy_vendor_library(source_root: Path, destination_root: Path) -> None:
+    destination_root.mkdir(parents=True, exist_ok=True)
+    _copy_required(source_root, destination_root, VENDOR_PACKAGE_DIRS)
+    _copy_required(source_root, destination_root, VENDOR_PACKAGE_FILES)
+    _copy_required(source_root, destination_root, VENDOR_CONFIG_DIRS)
+    _copy_required(source_root, destination_root, VENDOR_CONFIG_FILES)
+    _copy_required(source_root, destination_root, (VENDOR_STARTUP_DIR,))
 
 
 def _git_version(source_root: Path) -> str:
@@ -192,8 +223,7 @@ def build_distribution(args: argparse.Namespace) -> Path:
     tools = staging / "smarttools"
     try:
         library.mkdir(parents=True)
-        _copy_required(source_library, library, LIBRARY_DIRS)
-        _copy_required(source_library, library, LIBRARY_FILES)
+        copy_vendor_library(source_library, library)
         if args.tools_mode == "copy":
             tools.mkdir(parents=True)
             _copy_required(source_tools, tools, TOOLS_DIRS)

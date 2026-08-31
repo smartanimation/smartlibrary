@@ -23,6 +23,9 @@ def verify(artifact: Path, checksum: Path) -> dict:
             "smartlibrary/VERSION",
             "smartlibrary/release-manifest.json",
             "smartprojects-template/studio.yml",
+            "smartlibrary/packages/smartlib/apps/launcher/vendor_studio_config.py",
+            "smartlibrary/packages/smartlib/apps/smart_delivery/service.py",
+            "smartlibrary/packages/smartlib/dcc/maya/preflight.py",
         }
         missing = required - names
         if missing:
@@ -34,6 +37,17 @@ def verify(artifact: Path, checksum: Path) -> dict:
         ]
         if forbidden:
             raise ValueError(f"Release archive contains development files: {forbidden[:10]}")
+        forbidden_roots = (
+            "smartlibrary/scripts/",
+            "smartlibrary/packages/smartlib/apps/asset_manager/",
+            "smartlibrary/packages/smartlib/apps/shot_manager/ui",
+            "smartlibrary/packages/smartlib/dcc/houdini/",
+            "smartlibrary/packages/smartlib/dcc/resolve/",
+            "smartlibrary/packages/smartlib/dcc/unreal/",
+        )
+        exposed = [name for name in names if name.startswith(forbidden_roots)]
+        if exposed:
+            raise ValueError(f"Release archive exposes non-vendor source: {exposed[:10]}")
         manifest = json.loads(archive.read("smartlibrary/release-manifest.json"))
         if manifest.get("schema") != "smartpipeline.release.v1":
             raise ValueError("Release manifest schema is invalid.")
