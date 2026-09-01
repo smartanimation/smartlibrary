@@ -4,6 +4,11 @@ anchors:
   fps: 24
   resolution: [1920, 1080]
 
+editorial:
+  handle_policy:
+    head: 8
+    tail: 8
+
 review_build:
   maya_software: ""
 
@@ -55,14 +60,21 @@ templates:
   sequences_root: "{production_root}/sequences"
   shots_root: "{production_root}/shots"
   art_root: "{workspace_root}/art"
-  editorial_root: "{workspace_root}/editorial"
+  editorial_root: "{production_root}/editorial"
   editorial_data_root: "{production_root}/editorial/data"
+  editorial_work_root: "{workspace_root}/editorial/work"
+  editorial_publish_root: "{editorial_root}/publish"
+  editorial_sequence_publish_root: "{editorial_publish_root}/{episode}/{sequence}"
   setting_root: "{production_root}/settings"
   delivery_root: "{project_root}/delivery"
   deliveries_vendors_dir: "{delivery_root}/vendors"
   delivery_vendor_root: "{deliveries_vendors_dir}/{studio_id}"
   delivery_vendor_batch: "{delivery_vendor_root}/{delivery_batch}"
   delivery_vendor_package: "{delivery_vendor_batch}/{entity}.zip"
+  deliveries_editorial_dir: "{delivery_root}/editorial"
+  delivery_editorial_recipient_root: "{deliveries_editorial_dir}/{recipient}"
+  delivery_editorial_batch: "{delivery_editorial_recipient_root}/{delivery_batch}/{process}"
+  delivery_editorial_package: "{delivery_editorial_batch}/{entity}.zip"
   deliveries_client_dir: "{delivery_root}/client"
   deliveries_archive_dir: "{delivery_root}/archive"
   incoming_root: "{project_root}/incoming"

@@ -351,9 +351,6 @@ class SmartCastingService:
         asset_root = self.shot_service.find_asset_root(asset_name)
         if not asset_root:
             return {context: "Missing" for context in CAST_CONTEXTS}
-        variant_root = asset_root / variant
-        if not variant_root.exists():
-            return {context: "Missing" for context in CAST_CONTEXTS}
         metadata = read_json(asset_root / "asset.json", {}) or {}
         identity = AssetIdentity(
             str(metadata.get("category") or asset_root.parents[1].name),
@@ -361,6 +358,19 @@ class SmartCastingService:
             str(metadata.get("asset") or metadata.get("name") or asset_root.name),
             variant,
         )
+        return self.context_statuses_for_identity(identity, asset_publish=asset_publish)
+
+    def context_statuses_for_identity(
+        self,
+        identity: AssetIdentity,
+        *,
+        asset_publish: str = "approved",
+    ) -> dict[str, str]:
+        """Return the Casting FAST/WORK/FINAL state for an exact asset identity."""
+
+        variant_root = self.paths.asset_variant_root(identity)
+        if not variant_root.exists():
+            return {context: "Missing" for context in CAST_CONTEXTS}
         try:
             from smartlib.apps.asset_manager.context import AssetContextService
 

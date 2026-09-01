@@ -7,6 +7,7 @@ from smartlib.apps.smart_casting import SmartCastingService
 from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.credentials import credentials_path
+from smartlib.core.path_resolver import AssetIdentity
 
 
 def _clear_credentials_environment(monkeypatch) -> None:
@@ -318,6 +319,37 @@ def test_smart_casting_maps_environment_work_to_proxy(tmp_path: Path) -> None:
     service = SmartCastingService(ProjectConfig(config_dir))
     statuses = service.cast_context_statuses(
         {"asset": "Room", "variant": "default", "asset_publish": "approved"}
+    )
+
+    assert statuses["FAST"] == "WIP"
+    assert statuses["WORK"] == "WIP"
+    assert statuses["FINAL"] == "Missing"
+
+
+def test_context_statuses_for_identity_uses_exact_category_and_group(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    selected_root = project_root / "library" / "assets" / "BG" / "main" / "Room"
+    other_root = project_root / "library" / "assets" / "CH" / "hero" / "Room"
+    for root, category, group in (
+        (selected_root, "BG", "main"),
+        (other_root, "CH", "hero"),
+    ):
+        write_json(
+            root / "asset.json",
+            {"category": category, "group": group, "asset": "Room", "asset_type": category},
+        )
+        write_json(root / "default" / "variant.json", {"variant": "default"})
+    proxy_root = selected_root / "default" / "publish" / "asset" / "proxy"
+    write_json(proxy_root / "latest.json", {"version": "v001", "path": "v001/Room_default.mb"})
+    scene = proxy_root / "v001" / "Room_default.mb"
+    scene.parent.mkdir(parents=True, exist_ok=True)
+    scene.write_bytes(b"maya")
+
+    service = SmartCastingService(ProjectConfig(config_dir))
+    statuses = service.context_statuses_for_identity(
+        AssetIdentity("BG", "main", "Room", "default")
     )
 
     assert statuses["FAST"] == "WIP"

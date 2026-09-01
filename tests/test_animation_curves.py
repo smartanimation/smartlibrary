@@ -8,7 +8,10 @@ from smartlib.dcc.maya.animation_curves import (
     _is_controller_node,
     _non_base_animation_layers,
     _collect_static_values,
+    _contract_nodes,
     _apply_static_values,
+    _apply_tangents,
+    _authored_anim_curves,
     _remap_plug,
     apply_animation_curve_data,
     collect_animation_curves_for_cast,
@@ -141,6 +144,38 @@ def test_reference_edit_source_falls_back_to_connection_info() -> None:
     }
 
 
+class _AuthoredCurveBoundaryCmds:
+    def listConnections(self, plug, **kwargs):
+        if plug == "DLI:A_L_forFingerB.rotateX" and kwargs.get("type") == "animCurve":
+            return ["finger_curve"]
+        if plug == "DLI:referenced_CTL.rotateX" and kwargs.get("plugs"):
+            return ["DLIRN.phl[0]"]
+        if plug == "DLIRN.phl[0]" and kwargs.get("type") == "animCurve":
+            return ["referenced_curve"]
+        if plug == "DLI:derivedJoint.rotateX" and kwargs.get("plugs"):
+            return ["rigConstraint.outputX"]
+        return []
+
+    def connectionInfo(self, *_args, **_kwargs):
+        return ""
+
+    def nodeType(self, node):
+        return {
+            "finger_curve": "animCurveTA",
+            "referenced_curve": "animCurveTA",
+            "DLIRN": "reference",
+            "rigConstraint": "orientConstraint",
+        }.get(node, "transform")
+
+
+def test_authored_curve_boundary_excludes_rig_evaluation_outputs() -> None:
+    cmds = _AuthoredCurveBoundaryCmds()
+
+    assert _authored_anim_curves(cmds, "DLI:A_L_forFingerB.rotateX") == ["finger_curve"]
+    assert _authored_anim_curves(cmds, "DLI:referenced_CTL.rotateX") == ["referenced_curve"]
+    assert _authored_anim_curves(cmds, "DLI:derivedJoint.rotateX") == []
+
+
 class _SetMemberCmds(_ReferencedRigCmds):
     def listRelatives(self, node, **_kwargs):
         if node == "DLI:CTL_C_spineChest":
@@ -266,6 +301,24 @@ def test_controller_recognition_excludes_internal_rig_nodes() -> None:
     assert not _is_controller_node(cmds, "DLI:CTLDRV_C_spineChest")
 
 
+class _ControllerContractCmds(_ControllerRecognitionCmds):
+    def ls(self, *args, **_kwargs):
+        return [args[0]] if args else []
+
+
+def test_controller_contract_excludes_shaped_internal_finger_nodes() -> None:
+    cmds = _ControllerContractCmds()
+
+    nodes = _contract_nodes(
+        cmds,
+        ["DLI:A_L_forFingerB", "DLI:handControl"],
+        traverse_descendants=False,
+        namespace="DLI",
+    )
+
+    assert nodes == ["DLI:handControl"]
+
+
 class _StaticValueCmds:
     def listAttr(self, _node, **kwargs):
         return ["ikBlend", "translateX"] if kwargs.get("keyable") else []
@@ -342,6 +395,12 @@ class _StaticApplyCmds:
     def setAttr(self, plug, value, **_kwargs):
         self.values[plug] = value
 
+    def listRelatives(self, *_args, **_kwargs):
+        return ["shape"]
+
+    def nodeType(self, node):
+        return "nurbsCurve" if node == "shape" else "transform"
+
 
 def test_static_values_are_namespace_remapped_and_applied() -> None:
     cmds = _StaticApplyCmds()
@@ -355,6 +414,25 @@ def test_static_values_are_namespace_remapped_and_applied() -> None:
 
     assert cmds.values == {"hero:CTL_L_foot.ikBlend": 1.0}
     assert report[0]["state"] == "APPLIED"
+
+
+class _InternalStaticApplyCmds(_StaticApplyCmds):
+    def listRelatives(self, *_args, **_kwargs):
+        return []
+
+
+def test_static_values_do_not_overwrite_internal_rig_nodes() -> None:
+    cmds = _InternalStaticApplyCmds()
+    report = _apply_static_values(
+        cmds,
+        [{"destination": "DLI:A_L_forFingerB.rotateX", "value": 12.0, "type": "double"}],
+        source_namespace="DLI",
+        target_namespace="DLI",
+        strict=True,
+    )
+
+    assert cmds.values == {}
+    assert report[0]["state"] == "SKIPPED_NON_CONTROLLER"
 
 
 def test_long_dag_destination_remaps_every_namespace_segment() -> None:
@@ -454,3 +532,76 @@ def test_apply_skips_destination_with_existing_rig_connection(monkeypatch) -> No
     assert cmds.keyed == []
     assert result["skipped_destinations"] == 1
     assert result["skipped_report"][0]["state"] == "SKIPPED_EXISTING_CONNECTION"
+
+
+class _TangentApplyCmds:
+    def __init__(self):
+        self.calls = []
+
+    def keyTangent(self, plug, **kwargs):
+        self.calls.append((plug, kwargs))
+
+
+def test_computed_tangents_do_not_apply_derived_angles_or_weights() -> None:
+    cmds = _TangentApplyCmds()
+
+    _apply_tangents(
+        cmds,
+        "DLI:CTL.translateX",
+        [
+            {
+                "time": 201.0,
+                "in_tangent": "auto",
+                "out_tangent": "auto",
+                "in_angle": 12.0,
+                "out_angle": 13.0,
+                "in_weight": 2.0,
+                "out_weight": 3.0,
+                "tangent_lock": True,
+                "weight_lock": False,
+            }
+        ],
+        weighted_tangents=False,
+    )
+
+    all_kwargs = [kwargs for _plug, kwargs in cmds.calls]
+    assert not any("inAngle" in kwargs or "outAngle" in kwargs for kwargs in all_kwargs)
+    assert not any("inWeight" in kwargs or "outWeight" in kwargs for kwargs in all_kwargs)
+    assert not any("weightLock" in kwargs for kwargs in all_kwargs)
+    assert all_kwargs[-1]["lock"] is True
+
+
+def test_fixed_tangent_values_are_applied_unlocked_then_relocked() -> None:
+    cmds = _TangentApplyCmds()
+
+    _apply_tangents(
+        cmds,
+        "DLI:CTL.translateX",
+        [
+            {
+                "time": 201.0,
+                "in_tangent": "fixed",
+                "out_tangent": "fixed",
+                "in_angle": 12.0,
+                "out_angle": 13.0,
+                "in_weight": 2.0,
+                "out_weight": 3.0,
+                "tangent_lock": True,
+                "weight_lock": True,
+            }
+        ],
+        weighted_tangents=True,
+    )
+
+    all_kwargs = [kwargs for _plug, kwargs in cmds.calls]
+    assert {"edit": True, "time": (201.0, 201.0), "lock": False, "weightLock": False} in all_kwargs
+    assert {
+        "edit": True,
+        "time": (201.0, 201.0),
+        "inAngle": 12.0,
+        "inWeight": 2.0,
+        "outAngle": 13.0,
+        "outWeight": 3.0,
+    } in all_kwargs
+    assert all_kwargs[-1]["lock"] is True
+    assert all_kwargs[-1]["weightLock"] is True

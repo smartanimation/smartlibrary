@@ -64,6 +64,35 @@ class ProjectPaths:
             return self._path_from_template(template, studio_id=studio_id, delivery_batch=delivery_batch, entity=entity)
         return self.delivery_vendor_batch(studio_id, delivery_batch) / f"{entity}.zip"
 
+    def delivery_editorial_root(self) -> Path:
+        template = self._template("deliveries_editorial_dir")
+        return self._path_from_template(template) if template else self.delivery_root() / "editorial"
+
+    def delivery_editorial_recipient_root(self, recipient: str) -> Path:
+        template = self._template("delivery_editorial_recipient_root")
+        if template:
+            return self._path_from_template(template, recipient=recipient)
+        return self.delivery_editorial_root() / recipient
+
+    def delivery_editorial_batch(self, recipient: str, delivery_batch: str, process: str) -> Path:
+        template = self._template("delivery_editorial_batch")
+        if template:
+            return self._path_from_template(
+                template, recipient=recipient, delivery_batch=delivery_batch, process=process
+            )
+        return self.delivery_editorial_recipient_root(recipient) / delivery_batch / process
+
+    def delivery_editorial_package(
+        self, recipient: str, delivery_batch: str, process: str, entity: str
+    ) -> Path:
+        template = self._template("delivery_editorial_package")
+        if template:
+            return self._path_from_template(
+                template, recipient=recipient, delivery_batch=delivery_batch,
+                process=process, entity=entity,
+            )
+        return self.delivery_editorial_batch(recipient, delivery_batch, process) / f"{entity}.zip"
+
     def delivery_staging_root(self) -> Path:
         template = self._template("delivery_staging_root")
         return self._path_from_template(template) if template else self.workspace_root() / "delivery"
@@ -101,6 +130,30 @@ class ProjectPaths:
             self.project_root / "editorial" / "publish" / episode / sequence,
             self.project_root / "editorial" / episode / sequence,
         )
+
+    def editorial_episode_publish_root(self, episode: str) -> Path:
+        """Resolve one episode-level Editorial Publish container."""
+        return self.editorial_publish_root() / episode
+
+    def editorial_identity_registry_path(self, episode: str) -> Path:
+        """Resolve the immutable CG Shot identity registry for an Editorial unit."""
+        return self.editorial_episode_publish_root(episode) / "identity" / "shot_registry.json"
+
+    def editorial_episode_revisions_root(self, episode: str) -> Path:
+        """Resolve append-only Editorial revisions for an episode/unit."""
+        return self.editorial_episode_publish_root(episode) / "revisions"
+
+    def editorial_revision_dir(self, episode: str, revision: str) -> Path:
+        return self.editorial_episode_revisions_root(episode) / revision
+
+    def editorial_revision_clean_dir(self, episode: str, revision: str) -> Path:
+        return self.editorial_revision_dir(episode, revision) / "media" / "clean"
+
+    def editorial_revision_edit_dir(self, episode: str, revision: str) -> Path:
+        return self.editorial_revision_dir(episode, revision) / "media" / "edit"
+
+    def editorial_revision_mapping_path(self, episode: str, revision: str) -> Path:
+        return self.editorial_revision_dir(episode, revision) / "metadata" / "editorial_mapping.json"
 
     def workspace_partition(self, department: str) -> str:
         department_name = str(department or "").strip()
@@ -375,7 +428,7 @@ class ProjectPaths:
     def shot_work_dir(self, episode: str, sequence: str, shot: str, department: str, tool_name: str = "maya") -> Path:
         template = self._template("shot_work")
         if template:
-            return self._path_from_template(
+            resolved = self._path_from_template(
                 template,
                 episode=episode,
                 sequence=sequence,
@@ -387,6 +440,9 @@ class ProjectPaths:
                 dcc=tool_name,
                 tool=tool_name,
             )
+            if "{dcc}" not in template and "{tool}" not in template:
+                return resolved / tool_name
+            return resolved
         return self.shot_root(episode, sequence, shot) / "work" / department / tool_name
 
     def shot_work_root(
@@ -510,6 +566,26 @@ class ProjectPaths:
         return self._shot_area_root(
             "shot_review_root", episode, sequence, shot, "review", department
         )
+
+    def shot_review_movie_dir(
+        self, episode: str, sequence: str, shot: str, department: str
+    ) -> Path:
+        """Resolve the working review movie directory for a department."""
+        template = self._template("shot_review_movie")
+        if template:
+            return self._path_from_template(
+                template,
+                episode=episode,
+                sequence=sequence,
+                seq=sequence,
+                shot=shot,
+                department=department,
+                dept=department,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return self.shot_review_root(
+            episode, sequence, shot, department
+        ) / department / "mov"
 
     def shot_render_layers_root(
         self, episode: str, sequence: str, shot: str, department: str

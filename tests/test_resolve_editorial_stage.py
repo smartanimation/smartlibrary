@@ -759,3 +759,48 @@ def test_marker_frame_remains_relative_when_offset_exceeds_timeline_start() -> N
 
     assert _absolute_marker_frame(0, 278) == 278
     assert _absolute_marker_frame(354, 278) == 632
+
+
+def test_aaf_stage_uses_first_sequence_shot_cut_in_as_start_timecode(
+    tmp_path: Path,
+) -> None:
+    from smartlib.dcc.resolve.export_timeline_csv import (
+        _first_shot_cut_in,
+        _set_timeline_start_frame,
+    )
+
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    _write_config(config_dir, project_root)
+    sequence_root = (
+        project_root / "production" / "sequences" / "ep02" / "s027"
+    )
+    sequence_root.mkdir(parents=True)
+    (sequence_root / "sequence.json").write_text(
+        json.dumps(
+            {
+                "shots": [
+                    {"shot": "c002", "cut_in": 412},
+                    {"shot": "c001", "cut_in": 278},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class Timeline:
+        def __init__(self):
+            self.start_timecode = ""
+
+        def SetStartTimecode(self, value):
+            self.start_timecode = value
+            return True
+
+    timeline = Timeline()
+    cut_in = _first_shot_cut_in(
+        ProjectConfig(config_dir), "ep02", "s027", timeline
+    )
+    _set_timeline_start_frame(timeline, cut_in, 24)
+
+    assert cut_in == 278
+    assert timeline.start_timecode == "00:00:11:14"

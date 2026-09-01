@@ -5,10 +5,24 @@ import os
 import sys
 from pathlib import Path
 
+from smartlib.core.icons import tool_icon_path
+
 
 MENU_NAME = "SmartPipelineMenu"
 MENU_LABEL = "SmartMenu"
 SMART_GATE_GUIDE_PLUGIN = "smart_viewport_gate_guides.py"
+
+MENU_TOOL_ICONS = {
+    "Asset Manager": "asset_manager",
+    "Shot Manager": "shot_manager",
+    "Build Manager": "build_manager",
+    "Review Build Manager": "review_build_manager",
+    "Smart Ingest": "smart_ingest",
+    "Smart Casting": "smart_casting",
+    "Smart AE Browser": "smart_ae_browser",
+    "Smart Editorial": "smart_editorial",
+    "Smart Delivery": "smart_delivery",
+}
 
 
 DEFAULT_MENU_CONFIG = {
@@ -34,6 +48,11 @@ DEFAULT_MENU_CONFIG = {
                 {
                     "label": "Smart Preflight",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_preflight",
+                    "enabled": True,
+                },
+                {
+                    "label": "Texture Path Repair",
+                    "command": "smartlib.dcc.maya.smart_menu.show_texture_path_repair",
                     "enabled": True,
                 },
             ],
@@ -333,12 +352,17 @@ def _add_menu_item(cmds, parent: str, item: dict) -> None:
         return
     command_path = str(item.get("command") or "").strip()
     enabled = _is_enabled(item) and bool(command_path)
-    cmds.menuItem(
-        label=label,
-        parent=parent,
-        enable=enabled,
-        command=(lambda *_args, path=command_path: _run_command(path)) if enabled else "",
-    )
+    icon_id = str(item.get("icon") or MENU_TOOL_ICONS.get(label) or "").strip()
+    icon_path = tool_icon_path(icon_id, 16) if icon_id else None
+    kwargs = {
+        "label": label,
+        "parent": parent,
+        "enable": enabled,
+        "command": (lambda *_args, path=command_path: _run_command(path)) if enabled else "",
+    }
+    if icon_path:
+        kwargs["image"] = str(icon_path)
+    cmds.menuItem(**kwargs)
 
 
 def _menu_items_from_config(items) -> list[dict]:
@@ -436,6 +460,13 @@ def show_smart_preflight() -> None:
     from smartlib.dcc.maya.preflight import show_smart_preflight as show
 
     show()
+
+
+def show_texture_path_repair() -> None:
+    ensure_runtime_paths()
+    _reload("smartlib.core.texture_reconnect", "smartlib.dcc.maya.texture_reconnect", "smartlib.apps.texture_path_repair.ui", "smartlib.apps.texture_path_repair")
+    from smartlib.apps import texture_path_repair
+    texture_path_repair.show(config_dir=str(_config_dir()))
 
 
 def show_review_layer_manager() -> None:

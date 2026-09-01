@@ -44,6 +44,8 @@ def test_resolve_ae_work_path_uses_project_paths(tmp_path, capsys):
             "anim",
             "--dcc",
             "ae",
+            "--task",
+            "preComp",
             "--option",
             "main",
         ]
@@ -51,5 +53,6 @@ def test_resolve_ae_work_path_uses_project_paths(tmp_path, capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["work_root"] == (
-        project_root / "resolved_work" / "ep02" / "s027" / "c001" / "anim" / "ae" / "main"
+        project_root / "resolved_work" / "ep02" / "s027" / "c001"
+        / "anim" / "ae" / "preComp" / "main"
     ).as_posix()

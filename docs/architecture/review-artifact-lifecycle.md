@@ -1,7 +1,7 @@
 # Review Artifact Lifecycle
 
 - Status: Accepted
-- Decision date: 2026-08-27
+- Decision date: 2026-09-01
 - Scope: SmartPipelineのShot Review、Smart Playblast、Smart AE Browser、PreComp、Review Build
 
 この文書は、SmartPipelineにおけるReview関連成果物の名称、責務、保存領域、状態遷移に関する正本である。
@@ -69,6 +69,16 @@ Publish済みPreCompとRender Layer Materialを使用して生成する、再合
 
 Review Build内のMovieはBuild結果の技術確認用であり、それだけではInternalまたはClientへの提出物を意味しない。
 
+### Working Review Movie
+
+Smart AE BrowserのRenderから、現在の作業AEPを確認するために直接生成するMOV。
+
+- Review Buildを生成しない、日常的な作業確認用の成果物である。
+- `review/review_build`および`output`には保存しない。
+- Shot Workspaceの`review/{department}/mov`へ保存する。
+- VersionおよびTakeはディレクトリではなくファイル名で識別する。
+- 保存先は共通Path Resolverの`shot_review_movie_dir`から取得する。
+
 ### Output
 
 InternalまたはClientへ実際に提出したチェック成果物。
@@ -123,6 +133,13 @@ Render Layer Materialの連番生成に成功しただけでは、Review素材�
 
 ## 初回AE Build
 
+- Build成功後は、共通Path Resolverで解決したShot Workの作業AEPへ自動的にSave Asする。
+- Build元のBase AEPを作業中の保存先として使用しない。
+- 作業AEPのファイル名はNaming設定に従い、既存Version/TakeとManifest Versionから次の採番を決定する。
+- Shot Workは`{department}/{dcc}/{workflow_task}/{option}`の順でDCCとTaskを分離する。
+- AEの標準DCC IDは`ae`、Workflow Taskは`preComp`、Optionは`main`とする。
+- AEの作業ファイル名に使用するFile Taskは`compTemp`とし、Workflow Taskとは別に設定できる。
+- Shot WorkファイルはVersionを3桁、Takeを2桁で表記する。
 - 素材のAnchor Pointは素材中央を初期値とする。
 - 素材のPositionは親Comp中央を初期値とする。
 - Playblast SettingsにScaleまたはPositionの確定値を要求しない。
@@ -135,6 +152,17 @@ Render Layer Materialの連番生成に成功しただけでは、Review素材�
 
 ```text
 {workspace_root}/{workspace_partition}/shots/{episode}/{sequence}/{shot}/
+├─ work/
+│  └─ {dept}/
+│     ├─ ae/
+│     │  └─ preComp/
+│     │     └─ main/
+│     │        └─ {project}_{episode}_{sequence}_{shot}_compTemp_v001_t01.aep
+│     └─ maya/
+│        └─ preComp/
+│           └─ main/
+│              └─ {project}_{episode}_{sequence}_{shot}_preComp_v001_t01.ma
+│
 ├─ render/
 │  └─ {dept}/
 │     └─ layers/
@@ -144,6 +172,9 @@ Render Layer Materialの連番生成に成功しただけでは、Review素材�
 │           └─ v001/  # 連番名とoutput_t###.jsonでTakeを識別
 │
 ├─ review/
+│  ├─ {dept}/
+│  │  └─ mov/
+│  │     └─ {project}_{episode}_{sequence}_{shot}_{task}_v001_t001.mov
 │  └─ review_build/
 │     └─ v001/
 │        └─ t001/
@@ -193,6 +224,7 @@ Path(project_root) / "production" / "shots"
 
 ```python
 paths.shot_render_layer_dir(identity, department, layer, version)
+paths.shot_review_movie_dir(identity, department)
 paths.shot_review_build_dir(identity, department, version, take)
 paths.shot_review_output_dir(identity, department, audience, version)
 paths.shot_precomp_publish_dir(identity, version)

@@ -12,6 +12,7 @@ from smartlib.apps.launcher.project_config_transfer import (
     import_project_config,
     inspect_project_config_archive,
 )
+from smartlib.core.icons import tool_icon_path
 
 # --- パス設定 ---
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -407,6 +408,9 @@ class SmartLauncher(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Smart Launcher")
+        launcher_icon = tool_icon_path("smart_launcher", 40)
+        if launcher_icon:
+            self.setWindowIcon(QtGui.QIcon(str(launcher_icon)))
         self.studio_config = load_yml(os.path.join(SMARTPROJECTS_ROOT, "studio.yml"))
         self.allowed_smart_tools = allowed_launcher_tools(self.studio_config)
         self.load_ui()
@@ -1263,6 +1267,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
             ("smart_casting", "Smart Casting", QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton),
             ("shot_manager", "Shot Manager", QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon),
             ("review_build_manager", "Review Build Manager", QtWidgets.QStyle.StandardPixmap.SP_MediaPlay),
+            ("editorial_intake", "Smart Editorial", QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView),
             ("smart_delivery", "Smart Delivery", QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton),
         )
         for tool_id, label, icon_type in tool_specs:
@@ -1271,10 +1276,20 @@ class SmartLauncher(QtWidgets.QMainWindow):
             action = tools_menu.addAction(
                 label, lambda _checked=False, name=tool_id: self.launch_smart_tool(name)
             )
-            action.setIcon(self.style().standardIcon(icon_type))
+            icon_path = tool_icon_path(tool_id, 20)
+            action.setIcon(
+                QtGui.QIcon(str(icon_path))
+                if icon_path
+                else self.style().standardIcon(icon_type)
+            )
         if self.is_smart_tool_allowed("smart_review"):
             smart_review_action = tools_menu.addAction("Smart Review", self.launch_current_project_smart_review)
-            smart_review_action.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView))
+            smart_review_icon = tool_icon_path("smart_review", 20)
+            smart_review_action.setIcon(
+                QtGui.QIcon(str(smart_review_icon))
+                if smart_review_icon
+                else self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView)
+            )
         self.usdview_action = None
         if self.is_smart_tool_allowed("usdview"):
             self.usdview_action = tools_menu.addAction("Open USD in usdview", self.launch_current_project_usdview)

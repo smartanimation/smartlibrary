@@ -3,7 +3,13 @@
 
   var STORAGE_KEY = "smart-ae-browser-state-v1";
   var POLL_INTERVAL_MS = 4000;
-  var DEFAULT_CONFIG_ROOT = "P:/dev/smartlibrary/config";
+  var PIPELINE_ROOT = "P:/dev/smartlibrary";
+  var DEFAULT_CONFIG_ROOT = (
+    typeof process !== "undefined"
+    && process.env
+    && process.env.SMARTPIPELINE_PROJECT_CONFIG_ROOT
+  ) ? String(process.env.SMARTPIPELINE_PROJECT_CONFIG_ROOT).replace(/\\/g, "/")
+    : "P:/dev/smartprojects/config";
   var DEFAULT_AE_RENDER_CONFIG = {
     final_comp: {
       name: "final",
@@ -14,13 +20,17 @@
       render_settings_template_aliases: "Best Settings",
       output_module_template: "Apple ProRes 422 Proxy",
       output_module_template_aliases: "Apple ProRes 422 Prox,ProRes 422 Proxy,QuickTime Apple ProRes 422 Proxy",
+      output_module_fallback_template: "High Quality",
+      output_module_fallback_template_aliases: "高品質",
       audio_output: true,
-      quality: "best",
-      output_path: "{shot_root}/output/review/{dept}/{version_label}/{take_label}/mov/{output_filename}"
+      quality: "best"
     }
   };
   var DEFAULT_NAMING_CONFIG = {
     smart_aftereffects: {
+      dcc: "ae",
+      work_task: "preComp",
+      work_option: "main",
       task: "compTemp",
       aep_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}",
       output_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"
@@ -38,6 +48,7 @@
     selectedAepPath: "",
     nextSaveVersions: {},
     resolvedWorkRoots: {},
+    resolvedReviewMoviePaths: {},
     rows: [],
     activeTab: "watch",
     filters: {
@@ -74,11 +85,12 @@
     }
 
     try {
-      var defaultNamingPath = path.join(configRoot, "default", "naming.yml");
+      var defaultConfigDir = path.join(PIPELINE_ROOT, "config", "default");
+      var defaultNamingPath = path.join(defaultConfigDir, "naming.yml");
       var defaultNaming = fs.existsSync(defaultNamingPath) ? parseSimpleYaml(fs.readFileSync(defaultNamingPath, "utf8")) : {};
-      var defaultAeRenderPath = path.join(configRoot, "default", "ae_render.yml");
+      var defaultAeRenderPath = path.join(defaultConfigDir, "ae_render.yml");
       var defaultAeRender = fs.existsSync(defaultAeRenderPath) ? parseSimpleYaml(fs.readFileSync(defaultAeRenderPath, "utf8")) : {};
-      var defaultTemplates = loadPathTemplates(fs, path, path.join(configRoot, "default"));
+      var defaultTemplates = loadPathTemplates(fs, path, defaultConfigDir);
       fs.readdirSync(configRoot, { withFileTypes: true }).forEach(function (entry) {
         var templatePath;
         var aeRenderPath;
@@ -527,7 +539,7 @@
     if (!fs || !pathModule || !childProcess || !project || !project.configDir) {
       return [];
     }
-    pipelineRoot = pathModule.dirname(DEFAULT_CONFIG_ROOT);
+    pipelineRoot = PIPELINE_ROOT;
     scriptPath = pathModule.join(pipelineRoot, "scripts", "list_ae_render_manifests.py");
     if (!fs.existsSync(scriptPath)) {
       return [];
@@ -1553,28 +1565,7 @@
   }
 
   function workAepRoot(shotRoot, department) {
-    var backendRoot = resolveWorkAepRootFromBackend(shotRoot, department);
-    var project = selectedProject();
-    var templates = project ? project.templates || {} : {};
-    var tokens = shotTokensFromRoot(shotRoot);
-    var values = {
-      project_root: project ? project.root || templates.project_root || "" : "",
-      project_name: project ? project.name || project.id || templates.project_name || "" : "",
-      shot_root: shotRoot,
-      episode: tokens.episode,
-      sequence: tokens.sequence,
-      seq: tokens.sequence,
-      shot: tokens.shot,
-      department: department || "anim",
-      dept: department || "anim",
-      dcc: "ae",
-      tool: "ae"
-    };
-    if (backendRoot) {
-      return backendRoot;
-    }
-    var shotWork = resolveConfiguredTemplate(templates.shot_work || "{shot_root}/work/{department}/{dcc}", values, templates);
-    return joinPath(shotWork, "main");
+    return resolveWorkAepRootFromBackend(shotRoot, department);
   }
 
   function resolveWorkAepRootFromBackend(shotRoot, department) {
@@ -1583,6 +1574,9 @@
     var childProcess = nodeRequire("child_process");
     var project = selectedProject();
     var tokens = shotTokensFromRoot(shotRoot);
+    var dcc = afterEffectsDcc();
+    var task = afterEffectsWorkTask();
+    var option = afterEffectsWorkOption();
     var key;
     var pipelineRoot;
     var scriptPath;
@@ -1592,11 +1586,20 @@
     if (!fs || !pathModule || !childProcess || !project || !project.configDir) {
       return "";
     }
-    key = [project.configDir, tokens.episode, tokens.sequence, tokens.shot, department || "anim", "ae", "main"].join("|");
+    key = [
+      project.configDir,
+      tokens.episode,
+      tokens.sequence,
+      tokens.shot,
+      department || "anim",
+      dcc,
+      task,
+      option
+    ].join("|");
     if (state.resolvedWorkRoots[key]) {
       return state.resolvedWorkRoots[key];
     }
-    pipelineRoot = pathModule.dirname(DEFAULT_CONFIG_ROOT);
+    pipelineRoot = PIPELINE_ROOT;
     scriptPath = pathModule.join(pipelineRoot, "scripts", "resolve_ae_work_path.py");
     if (!fs.existsSync(scriptPath)) {
       return "";
@@ -1610,8 +1613,9 @@
         "--sequence", tokens.sequence,
         "--shot", tokens.shot,
         "--department", department || "anim",
-        "--dcc", "ae",
-        "--option", "main"
+        "--dcc", dcc,
+        "--task", task,
+        "--option", option
       ], { encoding: "utf8", maxBuffer: 1024 * 1024 });
     } catch (error) {
       return "";
@@ -1623,6 +1627,64 @@
     if (payload && payload.ok && payload.work_root) {
       state.resolvedWorkRoots[key] = String(payload.work_root).replace(/\\/g, "/");
       return state.resolvedWorkRoots[key];
+    }
+    return "";
+  }
+
+  function resolveReviewMoviePathFromBackend(shotRoot, department, filename) {
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    var childProcess = nodeRequire("child_process");
+    var project = selectedProject();
+    var tokens = shotTokensFromRoot(shotRoot);
+    var key;
+    var pipelineRoot;
+    var scriptPath;
+    var python;
+    var result;
+    var payload;
+    if (!fs || !pathModule || !childProcess || !project || !project.configDir || !filename) {
+      return "";
+    }
+    key = [
+      project.configDir,
+      tokens.episode,
+      tokens.sequence,
+      tokens.shot,
+      department || "anim",
+      filename
+    ].join("|");
+    if (state.resolvedReviewMoviePaths[key]) {
+      return state.resolvedReviewMoviePaths[key];
+    }
+    pipelineRoot = PIPELINE_ROOT;
+    scriptPath = pathModule.join(
+      pipelineRoot, "scripts", "resolve_ae_review_movie_path.py"
+    );
+    if (!fs.existsSync(scriptPath)) {
+      return "";
+    }
+    python = findPythonExecutable(fs, pathModule, pipelineRoot);
+    try {
+      result = childProcess.spawnSync(python, [
+        scriptPath,
+        "--config-dir", project.configDir,
+        "--episode", tokens.episode,
+        "--sequence", tokens.sequence,
+        "--shot", tokens.shot,
+        "--department", department || "anim",
+        "--filename", filename
+      ], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+    } catch (error) {
+      return "";
+    }
+    if (!result || result.status !== 0) {
+      return "";
+    }
+    payload = parseLastJsonLine(result.stdout);
+    if (payload && payload.ok && payload.path) {
+      state.resolvedReviewMoviePaths[key] = String(payload.path).replace(/\\/g, "/");
+      return state.resolvedReviewMoviePaths[key];
     }
     return "";
   }
@@ -1768,7 +1830,7 @@
     var take = "";
     var department = "";
     if (fileMatch) {
-      return "v" + fileMatch[1] + "/t" + String(Number(fileMatch[2])).padStart(3, "0");
+      return "v" + fileMatch[1] + "/t" + String(Number(fileMatch[2])).padStart(2, "0");
     }
     parts.forEach(function (part, index) {
       if (/^v\d+/i.test(part)) {
@@ -2031,9 +2093,13 @@
       renderSettingsTemplateAliases: splitCsv(queue.render_settings_template_aliases || ""),
       outputModuleTemplate: String(queue.output_module_template || "Apple ProRes 422 Proxy"),
       outputModuleTemplateAliases: splitCsv(queue.output_module_template_aliases || ""),
+      outputModuleFallbackTemplate: String(queue.output_module_fallback_template || "High Quality"),
+      outputModuleFallbackTemplateAliases: splitCsv(queue.output_module_fallback_template_aliases || "高品質"),
       audioOutput: queue.audio_output !== false && String(queue.audio_output).toLowerCase() !== "false",
       quality: String(queue.quality || "best"),
-      outputPath: values.shot_root ? afterEffectsOutputPath(String(queue.output_path || DEFAULT_AE_RENDER_CONFIG.render_queue.output_path), values) : "",
+      outputPath: values.shot_root ? resolveReviewMoviePathFromBackend(
+        values.shot_root, values.dept, values.output_filename
+      ) : "",
       values: values
     };
   }
@@ -2121,6 +2187,21 @@
     return String(naming.task || currentDepartment() || "compTemp");
   }
 
+  function afterEffectsDcc() {
+    var naming = currentAeNamingConfig().smart_aftereffects || {};
+    return String(naming.dcc || "ae");
+  }
+
+  function afterEffectsWorkTask() {
+    var naming = currentAeNamingConfig().smart_aftereffects || {};
+    return String(naming.work_task || "preComp");
+  }
+
+  function afterEffectsWorkOption() {
+    var naming = currentAeNamingConfig().smart_aftereffects || {};
+    return String(naming.work_option || "main");
+  }
+
   function afterEffectsFilename(kind, values, ext) {
     var naming = currentAeNamingConfig().smart_aftereffects || {};
     var key = kind === "aep" ? "aep_filename" : "output_filename";
@@ -2131,14 +2212,6 @@
       ext: ext || ""
     });
     return sanitizeFilename(formatTemplate(template, data).replace(/\*/g, "_"));
-  }
-
-  function afterEffectsOutputPath(template, values) {
-    var outputPath = formatTemplate(template, values);
-    if (String(template || "").indexOf("{output_filename}") !== -1) {
-      return outputPath;
-    }
-    return replacePathBasename(outputPath, values.output_filename || afterEffectsFilename("output", values, "mov"));
   }
 
   function resolveConfiguredTemplate(template, values, templates) {
@@ -2473,6 +2546,7 @@
       setStatus("Save failed: " + payload.error);
       return;
     }
+    commitWorkSave(next);
     state.selectedAepPath = next.path;
     clearAepCache();
     renderRows();
@@ -2552,7 +2626,7 @@
       setStatus("PreComp Publish save failed: " + saveResult.error);
       return;
     }
-    pipelineRoot = pathModule.dirname(DEFAULT_CONFIG_ROOT);
+    pipelineRoot = PIPELINE_ROOT;
     scriptPath = pathModule.join(pipelineRoot, "scripts", "publish_precomp.py");
     if (!fs.existsSync(scriptPath)) {
       setStatus("PreComp Publish failed: backend script was not found: " + scriptPath);
@@ -2623,6 +2697,7 @@
     var context = currentWorkContext();
     var latest;
     var forcedVersion;
+    var manifestVersion;
     var version;
     var take;
     if (!context) {
@@ -2630,14 +2705,11 @@
     }
     latest = latestWorkAepVersionTake(context);
     forcedVersion = state.nextSaveVersions[workContextKey(context)];
-    version = forcedVersion || latest.version || currentContextVersion() || 1;
-    take = forcedVersion ? 1 : latest.take + 1;
+    manifestVersion = currentContextVersion();
+    version = forcedVersion || Math.max(latest.version, manifestVersion, 1);
+    take = forcedVersion || latest.version !== version ? 1 : latest.take + 1;
     if (!take || take < 1) {
       take = 1;
-    }
-    if (forcedVersion) {
-      delete state.nextSaveVersions[workContextKey(context)];
-      persistState();
     }
     return {
       path: joinPath(context.root, afterEffectsFilename("aep", {
@@ -2648,13 +2720,23 @@
         dept: context.department,
         task: context.task,
         version: String(version).padStart(3, "0"),
-        take: String(take).padStart(3, "0"),
+        take: String(take).padStart(2, "0"),
         version_label: "v" + String(version).padStart(3, "0"),
-        take_label: "t" + String(take).padStart(3, "0")
+        take_label: "t" + String(take).padStart(2, "0")
       }, "aep")),
       version: version,
-      take: take
+      take: take,
+      contextKey: workContextKey(context),
+      consumesForcedVersion: Boolean(forcedVersion)
     };
+  }
+
+  function commitWorkSave(saveTarget) {
+    if (!saveTarget || !saveTarget.consumesForcedVersion || !saveTarget.contextKey) {
+      return;
+    }
+    delete state.nextSaveVersions[saveTarget.contextKey];
+    persistState();
   }
 
   function latestWorkAepVersionTake(context) {
@@ -2730,6 +2812,9 @@
     var result = await window.SmartCEPBridge.callHost(hostMethod, { path: manifest.path }, "");
     var payload;
     var message;
+    var saveTarget;
+    var saveResult;
+    var savePayload;
     if (!result) {
       setStatus("Build failed: After Effects returned no response");
       return;
@@ -2753,16 +2838,45 @@
       setStatus("Build failed: " + (message || "After Effects did not complete the build"));
       return;
     }
+    saveTarget = nextWorkSavePath();
+    if (!saveTarget || !saveTarget.path) {
+      setStatus("Build completed, but the work AEP path could not be resolved");
+      return;
+    }
+    setStatus("Build completed. Saving AEP: " + basename(saveTarget.path));
+    saveResult = await window.SmartCEPBridge.callHost(
+      "saveAepProject", { path: saveTarget.path }, ""
+    );
+    try {
+      savePayload = saveResult ? JSON.parse(saveResult) : {};
+    } catch (saveError) {
+      savePayload = { error: String(saveResult || saveError.message) };
+    }
+    if (!saveResult || savePayload.error || savePayload.ok === false) {
+      setStatus(
+        "Build completed, but Save As failed: "
+        + (savePayload.error || "After Effects returned no response")
+      );
+      return;
+    }
+    commitWorkSave(saveTarget);
+    state.selectedAepPath = saveTarget.path;
+    clearAepCache();
     buildFromSelectedManifest(false);
-    setStatus("Build executed: " + basename(manifest.path) + (payload.imported !== undefined ? " / " + payload.imported + " footage" : ""));
+    renderRows();
+    setStatus(
+      "Built and saved AEP: " + basename(saveTarget.path)
+      + (payload.imported !== undefined ? " / " + payload.imported + " footage" : "")
+    );
   }
 
   async function renderFinalComp() {
     var context = renderQueueContext();
     var result;
     var payload;
+    var transcode;
     if (!context.outputPath) {
-      setStatus("Select a shot before rendering");
+      setStatus("Could not resolve review movie path for the selected shot");
       return;
     }
     setStatus("Rendering " + context.compName + "...");
@@ -2776,7 +2890,66 @@
       setStatus("Render failed: " + payload.error);
       return;
     }
+    if (payload.requiresTranscode) {
+      setStatus("Encoding Apple ProRes 422 Proxy...");
+      transcode = transcodeAeIntermediate(payload, context);
+      if (!transcode.ok) {
+        setStatus(
+          "Render failed during ProRes encoding: "
+          + (transcode.error || "Unknown ffmpeg error")
+          + (payload.intermediatePath ? " / Intermediate: " + payload.intermediatePath : "")
+        );
+        return;
+      }
+      payload.outputModuleTemplate = transcode.codec || context.outputModuleTemplate;
+      payload.format = "QuickTime";
+    }
     setStatus(payload.warning ? "Rendered with warning: " + payload.warning : "Rendered " + basename(context.outputPath) + " / " + (payload.outputModuleTemplate || payload.outputModuleName || context.outputModuleTemplate) + (payload.format ? " / " + payload.format : ""));
+  }
+
+  function transcodeAeIntermediate(payload, context) {
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    var childProcess = nodeRequire("child_process");
+    var project = selectedProject();
+    var pipelineRoot;
+    var scriptPath;
+    var python;
+    var args;
+    var result;
+    var response;
+    if (!fs || !pathModule || !childProcess) {
+      return { ok: false, error: "CEP Node runtime is unavailable" };
+    }
+    pipelineRoot = PIPELINE_ROOT;
+    scriptPath = pathModule.join(pipelineRoot, "scripts", "transcode_ae_render.py");
+    if (!fs.existsSync(scriptPath)) {
+      return { ok: false, error: "ProRes transcoder was not found: " + scriptPath };
+    }
+    python = findPythonExecutable(fs, pathModule, pipelineRoot);
+    args = [
+      scriptPath,
+      "--input", String(payload.intermediatePath || payload.renderedPath || ""),
+      "--output", String(context.outputPath || payload.outputPath || ""),
+      "--remove-source"
+    ];
+    if (project && project.configDir) {
+      args.push("--config-dir", project.configDir);
+    }
+    try {
+      result = childProcess.spawnSync(python, args, {
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024
+      });
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+    response = parseLastJsonLine(result ? result.stdout : "");
+    if (!response.ok) {
+      response.error = response.error
+        || String((result && (result.stderr || result.stdout)) || "ProRes encoding failed").trim();
+    }
+    return response;
   }
 
   async function refreshProjectFootageRows() {

@@ -18,6 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     _bootstrap()
 
     from smartlib.core.config_loader import ProjectConfig
+    from smartlib.core.output_resolver import OutputPathResolver
     from smartlib.core.path_resolver import ProjectPaths
 
     parser = argparse.ArgumentParser(description="Resolve Smart AE Browser work paths.")
@@ -27,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shot", required=True)
     parser.add_argument("--department", default="anim")
     parser.add_argument("--dcc", default="ae")
+    parser.add_argument("--task", default="preComp")
     parser.add_argument("--option", default="main")
     args = parser.parse_args(argv)
 
@@ -49,7 +51,26 @@ def main(argv: list[str] | None = None) -> int:
         args.department,
         args.dcc,
     )
-    work_root = shot_work / args.option
+    work_output = OutputPathResolver(config).resolve(
+        "shot_work_scene",
+        {
+            "shot_root": shot_root.as_posix(),
+            "shot_work": shot_work.as_posix(),
+            "episode": args.episode,
+            "sequence": args.sequence,
+            "shot": args.shot,
+            "department": args.department,
+            "dcc": args.dcc,
+            "task": args.task,
+            "option": args.option,
+            "version": "001",
+            "take": "01",
+            "ext": "aep",
+        },
+        default_directory="{shot_work}/{task}/{option}",
+        default_filename="{shot}_{task}_v{version}_t{take}.{ext}",
+    )
+    work_root = work_output.directory
     print(
         json.dumps(
             {
@@ -57,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
                 "shot_root": shot_root.as_posix(),
                 "shot_work": shot_work.as_posix(),
                 "work_root": work_root.as_posix(),
+                "dcc": args.dcc,
+                "task": args.task,
+                "option": args.option,
             },
             ensure_ascii=False,
         )

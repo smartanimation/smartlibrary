@@ -1,0 +1,28 @@
+{
+  "schema": "smart_delivery.package_profile/v1",
+  "profile": {
+    "id": "editorial",
+    "source": "smartpipeline",
+    "received_from": "external_editor",
+    "delivery_recipient": "external_editor",
+    "delivery_process": "edit_in",
+    "asset_subset": "editorial",
+    "asset_root": "production/editorial",
+    "shot_root": "production/editorial/publish/{episode}/revisions/{subset}"
+  },
+  "layouts": {
+    "asset": {
+      "scene": "metadata/{name}",
+      "textures": "media/{relative}"
+    },
+    "shot": {
+      "maya": "source/{name}",
+      "after_effects": "source/{name}",
+      "image_sequence": "media/{name}",
+      "cache": "source/{name}",
+      "usd": "source/{name}",
+      "default": "media/{name}"
+    }
+  },
+  "include": {}
+}

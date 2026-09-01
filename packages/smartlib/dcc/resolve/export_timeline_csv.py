@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.metadata import read_json
 from smartlib.core.path_resolver import configured_project_paths
 from smartlib.core.versioning import format_version, next_version, parse_version
 
@@ -345,6 +346,7 @@ def stage_editorial_source(
     shot_media_links = []
     marker_count = 0
     aaf_fallback = False
+    timeline_start_frame = None
     if reference_path:
         reference = Path(reference_path)
         if reference_type.lower() in {"aaf", "edl", "xml"}:
@@ -369,6 +371,17 @@ def stage_editorial_source(
                 )
                 timeline_import_path = reference
                 aaf_fallback = True
+        if reference_type.lower() == "aaf":
+            timeline_start_frame = _first_shot_cut_in(
+                project_config,
+                episode,
+                sequence,
+                timeline,
+            )
+            if timeline_start_frame is not None:
+                _set_timeline_start_frame(
+                    timeline, timeline_start_frame, _project_fps(project_config)
+                )
         rule = shot_naming_rule(project_config, profile_name=shot_naming_profile)
         if aaf_fallback:
             marker_count = _add_reference_markers(
@@ -406,6 +419,7 @@ def stage_editorial_source(
             "timeline_import_path": timeline_import_path.as_posix() if timeline_import_path else "",
             "timeline_import_type": timeline_import_path.suffix.lower().lstrip(".") if timeline_import_path else "",
             "timeline_import_mode": "aaf_markers_on_offline" if aaf_fallback else "resolve_timeline_import",
+            "timeline_start_frame": timeline_start_frame,
             "cutting_markers": marker_count,
             "shot_media_links": shot_media_links,
         },
@@ -595,13 +609,8 @@ def editorial_work_sequence_dir(project_config: ProjectConfig, episode: str, seq
     project_root = project_config.project_root
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
-    templates = project_config.base.get("templates") or {}
-    editorial_root = _resolve_template(
-        str(templates.get("editorial_root") or "{project_root}/editorial"),
-        project_root,
-        templates,
-    )
-    return Path(editorial_root) / "work" / episode / sequence
+    paths = configured_project_paths(project_root, project_config)
+    return paths.editorial_work_root() / episode / sequence
 
 
 def editorial_work_versions(project_config: ProjectConfig, episode: str, sequence: str) -> list[str]:
@@ -809,6 +818,67 @@ def _create_offline_timeline(
     if callable(setter):
         setter(timeline)
     return timeline
+
+def _project_fps(project_config: ProjectConfig) -> int:
+    try:
+        return max(1, int((project_config.base.get("anchors") or {}).get("fps") or 24))
+    except (TypeError, ValueError):
+        return 24
+
+
+def _first_shot_cut_in(
+    project_config: ProjectConfig,
+    episode: str,
+    sequence: str,
+    timeline: Any,
+) -> int | None:
+    project_root = project_config.project_root
+    if project_root is not None:
+        paths = configured_project_paths(project_root, project_config)
+        sequence_root = paths.sequence_workspace_root(episode, sequence)
+        sequence_data = read_json(sequence_root / "sequence.json", {}) or {}
+        cut_ins = [
+            int(row["cut_in"])
+            for row in sequence_data.get("shots") or []
+            if isinstance(row, dict) and row.get("cut_in") is not None
+        ]
+        if cut_ins:
+            return min(cut_ins)
+        shot_cut_ins = []
+        for shot_json in paths.sequence_root(episode, sequence).glob("*/shot.json"):
+            shot_data = read_json(shot_json, {}) or {}
+            editorial = shot_data.get("editorial") or {}
+            try:
+                shot_cut_ins.append(int(editorial["cut_in"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if shot_cut_ins:
+            return min(shot_cut_ins)
+    getter = getattr(timeline, "GetItemListInTrack", None)
+    items = list(getter("video", 1) or []) if callable(getter) else []
+    starts = [
+        int(_call_or_default(item, "GetStart", 0) or 0)
+        for item in items
+    ]
+    return min(starts) if starts else None
+
+
+def _set_timeline_start_frame(timeline: Any, frame: int, fps: int) -> None:
+    timecode = _frame_to_timecode(frame, fps)
+    setter = getattr(timeline, "SetStartTimecode", None)
+    if not callable(setter) or not setter(timecode):
+        raise RuntimeError(
+            f"Resolve could not set timeline start timecode to {timecode}."
+        )
+
+
+def _frame_to_timecode(frame: int, fps: int) -> str:
+    rate = max(1, int(fps))
+    value = max(0, int(frame))
+    hours, remainder = divmod(value, rate * 3600)
+    minutes, remainder = divmod(remainder, rate * 60)
+    seconds, frames = divmod(remainder, rate)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
 
 
 def _import_editorial_timeline(

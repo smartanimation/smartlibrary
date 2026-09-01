@@ -24,6 +24,8 @@ class PackageProfile:
     shot_root: str
     layouts: dict[str, dict[str, str]]
     include: dict[str, tuple[str, ...]]
+    delivery_recipient: str = "external_editor"
+    delivery_process: str = "edit_in"
 
     @classmethod
     def load(cls, path: str | Path) -> "PackageProfile":
@@ -38,6 +40,8 @@ class PackageProfile:
             shot_root=str(profile.get("shot_root") or "production/shots/{episode}/{sequence}/{shot}/data/{department}/{subset}/v###"),
             layouts={str(k): {str(a): str(b) for a, b in dict(v or {}).items()} for k, v in dict(data.get("layouts") or {}).items()},
             include={str(k): tuple(str(v) for v in values or []) for k, values in dict(data.get("include") or {}).items()},
+            delivery_recipient=str(profile.get("delivery_recipient") or "external_editor"),
+            delivery_process=str(profile.get("delivery_process") or "edit_in"),
         )
 
 

@@ -893,23 +893,45 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             type_layout.setContentsMargins(0, 0, 0, 0)
             type_layout.setSpacing(4)
             type_layout.addWidget(QtWidgets.QLabel("DataType :"))
+            self.data_type_list.setIconSize(QtCore.QSize(28, 28))
+            _ensure_smartlib_on_path()
+            from smartlib.core.icons import shot_data_icon_path
+
             animation_item = QtWidgets.QListWidgetItem("Animation Curves")
             animation_item.setData(QtCore.Qt.UserRole, "animation_curve")
+            icon_path = shot_data_icon_path("animation_curve", 28)
+            if icon_path:
+                animation_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.data_type_list.addItem(animation_item)
             camera_item = QtWidgets.QListWidgetItem("Camera")
             camera_item.setData(QtCore.Qt.UserRole, "camera")
+            icon_path = shot_data_icon_path("camera", 28)
+            if icon_path:
+                camera_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.data_type_list.addItem(camera_item)
             light_item = QtWidgets.QListWidgetItem("Light")
             light_item.setData(QtCore.Qt.UserRole, "light")
+            icon_path = shot_data_icon_path("light", 28)
+            if icon_path:
+                light_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.data_type_list.addItem(light_item)
             playblast_item = QtWidgets.QListWidgetItem("Playblast Settings")
             playblast_item.setData(QtCore.Qt.UserRole, "render_manifest")
+            icon_path = shot_data_icon_path("render_manifest", 28)
+            if icon_path:
+                playblast_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.data_type_list.addItem(playblast_item)
-            preview_render_item = QtWidgets.QListWidgetItem("Review Spec")
-            preview_render_item.setData(QtCore.Qt.UserRole, "review_spec")
+            preview_render_item = QtWidgets.QListWidgetItem("Review Layers")
+            preview_render_item.setData(QtCore.Qt.UserRole, "review_layers")
+            icon_path = shot_data_icon_path("review_layers", 28)
+            if icon_path:
+                preview_render_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.data_type_list.addItem(preview_render_item)
             set_dress_item = QtWidgets.QListWidgetItem("Set Dress Work Data")
             set_dress_item.setData(QtCore.Qt.UserRole, "set_dress_data")
+            icon_path = shot_data_icon_path("set_dress_data", 28)
+            if icon_path:
+                set_dress_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.data_type_list.addItem(set_dress_item)
             self.data_type_list.setMinimumWidth(130)
             self.data_type_list.setStyleSheet("QListWidget::item { height: 34px; }")
@@ -921,7 +943,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             target_layout.setSpacing(4)
             self.data_target_label = QtWidgets.QLabel("Name :")
             target_layout.addWidget(self.data_target_label)
-            self.data_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+            self.data_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
             self.data_cast_list.setAlternatingRowColors(True)
             self.data_cast_list.setMinimumWidth(190)
             target_layout.addWidget(self.data_cast_list, 1)
@@ -2347,7 +2369,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             ("camera", "Camera"),
             ("light", "Light"),
             ("render_manifest", "Render Manifest"),
-            ("review_spec", "Review Spec"),
+            ("review_layers", "Review Layers"),
             ("set_dress_data", "Set Dress Work Data"),
         )
         published_icon = self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
@@ -2410,6 +2432,23 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return str(data.get("cast_key") or data.get("target") or item.text()).strip()
         return item.text().strip()
 
+    def _selected_data_targets(self) -> list[str]:
+        targets = []
+        for item in sorted(
+            self.data_cast_list.selectedItems(),
+            key=self.data_cast_list.row,
+        ):
+            data = item.data(QtCore.Qt.UserRole)
+            if isinstance(data, dict):
+                target = str(
+                    data.get("cast_key") or data.get("target") or item.text()
+                ).strip()
+            else:
+                target = item.text().strip()
+            if target and target not in targets:
+                targets.append(target)
+        return targets
+
     def _on_data_type_changed(self) -> None:
         self._update_data_action_visibility()
         data_type = self._current_data_type()
@@ -2419,7 +2458,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 if self.active_sequence_identity else {"cast": {}}
             )
             self.populate_data_cast_list(cast_data)
-        elif data_type in {"review_spec", "render_manifest"}:
+        elif data_type == "render_manifest":
             self._populate_preview_render_targets()
         elif data_type in {"camera", "light"}:
             self._populate_scene_data_targets(data_type)
@@ -2443,7 +2482,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if hasattr(self, "data_target_label"):
             labels = {
                 "animation_curve": "Cast :",
-                "review_spec": "Department :",
+                "review_layers": "Definition :",
                 "set_dress_data": "Package :",
                 "camera": "Root :",
                 "light": "Root :",
@@ -2547,9 +2586,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             departments = {
                 self.work_dept_combo.currentText().strip() or "default"
             }
-            for row in self.service.list_review_spec_versions(identity):
+            for row in self.service.list_shot_data_versions(identity):
                 parts = row.name.split("/")
-                if len(parts) > 1:
+                if parts and parts[0] == "render_manifest" and len(parts) > 1:
                     departments.add(parts[1])
             for row in self.service.list_preview_render_versions(identity):
                 parts = row.name.split("/")
@@ -2764,9 +2803,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         identity = self.active_shot_identity or self.current_identity()
         departments = {self.work_dept_combo.currentText().strip() or "default"}
         if identity:
-            for row in self.service.list_review_spec_versions(identity):
+            for row in self.service.list_shot_data_versions(identity):
                 parts = str(row.name or "").split("/")
-                if len(parts) > 1:
+                if parts and parts[0] == "render_manifest" and len(parts) > 1:
                     departments.add(parts[1])
         self.data_cast_list.blockSignals(True)
         self.data_cast_list.clear()
@@ -2881,7 +2920,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not published_sources:
             return False
         version_path = Path(path)
-        source_path = version_path / "animation_curve.json" if version_path.is_dir() else version_path
+        if version_path.is_dir():
+            source_path = version_path / "animation_manifest.json"
+            if not source_path.is_file():
+                source_path = version_path / "animation_curve.json"
+        else:
+            source_path = version_path
         return source_path.resolve().as_posix().lower() in published_sources
 
     @staticmethod
@@ -4730,36 +4774,46 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         try:
             _ensure_smartlib_on_path()
             import maya.cmds as cmds
-            from smartlib.dcc.maya.animation_curves import collect_animation_curves_for_cast
+            from smartlib.dcc.maya.animation_curves import export_animation_atom_for_cast
 
             source_workfile = cmds.file(query=True, sceneName=True) or ""
-            cast_row = self._selected_data_cast_row_data()
-            if not cast_row:
-                QtWidgets.QMessageBox.warning(self, "Export Animation Curves", "Select one cast in the Data tab first.")
-                return
-            curve_data = collect_animation_curves_for_cast(
-                cast_key=cast_row["cast_key"],
-                asset=cast_row["asset"],
-                namespace=cast_row["namespace"] or cast_row["cast_key"],
-                source_workfile=source_workfile,
-            )
-            if not curve_data.get("curves"):
-                namespace = cast_row["namespace"] or cast_row["cast_key"]
+            start, end = self.service.shot_frame_range(identity)
+            cast_rows = self._selected_data_cast_rows_data()
+            if not cast_rows:
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Export Animation Curves",
-                    f"No animation curves were found in namespace {namespace}.",
+                    "Select one or more casts in the Data tab first.",
                 )
                 return
-            path = self.service.export_animation_curves_data(
-                identity,
-                curve_data,
-                target=cast_row["cast_key"],
-                subset="curves",
-                source_workfile=source_workfile,
-                comment=comment.strip(),
-            )
-            self.status_label.setText(f"Exported animation curve data: {path}")
+            exported = []
+            for cast_row in cast_rows:
+                namespace = cast_row["namespace"] or cast_row["cast_key"]
+                plan = self.service.plan_animation_atom_export(
+                    identity,
+                    target=cast_row["cast_key"],
+                    subset="curves",
+                )
+                manifest = export_animation_atom_for_cast(
+                    plan["atom_path"],
+                    cast_key=cast_row["cast_key"],
+                    asset=cast_row["asset"],
+                    namespace=namespace,
+                    source_workfile=source_workfile,
+                    frame_range=(start, end),
+                )
+                path = self.service.finalize_animation_atom_export(
+                    identity,
+                    manifest,
+                    target=cast_row["cast_key"],
+                    subset="curves",
+                    version=plan["version"],
+                    source_workfile=source_workfile,
+                    comment=comment.strip(),
+                )
+                exported.append(path)
+            message = f"Exported authoritative Animation ATOM for {len(exported)} cast(s)."
+            self.status_label.setText(message)
             self.populate_data_tree()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Export Animation Curves Failed", str(exc))
@@ -4874,7 +4928,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         try:
             import maya.cmds as cmds
             from smartlib.dcc.maya.animation_curves import (
-                collect_animation_curves_for_cast,
+                export_animation_atom_for_cast,
                 export_animation_geometry_cache,
             )
 
@@ -4895,28 +4949,28 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             source_workfile = cmds.file(query=True, sceneName=True) or ""
             curve_data_path = self._selected_animation_curve_data_path(cast_row["cast_key"])
             if not curve_data_path:
-                curve_data = collect_animation_curves_for_cast(
+                atom_plan = self.service.plan_animation_atom_export(
+                    identity,
+                    target=cast_row["cast_key"],
+                    subset="curves",
+                )
+                atom_manifest = export_animation_atom_for_cast(
+                    atom_plan["atom_path"],
                     cast_key=cast_row["cast_key"],
                     asset=cast_row["asset"],
                     namespace=namespace,
                     source_workfile=source_workfile,
+                    frame_range=(start, end),
                 )
-                if curve_data.get("curves"):
-                    curve_data_file = self.service.export_animation_curves_data(
-                        identity,
-                        curve_data,
-                        target=cast_row["cast_key"],
-                        subset="curves",
-                        source_workfile=source_workfile,
-                        comment=comment.strip(),
-                    )
-                    curve_data_path = self.service.publish_animation_from_data(
-                        identity,
-                        curve_data_file,
-                        target=cast_row["cast_key"],
-                        subset="curves",
-                        comment=comment.strip(),
-                    )
+                curve_data_path = self.service.finalize_animation_atom_export(
+                    identity,
+                    atom_manifest,
+                    target=cast_row["cast_key"],
+                    subset="curves",
+                    version=atom_plan["version"],
+                    source_workfile=source_workfile,
+                    comment=comment.strip(),
+                )
             plan = self.service.plan_animation_cache_publish(
                 identity,
                 target=cast_row["cast_key"],
@@ -5123,65 +5177,105 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not self.is_maya_session:
             QtWidgets.QMessageBox.information(self, f"Export {title}", "Available inside Maya.")
             return
-        target = self._current_data_target()
-        if not target:
-            QtWidgets.QMessageBox.warning(self, f"Export {title}", f"Select one {title} first.")
+        targets = self._selected_data_targets()
+        if not targets:
+            QtWidgets.QMessageBox.warning(
+                self, f"Export {title}", f"Select one or more {title} targets first."
+            )
             return
         comment, accepted = QtWidgets.QInputDialog.getText(self, f"Export {title}", "Comment")
         if not accepted:
             return
         try:
             import maya.cmds as cmds
+            source_workfile = cmds.file(query=True, sceneName=True) or ""
+            exported = []
+            failed = []
             if data_type == "render_manifest":
                 from smartlib.dcc.maya.review_playblast import load_scene_playblast_settings
 
                 payload = load_scene_playblast_settings(cmds)
                 if not payload:
                     raise RuntimeError("Smart Playblast settings were not found in the current scene.")
-                kwargs = dict(
-                    target=self._data_target_token(target), subset="main",
-                    filename="render_manifest.json",
-                    source_workfile=cmds.file(query=True, sceneName=True) or "",
-                    comment=comment.strip(),
-                )
-                if sequence_identity:
-                    path = self.service.export_sequence_scene_data(
-                        sequence_identity, data_type, payload,
-                        department=self.work_dept_combo.currentText().strip() or "layout",
-                        **kwargs,
-                    )
-                else:
-                    path = self.service.export_shot_scene_data(identity, data_type, payload, **kwargs)
-                self.status_label.setText(f"Exported {title} data: {path}")
-                self.populate_data_tree()
-                return
-            from smartlib.dcc.maya.shot_scene_data import (
-                collect_scene_component_data,
-                export_scene_component_selection,
-            )
-
-            payload = collect_scene_component_data(target, data_type)
-            kwargs = dict(
-                target=self._data_target_token(target), subset="main",
-                filename=f"{data_type}.json",
-                source_workfile=cmds.file(query=True, sceneName=True) or "",
-                comment=comment.strip(),
-            )
-            if sequence_identity:
-                path = self.service.export_sequence_scene_data(
-                    sequence_identity, data_type, payload,
-                    department=self.work_dept_combo.currentText().strip() or "layout",
-                    **kwargs,
-                )
+                for target in targets:
+                    try:
+                        kwargs = dict(
+                            target=self._data_target_token(target),
+                            subset="main",
+                            filename="render_manifest.json",
+                            source_workfile=source_workfile,
+                            comment=comment.strip(),
+                        )
+                        if sequence_identity:
+                            path = self.service.export_sequence_scene_data(
+                                sequence_identity,
+                                data_type,
+                                payload,
+                                department=self._data_target_token(target),
+                                **kwargs,
+                            )
+                        else:
+                            path = self.service.export_shot_scene_data(
+                                identity, data_type, payload, **kwargs
+                            )
+                        exported.append(path)
+                    except Exception as exc:
+                        failed.append((target, str(exc)))
             else:
-                path = self.service.export_shot_scene_data(identity, data_type, payload, **kwargs)
-            export_result = export_scene_component_selection(target, data_type, path.parent)
-            self.service.register_scene_data_files(
-                path,
-                export_result.get("files") or {},
-                errors=export_result.get("errors") or {},
-            )
-            self.status_label.setText(f"Exported {title} data: {path}")
+                from smartlib.dcc.maya.shot_scene_data import (
+                    collect_scene_component_data,
+                    export_scene_component_selection,
+                )
+
+                for target in targets:
+                    try:
+                        payload = collect_scene_component_data(target, data_type)
+                        kwargs = dict(
+                            target=self._data_target_token(target),
+                            subset="main",
+                            filename=f"{data_type}.json",
+                            source_workfile=source_workfile,
+                            comment=comment.strip(),
+                        )
+                        if sequence_identity:
+                            path = self.service.export_sequence_scene_data(
+                                sequence_identity,
+                                data_type,
+                                payload,
+                                department=self.work_dept_combo.currentText().strip()
+                                or "layout",
+                                **kwargs,
+                            )
+                        else:
+                            path = self.service.export_shot_scene_data(
+                                identity, data_type, payload, **kwargs
+                            )
+                        export_result = export_scene_component_selection(
+                            target, data_type, path.parent
+                        )
+                        self.service.register_scene_data_files(
+                            path,
+                            export_result.get("files") or {},
+                            errors=export_result.get("errors") or {},
+                        )
+                        exported.append(path)
+                    except Exception as exc:
+                        failed.append((target, str(exc)))
+            if not exported:
+                raise RuntimeError(
+                    "\n".join(f"{target}: {error}" for target, error in failed)
+                )
+            message = f"Exported {title} data for {len(exported)} target(s)."
+            if failed:
+                message += f" Failed {len(failed)} target(s)."
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    f"Export {title} Partially Completed",
+                    message
+                    + "\n\n"
+                    + "\n".join(f"{target}: {error}" for target, error in failed),
+                )
+            self.status_label.setText(message)
             self.populate_data_tree()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, f"Export {title} Failed", str(exc))
@@ -5353,8 +5447,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return ""
         path = Path(str(raw_path))
         if path.is_dir():
-            path = path / "animation_curve.json"
-        if path.name != "animation_curve.json" or not path.exists():
+            manifest_path = path / "animation_manifest.json"
+            path = manifest_path if manifest_path.is_file() else path / "animation_curve.json"
+        if path.name not in {"animation_manifest.json", "animation.atom", "animation_curve.json"} or not path.exists():
             return ""
         normalized = path.as_posix()
         expected = f"/data/animation/{cast_key}/curves/"
@@ -5420,6 +5515,18 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return None
         data = item.data(QtCore.Qt.UserRole)
         return dict(data) if isinstance(data, dict) else None
+
+    def _selected_data_cast_rows_data(self) -> list[dict]:
+        selected = sorted(
+            self.data_cast_list.selectedItems(),
+            key=self.data_cast_list.row,
+        )
+        rows = []
+        for item in selected:
+            data = item.data(QtCore.Qt.UserRole)
+            if isinstance(data, dict):
+                rows.append(dict(data))
+        return rows
 
     def _selected_publish_cast_row_data(self) -> dict | None:
         item = self.publish_target_list.currentItem()

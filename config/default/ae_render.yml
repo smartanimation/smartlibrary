@@ -6,6 +6,7 @@ render_queue:
   render_settings_template_aliases: 最良設定,最高設定
   output_module_template: Apple ProRes 422 Proxy
   output_module_template_aliases: Apple ProRes 422 Prox,ProRes 422 Proxy,QuickTime Apple ProRes 422 Proxy
+  output_module_fallback_template: High Quality
+  output_module_fallback_template_aliases: 高品質
   audio_output: true
   quality: best
-  output_path: "{shot_root}/output/review/{dept}/{version_label}/{take_label}/mov/{output_filename}"

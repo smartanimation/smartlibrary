@@ -1,0 +1,11 @@
+{
+  "transfer_manifest_count": 140,
+  "transfer_resolved_count": 140,
+  "observed_node_count": 122,
+  "attribute_count": 803,
+  "sample_count": 427999,
+  "difference_count": 0,
+  "different_plug_count": 0,
+  "worst_plugs": [],
+  "differences": []
+}

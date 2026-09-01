@@ -9,7 +9,7 @@ from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json, write_json
 from smartlib.dcc.maya.animation_curves import (
     apply_animation_curves_from_file,
-    collect_animation_curves_for_cast,
+    export_animation_atom_for_cast,
 )
 
 
@@ -33,31 +33,30 @@ def publish_c001_validation_package(
 
     animation_publishes: dict[str, str] = {}
     for target, source_namespace in (("DLI", "DLI"), ("JIN", "JIN")):
-        curve_data = collect_animation_curves_for_cast(
+        plan = service.plan_animation_atom_export(
+            identity,
+            target=target,
+            subset="curves",
+        )
+        atom_manifest = export_animation_atom_for_cast(
+            plan["atom_path"],
             cast_key=f"{target}_main",
             asset=target,
             namespace=source_namespace,
             controller_root="allRigSet",
             source_workfile=source_path,
+            frame_range=(278, 411),
         )
-        if not curve_data.get("curves"):
-            raise RuntimeError(f"No animation curves were found in {source_namespace}:allRigSet")
-        data_path = service.export_animation_curves_data(
+        manifest_path = service.finalize_animation_atom_export(
             identity,
-            curve_data,
+            atom_manifest,
             target=target,
             subset="curves",
+            version=plan["version"],
             source_workfile=source_path,
             comment=comment,
         )
-        published_path = service.publish_animation_from_data(
-            identity,
-            data_path,
-            target=target,
-            subset="curves",
-            comment=comment,
-        )
-        animation_publishes[target] = service._relative_to_project(published_path.parent)
+        animation_publishes[target] = service._relative_to_project(manifest_path.parent)
 
     placement_publish = _publish_placement(
         service,
@@ -186,7 +185,7 @@ def build_c001_validation_scene(
 
     for target, target_namespace in (("DLI", "DLI_main"), ("JIN", "JIN_main")):
         relative = str((manifest.get("animation") or {}).get(target) or "")
-        curve_path = service.paths.project_root / relative / "animation_curve.json"
+        curve_path = service.paths.project_root / relative / "animation_manifest.json"
         apply_animation_curves_from_file(curve_path, namespace=target_namespace, clear_existing=True)
 
     frame_range = manifest.get("frame_range") or [278, 411]

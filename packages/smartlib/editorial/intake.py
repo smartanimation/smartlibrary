@@ -108,9 +108,9 @@ class EditorialIntakeService:
 
     @property
     def editorial_root(self) -> Path:
-        templates = self.project_config.base.get("templates") or {}
-        value = templates.get("editorial_root") or "{project_root}/editorial"
-        return Path(_resolve_template(value, self.project_root, templates))
+        return configured_project_paths(
+            self.project_root, self.project_config
+        ).editorial_root()
 
     @property
     def incoming_editorial_dir(self) -> Path:

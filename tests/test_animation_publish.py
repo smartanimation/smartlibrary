@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 from smartlib.apps.shot_manager import ShotIdentity, ShotManagerService
@@ -75,6 +76,35 @@ def _service(tmp_path: Path) -> tuple[ShotManagerService, ShotIdentity]:
         encoding="utf-8",
     )
     return service, identity
+
+
+def test_animation_atom_is_authoritative_data_payload(tmp_path: Path) -> None:
+    service, identity = _service(tmp_path)
+    plan = service.plan_animation_atom_export(identity, target="Hero_main")
+    plan["atom_path"].write_text("atomVersion 1.0;", encoding="utf-8")
+
+    manifest_path = service.finalize_animation_atom_export(
+        identity,
+        {
+            "namespace": "Hero_main",
+            "transfer_nodes": ["Hero_main:root_CTL", "Hero_main:A_L_IndexFinger1"],
+            "payload_sha256": "test-checksum",
+            "frame_range": [1001, 1010],
+        },
+        target="Hero_main",
+        version=plan["version"],
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema"] == "smartpipeline.animation_atom.v3"
+    assert manifest["format"] == "atom"
+    assert manifest["payload"] == "animation.atom"
+    assert manifest["payload_sha256"] == hashlib.sha256(b"atomVersion 1.0;").hexdigest()
+    assert service.latest_animation_curve_path(identity, target="Hero_main") == manifest_path
+    rows = service.list_animation_curve_versions(identity, target="Hero_main")
+    assert rows[0].path == str(manifest_path)
+    latest = json.loads(manifest_path.parents[1].joinpath("latest.json").read_text(encoding="utf-8"))
+    assert latest["path"] == "v001/animation_manifest.json"
 
 
 def test_cache_and_package_fix_curve_data_dependency(tmp_path: Path) -> None:

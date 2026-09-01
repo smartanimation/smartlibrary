@@ -580,14 +580,21 @@ var SmartAEBrowser = SmartAEBrowser || {};
   }
 
   function setOutputAudio(outputModule, enabled) {
-    var settings = {};
-    settings["Audio Output"] = enabled ? "On" : "Off";
-    try {
-      outputModule.setSettings(settings);
-      return "";
-    } catch (error) {
-      return error.message;
+    var keys = ["Output Audio", "Audio Output"];
+    var errors = [];
+    var settings;
+    var i;
+    for (i = 0; i < keys.length; i += 1) {
+      settings = {};
+      settings[keys[i]] = enabled ? "On" : "Off";
+      try {
+        outputModule.setSettings(settings);
+        return "";
+      } catch (error) {
+        errors.push(error.message);
+      }
     }
+    return errors.join("; ");
   }
 
   function availableOutputModuleTemplates(outputModule) {
@@ -655,6 +662,24 @@ var SmartAEBrowser = SmartAEBrowser || {};
 
   function applyOutputModuleTemplate(outputModule, preferredName, aliases) {
     return applyNamedTemplate(outputModule, preferredName || "Apple ProRes 422 Proxy", aliases || [], availableOutputModuleTemplates(outputModule), "Output module");
+  }
+
+  function applyOutputModuleFallback(outputModule, preferredName, aliases) {
+    return applyNamedTemplate(
+      outputModule,
+      preferredName || "High Quality",
+      (aliases && aliases.length) ? aliases : ["High Quality", "高品質"],
+      availableOutputModuleTemplates(outputModule),
+      "Output module fallback"
+    );
+  }
+
+  function intermediateMoviePath(outputPath) {
+    var text = String(outputPath || "");
+    if (/\.[^\.\/\\]+$/.test(text)) {
+      return text.replace(/(\.[^\.\/\\]+)$/, ".smart-ae-intermediate$1");
+    }
+    return text + ".smart-ae-intermediate.mov";
   }
 
   function normalizeTemplateName(value) {
@@ -1745,6 +1770,10 @@ var SmartAEBrowser = SmartAEBrowser || {};
     var module;
     var appliedRenderSettings;
     var appliedOutputTemplate;
+    var outputFile;
+    var intermediatePath = "";
+    var requiresTranscode = false;
+    var transcodeReason = "";
     var audioWarning;
     var format;
     var warnings = [];
@@ -1779,13 +1808,30 @@ var SmartAEBrowser = SmartAEBrowser || {};
         warnings.push(settingsError.message);
       }
       module = item.outputModule(1);
-      appliedOutputTemplate = applyOutputModuleTemplate(module, payload.outputModuleTemplate || "Apple ProRes 422 Proxy", payload.outputModuleTemplateAliases || []);
+      try {
+        appliedOutputTemplate = applyOutputModuleTemplate(module, payload.outputModuleTemplate || "Apple ProRes 422 Proxy", payload.outputModuleTemplateAliases || []);
+      } catch (templateError) {
+        requiresTranscode = true;
+        transcodeReason = templateError.message;
+        appliedOutputTemplate = applyOutputModuleFallback(
+          module,
+          payload.outputModuleFallbackTemplate || "High Quality",
+          payload.outputModuleFallbackTemplateAliases || ["High Quality", "高品質"]
+        );
+      }
       audioWarning = setOutputAudio(module, payload.audioOutput !== false);
       if (audioWarning) {
         warnings.push("Audio Output setting was not changed: " + audioWarning);
       }
       module = item.outputModule(1);
-      module.file = file;
+      format = outputModuleFormat(module);
+      if (requiresTranscode && normalizeTemplateName(format) !== normalizeTemplateName("QuickTime")) {
+        throw new Error("Output module fallback must use QuickTime, but uses: " + format);
+      }
+      intermediatePath = requiresTranscode ? intermediateMoviePath(file.fsName) : "";
+      outputFile = requiresTranscode ? File(intermediatePath) : file;
+      ensureFolder(outputFile.parent);
+      module.file = outputFile;
       format = outputModuleFormat(module);
       app.endUndoGroup();
       renderStarted = true;
@@ -1794,6 +1840,10 @@ var SmartAEBrowser = SmartAEBrowser || {};
         ok: true,
         comp: comp.name,
         outputPath: file.fsName,
+        renderedPath: outputFile.fsName,
+        intermediatePath: intermediatePath,
+        requiresTranscode: requiresTranscode,
+        transcodeReason: transcodeReason,
         renderSettingsTemplate: appliedRenderSettings || "",
         outputModuleTemplate: appliedOutputTemplate,
         outputModuleName: module.name,

@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,266 @@ class AnimationCurveApplyError(RuntimeError):
 def collect_animation_curves(*, source_workfile: str | Path = "") -> dict[str, Any]:
     cmds = _maya_cmds()
     return _collect_curves_from_nodes(cmds, cmds.ls(type=ANIM_CURVE_TYPES) or [], source_workfile=source_workfile)
+
+
+def export_animation_atom_for_cast(
+    path: str | Path,
+    *,
+    cast_key: str,
+    namespace: str,
+    asset: str = "",
+    controller_root: str = "allRigSet",
+    source_workfile: str | Path = "",
+    frame_range: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """Export the authoritative editable animation payload as Maya ATOM."""
+
+    cmds = _maya_cmds()
+    animation_layers = _non_base_animation_layers(cmds)
+    if animation_layers:
+        raise RuntimeError(
+            "Animation Layers are not allowed for Animation ATOM publish. "
+            "Merge them into BaseAnimation before publishing: "
+            + ", ".join(animation_layers)
+        )
+    root_node = _resolve_controller_root(cmds, namespace, controller_root)
+    if not root_node:
+        raise RuntimeError(f"Controller root was not found: {namespace}:{controller_root}")
+    controls = _contract_nodes(
+        cmds,
+        _controller_members(cmds, root_node),
+        traverse_descendants=True,
+        namespace=namespace,
+    )
+    # Clean-rig reconstruction proves this production rig authors required
+    # animation directly on internal A_* transforms as well as controls.
+    animated_nodes = _namespace_animated_nodes(cmds, namespace)
+    transfer_nodes = sorted(set(controls) | set(animated_nodes))
+    if not transfer_nodes:
+        raise RuntimeError(f"No animation transfer nodes were found in namespace: {namespace}")
+
+    if frame_range is None:
+        start = int(cmds.playbackOptions(query=True, minTime=True))
+        end = int(cmds.playbackOptions(query=True, maxTime=True))
+    else:
+        start, end = int(frame_range[0]), int(frame_range[1])
+    if end < start:
+        raise ValueError(f"Invalid Animation ATOM frame range: {start}-{end}")
+
+    authored_destinations = {
+        plug
+        for node in transfer_nodes
+        for plug in _animated_candidate_plugs(cmds, node)
+        if _authored_anim_curves(cmds, plug)
+    }
+    static_values = _collect_static_values(
+        cmds,
+        controls,
+        animated_destinations=authored_destinations,
+    )
+
+    atom_path = Path(path)
+    atom_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cmds.pluginInfo("atomImportExport", query=True, loaded=True):
+        cmds.loadPlugin("atomImportExport", quiet=True)
+    previous_selection = cmds.ls(selection=True, long=True) or []
+    keyed_static: list[str] = []
+    cmds.undoInfo(openChunk=True, chunkName="smartpipelineAnimationAtomExport")
+    try:
+        # ATOM does not reliably restore static custom attributes on referenced
+        # nodes. Temporary constant keys make those values part of its native
+        # curve payload; the undo below leaves the source scene unchanged.
+        for node in transfer_nodes:
+            for plug in _transfer_candidate_plugs(cmds, node):
+                try:
+                    if _upstream_anim_curves(cmds, plug) or not cmds.getAttr(plug, settable=True):
+                        continue
+                    value = _json_scalar(cmds.getAttr(plug, time=start))
+                    if not isinstance(value, (bool, int, float)):
+                        continue
+                    cmds.setKeyframe(plug, time=start, value=float(value))
+                    cmds.setKeyframe(plug, time=end, value=float(value))
+                    keyed_static.append(plug)
+                except (RuntimeError, TypeError, ValueError):
+                    continue
+        cmds.select(transfer_nodes, replace=True, noExpand=True)
+        options = (
+            f"precision=17;statics=1;baked=0;sdk=0;constraint=0;animLayers=0;"
+            f"selected=selectedOnly;whichRange=2;range={start}:{end};"
+            "hierarchy=none;controlPoints=0;useChannelBox=0;options=keys;copyKeyCmd="
+        )
+        cmds.file(
+            atom_path.as_posix(),
+            force=True,
+            options=options,
+            type="atomExport",
+            exportSelected=True,
+        )
+    finally:
+        cmds.undoInfo(closeChunk=True)
+        try:
+            cmds.undo()
+        finally:
+            cmds.select(previous_selection, replace=True) if previous_selection else cmds.select(clear=True)
+    if not atom_path.exists():
+        raise RuntimeError(f"Maya ATOM export did not create a file: {atom_path}")
+    return {
+        "schema": "smartpipeline.animation_atom.v3",
+        "transfer_contract": "namespace_authored_animation_and_controller_state.v3",
+        "publish_type": "animation",
+        "format": "atom",
+        "payload": atom_path.name,
+        "payload_sha256": hashlib.sha256(atom_path.read_bytes()).hexdigest(),
+        "cast_key": cast_key,
+        "asset": asset,
+        "namespace": namespace,
+        "controller_root": root_node,
+        "controller_count": len(controls),
+        "animated_node_count": len(animated_nodes),
+        "transfer_node_count": len(transfer_nodes),
+        "transfer_nodes": transfer_nodes,
+        "keyed_static_count": len(keyed_static),
+        "static_values": static_values,
+        "static_value_count": len(static_values),
+        "frame_range": [start, end],
+        "source_workfile": str(source_workfile).replace("\\", "/") if source_workfile else "",
+    }
+
+
+def apply_animation_atom_from_file(
+    path: str | Path,
+    *,
+    namespace: str | None = None,
+    clear_existing: bool = True,
+) -> dict[str, Any]:
+    """Apply an authoritative ATOM payload using its transfer manifest."""
+
+    cmds = _maya_cmds()
+    source = Path(path)
+    manifest_path = source / "animation_manifest.json" if source.is_dir() else source
+    if manifest_path.suffix.lower() == ".atom":
+        candidate = manifest_path.with_name("animation_manifest.json")
+        manifest_path = candidate if candidate.exists() else manifest_path
+    if manifest_path.suffix.lower() == ".json":
+        with manifest_path.open("r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        if manifest.get("schema") in {
+            "smartpipeline.animation_atom.v1",
+            "smartpipeline.animation_atom.v2",
+        }:
+            raise AnimationCurveApplyError(
+                "Animation ATOM v1/v2 is unsafe for clean-rig reconstruction. "
+                "Republish as v3."
+            )
+        atom_path = manifest_path.parent / str(manifest.get("payload") or "animation.atom")
+    else:
+        manifest = {"format": "atom", "payload": manifest_path.name, "transfer_nodes": []}
+        atom_path = manifest_path
+    if not atom_path.exists():
+        raise FileNotFoundError(f"Animation ATOM payload was not found: {atom_path}")
+    expected_hash = str(manifest.get("payload_sha256") or "")
+    actual_hash = hashlib.sha256(atom_path.read_bytes()).hexdigest()
+    if expected_hash and actual_hash != expected_hash:
+        raise AnimationCurveApplyError(f"Animation ATOM checksum mismatch: {atom_path}")
+
+    source_namespace = str(manifest.get("namespace") or "")
+    target_namespace = namespace if namespace is not None else source_namespace
+    transfer_nodes: list[str] = []
+    report: list[dict[str, Any]] = []
+    for source_node in manifest.get("transfer_nodes") or []:
+        remapped = _remap_node_namespace(str(source_node), source_namespace, target_namespace)
+        target_node = _resolve_scene_node(cmds, remapped)
+        state = "FOUND" if target_node and cmds.objExists(target_node) else "MISSING"
+        report.append({"source": str(source_node), "target": target_node, "state": state})
+        if state == "FOUND":
+            transfer_nodes.append(target_node)
+    missing = [item for item in report if item["state"] != "FOUND"]
+    if missing:
+        raise AnimationCurveApplyError(
+            f"Animation ATOM node remap failed: {len(missing)} missing nodes.",
+            report=report,
+        )
+    if not transfer_nodes:
+        raise AnimationCurveApplyError("Animation ATOM manifest has no transfer nodes.")
+    if not cmds.pluginInfo("atomImportExport", query=True, loaded=True):
+        cmds.loadPlugin("atomImportExport", quiet=True)
+    import_atom_path = atom_path
+    temporary_atom_path: Path | None = None
+    if source_namespace != target_namespace:
+        temporary_atom_path = _rewrite_atom_namespace(
+            atom_path,
+            source_namespace=source_namespace,
+            target_namespace=target_namespace,
+        )
+        import_atom_path = temporary_atom_path
+    previous_selection = cmds.ls(selection=True, long=True) or []
+    try:
+        if clear_existing:
+            cmds.cutKey(transfer_nodes, clear=True)
+        cmds.select(transfer_nodes, replace=True, noExpand=True)
+        options = (
+            ";targetTime=3;option=scaleReplace;match=string;selected=selectedOnly;"
+            "search=;replace=;prefix=;suffix=;mapFile=;"
+        )
+        cmds.file(
+            import_atom_path.as_posix(),
+            i=True,
+            type="atomImport",
+            options=options,
+            returnNewNodes=True,
+        )
+        static_report = _apply_static_values(
+            cmds,
+            list(manifest.get("static_values") or []),
+            source_namespace=source_namespace,
+            target_namespace=target_namespace,
+            strict=True,
+        )
+    finally:
+        try:
+            cmds.select(previous_selection, replace=True) if previous_selection else cmds.select(clear=True)
+        finally:
+            if temporary_atom_path:
+                temporary_atom_path.unlink(missing_ok=True)
+    return {
+        "format": "atom",
+        "applied_destinations": len(transfer_nodes),
+        "applied_keys": 0,
+        "missing_destinations": 0,
+        "report": report,
+        "static_report": static_report,
+        "payload": str(atom_path),
+    }
+
+
+def _rewrite_atom_namespace(
+    atom_path: Path,
+    *,
+    source_namespace: str,
+    target_namespace: str,
+) -> Path:
+    """Rewrite only ATOM dagNode header names for deterministic remapping."""
+
+    source_prefix = f"{source_namespace.strip(':')}:"
+    target_prefix = f"{target_namespace.strip(':')}:"
+    header = re.compile(rf"^(\s*){re.escape(source_prefix)}", re.MULTILINE)
+    rewritten, count = header.subn(rf"\1{target_prefix}", atom_path.read_text(encoding="utf-8"))
+    if count == 0:
+        raise AnimationCurveApplyError(
+            f"Animation ATOM namespace was not found: {source_namespace}"
+        )
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".atom",
+        prefix="smartpipeline_atom_",
+        encoding="utf-8",
+        delete=False,
+    )
+    try:
+        handle.write(rewritten)
+    finally:
+        handle.close()
+    return Path(handle.name)
 
 
 def read_animation_curve_json(path: str | Path) -> dict[str, Any]:
@@ -119,6 +380,13 @@ def apply_animation_curves_from_file(
     clear_existing: bool = True,
     strict_destinations: bool = True,
 ) -> dict[str, Any]:
+    source = Path(path)
+    if source.is_dir() or source.suffix.lower() == ".atom" or source.name == "animation_manifest.json":
+        return apply_animation_atom_from_file(
+            source,
+            namespace=namespace,
+            clear_existing=clear_existing,
+        )
     data = read_animation_curve_json(path)
     return apply_animation_curve_data(
         data,
@@ -485,11 +753,7 @@ def _contract_nodes(
         for node, is_member in candidates:
             if namespace and not _node_belongs_to_namespace(node, namespace):
                 continue
-            recognized = (
-                _is_controller_node(cmds, node)
-                if is_member
-                else _has_controller_shape(cmds, node)
-            )
+            recognized = _is_controller_node(cmds, node)
             if _is_animatable_dag_node(cmds, node) and recognized:
                 nodes.add(str(node))
     # Some production rigs omit valid CTL nodes from allRigSet entirely.
@@ -587,6 +851,16 @@ def _apply_static_values(
             report.append({"source": source, "target": target, "state": "MISSING"})
             missing.append(target or source)
             continue
+        target_node = target.rsplit(".", 1)[0]
+        if not _is_controller_node(cmds, target_node):
+            report.append(
+                {
+                    "source": source,
+                    "target": target,
+                    "state": "SKIPPED_NON_CONTROLLER",
+                }
+            )
+            continue
         try:
             if item.get("type") == "string":
                 cmds.setAttr(target, str(item.get("value") or ""), type="string")
@@ -650,6 +924,107 @@ def _static_candidate_plugs(cmds: Any, node: str) -> list[str]:
     plugs = {f"{node}.{attribute}" for attribute in attributes}
     plugs.update(_incoming_destination_plugs(cmds, node))
     return sorted(plugs)
+
+
+def _transfer_candidate_plugs(cmds: Any, node: str) -> list[str]:
+    attributes: set[str] = set()
+    for kwargs in ({"keyable": True}, {"channelBox": True}):
+        try:
+            attributes.update(cmds.listAttr(node, **kwargs) or [])
+        except (RuntimeError, TypeError, ValueError):
+            continue
+    return sorted(f"{node}.{attribute}" for attribute in attributes)
+
+
+def _namespace_animated_nodes(cmds: Any, namespace: str) -> list[str]:
+    """Find DAG nodes whose attributes receive authored animation curves.
+
+    This deliberately excludes rig evaluation outputs. Walking an arbitrary
+    dependency chain reaches almost every driven joint and constraint in a rig
+    and causes ATOM to bake the result back on top of the rig.
+    """
+
+    nodes: set[str] = set()
+    try:
+        candidates = (cmds.ls(type="transform", long=True) or []) + (
+            cmds.ls(type="joint", long=True) or []
+        )
+    except (RuntimeError, TypeError, ValueError):
+        candidates = []
+    for node in sorted(set(str(value) for value in candidates)):
+        if not _node_belongs_to_namespace(node, namespace):
+            continue
+        for plug in _animated_candidate_plugs(cmds, node):
+            if _authored_anim_curves(cmds, plug):
+                nodes.add(node)
+                break
+    return sorted(nodes)
+
+
+def _namespace_finger_animation_nodes(cmds: Any, namespace: str) -> list[str]:
+    """Return only directly animated internal finger transforms for this rig."""
+
+    nodes: set[str] = set()
+    pattern = f"{str(namespace).strip(':')}:A_*Finger*" if namespace else "A_*Finger*"
+    try:
+        candidates = cmds.ls(pattern, long=True) or []
+    except (RuntimeError, TypeError, ValueError):
+        candidates = []
+    for node in candidates:
+        node = str(node)
+        if not _node_belongs_to_namespace(node, namespace) or not _is_animatable_dag_node(cmds, node):
+            continue
+        if any(_authored_anim_curves(cmds, plug) for plug in _animated_candidate_plugs(cmds, node)):
+            nodes.add(node)
+    return sorted(nodes)
+
+
+def _authored_anim_curves(cmds: Any, plug: str) -> list[str]:
+    """Resolve only direct curves, allowing Maya reference placeholders.
+
+    ``skipConversionNodes`` handles unitConversion nodes. A referenced edit may
+    expose the source through a reference-node placeholder, so that single
+    indirection is followed. Other dependency nodes are rig computation and
+    must never expand the Animation ATOM transfer contract.
+    """
+
+    curves: set[str] = set()
+    try:
+        curves.update(
+            cmds.listConnections(
+                plug,
+                source=True,
+                destination=False,
+                type="animCurve",
+                skipConversionNodes=True,
+            )
+            or []
+        )
+    except (RuntimeError, TypeError, ValueError):
+        pass
+    for source_plug in _incoming_source_plugs(cmds, plug):
+        source_node = source_plug.rsplit(".", 1)[0]
+        try:
+            source_type = cmds.nodeType(source_node)
+        except (RuntimeError, TypeError, ValueError):
+            continue
+        if source_type in ANIM_CURVE_TYPES:
+            curves.add(source_node)
+        elif source_type == "reference":
+            try:
+                curves.update(
+                    cmds.listConnections(
+                        source_plug,
+                        source=True,
+                        destination=False,
+                        type="animCurve",
+                        skipConversionNodes=True,
+                    )
+                    or []
+                )
+            except (RuntimeError, TypeError, ValueError):
+                pass
+    return sorted(curves)
 
 
 def _incoming_destination_plugs(cmds: Any, node: str) -> list[str]:
@@ -855,38 +1230,57 @@ def _resolve_scene_plug(cmds: Any, plug: str) -> str:
     return unique[0] if len(unique) == 1 else plug
 
 
+def _resolve_scene_node(cmds: Any, node: str) -> str:
+    if not node or cmds.objExists(node):
+        return node
+    leaf = node.rsplit("|", 1)[-1]
+    try:
+        matches = cmds.ls(leaf, long=True, objectsOnly=True) or []
+    except (RuntimeError, TypeError, ValueError):
+        return node
+    suffix_matches = [str(match) for match in matches if str(match).endswith(node)]
+    unique = sorted(set(suffix_matches or [str(match) for match in matches]))
+    return unique[0] if len(unique) == 1 else node
+
+
 def _apply_tangents(cmds: Any, plug: str, keys: list[dict[str, Any]], *, weighted_tangents: Any = None) -> None:
+    """Restore tangents without editing Maya-derived values on computed types."""
     if weighted_tangents is not None:
-        try:
-            cmds.keyTangent(plug, edit=True, weightedTangents=bool(weighted_tangents))
-        except RuntimeError:
-            pass
+        cmds.keyTangent(plug, edit=True, weightedTangents=bool(weighted_tangents))
     for key in keys:
         if key.get("time") is None:
             continue
-        kwargs = {}
+        key_time = (float(key["time"]), float(key["time"]))
+        tangent_types = {}
         if key.get("in_tangent"):
-            kwargs["inTangentType"] = key["in_tangent"]
+            tangent_types["inTangentType"] = key["in_tangent"]
         if key.get("out_tangent"):
-            kwargs["outTangentType"] = key["out_tangent"]
-        for source_key, maya_key in (
-            ("in_angle", "inAngle"),
-            ("out_angle", "outAngle"),
-            ("in_weight", "inWeight"),
-            ("out_weight", "outWeight"),
-        ):
-            if key.get(source_key) is not None:
-                kwargs[maya_key] = float(key[source_key])
+            tangent_types["outTangentType"] = key["out_tangent"]
+        if tangent_types:
+            cmds.keyTangent(plug, edit=True, time=key_time, **tangent_types)
+
+        fixed_values = {}
+        if key.get("in_tangent") == "fixed":
+            if key.get("in_angle") is not None:
+                fixed_values["inAngle"] = float(key["in_angle"])
+            if weighted_tangents and key.get("in_weight") is not None:
+                fixed_values["inWeight"] = float(key["in_weight"])
+        if key.get("out_tangent") == "fixed":
+            if key.get("out_angle") is not None:
+                fixed_values["outAngle"] = float(key["out_angle"])
+            if weighted_tangents and key.get("out_weight") is not None:
+                fixed_values["outWeight"] = float(key["out_weight"])
+        if fixed_values:
+            cmds.keyTangent(plug, edit=True, time=key_time, lock=False, weightLock=False)
+            cmds.keyTangent(plug, edit=True, time=key_time, **fixed_values)
+
+        locks = {}
         if key.get("tangent_lock") is not None:
-            kwargs["lock"] = bool(key["tangent_lock"])
-        if key.get("weight_lock") is not None:
-            kwargs["weightLock"] = bool(key["weight_lock"])
-        if not kwargs:
-            continue
-        try:
-            cmds.keyTangent(plug, edit=True, time=(float(key["time"]), float(key["time"])), **kwargs)
-        except RuntimeError:
-            pass
+            locks["lock"] = bool(key["tangent_lock"])
+        if weighted_tangents and key.get("weight_lock") is not None:
+            locks["weightLock"] = bool(key["weight_lock"])
+        if locks:
+            cmds.keyTangent(plug, edit=True, time=key_time, **locks)
 
 
 def _apply_infinity(cmds: Any, plug: str, infinity: dict[str, Any]) -> None:

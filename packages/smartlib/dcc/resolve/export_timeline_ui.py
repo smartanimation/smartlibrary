@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from smartlib.apps.editorial_intake.service import SmartEditorialIntakeService
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.editorial.policy import editorial_handle_policy
 from smartlib.dcc.resolve.export_timeline_csv import (
     create_cutting_markers_from_timeline,
     current_timeline_media_info,
@@ -34,6 +35,7 @@ class ResolveTimelineExportWindow:
     def __init__(self, config_dir: str | os.PathLike[str] | None = None, resolve_app=None):
         self.resolve_app = resolve_app
         self.project_config = ProjectConfig(config_dir or os.environ.get("PROJECT_CONFIG_DIR", ""))
+        self.handle_policy = editorial_handle_policy(self.project_config)
         self.current_work_dir: Path | None = None
         self.selected_movie_path: Path | None = None
         self._updating_versions = False
@@ -48,8 +50,8 @@ class ResolveTimelineExportWindow:
         self.episode_var = tk.StringVar(value="")
         self.sequence_var = tk.StringVar(value="")
         self.version_var = tk.StringVar(value="Latest")
-        self.handle_head_var = tk.IntVar(value=12)
-        self.handle_tail_var = tk.IntVar(value=12)
+        self.handle_head_var = tk.IntVar(value=self.handle_policy.head)
+        self.handle_tail_var = tk.IntVar(value=self.handle_policy.tail)
         self.track_var = tk.IntVar(value=1)
         self.shot_naming_profile_var = tk.StringVar(value="")
         self.create_folders_var = tk.BooleanVar(value=True)
@@ -111,8 +113,8 @@ class ResolveTimelineExportWindow:
 
         options = ttk.LabelFrame(frame, text="OPTION", padding=8)
         options.pack(fill=tk.X, pady=(4, 8))
-        self._labeled_spin(options, "handle_head", self.handle_head_var, 0, 0, 999)
-        self._labeled_spin(options, "handle_tail", self.handle_tail_var, 1, 0, 999)
+        self._labeled_spin(options, "handle_head (policy)", self.handle_head_var, 0, 0, 999, state="readonly")
+        self._labeled_spin(options, "handle_tail (policy)", self.handle_tail_var, 1, 0, 999, state="readonly")
         self._labeled_spin(options, "track_index", self.track_var, 2, 1, 99)
         self._labeled_combo(options, "shot_naming", self.shot_naming_profile_var, 3, "shot_naming_combo", self._shot_naming_changed)
 
@@ -179,9 +181,14 @@ class ResolveTimelineExportWindow:
         parent.columnconfigure(1, weight=1)
 
     @staticmethod
-    def _labeled_spin(parent, label: str, variable: tk.IntVar, row: int, minimum: int, maximum: int) -> None:
+    def _labeled_spin(
+        parent, label: str, variable: tk.IntVar, row: int, minimum: int, maximum: int,
+        state: str = "normal",
+    ) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, padx=(0, 10), pady=3)
-        ttk.Spinbox(parent, from_=minimum, to=maximum, textvariable=variable, width=12).grid(
+        ttk.Spinbox(
+            parent, from_=minimum, to=maximum, textvariable=variable, width=12, state=state,
+        ).grid(
             row=row,
             column=1,
             sticky=tk.EW,
@@ -656,9 +663,9 @@ class ResolveTimelineExportWindow:
         options = manifest.get("resolve_export_options")
         if not isinstance(options, dict):
             return
+        self.handle_head_var.set(self.handle_policy.head)
+        self.handle_tail_var.set(self.handle_policy.tail)
         integer_options = (
-            ("handle_head", self.handle_head_var, 0, 999),
-            ("handle_tail", self.handle_tail_var, 0, 999),
             ("track_index", self.track_var, 1, 99),
         )
         for key, variable, minimum, maximum in integer_options:

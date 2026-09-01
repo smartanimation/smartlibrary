@@ -3018,6 +3018,92 @@ class ShotManagerService:
             )
         return normalized
 
+    def plan_animation_atom_export(
+        self,
+        identity: ShotIdentity,
+        *,
+        target: str = "main",
+        subset: str = "curves",
+    ) -> dict[str, Any]:
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "curves")
+        base_dir = self.shot_data_root(identity) / "animation" / clean_target / clean_subset
+        version = self._next_publish_version(base_dir)
+        version_dir = base_dir / version
+        version_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "target": clean_target,
+            "subset": clean_subset,
+            "version": version,
+            "base_dir": base_dir,
+            "version_dir": version_dir,
+            "atom_path": version_dir / "animation.atom",
+        }
+
+    def finalize_animation_atom_export(
+        self,
+        identity: ShotIdentity,
+        manifest: dict[str, Any],
+        *,
+        target: str,
+        subset: str = "curves",
+        version: str,
+        source_workfile: str | Path = "",
+        comment: str = "",
+    ) -> Path:
+        clean_target = _clean_publish_token(target or "main")
+        clean_subset = _clean_publish_token(subset or "curves")
+        base_dir = self.shot_data_root(identity) / "animation" / clean_target / clean_subset
+        version_dir = base_dir / version
+        atom_path = version_dir / "animation.atom"
+        if not atom_path.exists():
+            raise FileNotFoundError(f"Animation ATOM payload was not created: {atom_path}")
+        data = dict(manifest)
+        data["payload_sha256"] = hashlib.sha256(atom_path.read_bytes()).hexdigest()
+        data.update(
+            {
+                "schema": "smartpipeline.animation_atom.v3",
+                "publish_type": "animation",
+                "format": "atom",
+                "payload": "animation.atom",
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "target": clean_target,
+                "subset": clean_subset,
+                "version": version,
+                "comment": comment,
+            }
+        )
+        if source_workfile:
+            data["source_workfile"] = self._relative_to_project(Path(source_workfile))
+        manifest_path = write_json(version_dir / "animation_manifest.json", data)
+        write_json(
+            version_dir / "data.json",
+            {
+                "data_type": "animation",
+                "format": "atom",
+                "target": clean_target,
+                "subset": clean_subset,
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "version": version,
+                "files": {
+                    "animation": "animation.atom",
+                    "manifest": "animation_manifest.json",
+                },
+                "source_workfile": data.get("source_workfile", ""),
+                "comment": comment,
+            },
+        )
+        write_json(
+            base_dir / "latest.json",
+            {"version": version, "path": f"{version}/animation_manifest.json"},
+        )
+        self._update_versions(base_dir / "versions.json", version)
+        return manifest_path
+
     def publish_animation_curves(
         self,
         identity: ShotIdentity,
@@ -3138,7 +3224,9 @@ class ShotManagerService:
         for version_dir in base_dir.glob("v*"):
             if not version_dir.is_dir() or not version_dir.name[1:].isdigit():
                 continue
-            animation_path = version_dir / "animation_curve.json"
+            animation_path = version_dir / "animation_manifest.json"
+            if not animation_path.exists():
+                animation_path = version_dir / "animation_curve.json"
             if not animation_path.exists():
                 continue
             metadata = read_json(version_dir / "data.json", {}) or read_json(version_dir / "publish.json", {}) or {}
@@ -4348,7 +4436,9 @@ class ShotManagerService:
                 for path in version_dir.iterdir()
                 if path.is_file() and path.suffix.lower() in {".json", ".yml", ".yaml"}
             )
-            metadata = read_json(version_dir / "data.json", {}) or {}
+            metadata = read_json(version_dir / "data.json", {}) or read_json(
+                version_dir / "publish.json", {}
+            ) or {}
             try:
                 rel_name = base_dir.relative_to(data_root).as_posix()
             except ValueError:

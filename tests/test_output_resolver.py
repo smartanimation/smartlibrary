@@ -214,6 +214,7 @@ def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
             "shot_render_layers_root": "{shot_render_root}/{department}/layers",
             "shot_render_layer_version": "{shot_render_layers_root}/{layer}/{version}",
             "shot_review_root": "{shot_workspace_root}/review",
+            "shot_review_movie": "{shot_review_root}/{department}/mov",
             "shot_review_build": "{shot_review_root}/review_build/{version}/{take}",
         },
         shot_dept_partitions={"default": "cg"},
@@ -225,6 +226,9 @@ def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
     assert paths.shot_review_build_dir(
         "ep02", "s027", "c001", "anim", "v003", "t004"
     ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/review/review_build/v003/t004"
+    assert paths.shot_review_movie_dir(
+        "ep02", "s027", "c001", "anim"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/review/anim/mov"
     assert paths.shot_review_output_root(
         "ep02", "s027", "c001", "anim", "internal"
     ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/output/review/internal"
@@ -282,7 +286,7 @@ def test_project_paths_resolve_common_work_contract(tmp_path):
     ) == tmp_path / "workspace/cg/assets/CH/main/DLI/default/work/rig"
     assert paths.shot_work_dir(
         "ep02", "s027", "c001", "anim", "maya"
-    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/work/anim"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/work/anim/maya"
     assert paths.sequence_work_dir(
         "ep02", "s027", "layout", "maya"
     ) == tmp_path / "workspace/cg/sequences/ep02/s027/work/layout"
@@ -404,3 +408,42 @@ def test_runtime_has_no_production_hierarchy_outside_resolvers():
         if finding.severity == "P1"
     ]
     assert violations == []
+
+
+def test_config_creator_exposes_and_preserves_all_path_template_domains(tmp_path):
+    from scripts import config_creator
+
+    custom_shot = tmp_path / "templates_shots.yml"
+    custom_shot.write_text(
+        "templates:\n  custom_shot_cache: '{shot_workspace_root}/cache'\n",
+        encoding="utf-8",
+    )
+    keys = config_creator.domain_path_template_keys(tmp_path)
+
+    assert "shot_workspace_root" in keys["templates_shots.yml"]
+    assert "shot_render_layers_root" in keys["templates_shots.yml"]
+    assert "shot_review_build" in keys["templates_shots.yml"]
+    assert "work_scene_dir" in keys["templates_assets.yml"]
+    assert "assembly_work_root" in keys["templates_assemblies.yml"]
+    assert "custom_shot_cache" in keys["templates_shots.yml"]
+
+    split = config_creator.split_path_templates(
+        {
+            "production_root": "{project_root}/prod",
+            "shot_review_build": "{shot_review_build_root}/{version}/{take}",
+            "custom_shot_cache": "{shot_workspace_root}/cache",
+            "asset_publish_root": "{asset_root}/{variant}/publish",
+            "assembly_work_root": "{workspace_root}/assemblies",
+        },
+        tmp_path,
+    )
+
+    assert split["templates_base.yml"] == {
+        "production_root": "{project_root}/prod"
+    }
+    assert set(split["templates_shots.yml"]) == {
+        "shot_review_build",
+        "custom_shot_cache",
+    }
+    assert set(split["templates_assets.yml"]) == {"asset_publish_root"}
+    assert set(split["templates_assemblies.yml"]) == {"assembly_work_root"}

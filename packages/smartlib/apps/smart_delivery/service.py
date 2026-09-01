@@ -37,11 +37,15 @@ class SmartDeliveryService:
         data = load_config(path) if path else {}
         configured = dict(data.get("smart_delivery") or {})
         studio = dict(data.get("studio") or {})
+        client = dict(data.get("client") or {})
         studio_id = str(studio.get("id") or configured.get("vendor") or "vendor").strip()
+        client_id = str(client.get("id") or "").strip()
         return {
             "package_profile": str(configured.get("package_profile") or "vendor"),
             "studio_id": studio_id,
             "studio_name": str(studio.get("name") or studio_id),
+            "client_id": client_id,
+            "client_name": str(client.get("name") or client_id),
             "vendor": studio_id,
             "asset_workflow": str(configured.get("asset_workflow") or "Package ZIP"),
             "shot_workflow": str(configured.get("shot_workflow") or "Package ZIP"),
@@ -78,17 +82,35 @@ class SmartDeliveryService:
 
     def suggested_package_output(self, entity: str, *, profile: str | None = None) -> Path:
         preferences = self.delivery_preferences()
+        if profile == "editorial":
+            selected = self.package_profile(profile)
+            recipient = selected.delivery_recipient
+            process = selected.delivery_process
+            for label, value in (("Editorial recipient", recipient), ("Editorial process", process)):
+                if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
+                    raise ValueError(f"Invalid {label} in package profile: {value!r}")
+            batch_root = self.shots.paths.delivery_editorial_recipient_root(recipient)
+            delivery_batch = self._next_dated_batch(batch_root)
+            return self.shots.paths.delivery_editorial_package(
+                recipient, delivery_batch, process, entity
+            )
+
         studio_id = preferences["studio_id"]
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", studio_id):
             raise ValueError(f"Invalid Studio ID in studio.yml: {studio_id!r}")
         vendor_root = self.shots.paths.delivery_vendor_root(studio_id)
+        delivery_batch = self._next_dated_batch(vendor_root)
+        return self.shots.paths.delivery_vendor_package(studio_id, delivery_batch, entity)
+
+    @staticmethod
+    def _next_dated_batch(root: Path) -> str:
         date = datetime.now().strftime("%Y%m%d")
         numbers = []
-        for row in vendor_root.glob(f"{date}_*") if vendor_root.is_dir() else []:
+        for row in root.glob(f"{date}_*") if root.is_dir() else []:
             suffix = row.name.rsplit("_", 1)[-1]
-            if suffix.isdigit(): numbers.append(int(suffix))
-        delivery_batch = f"{date}_{max(numbers, default=0) + 1:02d}"
-        return self.shots.paths.delivery_vendor_package(studio_id, delivery_batch, entity)
+            if suffix.isdigit():
+                numbers.append(int(suffix))
+        return f"{date}_{max(numbers, default=0) + 1:02d}"
 
     def package_profile(self, name: str) -> PackageProfile:
         path = Path(__file__).resolve().parents[4] / "config" / "delivery" / "package_profiles" / f"{name}.json"

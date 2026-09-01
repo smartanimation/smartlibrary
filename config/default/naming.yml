@@ -33,6 +33,9 @@ smart_playblast:
   filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
 
 smart_aftereffects:
+  dcc: ae
+  work_task: preComp
+  work_option: main
   task: compTemp
   aep_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"
   output_filename: "{project}*{episode}*{sequence}*{shot}*{task}_v{version}_t{take}.{ext}"

@@ -19,6 +19,7 @@ GOOGLE_CREDENTIALS_PATH_KEY = "credentials_path"
 SHOT_PATH_TEMPLATE_KEYS = {
     "shot_root", "shot_work_root", "shot_work", "shot_data_root",
     "shot_publish_root", "shot_output_root", "shot_render_root",
+    "shot_review_root", "shot_review_movie",
     "shot_build_root", "shot_build", "sequence_work_root", "sequence_work",
     "sequence_build_root", "sequence_build",
 }
@@ -29,6 +30,11 @@ ASSET_PATH_TEMPLATE_KEYS = {
 ASSEMBLY_PATH_TEMPLATE_KEYS = {
     "assembly_root", "assembly_work_root", "assembly_work",
     "assembly_data_root", "assembly_publish_root",
+}
+DOMAIN_PATH_TEMPLATE_FILES = {
+    "templates_shots.yml": SHOT_PATH_TEMPLATE_KEYS,
+    "templates_assets.yml": ASSET_PATH_TEMPLATE_KEYS,
+    "templates_assemblies.yml": ASSEMBLY_PATH_TEMPLATE_KEYS,
 }
 PACKAGES_DIR = os.path.join(PIPELINE_ROOT, "packages")
 if PACKAGES_DIR not in sys.path:
@@ -79,6 +85,49 @@ def merge_dicts(base, override):
             result[key] = merge_dicts(result[key], value)
         else:
             result[key] = value
+    return result
+
+
+def domain_path_template_keys(project_dir=""):
+    """Return every user-configurable domain template known by defaults/project.
+
+    The explicit sets remain as compatibility seeds, while YAML is authoritative.
+    This prevents Config Creator from silently hiding newly added PathResolver keys.
+    """
+    result = {}
+    for filename, seeds in DOMAIN_PATH_TEMPLATE_FILES.items():
+        keys = set(seeds)
+        keys.update(
+            (load_yml(os.path.join(DEFAULT_DIR, filename)).get("templates") or {}).keys()
+        )
+        if project_dir:
+            keys.update(
+                (load_yml(os.path.join(project_dir, filename)).get("templates") or {}).keys()
+            )
+        result[filename] = keys
+    return result
+
+
+def split_path_templates(templates, project_dir=""):
+    """Split edited templates into their authoritative config files."""
+    domain_keys = domain_path_template_keys(project_dir)
+    result = {
+        "templates_base.yml": {},
+        "templates_shots.yml": {},
+        "templates_assets.yml": {},
+        "templates_assemblies.yml": {},
+    }
+    for key, value in (templates or {}).items():
+        destination = "templates_base.yml"
+        for filename in (
+            "templates_shots.yml",
+            "templates_assets.yml",
+            "templates_assemblies.yml",
+        ):
+            if key in domain_keys[filename]:
+                destination = filename
+                break
+        result[destination][key] = value
     return result
 
 
@@ -172,7 +221,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.shot_depts_list = self.create_shot_departments_page()
         self.asset_depts_list = self.create_list_page("Asset Depts")
         self.template_table = self.create_table_page(
-            "Folder Structure",
+            "Path Resolver Templates",
             ["Key", "Path Value"],
         )
         self.template_files_tab = self.setup_template_files_tab()
@@ -187,7 +236,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs.addTab(self.anchors_table["widget"], "Anchors")
         self.tabs.addTab(self.shot_depts_list["widget"], "Shot Depts")
         self.tabs.addTab(self.asset_depts_list["widget"], "Asset Depts")
-        self.tabs.addTab(self.template_table["widget"], "Folder Structure")
+        self.tabs.addTab(self.template_table["widget"], "Paths")
         self.tabs.addTab(self.template_files_tab, "Templates")
         self.tabs.addTab(self.naming_tab, "Naming")
         self.tabs.addTab(self.preflight_tab, "Preflight")
@@ -239,6 +288,17 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         layout.addRow("Studio ID:", self.studio_id_input)
         layout.addRow("Studio Name:", self.studio_name_input)
         layout.addRow("Role:", self.studio_role_combo)
+        self.client_id_input = QtWidgets.QLineEdit()
+        self.client_id_input.setPlaceholderText("client_a")
+        self.client_name_input = QtWidgets.QLineEdit()
+        self.client_name_input.setPlaceholderText("Client A")
+        self.client_id_label = QtWidgets.QLabel("Client ID:")
+        self.client_name_label = QtWidgets.QLabel("Client Name:")
+        layout.addRow(self.client_id_label, self.client_id_input)
+        layout.addRow(self.client_name_label, self.client_name_input)
+        self.studio_role_combo.currentIndexChanged.connect(
+            self._update_studio_role_controls
+        )
         credentials_row = QtWidgets.QHBoxLayout()
         self.google_credentials_path_edit = QtWidgets.QLineEdit()
         self.google_credentials_path_edit.setPlaceholderText("%APPDATA%/credentials.json")
@@ -250,12 +310,12 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         credentials_browse.clicked.connect(self._browse_google_credentials_file)
         credentials_row.addWidget(credentials_browse)
         layout.addRow("Google Credentials File:", credentials_row)
-        note = QtWidgets.QLabel("Studio ID is used in delivery paths. Use lowercase letters, numbers, '_' or '-'.")
+        note = QtWidgets.QLabel(
+            "Studio and Client IDs may use lowercase letters, numbers, '_' or '-'. "
+            "The main Save button stores both Studio and Project settings."
+        )
         note.setWordWrap(True)
         layout.addRow(note)
-        self.save_studio_btn = QtWidgets.QPushButton("Save Studio")
-        self.save_studio_btn.clicked.connect(self._save_studio_from_ui)
-        layout.addRow(self.save_studio_btn)
         return page
 
     def _load_studio_editor(self):
@@ -268,6 +328,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         role = str(studio.get("role") or "internal").strip().lower()
         index = self.studio_role_combo.findData(role)
         self.studio_role_combo.setCurrentIndex(index if index >= 0 else 0)
+        client = dict(data.get("client") or {})
+        self.client_id_input.setText(str(client.get("id") or "").strip())
+        self.client_name_input.setText(str(client.get("name") or "").strip())
+        self._update_studio_role_controls()
         google_sheets = data.get("google_sheets") or {}
         self.google_credentials_path_edit.setText(
             str(google_sheets.get(GOOGLE_CREDENTIALS_PATH_KEY) or "")
@@ -286,11 +350,30 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             raise ValueError("Studio Name is required.")
         data = load_yml(STUDIO_CONFIG_PATH)
         data.setdefault("schema", "smartpipeline.studio.v1")
+        role = str(self.studio_role_combo.currentData() or "internal")
         data["studio"] = {
             "id": studio_id,
             "name": studio_name,
-            "role": str(self.studio_role_combo.currentData() or "internal"),
+            "role": role,
         }
+        if role == "internal":
+            client_id = self.client_id_input.text().strip()
+            client_name = self.client_name_input.text().strip()
+            if client_id or client_name:
+                if not client_id:
+                    raise ValueError("Client ID is required when Client Name is set.")
+                if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", client_id):
+                    raise ValueError(
+                        "Client ID must start with a lowercase letter or number and contain "
+                        "only lowercase letters, numbers, '_' or '-'."
+                    )
+                if not client_name:
+                    raise ValueError("Client Name is required when Client ID is set.")
+                data["client"] = {"id": client_id, "name": client_name}
+            else:
+                data.pop("client", None)
+        else:
+            data.pop("client", None)
         google_sheets = dict(data.get("google_sheets") or {})
         credentials_path = self.google_credentials_path_edit.text().strip()
         if credentials_path:
@@ -303,13 +386,15 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             data.pop("google_sheets", None)
         save_yml(STUDIO_CONFIG_PATH, data)
 
-    def _save_studio_from_ui(self):
-        try:
-            self._save_studio_config()
-        except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, "Studio Configuration Failed", str(exc))
-            return
-        QtWidgets.QMessageBox.information(self, "Saved", "Studio configuration saved.")
+    def _update_studio_role_controls(self, _index=None):
+        internal = str(self.studio_role_combo.currentData() or "internal") == "internal"
+        for widget in (
+            self.client_id_label,
+            self.client_id_input,
+            self.client_name_label,
+            self.client_name_input,
+        ):
+            widget.setVisible(internal)
 
     def _update_maya_timeline_controls(self, _index=None):
         mode = str(self.maya_timeline_mode.currentData() or "normalized")
@@ -910,7 +995,12 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         tokens.setWordWrap(True)
         layout.addWidget(tokens)
-        layout.addWidget(QtWidgets.QLabel("Logical Outputs (used by all tools)"))
+        output_note = QtWidgets.QLabel(
+            "Logical Outputs (used by all tools). Directory values should start "
+            "from a token configured on the Paths tab; filenames belong here."
+        )
+        output_note.setWordWrap(True)
+        layout.addWidget(output_note)
         self.output_naming_table = QtWidgets.QTableWidget(0, 3)
         self.output_naming_table.setHorizontalHeaderLabels(
             ["Output Key", "Directory", "Filename"]
@@ -963,6 +1053,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             "task", "dcc", "tool", "option", "preview", "layer", "cam",
             "version", "take", "frame", "ext",
         }
+        path_table = self.template_table["table"]
+        allowed_tokens.update(
+            path_table.item(row, 0).text().strip()
+            for row in range(path_table.rowCount())
+            if path_table.item(row, 0)
+            and path_table.item(row, 0).text().strip()
+        )
         for key, definition in self._output_naming_from_ui().items():
             directory = definition.get("directory", "")
             filename = definition.get("filename", "")
@@ -2370,29 +2467,23 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         config['anchors']['resolution'] = res
 
         t_tab = self.template_table["table"]
-        shot_templates = {}
-        asset_templates = {}
-        assembly_templates = {}
+        edited_templates = {}
         for r in range(t_tab.rowCount()):
             k_item = t_tab.item(r, 0); v_item = t_tab.item(r, 1)
             k = k_item.text() if k_item else ""; v = v_item.text() if v_item else ""
             if not k:
                 continue
-            if k in SHOT_PATH_TEMPLATE_KEYS:
-                shot_templates[k] = v
-            elif k in ASSET_PATH_TEMPLATE_KEYS:
-                asset_templates[k] = v
-            elif k in ASSEMBLY_PATH_TEMPLATE_KEYS:
-                assembly_templates[k] = v
-            else:
-                config['templates'][k] = v
+            edited_templates[k] = v
+        split_templates = split_path_templates(edited_templates, proj_dir)
+        config['templates'] = split_templates["templates_base.yml"]
 
         save_yml(os.path.join(proj_dir, "templates_base.yml"), config)
-        for filename, templates in (
-            ("templates_shots.yml", shot_templates),
-            ("templates_assets.yml", asset_templates),
-            ("templates_assemblies.yml", assembly_templates),
+        for filename in (
+            "templates_shots.yml",
+            "templates_assets.yml",
+            "templates_assemblies.yml",
         ):
+            templates = split_templates[filename]
             domain_path = os.path.join(proj_dir, filename)
             domain_data = load_yml(domain_path)
             merged_templates = dict(domain_data.get("templates") or {})
@@ -2414,7 +2505,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def load_project_config(self, project_name):
         proj_dir = os.path.join(PROJECTS_ROOT, project_name)
-        data = load_yml(os.path.join(proj_dir, "templates_base.yml"))
+        data = merge_dicts(
+            load_yml(os.path.join(DEFAULT_DIR, "templates_base.yml")),
+            load_yml(os.path.join(proj_dir, "templates_base.yml")),
+        )
         self.name_input.setText(project_name)
         root = data.get('anchors', {}).get('project_root', "")
         if root: self.path_input.setText(os.path.dirname(root).replace("\\", "/"))
@@ -3083,11 +3177,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             for row in range(table.rowCount())
             if table.item(row, 0)
         }
-        for filename, allowed in (
-            ("templates_shots.yml", SHOT_PATH_TEMPLATE_KEYS),
-            ("templates_assets.yml", ASSET_PATH_TEMPLATE_KEYS),
-            ("templates_assemblies.yml", ASSEMBLY_PATH_TEMPLATE_KEYS),
-        ):
+        domain_keys = domain_path_template_keys(project_dir)
+        for filename, allowed in domain_keys.items():
             data = load_yml(os.path.join(DEFAULT_DIR, filename))
             if project_dir:
                 data = merge_dicts(data, load_yml(os.path.join(project_dir, filename)))

@@ -95,6 +95,14 @@ def _shot_service(config_dir: str | os.PathLike[str]):
     return ShotManagerService(ProjectConfig(config_dir))
 
 
+def _smart_casting_service(config_dir: str | os.PathLike[str]):
+    _ensure_smartlib_on_path()
+    from smartlib.apps.smart_casting import SmartCastingService
+    from smartlib.core.config_loader import ProjectConfig
+
+    return SmartCastingService(ProjectConfig(config_dir))
+
+
 class AssetRequestDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, title: str = "Create Asset"):
         super().__init__(parent)
@@ -145,6 +153,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         super().__init__(parent)
         self.manager = manager or AssetManager()
         self.assets: list[Asset] = []
+        self._casting_status_service = None
         self.published_work_icon = self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
         self.setWindowTitle(f"Asset Manager - {self.manager.project_name}")
         self.resize(760, 460)
@@ -180,7 +189,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         settings.setValue("department", self._current_department())
         settings.setValue("subset", self._current_variant())
         settings.setValue("work_scene_format", self._selected_work_scene_extension())
-        settings.setValue("asset_view", "table" if self.asset_list.viewMode() == QtWidgets.QListView.ListMode else "card")
+        settings.setValue(
+            "asset_view",
+            "table" if self.asset_view_stack.currentWidget() is self.asset_table else "card",
+        )
         settings.setValue("shot_codes", [target["code"] for target in self._selected_cast_targets()])
         settings.setValue("main_splitter", self.main_splitter.saveState())
         settings.setValue("asset_browser_splitter", self.asset_browser_splitter.saveState())
@@ -371,7 +383,22 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 background: #424242;
             }
         """)
-        asset_browser_layout.addWidget(self.asset_list)
+        self.asset_table = QtWidgets.QTableWidget(0, 9)
+        self.asset_table.setHorizontalHeaderLabels(
+            ["", "Category", "Group", "Asset Name", "Variant", "FAST", "WORK", "FINAL", "Description"]
+        )
+        self.asset_table.verticalHeader().setVisible(False)
+        self.asset_table.horizontalHeader().setStretchLastSection(True)
+        self.asset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.asset_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.asset_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.asset_table.setIconSize(QtCore.QSize(80, 45))
+        self.asset_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+
+        self.asset_view_stack = QtWidgets.QStackedWidget()
+        self.asset_view_stack.addWidget(self.asset_list)
+        self.asset_view_stack.addWidget(self.asset_table)
+        asset_browser_layout.addWidget(self.asset_view_stack)
         self.main_splitter.addWidget(self.asset_panel)
 
         right = QtWidgets.QWidget()
@@ -930,6 +957,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_list.currentRowChanged.connect(self._show_current_asset)
         self.asset_list.itemSelectionChanged.connect(self._update_asset_action_state)
         self.asset_list.itemDoubleClicked.connect(lambda _item: self._show_detail_mode())
+        self.asset_table.currentCellChanged.connect(
+            lambda _row, _column, _previous_row, _previous_column: self._show_current_asset()
+        )
+        self.asset_table.itemSelectionChanged.connect(self._update_asset_action_state)
+        self.asset_table.itemDoubleClicked.connect(lambda _item: self._show_detail_mode())
         self.asset_card_btn.clicked.connect(self._set_asset_card_view)
         self.asset_table_btn.clicked.connect(self._set_asset_table_view)
         self.create_asset_btn.clicked.connect(self._create_asset)
@@ -943,6 +975,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.variant_list.currentRowChanged.connect(lambda _row: self._show_current_asset())
         self.detail_tabs.currentChanged.connect(lambda _index: self._update_selected_file_info())
         self.asset_list.customContextMenuRequested.connect(self._show_asset_context_menu)
+        self.asset_table.customContextMenuRequested.connect(self._show_asset_context_menu)
         self.work_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.work_list.customContextMenuRequested.connect(self._show_work_context_menu)
         self.work_list.itemChanged.connect(self._on_work_item_changed)
@@ -1051,16 +1084,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.detail_panel.setVisible(False)
 
     def _set_asset_card_view(self) -> None:
+        selected_key = self._current_asset_key()
+        self.asset_view_stack.setCurrentWidget(self.asset_list)
         self.asset_list.setViewMode(QtWidgets.QListView.IconMode)
         self.asset_list.setIconSize(QtCore.QSize(128, 72))
         self.asset_list.setGridSize(QtCore.QSize(160, 168))
         self.asset_list.setUniformItemSizes(True)
+        self._select_asset_key_in_list(selected_key)
 
     def _set_asset_table_view(self) -> None:
-        self.asset_list.setViewMode(QtWidgets.QListView.ListMode)
-        self.asset_list.setIconSize(QtCore.QSize(80, 45))
-        self.asset_list.setGridSize(QtCore.QSize())
-        self.asset_list.setUniformItemSizes(False)
+        selected_key = self._current_asset_key()
+        self.asset_view_stack.setCurrentWidget(self.asset_table)
+        self._apply_filter(selected_key=selected_key)
 
     def _apply_filter(self, selected_key: tuple[str, str, str] | None = None) -> None:
         if selected_key is None:
@@ -1068,7 +1103,12 @@ class AssetManagerWindow(QtWidgets.QDialog):
         text = self.search_edit.text().strip().lower()
         category_filter, group_filter, asset_filter = self._selected_asset_filter()
         self.asset_list.clear()
+        populate_table = self.asset_view_stack.currentWidget() is self.asset_table
+        if populate_table:
+            self.asset_table.blockSignals(True)
+            self.asset_table.setRowCount(0)
         row_to_select = -1
+        table_row_to_select = -1
         for asset in self.assets:
             category, group, asset_name = self._asset_filter_values(asset)
             if category_filter and category != category_filter:
@@ -1090,15 +1130,96 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.asset_list.addItem(item)
             if self._asset_key(asset) == selected_key:
                 row_to_select = self.asset_list.count() - 1
+            if populate_table:
+                variants = (
+                    self.manager.asset_variants(asset)
+                    if self.manager.is_asset_initialized(asset)
+                    else ["default"]
+                )
+                for variant in variants:
+                    table_row = self.asset_table.rowCount()
+                    self.asset_table.insertRow(table_row)
+                    statuses = self._asset_context_statuses(asset, variant)
+                    values = [
+                        "",
+                        asset.category,
+                        asset.group,
+                        asset.name,
+                        variant,
+                        str(statuses.get("FAST") or "Missing"),
+                        str(statuses.get("WORK") or "Missing"),
+                        str(statuses.get("FINAL") or "Missing"),
+                        str(metadata.get("description") or ""),
+                    ]
+                    for column, value in enumerate(values):
+                        table_item = QtWidgets.QTableWidgetItem(str(value))
+                        table_item.setData(QtCore.Qt.UserRole, asset)
+                        table_item.setData(QtCore.Qt.UserRole + 1, variant)
+                        if column == 0:
+                            table_item.setIcon(self._asset_icon(asset, metadata))
+                        elif column in {5, 6, 7}:
+                            self._style_asset_context_status(table_item, str(value))
+                        if not self.manager.is_asset_initialized(asset) and column not in {5, 6, 7}:
+                            table_item.setForeground(QtGui.QColor("#d9a441"))
+                        self.asset_table.setItem(table_row, column, table_item)
+                    if self._asset_key(asset) == selected_key and table_row_to_select < 0:
+                        table_row_to_select = table_row
         if row_to_select >= 0:
             self.asset_list.setCurrentRow(row_to_select)
         elif self.asset_list.count():
             self.asset_list.setCurrentRow(0)
+        if populate_table:
+            self.asset_table.blockSignals(False)
+            self.asset_table.resizeColumnsToContents()
+            self.asset_table.horizontalHeader().setStretchLastSection(True)
+            if table_row_to_select >= 0:
+                self.asset_table.setCurrentCell(table_row_to_select, 0)
+            elif self.asset_table.rowCount():
+                self.asset_table.setCurrentCell(0, 0)
+
+    def _asset_context_statuses(self, asset: Asset, variant: str) -> dict[str, str]:
+        try:
+            if self._casting_status_service is None:
+                self._casting_status_service = _smart_casting_service(self.manager.config_dir)
+            _ensure_smartlib_on_path()
+            from smartlib.core.path_resolver import AssetIdentity
+
+            identity = AssetIdentity(asset.category, asset.group, asset.name, variant)
+            return self._casting_status_service.context_statuses_for_identity(
+                identity, asset_publish="approved"
+            )
+        except (FileNotFoundError, KeyError, RuntimeError, TypeError, ValueError, IndexError):
+            return {"FAST": "Missing", "WORK": "Missing", "FINAL": "Missing"}
+
+    @staticmethod
+    def _style_asset_context_status(item, value: str) -> None:
+        status = str(value or "").strip().lower()
+        color = {
+            "ready": "#00c853",
+            "wip": "#ffc400",
+            "missing": "#ff1744",
+        }.get(status)
+        if color:
+            item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+
+    def _select_asset_key_in_list(self, key: tuple[str, str, str] | None) -> None:
+        if not key:
+            return
+        for row in range(self.asset_list.count()):
+            item = self.asset_list.item(row)
+            asset = item.data(QtCore.Qt.UserRole)
+            if isinstance(asset, Asset) and self._asset_key(asset) == key:
+                self.asset_list.setCurrentRow(row)
+                return
 
     def _populate_asset_filter_tree(self) -> None:
         current_filter = self._selected_asset_filter()
         self.asset_filter_tree.blockSignals(True)
         self.asset_filter_tree.clear()
+        self.asset_filter_tree.setIconSize(QtCore.QSize(20, 20))
+        _ensure_smartlib_on_path()
+        from smartlib.core.icons import asset_category_icon_path
+
         all_item = QtWidgets.QTreeWidgetItem(["ALL"])
         all_item.setData(0, QtCore.Qt.UserRole, ("", "", ""))
         self.asset_filter_tree.addTopLevelItem(all_item)
@@ -1116,6 +1237,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             if category_item is None:
                 category_item = QtWidgets.QTreeWidgetItem([category])
                 category_item.setData(0, QtCore.Qt.UserRole, (category, "", ""))
+                icon_path = asset_category_icon_path(category, 20)
+                if icon_path:
+                    category_item.setIcon(0, QtGui.QIcon(str(icon_path)))
                 self.asset_filter_tree.addTopLevelItem(category_item)
                 category_items[category] = category_item
 
@@ -1325,6 +1449,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         )
 
     def _current_asset(self) -> Asset | None:
+        if self.asset_view_stack.currentWidget() is self.asset_table:
+            row = self.asset_table.currentRow()
+            item = self.asset_table.item(row, 0) if row >= 0 else None
+            return item.data(QtCore.Qt.UserRole) if item else None
         item = self.asset_list.currentItem()
         if not item:
             return None
@@ -1357,10 +1485,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _selected_assets(self) -> list[Asset]:
         assets: list[Asset] = []
-        for item in self.asset_list.selectedItems():
-            asset = item.data(QtCore.Qt.UserRole)
-            if isinstance(asset, Asset):
-                assets.append(asset)
+        if self.asset_view_stack.currentWidget() is self.asset_table:
+            rows = sorted({index.row() for index in self.asset_table.selectedIndexes()})
+            for row in rows:
+                item = self.asset_table.item(row, 0)
+                asset = item.data(QtCore.Qt.UserRole) if item else None
+                if isinstance(asset, Asset) and asset not in assets:
+                    assets.append(asset)
+        else:
+            for item in self.asset_list.selectedItems():
+                asset = item.data(QtCore.Qt.UserRole)
+                if isinstance(asset, Asset):
+                    assets.append(asset)
         current = self._current_asset()
         if not assets and current:
             assets.append(current)
@@ -1850,6 +1986,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         return variants[0] if variants else "main"
 
     def _current_asset_variant(self) -> str:
+        if self.asset_view_stack.currentWidget() is self.asset_table:
+            row = self.asset_table.currentRow()
+            item = self.asset_table.item(row, 4) if row >= 0 else None
+            if item:
+                return item.text().strip() or "default"
         item = self.asset_variant_list.currentItem()
         if item:
             return item.text().strip() or "default"
@@ -3014,14 +3155,25 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.status_label.setText(f"Copied: {text}")
 
     def _show_asset_context_menu(self, pos) -> None:
-        item = self.asset_list.itemAt(pos)
-        if item:
-            if not item.isSelected():
-                self.asset_list.clearSelection()
-                item.setSelected(True)
-            self.asset_list.setCurrentItem(
-                item, QtCore.QItemSelectionModel.NoUpdate
-            )
+        source = self.sender()
+        if source is self.asset_table:
+            item = self.asset_table.itemAt(pos)
+            if item:
+                if not item.isSelected():
+                    self.asset_table.clearSelection()
+                    self.asset_table.selectRow(item.row())
+                self.asset_table.setCurrentCell(item.row(), item.column())
+            menu_parent = self.asset_table
+        else:
+            item = self.asset_list.itemAt(pos)
+            if item:
+                if not item.isSelected():
+                    self.asset_list.clearSelection()
+                    item.setSelected(True)
+                self.asset_list.setCurrentItem(
+                    item, QtCore.QItemSelectionModel.NoUpdate
+                )
+            menu_parent = self.asset_list
         asset = self._current_asset()
         menu = QtWidgets.QMenu(self)
         create_asset = menu.addAction("Create Asset")
@@ -3059,7 +3211,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         copy_data.setEnabled(asset is not None)
         copy_work.setEnabled(asset is not None)
         copy_publish.setEnabled(asset is not None)
-        action = _exec_menu(menu, self.asset_list.mapToGlobal(pos))
+        action = _exec_menu(menu, menu_parent.mapToGlobal(pos))
         if action == create_asset:
             self._create_asset()
         elif action == initialize_assets:
@@ -3263,20 +3415,34 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.status_label.setText(f"Initialized {len(results)} asset(s)")
 
     def _select_asset_keys(self, keys: set[tuple[str, str, str]]) -> None:
-        self.asset_list.clearSelection()
-        first_item = None
-        for row in range(self.asset_list.count()):
-            item = self.asset_list.item(row)
-            asset = item.data(QtCore.Qt.UserRole)
-            if not isinstance(asset, Asset) or self._asset_key(asset) not in keys:
-                continue
-            item.setSelected(True)
-            if first_item is None:
-                first_item = item
-        if first_item is not None:
-            self.asset_list.setCurrentItem(
-                first_item, QtCore.QItemSelectionModel.NoUpdate
-            )
+        if self.asset_view_stack.currentWidget() is self.asset_table:
+            self.asset_table.clearSelection()
+            first_row = -1
+            for row in range(self.asset_table.rowCount()):
+                item = self.asset_table.item(row, 0)
+                asset = item.data(QtCore.Qt.UserRole) if item else None
+                if not isinstance(asset, Asset) or self._asset_key(asset) not in keys:
+                    continue
+                self.asset_table.selectRow(row)
+                if first_row < 0:
+                    first_row = row
+            if first_row >= 0:
+                self.asset_table.setCurrentCell(first_row, 0)
+        else:
+            self.asset_list.clearSelection()
+            first_item = None
+            for row in range(self.asset_list.count()):
+                item = self.asset_list.item(row)
+                asset = item.data(QtCore.Qt.UserRole)
+                if not isinstance(asset, Asset) or self._asset_key(asset) not in keys:
+                    continue
+                item.setSelected(True)
+                if first_item is None:
+                    first_item = item
+            if first_item is not None:
+                self.asset_list.setCurrentItem(
+                    first_item, QtCore.QItemSelectionModel.NoUpdate
+                )
         self._update_asset_action_state()
 
     def _create_variant(self) -> None:
@@ -3312,6 +3478,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _select_asset(self, target: Asset) -> None:
         key = self._asset_key(target)
+        if self.asset_view_stack.currentWidget() is self.asset_table:
+            for row in range(self.asset_table.rowCount()):
+                item = self.asset_table.item(row, 0)
+                asset = item.data(QtCore.Qt.UserRole) if item else None
+                if asset and self._asset_key(asset) == key:
+                    self.asset_table.setCurrentCell(row, 0)
+                    return
+            return
         for row in range(self.asset_list.count()):
             asset = self.asset_list.item(row).data(QtCore.Qt.UserRole)
             if asset and self._asset_key(asset) == key:

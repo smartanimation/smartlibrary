@@ -55,6 +55,21 @@ def test_smart_delivery_uses_studio_id_and_next_batch(tmp_path, monkeypatch):
     )
 
 
+def test_internal_delivery_preferences_include_client_identity(tmp_path, monkeypatch):
+    studio_config = tmp_path / "studio.yml"
+    studio_config.write_text(
+        "studio:\n  id: internal\n  name: Internal\n  role: internal\n"
+        "client:\n  id: client_a\n  name: Client A\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SMARTPIPELINE_STUDIO_CONFIG", str(studio_config))
+
+    service = object.__new__(SmartDeliveryService)
+
+    assert service.delivery_preferences()["client_id"] == "client_a"
+    assert service.delivery_preferences()["client_name"] == "Client A"
+
+
 def test_smart_delivery_rejects_unsafe_studio_id(tmp_path, monkeypatch):
     studio_config = tmp_path / "studio.yml"
     studio_config.write_text("studio:\n  id: ../outside\n", encoding="utf-8")
