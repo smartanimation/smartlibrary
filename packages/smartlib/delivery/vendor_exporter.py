@@ -4,11 +4,12 @@ import fnmatch
 import json
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from smartlib.core.asset_categories import canonical_asset_category, mapped_asset_category
 from smartlib.core.config_loader import load_config
 
 
@@ -24,6 +25,7 @@ class PackageProfile:
     shot_root: str
     layouts: dict[str, dict[str, str]]
     include: dict[str, tuple[str, ...]]
+    category_mapping: dict[str, dict[str, str]] = field(default_factory=dict)
     delivery_recipient: str = "external_editor"
     delivery_process: str = "edit_in"
 
@@ -40,8 +42,21 @@ class PackageProfile:
             shot_root=str(profile.get("shot_root") or "production/shots/{episode}/{sequence}/{shot}/data/{department}/{subset}/v###"),
             layouts={str(k): {str(a): str(b) for a, b in dict(v or {}).items()} for k, v in dict(data.get("layouts") or {}).items()},
             include={str(k): tuple(str(v) for v in values or []) for k, values in dict(data.get("include") or {}).items()},
+            category_mapping={
+                str(direction): {str(source): str(target) for source, target in dict(values or {}).items()}
+                for direction, values in dict(data.get("category_mapping") or {}).items()
+            },
             delivery_recipient=str(profile.get("delivery_recipient") or "external_editor"),
             delivery_process=str(profile.get("delivery_process") or "edit_in"),
+        )
+
+    def inbound_category(self, value: str) -> str:
+        return mapped_asset_category(value, self.category_mapping.get("inbound"), canonical_fallback=True)
+
+    def outbound_category(self, value: str) -> str:
+        canonical = canonical_asset_category(value, strict=True)
+        return mapped_asset_category(
+            canonical, self.category_mapping.get("outbound"), canonical_fallback=False
         )
 
 
@@ -76,7 +91,9 @@ class VendorPackageBuilder:
                 rows.append((source, _safe_member(layout.get("textures", "sourceimages/{relative}").format(relative=relative))))
             files.append({"role": "texture_root", "path": _member_root(layout.get("textures", "sourceimages/{relative}")),
                           "source": texture_path.as_posix(), "required": False, "include_patterns": list(texture_patterns)})
-        target = {"target_type": "Asset", "project": project, "category": category, "group": group,
+        internal_category = canonical_asset_category(category, strict=True)
+        package_category = self.profile.outbound_category(internal_category)
+        target = {"target_type": "Asset", "project": project, "category": package_category, "group": group,
                   "asset": asset, "variant": variant, "department": "assembly",
                   "subset": subset or self.profile.asset_subset, "format": scene_path.suffix.lstrip(".").lower()}
         manifest = {
@@ -87,7 +104,8 @@ class VendorPackageBuilder:
             "source_inputs": {"scene": scene_path.as_posix(), "texture_root": texture_path.as_posix() if texture_path else ""},
             "files": files,
             "ingest": {"auto_plan": True, "copy_mode": "expand_package", "preserve_relative_paths": True,
-                       "version_policy": "next", "expected_target_root": self.profile.asset_root.format(**target),
+                       "version_policy": "next", "internal_category": internal_category,
+                       "expected_target_root": self.profile.asset_root.format(**{**target, "category": internal_category}),
                        "open_scene_file": scene_member, "write_indexes": ["manifest.json", "latest.json", "versions.json"]},
         }
         if assembly:

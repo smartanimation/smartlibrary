@@ -3,111 +3,117 @@ version: 1
 
 stage_profiles:
   FAST:
-    character: LO
-    environment: PROXY
-    prop: LO
+    character: CHAR_LO
+    environment: BG_PROXY
+    prop: PROP_LO
+    vehicle: PROP_LO
     purpose: proxy
     load_payloads: false
     load_crowds: false
   WORK:
-    character: ANIM
-    environment: PROXY
-    prop: LO
+    character: CHAR_ANIM
+    environment: BG_PROXY
+    prop: PROP_LO
+    vehicle: PROP_LO
     purpose: proxy
     load_payloads: true
     load_crowds: true
   REND:
-    character: REND
-    environment: REND
-    prop: REND
+    character: CHAR_REND
+    environment: BG_REND
+    prop: PROP_REND
+    vehicle: PROP_REND
     purpose: render
     load_payloads: true
     load_crowds: true
 
 quality_profiles:
-  LO:
+  CHAR_LO:
     model: low
     look: low
     rig: layout
     groom: none
-  ANIM:
+  CHAR_ANIM:
     model: low
     look: low
     rig: anim
     groom: none
-  REND:
+  CHAR_REND:
     model: high
     look: high
     rig: anim
     groom: render
-  MCP:
+  CHAR_MCP:
     model: low
     look: none
     rig: mocap
     groom: none
-  PROXY:
+  BG_PROXY:
     assembly: proxy
     look: none
+  BG_REND:
+    assembly: render
+    look: high
+  PROP_LO:
+    model: low
+    look: low
+    rig: layout
+  PROP_ANIM:
+    model: low
+    look: low
+    rig: anim
+  PROP_REND:
+    model: high
+    look: high
+
+profile_labels:
+  CHAR_LO: LO
+  CHAR_ANIM: ANIM
+  CHAR_REND: REND
+  CHAR_MCP: MCP
+  BG_PROXY: PROXY
+  BG_REND: REND
+  PROP_LO: LO
+  PROP_ANIM: ANIM
+  PROP_REND: REND
 
 asset_context_recipes:
   character:
-    inherit_common_profiles: false
     match:
       asset_type:
-        - CH
         - character
-        - characters
-    profiles:
-      LO:
-        model: low
-        look: low
-        rig: layout
-        groom: none
-      ANIM:
-        model: low
-        look: low
-        rig: anim
-        groom: none
-      REND:
-        model: high
-        look: high
-        rig: anim
-        groom: render
-      MCP:
-        model: low
-        look: none
-        rig: mocap
-        groom: none
+    profile_names:
+      - CHAR_LO
+      - CHAR_ANIM
+      - CHAR_REND
+      - CHAR_MCP
 
   environment:
-    inherit_common_profiles: false
     match:
       asset_type:
-        - BG
-        - env
         - environment
-        - set
-    profiles:
-      PROXY:
-        assembly: proxy
-        look: none
-      REND:
-        assembly: render
-        look: high
+    profile_names:
+      - BG_PROXY
+      - BG_REND
 
   prop:
-    inherit_common_profiles: false
     match:
       asset_type:
         - prop
-    profiles:
-      LO:
-        model: proxy
-        look: none
-      REND:
-        model: render
-        look: high
+    profile_names:
+      - PROP_LO
+      - PROP_ANIM
+      - PROP_REND
 
+
+  vehicle:
+    match:
+      asset_type:
+        - vehicle
+    profile_names:
+      - PROP_LO
+      - PROP_ANIM
+      - PROP_REND
 viewport:
   background: bbox
   textures: low

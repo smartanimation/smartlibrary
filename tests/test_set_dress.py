@@ -4,6 +4,8 @@ from smartlib.dcc.maya.set_dress import (
     SetDressLayer,
     SetDressPackage,
     composed_values,
+    compose_packages,
+    capture_scene,
     create_history_revision,
     diff_states,
     embed_package_in_scene,
@@ -13,6 +15,7 @@ from smartlib.dcc.maya.set_dress import (
     load_package_from_scene,
     list_history_revisions,
     remember_base,
+    recordable_attributes,
     save_package,
     suggested_path,
 )
@@ -50,14 +53,97 @@ class SceneCmds:
         return self.nodes[node][attr]
 
 
-def test_diff_tracks_transform_and_visibility_only():
+def test_diff_tracks_any_captured_plug():
     before = [NodeState("a", "|set|chair", {"translateX": 0.0, "visibility": True, "custom": 1})]
     after = [NodeState("a", "|set|chair", {"translateX": 3.5, "visibility": False, "custom": 9})]
     changes = diff_states(before, after)
     assert [(item.attribute, item.before, item.after) for item in changes] == [
+        ("custom", 1, 9),
         ("translateX", 0.0, 3.5),
         ("visibility", True, False),
     ]
+
+
+class AttributeCmds:
+    def __init__(self):
+        self.attrs = {
+            "translateX": ("double", False), "visibility": ("bool", False),
+            "costumeVariant": ("enum", False), "variantLabel": ("string", False),
+            "drivenOutput": ("double", True), "worldMatrix": ("matrix", False),
+        }
+
+    def listAttr(self, _node, keyable=False, channelBox=False):
+        if keyable:
+            return ["translateX", "visibility", "costumeVariant", "drivenOutput"]
+        if channelBox:
+            return ["variantLabel", "worldMatrix"]
+        return []
+
+    def objExists(self, plug):
+        return plug.split(".", 1)[1] in self.attrs
+
+    def getAttr(self, plug, lock=False, type=False):
+        attr_type, locked = self.attrs[plug.split(".", 1)[1]]
+        if lock:
+            return locked
+        if type:
+            return attr_type
+        raise AssertionError("value query is not expected")
+
+
+def test_recordable_attributes_include_rig_variants_and_filter_unsafe_plugs():
+    assert recordable_attributes(AttributeCmds(), "rig_SETTINGS") == [
+        "costumeVariant", "translateX", "variantLabel", "visibility",
+    ]
+
+
+class CaptureCmds:
+    def __init__(self):
+        self.values = {
+            "|set": {"translateX": ("double", 0.0)},
+            "|set|geo": {"translateX": ("double", 2.0)},
+            "|set|geo|geoShape": {"castsShadows": ("bool", True)},
+        }
+
+    def ls(self, objects=None, selection=False, long=False, type=None, shapes=False):
+        if selection:
+            return ["|set"]
+        candidates = list(objects or self.values)
+        if type == "transform":
+            return [item for item in candidates if not item.endswith("Shape")]
+        if shapes:
+            return [item for item in candidates if item.endswith("Shape")]
+        return candidates
+
+    def listRelatives(self, _nodes, allDescendents=False, fullPath=False):
+        return ["|set|geo|geoShape", "|set|geo"]
+
+    def listAttr(self, node, keyable=False, channelBox=False):
+        return list(self.values[node]) if keyable else []
+
+    def objExists(self, plug):
+        node, attribute = plug.rsplit(".", 1)
+        return node in self.values and attribute in self.values[node]
+
+    def getAttr(self, plug, lock=False, type=False):
+        node, attribute = plug.rsplit(".", 1)
+        attr_type, value = self.values[node][attribute]
+        if lock:
+            return False
+        if type:
+            return attr_type
+        return value
+
+    def nodeType(self, _node):
+        return "mesh"
+
+
+def test_capture_scene_includes_transforms_and_shapes_in_selected_hierarchy():
+    states = capture_scene(selection_only=True, cmds=CaptureCmds())
+    assert [state.node for state in states] == [
+        "|set", "|set|geo", "|set|geo|geoShape",
+    ]
+    assert states[-1].values == {"castsShadows": True}
 
 
 def test_top_layer_has_override_priority():
@@ -67,6 +153,33 @@ def test_top_layer_has_override_priority():
     assert result[("a", "translateX")].after == 20
     high.muted = True
     assert composed_values([high, low])[("a", "translateX")].after == 10
+
+
+def test_build_packages_compose_layers_base_and_context():
+    sequence = SetDressPackage(
+        layers=[SetDressLayer(name="sequence")],
+        base=[NodeState("set", "|set", {"visibility": True})],
+        context={"scope": "sequence", "sequence": "sq010"},
+    )
+    shot = SetDressPackage(
+        layers=[SetDressLayer(name="shot")],
+        base=[
+            NodeState("set", "|set", {"visibility": False, "translateX": 0.0}),
+            NodeState("rig", "|hero", {"costumeVariant": 0}),
+        ],
+        context={"scope": "shot", "shot": "sh020"},
+    )
+
+    result = compose_packages([sequence, shot])
+
+    assert [layer.name for layer in result.layers] == ["sequence", "shot"]
+    assert result.context == {
+        "scope": "shot", "sequence": "sq010", "shot": "sh020",
+    }
+    assert result.base == [
+        NodeState("set", "|set", {"visibility": True, "translateX": 0.0}),
+        NodeState("rig", "|hero", {"costumeVariant": 0}),
+    ]
 
 
 def test_base_snapshot_keeps_the_first_value_across_multiple_captures():

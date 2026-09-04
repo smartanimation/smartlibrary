@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import yaml
@@ -12,6 +13,7 @@ SMARTPROJECTS_ROOT = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG_DIR") or os.pat
 STUDIO_CONFIG_PATH = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG") or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
 PROJECTS_ROOT = os.environ.get("SMARTPIPELINE_PROJECT_CONFIG_ROOT") or os.path.join(SMARTPROJECTS_ROOT, "config")
 DEFAULT_DIR = os.path.join(PIPELINE_ROOT, "config", "default")
+PACKAGE_PROFILES_DIR = os.path.join(PIPELINE_ROOT, "config", "delivery", "package_profiles")
 GLOBAL_SOFT_PATH = os.path.join(DEFAULT_DIR, "software_settings.yml")
 ASSET_LIST_URL_LABEL = "Asset List URL"
 SHOT_LIST_URL_LABEL = "Shot List URL"
@@ -41,6 +43,8 @@ if PACKAGES_DIR not in sys.path:
     sys.path.insert(0, PACKAGES_DIR)
 
 from smartlib.apps.asset_manager.subsets import asset_subset_catalog
+from smartlib.core.asset_categories import ASSET_CATEGORIES, canonical_asset_category
+from smartlib.editorial.policy import normalize_editorial_handle_policy
 
 
 def google_sheet_id(value):
@@ -77,6 +81,69 @@ def save_yml(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def load_package_profile(name, root=None):
+    path = os.path.join(root or PACKAGE_PROFILES_DIR, f"{name}.json")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Package profile was not found: {path}")
+    with open(path, "r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError(f"Package profile must contain a JSON object: {path}")
+    return data
+
+
+def save_package_profile(name, data, root=None):
+    path = os.path.join(root or PACKAGE_PROFILES_DIR, f"{name}.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as stream:
+        json.dump(data, stream, ensure_ascii=False, indent=2)
+        stream.write("\n")
+    return path
+
+
+def category_mapping_editor_rows(mapping):
+    inbound = dict((mapping or {}).get("inbound") or {})
+    outbound = dict((mapping or {}).get("outbound") or {})
+    rows = {}
+    for category in ASSET_CATEGORIES:
+        aliases = sorted(
+            str(source).strip()
+            for source, target in inbound.items()
+            if canonical_asset_category(target) == category and str(source).strip()
+        )
+        rows[category] = {
+            "inbound": ", ".join(aliases),
+            "outbound": str(outbound.get(category) or "").strip(),
+        }
+    return rows
+
+
+def category_mapping_from_editor_rows(rows):
+    inbound = {}
+    outbound = {}
+    seen_aliases = set()
+    for category in ASSET_CATEGORIES:
+        values = dict((rows or {}).get(category) or {})
+        for source in str(values.get("inbound") or "").split(","):
+            alias = source.strip()
+            if not alias:
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", alias):
+                raise ValueError(f"Invalid inbound category alias: {alias}")
+            key = alias.casefold()
+            if key in seen_aliases:
+                raise ValueError(f"Inbound category alias is duplicated: {alias}")
+            seen_aliases.add(key)
+            inbound[alias] = category
+        external = str(values.get("outbound") or "").strip()
+        if external:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", external):
+                raise ValueError(f"Invalid outbound category: {external}")
+            outbound[category] = external
+    return {"inbound": inbound, "outbound": outbound}
+
 
 def merge_dicts(base, override):
     result = dict(base or {})
@@ -240,7 +307,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.tabs.addTab(self.template_files_tab, "Templates")
         self.tabs.addTab(self.naming_tab, "Naming")
         self.tabs.addTab(self.preflight_tab, "Preflight")
-        self.tabs.addTab(self.context_tab, "Contexts")
+        self.tabs.addTab(self.context_tab, "Asset Context")
         self.tabs.addTab(self.resolvers_tab, "Resolvers")
         self.tabs.addTab(self.review_tab, "Review")
         self.tabs.currentChanged.connect(self._refresh_template_files_table)
@@ -296,6 +363,37 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.client_name_label = QtWidgets.QLabel("Client Name:")
         layout.addRow(self.client_id_label, self.client_id_input)
         layout.addRow(self.client_name_label, self.client_name_input)
+
+        self.package_profile_group = QtWidgets.QGroupBox("Client Package Category Mapping")
+        package_layout = QtWidgets.QVBoxLayout(self.package_profile_group)
+        profile_row = QtWidgets.QHBoxLayout()
+        profile_row.addWidget(QtWidgets.QLabel("Package Profile"))
+        self.package_profile_combo = QtWidgets.QComboBox()
+        profile_row.addWidget(self.package_profile_combo, 1)
+        package_layout.addLayout(profile_row)
+        mapping_help = QtWidgets.QLabel(
+            "Inbound accepts comma-separated client aliases. Outbound defines the "
+            "single client category written by Smart Delivery. Internal categories are fixed."
+        )
+        mapping_help.setWordWrap(True)
+        package_layout.addWidget(mapping_help)
+        self.category_mapping_table = QtWidgets.QTableWidget(len(ASSET_CATEGORIES), 3)
+        self.category_mapping_table.setHorizontalHeaderLabels(
+            ["Internal Category", "Inbound Client Categories", "Outbound Client Category"]
+        )
+        self.category_mapping_table.verticalHeader().setVisible(False)
+        self.category_mapping_table.horizontalHeader().setStretchLastSection(True)
+        for row, category in enumerate(ASSET_CATEGORIES):
+            item = QtWidgets.QTableWidgetItem(category)
+            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.category_mapping_table.setItem(row, 0, item)
+            self.category_mapping_table.setItem(row, 1, QtWidgets.QTableWidgetItem())
+            self.category_mapping_table.setItem(row, 2, QtWidgets.QTableWidgetItem())
+        package_layout.addWidget(self.category_mapping_table)
+        layout.addRow(self.package_profile_group)
+        self.package_profile_combo.currentTextChanged.connect(
+            self._load_package_category_mapping
+        )
         self.studio_role_combo.currentIndexChanged.connect(
             self._update_studio_role_controls
         )
@@ -331,6 +429,18 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         client = dict(data.get("client") or {})
         self.client_id_input.setText(str(client.get("id") or "").strip())
         self.client_name_input.setText(str(client.get("name") or "").strip())
+        profile_names = [
+            os.path.splitext(name)[0]
+            for name in sorted(os.listdir(PACKAGE_PROFILES_DIR))
+            if name.endswith(".json")
+        ] if os.path.isdir(PACKAGE_PROFILES_DIR) else []
+        selected_profile = str(legacy.get("package_profile") or "client").strip()
+        self.package_profile_combo.blockSignals(True)
+        self.package_profile_combo.clear()
+        self.package_profile_combo.addItems(profile_names)
+        self.package_profile_combo.setCurrentText(selected_profile)
+        self.package_profile_combo.blockSignals(False)
+        self._load_package_category_mapping(self.package_profile_combo.currentText())
         self._update_studio_role_controls()
         google_sheets = data.get("google_sheets") or {}
         self.google_credentials_path_edit.setText(
@@ -374,6 +484,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 data.pop("client", None)
         else:
             data.pop("client", None)
+        if role == "internal" and self.package_profile_combo.currentText():
+            smart_delivery = dict(data.get("smart_delivery") or {})
+            smart_delivery["package_profile"] = self.package_profile_combo.currentText()
+            data["smart_delivery"] = smart_delivery
+            self._save_package_category_mapping()
         google_sheets = dict(data.get("google_sheets") or {})
         credentials_path = self.google_credentials_path_edit.text().strip()
         if credentials_path:
@@ -393,8 +508,33 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.client_id_input,
             self.client_name_label,
             self.client_name_input,
+            self.package_profile_group,
         ):
             widget.setVisible(internal)
+
+    def _load_package_category_mapping(self, profile_name):
+        if not profile_name:
+            return
+        try:
+            profile = load_package_profile(profile_name)
+            rows = category_mapping_editor_rows(profile.get("category_mapping") or {})
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            rows = category_mapping_editor_rows({})
+        for row, category in enumerate(ASSET_CATEGORIES):
+            self.category_mapping_table.item(row, 1).setText(rows[category]["inbound"])
+            self.category_mapping_table.item(row, 2).setText(rows[category]["outbound"])
+
+    def _save_package_category_mapping(self):
+        profile_name = self.package_profile_combo.currentText().strip()
+        profile = load_package_profile(profile_name)
+        rows = {}
+        for row, category in enumerate(ASSET_CATEGORIES):
+            rows[category] = {
+                "inbound": self.category_mapping_table.item(row, 1).text().strip(),
+                "outbound": self.category_mapping_table.item(row, 2).text().strip(),
+            }
+        profile["category_mapping"] = category_mapping_from_editor_rows(rows)
+        save_package_profile(profile_name, profile)
 
     def _update_maya_timeline_controls(self, _index=None):
         mode = str(self.maya_timeline_mode.currentData() or "normalized")
@@ -473,6 +613,12 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         editors.addWidget(delivery_group)
         layout.addWidget(editors, 1)
         policy = QtWidgets.QFormLayout()
+        self.workspace_representation_combo = QtWidgets.QComboBox()
+        self.workspace_representation_combo.addItem("Maya Reference", "maya")
+        self.workspace_representation_combo.addItem("USD Payload", "usd")
+        self.workspace_representation_combo.setToolTip(
+            "Default used by Review Build Manager when Representation is Project Default."
+        )
         self.missing_precomp_policy_combo = QtWidgets.QComboBox()
         self.missing_precomp_policy_combo.addItems(
             ["allow_project_default", "block", "auto_create_candidate"]
@@ -487,6 +633,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.review_failed_days.setRange(0, 3650)
         self.review_logs_days = QtWidgets.QSpinBox()
         self.review_logs_days.setRange(0, 3650)
+        policy.addRow("Default Asset Loading:", self.workspace_representation_combo)
         policy.addRow("Missing PreComp:", self.missing_precomp_policy_combo)
         policy.addRow("Default PreComp:", self.default_precomp_edit)
         policy.addRow("Keep Successful Jobs (days):", self.review_success_days)
@@ -1081,16 +1228,14 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         page = QtWidgets.QWidget()
         page_layout = QtWidgets.QVBoxLayout(page)
         page_layout.setContentsMargins(8, 8, 8, 8)
-        policy_group = QtWidgets.QGroupBox("Shot Build Policy")
-        policy_layout = QtWidgets.QFormLayout(policy_group)
-        self.workspace_representation_combo = QtWidgets.QComboBox()
-        self.workspace_representation_combo.addItem("Maya Reference", "maya")
-        self.workspace_representation_combo.addItem("USD Payload", "usd")
-        self.workspace_representation_combo.setToolTip(
-            "Default used by Review Build Manager when Representation is Project Default."
+        page_layout.addWidget(QtWidgets.QLabel("<b>Asset Context</b>"))
+        help_label = QtWidgets.QLabel(
+            "Define available published representations, reusable quality profiles, and the "
+            "Asset profile selected for each Shot build stage."
         )
-        policy_layout.addRow("Default Representation:", self.workspace_representation_combo)
-        page_layout.addWidget(policy_group)
+        help_label.setWordWrap(True)
+        help_label.setStyleSheet("color: #aeb7c2;")
+        page_layout.addWidget(help_label)
 
         content = QtWidgets.QWidget()
         root = QtWidgets.QHBoxLayout(content)
@@ -1099,13 +1244,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         page_layout.addWidget(content, 1)
 
         left = QtWidgets.QWidget()
-        left.setFixedWidth(220)
+        left.setFixedWidth(190)
         left_layout = QtWidgets.QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(QtWidgets.QLabel("<b>Context</b>"))
-        self.context_list = QtWidgets.QListWidget()
-        self.context_list.setStyleSheet("QListWidget::item { height: 30px; }")
-        left_layout.addWidget(self.context_list, 2)
         left_layout.addWidget(QtWidgets.QLabel("<b>Versions</b>"))
         self.context_version_list = QtWidgets.QListWidget()
         self.context_version_list.setStyleSheet("QListWidget::item { height: 28px; }")
@@ -1128,44 +1269,48 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.context_editor_tabs = QtWidgets.QTabWidget()
         self.context_editor_tabs.setDocumentMode(True)
 
-        stage_page = QtWidgets.QWidget()
-        stage_layout = QtWidgets.QVBoxLayout(stage_page)
-        stage_layout.setContentsMargins(8, 8, 8, 8)
-        stage_help = QtWidgets.QLabel(
-            "Stage Profiles select an Asset Context by asset class. Purpose and load flags "
-            "control the Maya USD viewport policy."
+        representation_page = QtWidgets.QWidget()
+        representation_layout = QtWidgets.QVBoxLayout(representation_page)
+        representation_layout.setContentsMargins(8, 8, 8, 8)
+        representation_help = QtWidgets.QLabel(
+            "Published subsets available to Profiles. Items are grouped by publish Type so "
+            "requirements such as rig / mocap remain visible."
         )
-        stage_help.setWordWrap(True)
-        stage_layout.addWidget(stage_help)
-        self.context_stage_table = QtWidgets.QTableWidget(0, 7)
-        self.context_stage_table.setHorizontalHeaderLabels(
-            ["Stage", "Character", "Environment", "Prop", "USD Purpose", "Payloads", "Crowds"]
+        representation_help.setWordWrap(True)
+        representation_layout.addWidget(representation_help)
+        representation_actions = QtWidgets.QHBoxLayout()
+        representation_actions.addStretch()
+        self.context_add_representation_btn = QtWidgets.QPushButton("+ Add Representation")
+        self.context_delete_representation_btn = QtWidgets.QPushButton("Delete")
+        representation_actions.addWidget(self.context_add_representation_btn)
+        representation_actions.addWidget(self.context_delete_representation_btn)
+        representation_layout.addLayout(representation_actions)
+        self.context_representation_tree = QtWidgets.QTreeWidget()
+        self.context_representation_tree.setHeaderLabels(["Type / Representation"])
+        self.context_representation_tree.setAlternatingRowColors(True)
+        self.context_representation_tree.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
         )
-        self._configure_context_table(self.context_stage_table)
-        stage_layout.addWidget(self.context_stage_table)
-        self.context_editor_tabs.addTab(stage_page, "Stage Profiles")
+        representation_layout.addWidget(self.context_representation_tree)
+        self.context_editor_tabs.addTab(representation_page, "Representations")
 
         profile_page = QtWidgets.QWidget()
         profile_layout = QtWidgets.QVBoxLayout(profile_page)
         profile_layout.setContentsMargins(8, 8, 8, 8)
-        class_actions = QtWidgets.QHBoxLayout()
-        class_actions.addWidget(QtWidgets.QLabel("Asset Type"))
+        profile_help = QtWidgets.QLabel(
+            "Select an Asset Type and edit the Profiles used by that type directly."
+        )
+        profile_help.setWordWrap(True)
+        profile_layout.addWidget(profile_help)
+        profile_actions = QtWidgets.QHBoxLayout()
+        profile_actions.addWidget(QtWidgets.QLabel("Asset Type"))
         self.context_asset_class_combo = QtWidgets.QComboBox()
         self.context_asset_class_combo.setMinimumWidth(180)
-        class_actions.addWidget(self.context_asset_class_combo)
-        self.context_add_asset_class_btn = QtWidgets.QPushButton("+ Add Class")
-        self.context_delete_asset_class_btn = QtWidgets.QPushButton("Delete Class")
-        class_actions.addWidget(self.context_add_asset_class_btn)
-        class_actions.addWidget(self.context_delete_asset_class_btn)
-        class_actions.addStretch()
-        profile_layout.addLayout(class_actions)
-        match_layout = QtWidgets.QHBoxLayout()
-        match_layout.addWidget(QtWidgets.QLabel("Asset Type Match"))
-        self.context_asset_class_match = QtWidgets.QLineEdit()
-        self.context_asset_class_match.setPlaceholderText("CH, character, characters")
-        match_layout.addWidget(self.context_asset_class_match, 1)
-        profile_layout.addLayout(match_layout)
-        profile_actions = QtWidgets.QHBoxLayout()
+        profile_actions.addWidget(self.context_asset_class_combo)
+        self.context_add_asset_class_btn = QtWidgets.QPushButton("+ Add Asset Type")
+        self.context_delete_asset_class_btn = QtWidgets.QPushButton("Delete Asset Type")
+        profile_actions.addWidget(self.context_add_asset_class_btn)
+        profile_actions.addWidget(self.context_delete_asset_class_btn)
         profile_actions.addStretch()
         self.context_add_profile_btn = QtWidgets.QPushButton("+ Add Profile")
         self.context_delete_profile_btn = QtWidgets.QPushButton("Delete")
@@ -1178,83 +1323,43 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         self._configure_context_table(self.context_profile_table)
         profile_layout.addWidget(self.context_profile_table)
-        self.context_editor_tabs.addTab(profile_page, "Quality Profiles")
+        self.context_editor_tabs.addTab(profile_page, "Profiles")
 
-        representation_page = QtWidgets.QWidget()
-        representation_layout = QtWidgets.QVBoxLayout(representation_page)
-        representation_layout.setContentsMargins(8, 8, 8, 8)
-        representation_actions = QtWidgets.QHBoxLayout()
-        representation_actions.addStretch()
-        self.context_add_representation_btn = QtWidgets.QPushButton("+ Add")
-        self.context_delete_representation_btn = QtWidgets.QPushButton("Delete")
-        representation_actions.addWidget(self.context_add_representation_btn)
-        representation_actions.addWidget(self.context_delete_representation_btn)
-        representation_layout.addLayout(representation_actions)
-        self.context_representation_table = QtWidgets.QTableWidget(0, 2)
-        self.context_representation_table.setHorizontalHeaderLabels(["Type", "Name"])
-        self._configure_context_table(self.context_representation_table)
-        representation_layout.addWidget(self.context_representation_table)
-        self.context_editor_tabs.addTab(representation_page, "Representations")
-
-        output_page = QtWidgets.QWidget()
-        output_layout = QtWidgets.QVBoxLayout(output_page)
-        output_layout.setContentsMargins(8, 8, 8, 8)
-        output_header = QtWidgets.QHBoxLayout()
-        self.context_output_target_label = QtWidgets.QLabel("Select a representation")
-        self.context_output_target_label.setStyleSheet("color: #aeb7c2;")
-        output_header.addWidget(self.context_output_target_label)
-        output_header.addStretch()
-        self.context_add_output_btn = QtWidgets.QPushButton("+ Add")
-        self.context_delete_output_btn = QtWidgets.QPushButton("Delete")
-        output_header.addWidget(self.context_add_output_btn)
-        output_header.addWidget(self.context_delete_output_btn)
-        output_layout.addLayout(output_header)
-        self.context_output_table = QtWidgets.QTableWidget(0, 3)
-        self.context_output_table.setHorizontalHeaderLabels(["Format", "Enabled", "Options"])
-        self._configure_context_table(self.context_output_table)
-        self.context_output_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        self.context_output_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        self.context_output_table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        output_layout.addWidget(self.context_output_table, 1)
-
-        details = QtWidgets.QFormLayout()
-        self.context_output_extension = QtWidgets.QLineEdit()
-        self.context_output_bake = QtWidgets.QComboBox()
-        self.context_output_bake.addItems(["Off", "On"])
-        self.context_output_root_motion = QtWidgets.QComboBox()
-        self.context_output_root_motion.addItems(["None", "Preserve", "Extract"])
-        self.context_output_axis = QtWidgets.QComboBox()
-        self.context_output_axis.addItems(["Y-up", "Z-up"])
-        self.context_output_unit = QtWidgets.QComboBox()
-        self.context_output_unit.addItems(["mm", "cm", "m"])
-        details.addRow("File Extension", self.context_output_extension)
-        details.addRow("Bake Animation", self.context_output_bake)
-        details.addRow("Root Motion", self.context_output_root_motion)
-        details.addRow("Axis", self.context_output_axis)
-        details.addRow("Unit", self.context_output_unit)
-        output_layout.addLayout(details)
-        self.context_editor_tabs.addTab(output_page, "Output Formats")
+        stage_page = QtWidgets.QWidget()
+        stage_layout = QtWidgets.QVBoxLayout(stage_page)
+        stage_layout.setContentsMargins(8, 8, 8, 8)
+        stage_help = QtWidgets.QLabel(
+            "Map FAST, WORK, and REND Shot build stages to an effective Asset Profile. "
+            "Purpose and load flags control the Maya USD viewport policy."
+        )
+        stage_help.setWordWrap(True)
+        stage_layout.addWidget(stage_help)
+        self.context_stage_table = QtWidgets.QTableWidget(0, 7)
+        self.context_stage_table.setHorizontalHeaderLabels(
+            ["Stage", "Character", "Environment", "Prop", "USD Purpose", "Payloads", "Crowds"]
+        )
+        self._configure_context_table(self.context_stage_table)
+        stage_layout.addWidget(self.context_stage_table)
+        self.context_editor_tabs.addTab(stage_page, "Shot Stage Mapping")
         main_layout.addWidget(self.context_editor_tabs, 1)
 
         root.addWidget(left)
         root.addWidget(main, 1)
 
-        self.context_list.currentItemChanged.connect(self._on_context_changed)
         self.context_version_list.currentItemChanged.connect(self._on_context_version_changed)
         self.context_new_version_btn.clicked.connect(self._add_context_version)
         self.context_set_active_btn.clicked.connect(self._set_active_context_version)
         self.context_add_profile_btn.clicked.connect(self._add_context_profile)
         self.context_delete_profile_btn.clicked.connect(self._delete_context_profile)
-        self.context_asset_class_combo.currentIndexChanged.connect(self._on_asset_class_changed)
+        self.context_asset_class_combo.currentIndexChanged.connect(
+            self._on_asset_class_changed
+        )
         self.context_add_asset_class_btn.clicked.connect(self._add_asset_class)
         self.context_delete_asset_class_btn.clicked.connect(self._delete_asset_class)
         self.context_add_representation_btn.clicked.connect(self._add_context_representation)
         self.context_delete_representation_btn.clicked.connect(self._delete_context_representation)
-        self.context_representation_table.itemChanged.connect(self._on_representation_item_changed)
-        self.context_representation_table.itemSelectionChanged.connect(self._on_representation_selected)
-        self.context_add_output_btn.clicked.connect(self._add_context_output)
-        self.context_delete_output_btn.clicked.connect(self._delete_context_output)
-        self.context_output_table.itemSelectionChanged.connect(self._on_output_selected)
+        self.context_representation_tree.itemChanged.connect(self._on_representation_item_changed)
+        self.context_editor_tabs.currentChanged.connect(self._on_context_editor_tab_changed)
         return page
 
     @staticmethod
@@ -1641,17 +1746,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.workspace_representation_combo.setCurrentIndex(
             representation_index if representation_index >= 0 else 0
         )
-        context_names = set()
-        for root in roots:
-            context_root = os.path.join(root, "contexts")
-            if os.path.isdir(context_root):
-                context_names.update(
-                    name for name in os.listdir(context_root)
-                    if os.path.isdir(os.path.join(context_root, name))
-                )
-        context_names.update(["asset", "layout", "anim", "lighting"])
-
-        for context_name in sorted(context_names, key=lambda value: (["asset", "layout", "anim", "lighting"].index(value) if value in ["asset", "layout", "anim", "lighting"] else 99, value)):
+        # Asset Context is the only supported configurable context. Historical
+        # layout/anim/lighting folders are left untouched on disk but are no
+        # longer synthesized as empty UI sections.
+        for context_name in ("asset",):
             versions = set()
             for root in roots:
                 folder = os.path.join(root, "contexts", context_name)
@@ -1688,14 +1786,20 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             settings = merge_dicts(settings, load_yml(os.path.join(root, "project_settings.yml")))
         self.context_active_versions = dict(settings.get("active_contexts") or {})
 
-        self.context_list.clear()
-        for context_name in self.context_configs:
-            item = QtWidgets.QListWidgetItem(context_name.title())
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, context_name)
-            self.context_list.addItem(item)
+        self._current_context_key = "asset"
+        self._current_context_version = None
+        self.context_version_list.clear()
+        versions = sorted(self.context_configs.get("asset", {}))
+        for version in versions:
+            self.context_version_list.addItem(version)
+        active = self.context_active_versions.get("asset", "")
+        self.context_active_label.setText(f"Active  {active or '-'}")
         self._context_loading = False
-        if self.context_list.count():
-            self.context_list.setCurrentRow(0)
+        index = versions.index(active) if active in versions else (len(versions) - 1)
+        if index >= 0:
+            self.context_version_list.setCurrentRow(index)
+        else:
+            self._clear_context_editor()
 
     @staticmethod
     def _normalize_context_config(context_name, version, data):
@@ -1731,6 +1835,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             return normalized
 
         result["quality_profiles"] = normalize_profiles(profiles)
+        labels = result.get("profile_labels") or {}
+        result["profile_labels"] = {
+            str(profile_name): str(labels.get(profile_name) or profile_name)
+            for profile_name in result["quality_profiles"]
+        }
         recipes = result.get("asset_context_recipes") or {}
         normalized_recipes = {}
         for asset_class, recipe in recipes.items():
@@ -1741,9 +1850,133 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             normalized_recipes[str(asset_class)] = normalized_recipe
         if normalized_recipes:
             result["asset_context_recipes"] = normalized_recipes
+        if str(context_name).lower() == "asset":
+            ConfigCreatorApp._normalize_asset_profile_scopes(result)
         result.pop("representations", None)
         result.setdefault("output_formats", {})
         return result
+
+    @staticmethod
+    def _normalize_asset_profile_scopes(data):
+        """Collapse duplicated profiles and give divergent class profiles unique names."""
+
+        common = data.get("quality_profiles") or {}
+        labels = data.setdefault("profile_labels", {})
+        recipes = data.get("asset_context_recipes") or {}
+        stage_profiles = data.get("stage_profiles") or {}
+
+        def comparable(profile):
+            return {
+                str(key): str(value)
+                for key, value in (profile or {}).items()
+                if value not in (None, "", "none")
+            }
+
+        # These names describe Shot stages, not representation recipes. Older
+        # projects commonly stored exact copies under both names.
+        for stage_name, profile_name in (
+            ("FAST", "LO"),
+            ("WORK", "ANIM"),
+            ("FINAL", "REND"),
+        ):
+            if (
+                stage_name in common
+                and profile_name in common
+                and comparable(common[stage_name]) == comparable(common[profile_name])
+            ):
+                common.pop(stage_name)
+                labels.pop(stage_name, None)
+                for policy in stage_profiles.values():
+                    if not isinstance(policy, dict):
+                        continue
+                    for asset_class in recipes:
+                        if str(policy.get(asset_class) or "").upper() == stage_name:
+                            policy[asset_class] = profile_name
+
+        base_profile_names = list(common)
+        prefixes = {
+            "character": "CHAR",
+            "environment": "ENV",
+            "prop": "PROP",
+        }
+        for asset_class, recipe in recipes.items():
+            if not isinstance(recipe, dict):
+                continue
+            profiles = recipe.get("profiles") or {}
+            explicit_names = recipe.get("profile_names")
+            selected = (
+                [str(value) for value in explicit_names]
+                if isinstance(explicit_names, (list, tuple, set))
+                else (
+                    list(base_profile_names)
+                    if recipe.get("inherit_common_profiles", True)
+                    else []
+                )
+            )
+            for profile_name in list(profiles):
+                target_name = profile_name
+                if profile_name in common:
+                    if comparable(profiles[profile_name]) == comparable(common[profile_name]):
+                        if profile_name not in selected:
+                            selected.append(profile_name)
+                        continue
+                    prefix = prefixes.get(str(asset_class), str(asset_class).upper())
+                    target_name = f"{prefix}_{profile_name}"
+                    suffix = 2
+                    while target_name in common:
+                        target_name = f"{prefix}_{profile_name}_{suffix}"
+                        suffix += 1
+                    for policy in stage_profiles.values():
+                        if (
+                            isinstance(policy, dict)
+                            and str(policy.get(asset_class) or "").upper() == str(profile_name).upper()
+                        ):
+                            policy[asset_class] = target_name
+                common[target_name] = profiles[profile_name]
+                labels.setdefault(target_name, target_name)
+                if target_name not in selected:
+                    selected.append(target_name)
+            recipe["profile_names"] = list(dict.fromkeys(
+                name for name in selected if name in common
+            ))
+            recipe.pop("profiles", None)
+            recipe.pop("inherit_common_profiles", None)
+
+        # The editor owns independent definitions per Asset Type. Clone legacy
+        # shared definitions non-destructively and update only the assignments.
+        scoped_prefixes = {"character": "CHAR", "environment": "BG", "prop": "PROP"}
+        for asset_class, recipe in recipes.items():
+            if not isinstance(recipe, dict):
+                continue
+            prefix = scoped_prefixes.get(
+                str(asset_class),
+                re.sub(r"[^A-Z0-9]+", "_", str(asset_class).upper()),
+            )
+            scoped_names = []
+            for profile_id in recipe.get("profile_names") or []:
+                profile_id = str(profile_id)
+                label = str(labels.get(profile_id) or profile_id)
+                expected = f"{prefix}_{re.sub(r'[^A-Z0-9]+', '_', label.upper()).strip('_')}"
+                if profile_id.startswith(f"{prefix}_"):
+                    scoped_id = profile_id
+                else:
+                    scoped_id = expected
+                    suffix = 2
+                    while scoped_id in common and comparable(common[scoped_id]) != comparable(common.get(profile_id)):
+                        scoped_id = f"{expected}_{suffix}"
+                        suffix += 1
+                    if scoped_id not in common and profile_id in common:
+                        common[scoped_id] = copy.deepcopy(common[profile_id])
+                    labels.setdefault(scoped_id, label)
+                    for policy in stage_profiles.values():
+                        if (
+                            isinstance(policy, dict)
+                            and str(policy.get(asset_class) or "") == profile_id
+                        ):
+                            policy[asset_class] = scoped_id
+                if scoped_id in common:
+                    scoped_names.append(scoped_id)
+            recipe["profile_names"] = list(dict.fromkeys(scoped_names))
 
     def _on_context_changed(self, current, _previous):
         if self._context_loading:
@@ -1776,12 +2009,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def _clear_context_editor(self):
         self._context_loading = True
         self.context_asset_class_combo.clear()
-        self.context_asset_class_match.clear()
         self.context_profile_table.setRowCount(0)
         self.context_stage_table.setRowCount(0)
-        self.context_representation_table.setRowCount(0)
-        self.context_output_table.setRowCount(0)
-        self.context_output_target_label.setText("Select a representation")
+        self.context_representation_tree.clear()
         self._current_output_key = None
         self._current_output_format = None
         self._context_loading = False
@@ -1793,51 +2023,62 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             return
         self._context_loading = True
         recipes = data.get("asset_context_recipes") or {}
-        if self._current_context_key == "asset" and recipes:
-            labels = {
-                "character": "Character",
-                "environment": "Background",
-                "prop": "Prop",
-            }
-            ordered = [
-                value for value in ("character", "environment", "prop")
-                if value in recipes
-            ]
-            ordered.extend(sorted(value for value in recipes if value not in ordered))
-            for asset_class in ordered:
-                self.context_asset_class_combo.addItem(
-                    labels.get(asset_class, asset_class.replace("_", " ").title()),
-                    asset_class,
-                )
-            self._current_asset_class_key = str(
-                self.context_asset_class_combo.itemData(0) or "character"
+        class_labels = {"character": "Character", "environment": "Background", "prop": "Prop"}
+        ordered = [value for value in ("character", "environment", "prop") if value in recipes]
+        ordered.extend(sorted(value for value in recipes if value not in ordered))
+        for asset_class in ordered:
+            self.context_asset_class_combo.addItem(
+                class_labels.get(asset_class, asset_class.replace("_", " ").title()),
+                asset_class,
             )
-        else:
-            self.context_asset_class_combo.addItem("Default / Legacy", "default")
-            for asset_class in sorted(recipes):
-                self.context_asset_class_combo.addItem(asset_class, asset_class)
-            self._current_asset_class_key = "default"
+        self._current_asset_class_key = str(
+            self.context_asset_class_combo.itemData(0) or ""
+        )
         self._populate_stage_profiles(data)
         representations = self.asset_subset_catalog
         for publish_type in sorted(representations):
+            type_item = QtWidgets.QTreeWidgetItem([str(publish_type)])
+            type_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, "type")
+            type_item.setFlags(type_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+            self.context_representation_tree.addTopLevelItem(type_item)
             for name in representations[publish_type]:
-                row = self.context_representation_table.rowCount()
-                self.context_representation_table.insertRow(row)
-                self.context_representation_table.setItem(row, 0, QtWidgets.QTableWidgetItem(publish_type))
-                self.context_representation_table.setItem(row, 1, QtWidgets.QTableWidgetItem(name))
-        self._populate_asset_class_profiles(data, representations)
+                item = QtWidgets.QTreeWidgetItem([str(name)])
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, "representation")
+                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsEditable)
+                type_item.addChild(item)
+            type_item.setExpanded(True)
+        self._populate_asset_type_profiles(data, representations)
         self.context_profile_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.context_representation_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         self._context_loading = False
-        if self.context_representation_table.rowCount():
-            self.context_representation_table.selectRow(0)
 
-    def _append_profile_row(self, profile_name, profile=None, representations=None):
+    def _populate_asset_type_profiles(self, data=None, representations=None):
+        data = data or self._current_context_data() or {}
+        representations = representations or self._representations_from_table()
+        self.context_profile_table.setRowCount(0)
+        recipe = (data.get("asset_context_recipes") or {}).get(
+            self._current_asset_class_key, {}
+        )
+        labels = data.get("profile_labels") or {}
+        library = data.get("quality_profiles") or {}
+        for profile_id in recipe.get("profile_names") or []:
+            if profile_id in library:
+                self._append_profile_row(
+                    labels.get(profile_id) or profile_id,
+                    library[profile_id],
+                    representations,
+                    definition_id=profile_id,
+                )
+
+    def _append_profile_row(
+        self, profile_name, profile=None, representations=None, definition_id=None
+    ):
         profile = profile or {}
         representations = representations or self._representations_from_table()
         row = self.context_profile_table.rowCount()
         self.context_profile_table.insertRow(row)
-        self.context_profile_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(profile_name)))
+        name_item = QtWidgets.QTableWidgetItem(str(profile_name))
+        name_item.setData(QtCore.Qt.ItemDataRole.UserRole, str(definition_id or ""))
+        self.context_profile_table.setItem(row, 0, name_item)
         for column, publish_type in enumerate(("model", "assembly", "look", "rig", "groom"), 1):
             combo = QtWidgets.QComboBox()
             combo.addItem("none")
@@ -1851,11 +2092,13 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def _populate_stage_profiles(self, data):
         self.context_stage_table.setRowCount(0)
         defaults = {
-            "FAST": {"character": "LO", "environment": "PROXY", "prop": "LO", "purpose": "proxy", "load_payloads": False, "load_crowds": False},
-            "WORK": {"character": "ANIM", "environment": "PROXY", "prop": "LO", "purpose": "proxy", "load_payloads": True, "load_crowds": True},
-            "REND": {"character": "REND", "environment": "REND", "prop": "REND", "purpose": "render", "load_payloads": True, "load_crowds": True},
+            "FAST": {"character": "CHAR_LO", "environment": "BG_PROXY", "prop": "PROP_LO", "purpose": "proxy", "load_payloads": False, "load_crowds": False},
+            "WORK": {"character": "CHAR_ANIM", "environment": "BG_PROXY", "prop": "PROP_LO", "purpose": "proxy", "load_payloads": True, "load_crowds": True},
+            "REND": {"character": "CHAR_REND", "environment": "BG_REND", "prop": "PROP_REND", "purpose": "render", "load_payloads": True, "load_crowds": True},
         }
         policies = data.get("stage_profiles") or defaults
+        recipes = data.get("asset_context_recipes") or {}
+        labels = data.get("profile_labels") or {}
         for stage in ("FAST", "WORK", "REND"):
             policy = dict(defaults[stage])
             policy.update(policies.get(stage) or policies.get(stage.lower()) or {})
@@ -1863,7 +2106,20 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.context_stage_table.insertRow(row)
             self.context_stage_table.setItem(row, 0, QtWidgets.QTableWidgetItem(stage))
             for column, key in enumerate(("character", "environment", "prop"), 1):
-                self.context_stage_table.setItem(row, column, QtWidgets.QTableWidgetItem(str(policy[key]).upper()))
+                recipe = recipes.get(key) or {}
+                available = list(recipe.get("profile_names") or [])
+                selected = str(policy[key]).upper()
+                if selected and selected not in available:
+                    available.append(selected)
+                combo = QtWidgets.QComboBox()
+                for profile_id in available:
+                    combo.addItem(
+                        str(labels.get(profile_id) or profile_id),
+                        str(profile_id),
+                    )
+                selected_index = combo.findData(selected)
+                combo.setCurrentIndex(selected_index if selected_index >= 0 else 0)
+                self.context_stage_table.setCellWidget(row, column, combo)
             purpose = QtWidgets.QComboBox()
             purpose.addItems(["proxy", "render", "bbox"])
             purpose.setCurrentText(str(policy.get("purpose") or "proxy").lower())
@@ -1886,8 +2142,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 continue
             values = []
             for column in (1, 2, 3):
-                item = self.context_stage_table.item(row, column)
-                values.append(item.text().strip().upper() if item else "")
+                combo = self.context_stage_table.cellWidget(row, column)
+                values.append(str(combo.currentData() or "").strip() if combo else "")
             purpose = self.context_stage_table.cellWidget(row, 4)
             result[stage] = {
                 "character": values[0],
@@ -1901,82 +2157,86 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     def _representations_from_table(self):
         result = {}
-        for row in range(self.context_representation_table.rowCount()):
-            type_item = self.context_representation_table.item(row, 0)
-            name_item = self.context_representation_table.item(row, 1)
-            publish_type = type_item.text().strip() if type_item else ""
-            name = name_item.text().strip() if name_item else ""
-            if publish_type and name:
-                result.setdefault(publish_type, []).append(name)
+        for index in range(self.context_representation_tree.topLevelItemCount()):
+            type_item = self.context_representation_tree.topLevelItem(index)
+            publish_type = type_item.text(0).strip()
+            names = [
+                type_item.child(child).text(0).strip()
+                for child in range(type_item.childCount())
+                if type_item.child(child).text(0).strip()
+            ]
+            if publish_type:
+                result[publish_type] = names
         return result
 
     def _store_context_editor(self):
         data = self._current_context_data()
         if not data or self._context_loading:
             return
-        self._store_output_table()
         representations = self._representations_from_table()
-        profiles = {}
+        library = data.setdefault("quality_profiles", {})
+        profile_labels = data.setdefault("profile_labels", {})
+        assigned = []
         for row in range(self.context_profile_table.rowCount()):
             name_item = self.context_profile_table.item(row, 0)
             name = name_item.text().strip() if name_item else ""
             if not name:
                 continue
+            definition_id = str(
+                name_item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+            ).strip()
+            if not definition_id:
+                definition_id = self._profile_definition_id(
+                    self._current_asset_class_key, name, library
+                )
+                name_item.setData(QtCore.Qt.ItemDataRole.UserRole, definition_id)
             profile = {}
             for column, publish_type in enumerate(("model", "assembly", "look", "rig", "groom"), 1):
                 combo = self.context_profile_table.cellWidget(row, column)
                 profile[publish_type] = combo.currentText().strip() if combo else "none"
-            profiles[name] = profile
+            library[definition_id] = profile
+            profile_labels[definition_id] = name
+            assigned.append(definition_id)
         self.asset_subset_catalog = representations
         data["stage_profiles"] = self._stage_profiles_from_table()
         data.pop("representations", None)
-        if self._current_asset_class_key == "default":
-            data["quality_profiles"] = profiles
-        else:
-            recipe = data.setdefault("asset_context_recipes", {}).setdefault(
-                self._current_asset_class_key, {}
-            )
-            recipe.setdefault("inherit_common_profiles", False)
-            recipe["profiles"] = profiles
-            matches = [
-                value.strip()
-                for value in self.context_asset_class_match.text().split(",")
-                if value.strip()
-            ]
-            recipe["match"] = {"asset_type": matches}
+        data["quality_profiles"] = library
+        data["profile_labels"] = profile_labels
+        recipes = data.setdefault("asset_context_recipes", {})
+        if self._current_asset_class_key:
+            recipe = recipes.setdefault(self._current_asset_class_key, {})
+            recipe["profile_names"] = assigned
 
-    def _populate_asset_class_profiles(self, data=None, representations=None):
-        data = data or self._current_context_data() or {}
-        representations = representations or self._representations_from_table()
-        self.context_profile_table.setRowCount(0)
-        if self._current_asset_class_key == "default":
-            profiles = data.get("quality_profiles") or {}
-            self.context_asset_class_match.clear()
-            self.context_asset_class_match.setEnabled(False)
-            self.context_delete_asset_class_btn.setEnabled(False)
-        else:
-            recipe = (data.get("asset_context_recipes") or {}).get(
-                self._current_asset_class_key, {}
-            )
-            profiles = recipe.get("profiles") or {}
-            matches = (recipe.get("match") or {}).get("asset_type") or []
-            if isinstance(matches, str):
-                matches = [matches]
-            self.context_asset_class_match.setText(", ".join(str(value) for value in matches))
-            self.context_asset_class_match.setEnabled(True)
-            self.context_delete_asset_class_btn.setEnabled(True)
-        for profile_name, profile in profiles.items():
-            self._append_profile_row(profile_name, profile, representations)
+    @staticmethod
+    def _profile_definition_id(asset_class, profile_name, existing):
+        prefix = {"character": "CHAR", "environment": "BG", "prop": "PROP"}.get(
+            str(asset_class), re.sub(r"[^A-Z0-9]+", "_", str(asset_class).upper())
+        )
+        suffix = re.sub(r"[^A-Z0-9]+", "_", str(profile_name).upper()).strip("_") or "PROFILE"
+        candidate = f"{prefix}_{suffix}"
+        index = 2
+        while candidate in existing:
+            candidate = f"{prefix}_{suffix}_{index}"
+            index += 1
+        return candidate
 
     def _on_asset_class_changed(self, index):
         if self._context_loading or index < 0:
             return
         self._store_context_editor()
         self._current_asset_class_key = str(
-            self.context_asset_class_combo.itemData(index) or "default"
+            self.context_asset_class_combo.itemData(index) or ""
         )
         self._context_loading = True
-        self._populate_asset_class_profiles()
+        self._populate_asset_type_profiles()
+        self._context_loading = False
+
+    def _on_context_editor_tab_changed(self, index):
+        if self._context_loading or index != 2:
+            return
+        self._store_context_editor()
+        self._context_loading = True
+        self._populate_stage_profiles(self._current_context_data() or {})
         self._context_loading = False
 
     def _add_asset_class(self):
@@ -1992,27 +2252,34 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Duplicate Asset Class", f"Asset class already exists: {name}")
             return
         self._store_context_editor()
-        recipes[name] = {"match": {"asset_type": [name]}, "profiles": {}}
+        recipes[name] = {"match": {"asset_type": [name]}, "profile_names": []}
         self._context_loading = True
-        self.context_asset_class_combo.addItem(name, name)
-        index = self.context_asset_class_combo.count() - 1
-        self.context_asset_class_combo.setCurrentIndex(index)
+        self.context_asset_class_combo.addItem(name.replace("_", " ").title(), name)
+        self.context_asset_class_combo.setCurrentIndex(
+            self.context_asset_class_combo.count() - 1
+        )
         self._current_asset_class_key = name
-        self._populate_asset_class_profiles(data)
+        self._populate_asset_type_profiles(data)
         self._context_loading = False
 
     def _delete_asset_class(self):
-        if self._current_asset_class_key == "default":
+        index = self.context_asset_class_combo.currentIndex()
+        if index < 0:
             return
         data = self._current_context_data()
         if not data:
             return
-        (data.get("asset_context_recipes") or {}).pop(self._current_asset_class_key, None)
+        self._store_context_editor()
+        asset_class = str(self.context_asset_class_combo.itemData(index) or "")
+        (data.get("asset_context_recipes") or {}).pop(asset_class, None)
         self._context_loading = True
-        self.context_asset_class_combo.removeItem(self.context_asset_class_combo.currentIndex())
-        self.context_asset_class_combo.setCurrentIndex(0)
-        self._current_asset_class_key = "default"
-        self._populate_asset_class_profiles(data)
+        self.context_asset_class_combo.removeItem(index)
+        next_index = min(index, self.context_asset_class_combo.count() - 1)
+        self.context_asset_class_combo.setCurrentIndex(next_index)
+        self._current_asset_class_key = str(
+            self.context_asset_class_combo.itemData(next_index) or ""
+        )
+        self._populate_asset_type_profiles(data)
         self._context_loading = False
 
     def _add_context_version(self):
@@ -2054,29 +2321,65 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         row = self.context_profile_table.currentRow()
         if row >= 0:
             self.context_profile_table.removeRow(row)
+            self._store_context_editor()
 
     def _add_context_representation(self):
-        row = self.context_representation_table.rowCount()
-        self.context_representation_table.insertRow(row)
-        self.context_representation_table.setItem(row, 0, QtWidgets.QTableWidgetItem("model"))
-        self.context_representation_table.setItem(row, 1, QtWidgets.QTableWidgetItem("new"))
-        self.context_representation_table.selectRow(row)
+        selected = self.context_representation_tree.currentItem()
+        type_item = selected if selected and selected.parent() is None else (
+            selected.parent() if selected else None
+        )
+        if type_item is None:
+            publish_type, ok = QtWidgets.QInputDialog.getText(
+                self, "Add Representation", "Publish type:"
+            )
+            publish_type = publish_type.strip().lower()
+            if not ok or not publish_type:
+                return
+            for index in range(self.context_representation_tree.topLevelItemCount()):
+                candidate = self.context_representation_tree.topLevelItem(index)
+                if candidate.text(0).strip() == publish_type:
+                    type_item = candidate
+                    break
+            if type_item is None:
+                type_item = QtWidgets.QTreeWidgetItem([publish_type])
+                type_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, "type")
+                self.context_representation_tree.addTopLevelItem(type_item)
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Add Representation", f"Name for {type_item.text(0)}:"
+        )
+        name = name.strip().lower()
+        if not ok or not name:
+            return
+        if any(type_item.child(index).text(0).strip() == name for index in range(type_item.childCount())):
+            QtWidgets.QMessageBox.warning(
+                self, "Duplicate Representation", f"Representation already exists: {type_item.text(0)} / {name}"
+            )
+            return
+        item = QtWidgets.QTreeWidgetItem([name])
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, "representation")
+        item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsEditable)
+        type_item.addChild(item)
+        type_item.setExpanded(True)
+        self.context_representation_tree.setCurrentItem(item)
         self._refresh_profile_choices()
 
     def _delete_context_representation(self):
-        row = self.context_representation_table.currentRow()
-        if row >= 0:
-            self._store_output_table()
-            key = self._selected_representation_key()
-            data = self._current_context_data()
-            if key and data:
-                publish_type, representation = key
-                by_type = (data.get("output_formats") or {}).get(publish_type) or {}
-                by_type.pop(representation, None)
-            self.context_representation_table.removeRow(row)
-            self._current_output_key = None
-            self.context_output_table.setRowCount(0)
-            self._refresh_profile_choices()
+        item = self.context_representation_tree.currentItem()
+        if not item:
+            return
+        parent = item.parent()
+        if parent is None:
+            if item.childCount():
+                QtWidgets.QMessageBox.information(
+                    self, "Delete Representation", "Delete the representations in this Type first."
+                )
+                return
+            self.context_representation_tree.takeTopLevelItem(
+                self.context_representation_tree.indexOfTopLevelItem(item)
+            )
+        else:
+            parent.removeChild(item)
+        self._refresh_profile_choices()
 
     def _refresh_profile_choices(self, *_args):
         if self._context_loading:
@@ -2095,32 +2398,17 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 combo.setCurrentText(current if combo.findText(current) >= 0 else "none")
         self._context_loading = False
 
-    def _on_representation_item_changed(self, _item):
+    def _on_representation_item_changed(self, *_args):
         if self._context_loading:
             return
-        old_key = self._current_output_key
-        new_key = self._selected_representation_key()
-        if old_key and new_key and old_key != new_key:
-            self._store_output_table()
-            data = self._current_context_data()
-            output_formats = data.setdefault("output_formats", {}) if data else {}
-            old_type, old_name = old_key
-            new_type, new_name = new_key
-            old_formats = (output_formats.get(old_type) or {}).pop(old_name, None)
-            if old_formats is not None:
-                output_formats.setdefault(new_type, {})[new_name] = old_formats
-            self._current_output_key = new_key
-            self.context_output_target_label.setText(" / ".join(new_key))
         self._refresh_profile_choices()
 
     def _selected_representation_key(self):
-        row = self.context_representation_table.currentRow()
-        if row < 0:
+        item = self.context_representation_tree.currentItem()
+        if not item or item.parent() is None:
             return None
-        type_item = self.context_representation_table.item(row, 0)
-        name_item = self.context_representation_table.item(row, 1)
-        publish_type = type_item.text().strip() if type_item else ""
-        name = name_item.text().strip() if name_item else ""
+        publish_type = item.parent().text(0).strip()
+        name = item.text(0).strip()
         return (publish_type, name) if publish_type and name else None
 
     def _on_representation_selected(self):
@@ -2266,6 +2554,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 for profile_name, profile in profiles.items():
                     if not profile_name.strip():
                         errors.append(f"{context_name}/{version}: Profile name is required")
+                    if profile_name.upper() in {"FAST", "WORK", "FINAL"}:
+                        errors.append(
+                            f"{context_name}/{version}/{profile_name}: Shot Stage names cannot be Common Profiles"
+                        )
                     for publish_type, value in profile.items():
                         if value not in ("", "none") and value not in representations.get(publish_type, []):
                             errors.append(f"{context_name}/{version}/{profile_name}: {publish_type}/{value} is not registered")
@@ -2279,6 +2571,20 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                                     f"{context_name}/{version}/{asset_class}/{profile_name}: "
                                     f"{publish_type}/{value} is not registered"
                                 )
+                        if profile_name in profiles:
+                            errors.append(
+                                f"{context_name}/{version}/{asset_class}/{profile_name}: "
+                                "same-name Profiles must use the Common definition"
+                            )
+                for asset_class, recipe in (data.get("asset_context_recipes") or {}).items():
+                    if not isinstance(recipe, dict):
+                        continue
+                    for profile_name in recipe.get("profile_names") or []:
+                        if str(profile_name) not in profiles:
+                            errors.append(
+                                f"{context_name}/{version}/{asset_class}: "
+                                f"Profile {profile_name} is not defined"
+                            )
                 if str(context_name).lower() == "asset":
                     stage_profiles = data.get("stage_profiles") or {}
                     for required_stage in ("FAST", "WORK", "REND"):
@@ -2291,24 +2597,16 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                             continue
                         for asset_class in ("character", "environment", "prop"):
                             selected = str(policy.get(asset_class) or "").upper()
+                            recipe = recipes.get(asset_class) or {}
                             available = {
                                 str(value).upper()
-                                for value in ((recipes.get(asset_class) or {}).get("profiles") or {})
+                                for value in (recipe.get("profile_names") or [])
                             }
                             if selected and available and selected not in available:
                                 errors.append(
                                     f"{context_name}/{version}/{stage_name}: "
                                     f"{asset_class} context {selected} is not registered"
                                 )
-                for publish_type, by_representation in (data.get("output_formats") or {}).items():
-                    for representation, formats in (by_representation or {}).items():
-                        if representation not in representations.get(publish_type, []):
-                            errors.append(f"{context_name}/{version}: output target {publish_type}/{representation} is not registered")
-                        for format_name, settings in (formats or {}).items():
-                            if not str(format_name).strip():
-                                errors.append(f"{context_name}/{version}/{publish_type}/{representation}: format name is required")
-                            if settings.get("enabled", True) and not str(settings.get("extension") or "").strip():
-                                errors.append(f"{context_name}/{version}/{publish_type}/{representation}/{format_name}: extension is required")
         return errors
 
     def _save_context_configs(self, proj_dir):
@@ -2424,6 +2722,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 'mode': str(self.maya_timeline_mode.currentData() or 'normalized'),
                 'normalized_start': self.maya_timeline_start.value(),
             },
+            'editorial': copy.deepcopy(existing_config.get('editorial') or {}),
+        }
+        config['editorial']['handle_policy'] = {
+            'head': self.editorial_handle_head.value(),
+            'tail': self.editorial_handle_tail.value(),
         }
         review_build_maya = str(
             self.review_build_maya_combo.currentData() or ""
@@ -2943,11 +3246,38 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         timeline_layout.addWidget(timeline_help)
         timeline_layout.addStretch(1)
 
+        handle_widget = QtWidgets.QWidget()
+        handle_layout = QtWidgets.QFormLayout(handle_widget)
+        handle_layout.setContentsMargins(0, 0, 0, 0)
+        handle_title = QtWidgets.QLabel("Editorial Handles")
+        handle_title.setStyleSheet("font-weight: bold;")
+        handle_layout.addRow(handle_title)
+        self.editorial_handle_head = QtWidgets.QSpinBox()
+        self.editorial_handle_head.setRange(0, 9999)
+        self.editorial_handle_head.setValue(8)
+        self.editorial_handle_tail = QtWidgets.QSpinBox()
+        self.editorial_handle_tail.setRange(0, 9999)
+        self.editorial_handle_tail.setValue(8)
+        self.editorial_handle_head.setToolTip(
+            "Canonical Head Handle used by Smart Editorial Export and Editorial Insert Export."
+        )
+        self.editorial_handle_tail.setToolTip(
+            "Canonical Tail Handle used by Smart Editorial Export and Editorial Insert Export."
+        )
+        handle_layout.addRow("Head:", self.editorial_handle_head)
+        handle_layout.addRow("Tail:", self.editorial_handle_tail)
+        handle_help = QtWidgets.QLabel(
+            "Project-wide policy. Existing fixed Editorial versions must match these values."
+        )
+        handle_help.setWordWrap(True)
+        handle_layout.addRow(handle_help)
+
         layout.addWidget(department_widget, 1)
         layout.addWidget(task_widget, 1)
         layout.addWidget(partition_widget, 1)
         layout.addWidget(recipe_widget, 1)
         layout.addWidget(timeline_widget, 1)
+        layout.addWidget(handle_widget, 1)
 
         add_department.clicked.connect(
             lambda: self._add_editable_list_item(
@@ -3102,6 +3432,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             else: self.env_tree.takeTopLevelItem(self.env_tree.indexOfTopLevelItem(i))
 
     def _apply_data_to_ui(self, data):
+        handle_policy = normalize_editorial_handle_policy(data)
+        self.editorial_handle_head.setValue(handle_policy.head)
+        self.editorial_handle_tail.setValue(handle_policy.tail)
         maya_timeline = normalize_maya_timeline_settings(data.get("maya_timeline"))
         timeline_index = self.maya_timeline_mode.findData(maya_timeline["mode"])
         self.maya_timeline_mode.setCurrentIndex(

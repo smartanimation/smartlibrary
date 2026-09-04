@@ -129,4 +129,4 @@ def test_build_manifest_autofills_delivery_asset_context(tmp_path: Path):
 
     assert defaults["delivery_type"] == "Asset"
     assert defaults["scene"] == scene.as_posix()
-    assert [defaults[key] for key in ("category", "group", "asset", "variant")] == ["BG", "sets", "CITY", "night"]
+    assert [defaults[key] for key in ("category", "group", "asset", "variant")] == ["environment", "sets", "CITY", "night"]

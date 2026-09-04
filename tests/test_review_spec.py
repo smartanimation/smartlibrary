@@ -50,7 +50,7 @@ def test_review_layers_are_separated_from_cast(tmp_path: Path) -> None:
     _write_json(
         shot_root / "cast.json",
         {
-            "cast": {"hero": {"asset": "Hero", "role": "CHA"}},
+            "cast": {"hero": {"asset": "Hero", "category": "character"}},
             "review_layers": {"CHA": {"members": ["hero"], "order": 10}},
         },
     )
@@ -142,14 +142,14 @@ def test_latest_preview_render_outputs_reads_recorded_layer_take(
     assert outputs["CHA"]["output_dir"] == str(take_root)
 
 
-def test_cast_role_does_not_require_review_layer() -> None:
+def test_cast_category_does_not_require_review_layer() -> None:
     issues = validate_cast_data(
         {
             "cast": {
                 "hero_main": {
                     "asset": "Hero",
                     "variant": "default",
-                    "role": "CHA",
+                    "category": "character",
                     "namespace": "hero_main",
                     "asset_publish": "approved",
                 }
@@ -158,6 +158,24 @@ def test_cast_role_does_not_require_review_layer() -> None:
     )
 
     assert issues == []
+
+
+def test_cast_role_is_rejected_in_v3_contract() -> None:
+    issues = validate_cast_data(
+        {
+            "cast": {
+                "hero_main": {
+                    "asset": "Hero",
+                    "category": "character",
+                    "role": "CHA",
+                    "namespace": "hero_main",
+                    "asset_publish": "approved",
+                }
+            }
+        }
+    )
+
+    assert [issue.code for issue in issues] == ["cast_role_removed"]
 
 
 def test_legacy_empty_default_layers_are_removed(tmp_path: Path) -> None:
@@ -184,7 +202,7 @@ def test_review_spec_migrates_latest_preview_render_settings(tmp_path: Path) -> 
     _write_json(
         shot_root / "cast.json",
         {
-            "cast": {"hero": {"asset": "Hero", "role": "CHA"}},
+            "cast": {"hero": {"asset": "Hero", "category": "character"}},
             "review_layers": {"CHA": {"members": ["hero"], "order": 10}},
         },
     )

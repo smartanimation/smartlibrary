@@ -51,7 +51,7 @@ def test_auto_plan_asset_copy(tmp_path: Path) -> None:
     assert item.target_type == "Asset"
     assert item.metadata.asset == "KUMA"
     assert item.target_path is not None
-    assert "assets/characters/main/KUMA/default/data/model/render/v001" in item.target_path.as_posix()
+    assert "assets/character/main/KUMA/default/data/model/render/v001" in item.target_path.as_posix()
 
     result = service.ingest_selected(items)
 

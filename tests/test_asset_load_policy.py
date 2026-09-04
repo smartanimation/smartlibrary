@@ -14,7 +14,6 @@ def test_context_layer_uses_older_default_for_newer_project_version(tmp_path, mo
 def test_rigged_prop_uses_maya_reference() -> None:
     result = resolve_asset_load_policy(
         {"category": "prop", "capabilities": {"rigged": True}},
-        role="BGA",
     )
     assert result.mode == "reference"
     assert result.component_type == "rig"
@@ -38,7 +37,6 @@ def test_metadata_override_has_highest_priority() -> None:
             "category": "env",
             "workspace_representation": {"mode": "maya_reference", "context": "ANIM"},
         },
-        role="BGA",
     )
     assert result.mode == "reference"
     assert result.context == "ANIM"

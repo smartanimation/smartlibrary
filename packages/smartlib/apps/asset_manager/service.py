@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from smartlib.core.asset_categories import canonical_asset_category
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.folder_structure import copy_entity_folder_structure, folder_structure_source
 from smartlib.core.metadata import write_json
@@ -31,7 +32,7 @@ class AssetCreateRequest:
     @property
     def identity(self) -> AssetIdentity:
         return AssetIdentity(
-            category=self.category,
+            category=canonical_asset_category(self.category, strict=True),
             group=self.group,
             name=self.name,
             variant=self.variant,
@@ -162,7 +163,7 @@ class AssetManagerService:
             return path
         data: dict[str, Any] = {
             "asset": request.name,
-            "category": request.category,
+            "category": canonical_asset_category(request.category, strict=True),
             "group": request.group,
             "description": request.description,
             "default_variant": request.variant,

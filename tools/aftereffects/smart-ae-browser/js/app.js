@@ -42,6 +42,8 @@
     selectedManifestId: "",
     projects: [],
     launchContext: {},
+    hasRestoredState: false,
+    restoredConfigDir: "",
     aepFiles: [],
     aepFilesCacheKey: "",
     aepFilesCacheAt: 0,
@@ -289,9 +291,12 @@
     bindElements();
     loadState();
     state.projects = loadProjectsFromConfig(DEFAULT_CONFIG_ROOT);
+    if (state.restoredConfigDir) {
+      reloadProjectsFromConfigDir(state.restoredConfigDir);
+    }
     bindEvents();
-    await applyLaunchContext();
-    if (!state.filters.project && projectExists("STKB")) {
+    await applyLaunchContext(!state.hasRestoredState);
+    if (!state.hasRestoredState && !state.filters.project && projectExists("STKB")) {
       state.filters.project = "STKB";
     }
     ensureSelectedManifestVisible();
@@ -324,6 +329,7 @@
       "replaceAllButton",
       "renderCompButton",
       "refreshButton",
+      "currentContextButton",
       "refreshOutputsButton",
       "refreshManifestButton",
       "addManifestButton",
@@ -363,6 +369,7 @@
       refreshManifestCatalog(false);
       refreshOutputStatus();
     });
+    elements.currentContextButton.addEventListener("click", selectCurrentShotContext);
     elements.refreshOutputsButton.addEventListener("click", function () {
       clearAepCache();
       refreshManifestCatalog(false);
@@ -375,6 +382,7 @@
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (button) {
       button.addEventListener("click", function () {
         state.activeTab = button.getAttribute("data-tab");
+        persistState();
         renderTabs();
       });
     });
@@ -392,6 +400,7 @@
         state.selectedManifestId = stored.selectedManifestId;
       }
       if (stored.filters) {
+        state.hasRestoredState = true;
         state.filters = Object.assign(state.filters, stored.filters);
         if (state.filters.project === "Showcase") {
           state.filters.project = "";
@@ -400,12 +409,17 @@
       if (stored.nextSaveVersions) {
         state.nextSaveVersions = stored.nextSaveVersions;
       }
+      state.selectedAepPath = stored.selectedAepPath || "";
+      state.restoredConfigDir = stored.configDir || "";
+      if (["watch", "queue", "aep", "render"].indexOf(stored.activeTab) >= 0) {
+        state.activeTab = stored.activeTab;
+      }
     } catch (error) {
       setStatus("Could not load saved panel state");
     }
   }
 
-  async function applyLaunchContext() {
+  async function applyLaunchContext(applySelection) {
     var context = {};
     var result = await window.SmartCEPBridge.callHost("getLaunchContext", undefined, "");
     if (result) {
@@ -417,6 +431,9 @@
     }
     context = mergeContext(readNodeEnvContext(), context);
     state.launchContext = context;
+    if (!applySelection) {
+      return;
+    }
 
     if (context.configDir) {
       reloadProjectsFromConfigDir(context.configDir);
@@ -437,6 +454,102 @@
       importManifestFromPath(context.manifest, context);
     }
     persistState();
+  }
+
+  function readSharedShotContext() {
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    var childProcess = nodeRequire("child_process");
+    var scriptPath;
+    var python;
+    var result;
+    var payload;
+    if (!fs || !pathModule || !childProcess) {
+      return { ok: false, error: "CEP Node runtime is unavailable" };
+    }
+    scriptPath = pathModule.join(PIPELINE_ROOT, "scripts", "read_ae_current_context.py");
+    if (!fs.existsSync(scriptPath)) {
+      return { ok: false, error: "Current context reader was not found" };
+    }
+    python = findPythonExecutable(fs, pathModule, PIPELINE_ROOT);
+    try {
+      result = childProcess.spawnSync(python, [scriptPath], {
+        encoding: "utf8",
+        timeout: 15000,
+        maxBuffer: 1024 * 1024
+      });
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+    payload = parseLastJsonLine(result ? result.stdout : "");
+    if (!result || result.status !== 0) {
+      return { ok: false, error: payload.error || String(result && (result.error || result.stderr) || "Could not read shared shot context").trim() };
+    }
+    if (!payload.ok && !payload.error && result) {
+      payload.error = String(result.stderr || "").trim();
+    }
+    return payload;
+  }
+
+  function selectCurrentShotContext() {
+    var payload;
+    var context;
+    var previousProjects = state.projects;
+    var nextFilters;
+    var applied = false;
+    elements.currentContextButton.disabled = true;
+    setStatus("Reading current Shot Manager selection...");
+    try {
+      payload = readSharedShotContext();
+      context = payload.context || {};
+      if (!payload.ok) {
+        setStatus("Current failed: " + (payload.error || "No shared shot context"));
+        return;
+      }
+      if (context.configDir) {
+        reloadProjectsFromConfigDir(context.configDir);
+      }
+      if (!context.project || !projectExists(context.project)) {
+        state.projects = previousProjects;
+        setStatus("Current failed: Project was not found: " + (context.project || "-"));
+        return;
+      }
+      if (!context.episode || !context.sequence || !context.shot) {
+        state.projects = previousProjects;
+        setStatus("Current failed: Shared shot selection is incomplete");
+        return;
+      }
+      nextFilters = { project: context.project };
+      ["episode", "sequence", "shot"].forEach(function (key) {
+        var value = normalizeToken(context[key]);
+        if (collectOptions(key, nextFilters).indexOf(value) === -1) {
+          throw new Error("Shared " + key + " was not found in the project: " + value);
+        }
+        nextFilters[key] = value;
+      });
+      state.filters = nextFilters;
+      state.launchContext = context;
+      state.selectedAepPath = "";
+      state.selectedManifestId = "";
+      applied = true;
+      clearAepCache();
+      refreshManifestCatalog(false);
+      setStatus(
+        "Current: " + [
+          state.filters.project,
+          state.filters.episode,
+          state.filters.sequence,
+          state.filters.shot
+        ].join(" / ")
+      );
+    } catch (error) {
+      if (!applied) {
+        state.projects = previousProjects;
+      }
+      setStatus("Current failed: " + error.message);
+    } finally {
+      elements.currentContextButton.disabled = false;
+    }
   }
 
   function readNodeEnvContext() {
@@ -755,7 +868,10 @@
       manifests: state.manifests,
       selectedManifestId: state.selectedManifestId,
       filters: state.filters,
-      nextSaveVersions: state.nextSaveVersions
+      nextSaveVersions: state.nextSaveVersions,
+      selectedAepPath: state.selectedAepPath,
+      activeTab: state.activeTab,
+      configDir: selectedProject() ? selectedProject().configDir || "" : ""
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(compactState));
   }
@@ -2023,6 +2139,7 @@
 
   function selectAepFile(path) {
     state.selectedAepPath = path || "";
+    persistState();
     renderRows();
   }
 

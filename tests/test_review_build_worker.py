@@ -62,6 +62,12 @@ def test_camera_for_layer_accepts_namespace_and_maya_numeric_suffix() -> None:
     )
 
 
+def test_camera_for_layer_does_not_fall_back_to_unrelated_camera() -> None:
+    cameras = ["|camera_grp|unrelatedCamera"]
+
+    assert worker._camera_for_layer(cameras, "CHA", "publishedCam") == ""
+
+
 def test_review_layer_contract_joins_definition_and_render_manifest() -> None:
     contracts = worker._resolved_review_layer_contracts(
         layer_definition={
@@ -137,7 +143,7 @@ def test_construct_snapshot_rig_path_overrides_worker_reresolution(
     preview = [
         BuildPreviewItem(
             cast_key="JIN_main", asset="JIN", variant="default",
-            namespace="JIN", role="CHA", review_layer="CHA",
+            namespace="JIN", category="character", review_layer="CHA",
             asset_publish="approved", required=True, status="resolved",
             publish_path=str(resolved_proxy),
         )

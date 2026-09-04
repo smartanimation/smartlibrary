@@ -108,7 +108,8 @@ class AssetRequestDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         layout = QtWidgets.QFormLayout(self)
-        self.category_edit = QtWidgets.QLineEdit("characters")
+        self.category_edit = QtWidgets.QComboBox()
+        self.category_edit.addItems(["character", "environment", "prop", "vehicle"])
         self.group_edit = QtWidgets.QLineEdit("hero")
         self.name_edit = QtWidgets.QLineEdit()
         self.variant_edit = QtWidgets.QLineEdit("default")
@@ -127,7 +128,7 @@ class AssetRequestDialog(QtWidgets.QDialog):
 
     def values(self) -> dict[str, str]:
         return {
-            "category": self.category_edit.text().strip(),
+            "category": self.category_edit.currentText().strip(),
             "group": self.group_edit.text().strip(),
             "name": self.name_edit.text().strip(),
             "variant": self.variant_edit.text().strip() or "default",
@@ -928,9 +929,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             "}"
         )
         context_main_layout.addWidget(self.context_readiness_label)
-        self.context_state_table = QtWidgets.QTableWidget(0, 7)
+        self.context_state_table = QtWidgets.QTableWidget(0, 8)
         self.context_state_table.setHorizontalHeaderLabels(
-            ["Subset", "Type", "Resolved", "State", "Official", "Latest", "Comment"]
+            ["Subset", "Type", "Resolved", "State", "Official", "Latest", "Source", "Comment"]
         )
         self.context_state_table.horizontalHeader().setStretchLastSection(True)
         self.context_state_table.verticalHeader().setVisible(False)
@@ -938,9 +939,15 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.context_state_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         context_main_layout.addWidget(self.context_state_table, 1)
         self.context_pack_tree = QtWidgets.QTreeWidget()
-        self.context_pack_tree.setHeaderLabels(["Pack", "Subset", "Ver", "Status", "Comment"])
+        self.context_pack_tree.setHeaderLabels(
+            ["Pack", "Subset", "Ver", "Status", "Source", "Comment"]
+        )
         self._apply_context_pack_tree_header()
         self.context_pack_tree.setIndentation(10)
+        self.context_pack_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.context_pack_tree.customContextMenuRequested.connect(
+            self._show_context_pack_menu
+        )
         context_main_layout.addWidget(self.context_pack_tree, 1)
         self.detail_tabs.addTab(context_tab, "Context")
 
@@ -2407,7 +2414,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
     def _populate_context_state(self, assembly, service=None) -> None:
         official_versions = self._context_official_versions(assembly, service)
-        self._populate_context_entries(assembly.entries, official_versions)
+        self._populate_context_entries(
+            assembly.entries,
+            official_versions,
+            source_scene=self._context_source_scene(assembly.manifest),
+        )
         can_pack = not assembly.errors
         if assembly.errors:
             self._set_context_readiness("BLOCKED", f"{len(assembly.errors)} representation missing")
@@ -2433,7 +2444,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self._set_context_readiness("RESOLVED", f"{len(assembly.entries)} representations resolved")
         self.context_pack_btn.setEnabled(can_pack)
 
-    def _populate_context_entries(self, entries, official_versions=None) -> None:
+    def _populate_context_entries(
+        self,
+        entries,
+        official_versions=None,
+        *,
+        source_scene: str = "",
+    ) -> None:
         official_versions = official_versions or {}
         self.context_state_table.setRowCount(0)
         for entry in entries:
@@ -2450,10 +2467,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 entry.status,
                 official_version,
                 entry.latest_version,
+                Path(source_scene).name if entry.publish_type == "current_scene" and source_scene else "-",
                 entry.comment,
             ]
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(str(value))
+                if column == 6 and source_scene and entry.publish_type == "current_scene":
+                    item.setToolTip(source_scene)
                 if entry.status == "MISSING":
                     item.setForeground(QtGui.QColor("#d88888"))
                 elif entry.status == "SKIPPED":
@@ -2494,6 +2514,22 @@ class AssetManagerWindow(QtWidgets.QDialog):
     @staticmethod
     def _context_entry_key(publish_type: str, requested_subset: str) -> tuple[str, str]:
         return str(publish_type), str(requested_subset)
+
+    @staticmethod
+    def _context_source_scene(manifest) -> str:
+        if not isinstance(manifest, dict):
+            return ""
+        source = str(manifest.get("source_scene") or "").strip()
+        if source:
+            return source
+        composition = manifest.get("composition") or {}
+        if isinstance(composition, dict):
+            return str(
+                composition.get("maya_scene_source")
+                or composition.get("source")
+                or ""
+            ).strip()
+        return ""
 
     def _context_official_versions(self, assembly, service) -> dict[tuple[str, str], str]:
         if not service:
@@ -2619,34 +2655,74 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.status_label.setText(str(exc))
             return
         if verification and service.is_current_assembly(resolved, verification):
+            verification_manifest = resolved.manifest
             try:
                 with verification.assembly_json.open("r", encoding="utf-8") as stream:
                     status = str((json.load(stream) or {}).get("status") or "verifying").upper()
             except Exception:
                 status = "VERIFYING"
-            assembly_item = QtWidgets.QTreeWidgetItem(["_assembly", "", "", status, "verification scene"])
+            try:
+                with verification.manifest_path.open("r", encoding="utf-8") as stream:
+                    saved_manifest = json.load(stream) or {}
+                if isinstance(saved_manifest, dict):
+                    verification_manifest = saved_manifest
+            except (OSError, TypeError, ValueError):
+                pass
+            assembly_source = self._context_source_scene(verification_manifest)
+            assembly_item = QtWidgets.QTreeWidgetItem(
+                [
+                    "_assembly",
+                    "",
+                    "",
+                    status,
+                    Path(assembly_source).name if assembly_source else "-",
+                    "verification scene",
+                ]
+            )
+            if assembly_source:
+                assembly_item.setToolTip(4, assembly_source)
             assembly_item.setForeground(0, QtGui.QColor("#d6b46b"))
             assembly_item.setExpanded(True)
             self.context_pack_tree.addTopLevelItem(assembly_item)
-            for entry in resolved.manifest.get("resolved_representations") or []:
-                assembly_item.addChild(
-                    QtWidgets.QTreeWidgetItem(
-                        [
-                            str(entry.get("publish_type") or ""),
-                            str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
-                            str(entry.get("version") or ""),
-                            "",
-                            str(entry.get("comment") or ""),
-                        ]
-                    )
+            for entry in verification_manifest.get("resolved_representations") or []:
+                entry_source = (
+                    assembly_source
+                    if str(entry.get("publish_type") or "") == "current_scene"
+                    else ""
                 )
+                entry_item = QtWidgets.QTreeWidgetItem(
+                    [
+                        str(entry.get("publish_type") or ""),
+                        str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
+                        str(entry.get("version") or ""),
+                        "",
+                        Path(entry_source).name if entry_source else "-",
+                        str(entry.get("comment") or ""),
+                    ]
+                )
+                if entry_source:
+                    entry_item.setToolTip(4, entry_source)
+                assembly_item.addChild(entry_item)
         for pack in packs:
             pack_status = str(pack.get("status") or "published").upper()
+            pack_source = self._context_source_scene(pack.get("manifest"))
             version_item = QtWidgets.QTreeWidgetItem(
-                [pack["version"], "", "", pack_status, pack.get("comment", "")]
+                [
+                    pack["version"],
+                    "",
+                    "",
+                    pack_status,
+                    Path(pack_source).name if pack_source else "-",
+                    pack.get("comment", ""),
+                ]
             )
+            if pack_source:
+                version_item.setToolTip(4, pack_source)
             version_item.setData(0, QtCore.Qt.UserRole, pack["manifest"])
             version_item.setData(0, QtCore.Qt.UserRole + 1, pack["version"])
+            version_item.setData(
+                0, QtCore.Qt.UserRole + 2, str(Path(pack["manifest_path"]).parent)
+            )
             if pack_status == "APPROVED":
                 version_item.setForeground(3, QtGui.QColor("#72c48f"))
             elif pack_status in {"LATEST", "PUBLISHED"}:
@@ -2654,17 +2730,24 @@ class AssetManagerWindow(QtWidgets.QDialog):
             version_item.setExpanded(True)
             self.context_pack_tree.addTopLevelItem(version_item)
             for entry in pack["manifest"].get("resolved_representations") or []:
-                version_item.addChild(
-                    QtWidgets.QTreeWidgetItem(
-                        [
-                            str(entry.get("publish_type") or ""),
-                            str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
-                            str(entry.get("version") or ""),
-                            "",
-                            str(entry.get("comment") or ""),
-                        ]
-                    )
+                entry_source = (
+                    pack_source
+                    if str(entry.get("publish_type") or "") == "current_scene"
+                    else ""
                 )
+                entry_item = QtWidgets.QTreeWidgetItem(
+                    [
+                        str(entry.get("publish_type") or ""),
+                        str(entry.get("resolved_subset") or entry.get("requested_subset") or ""),
+                        str(entry.get("version") or ""),
+                        "",
+                        Path(entry_source).name if entry_source else "-",
+                        str(entry.get("comment") or ""),
+                    ]
+                )
+                if entry_source:
+                    entry_item.setToolTip(4, entry_source)
+                version_item.addChild(entry_item)
         self._apply_context_pack_tree_header()
         self.context_pack_tree.expandAll()
         self._update_context_approve_state()
@@ -2676,6 +2759,32 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if item is None or not item.data(0, QtCore.Qt.UserRole):
             return None
         return item
+
+    def _show_context_pack_menu(self, pos) -> None:
+        clicked = self.context_pack_tree.itemAt(pos)
+        if clicked is None:
+            return
+        self.context_pack_tree.setCurrentItem(clicked)
+        item = self._selected_context_pack_item()
+        if item is None:
+            return
+        folder = str(item.data(0, QtCore.Qt.UserRole + 2) or "")
+        if not folder:
+            return
+        menu = QtWidgets.QMenu(self)
+        open_folder = menu.addAction("Open Pack Folder")
+        if _exec_menu(menu, self.context_pack_tree.viewport().mapToGlobal(pos)) != open_folder:
+            return
+        path = Path(folder)
+        if not path.is_dir():
+            QtWidgets.QMessageBox.warning(
+                self, "Open Pack Folder", f"Pack folder was not found:\n{path}"
+            )
+            return
+        try:
+            self.manager.open_in_explorer(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Open Pack Folder", str(exc))
 
     def _update_context_approve_state(self) -> None:
         item = self._selected_context_pack_item()
@@ -2720,9 +2829,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QtWidgets.QHeaderView.Stretch)
         header.setStretchLastSection(True)
     def _populate_data_tree(self, asset: Asset) -> None:
         selected_type = str(self.data_type_list.currentItem().data(QtCore.Qt.UserRole) or "") if self.data_type_list.currentItem() else ""

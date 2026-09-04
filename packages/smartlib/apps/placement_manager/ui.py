@@ -238,19 +238,30 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
     def refresh(self) -> None:
         from smartlib.dcc.maya import placement
 
+        errors = []
+
         try:
             self.asset_rows = self.asset_service.list_assets()
         except Exception as exc:
             self.asset_rows = []
-            self.status_label.setText(str(exc))
+            errors.append(str(exc))
+
+        try:
+            locators = placement.list_placement_locators()
+        except Exception as exc:
+            locators = []
+            errors.append(str(exc))
 
         try:
             self.cast_members = placement.list_cast_members(self.project_config)
-            locators = placement.list_placement_locators()
         except Exception as exc:
-            self.status_label.setText(str(exc))
             self.cast_members = []
-            locators = []
+            errors.append(str(exc))
+
+        if errors:
+            self.status_label.setText(errors[-1])
+        else:
+            self.status_label.setText("")
         self.populate_asset_cards()
         self._populate_cast_table()
         self._populate_placement_tree(locators)
@@ -489,7 +500,10 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         from smartlib.dcc.maya import placement
 
         try:
-            placements_path, members_path = placement.export_metadata(self.project_config)
+            placements_path, members_path = placement.export_metadata(
+                self.project_config,
+                target=self._selected_locator(),
+            )
             self.status_label.setText(f"Exported {placements_path.parent}")
         except Exception as exc:
             self.status_label.setText(str(exc))
@@ -590,7 +604,9 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
                 extra={"cast": member.name, "namespace": member.namespace, "path": path_text},
             ),
         )
-        item.setIcon(0, asset_icon(QtCore, QtGui, thumbnail=getattr(asset, "thumbnail", ""), label=member.asset, width=64, height=36))
+        thumbnail = Path(str(getattr(asset, "thumbnail", "") or ""))
+        if thumbnail.is_file():
+            item.setIcon(0, asset_icon(QtCore, QtGui, thumbnail=thumbnail, label="", width=64, height=36))
         flags = item.flags()
         flags &= ~QtCore.Qt.ItemIsEditable
         flags &= ~QtCore.Qt.ItemIsDragEnabled

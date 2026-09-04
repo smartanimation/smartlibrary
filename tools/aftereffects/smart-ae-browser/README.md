@@ -36,6 +36,12 @@ Supported context fields:
 }
 ```
 
+## State and Current
+
+The panel restores its previous selection when it opens. Use `Current`, beside
+the refresh button, to explicitly switch to the latest shot selected in Shot
+Manager. This only changes the browser filters; it does not open or build an AEP.
+
 ## Manifest Shape
 
 The panel accepts any of these top-level item arrays:

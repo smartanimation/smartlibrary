@@ -10,6 +10,7 @@ from dataclasses import replace
 
 from smartlib.apps.shot_manager import SequenceIdentity, ShotIdentity, ShotManagerService
 from smartlib.core.config_loader import ProjectConfig, expand_config_tokens
+from smartlib.core.asset_categories import canonical_asset_category
 from smartlib.core.metadata import read_json
 from smartlib.core.versioning import format_version, parse_version
 from smartlib.apps.review_build_manager.orchestrator import SceneBuildOrchestrator
@@ -99,11 +100,11 @@ class ReviewBuildManagerService:
                 "name": name,
                 "asset": str(source.get("asset") or row.get("asset") or name),
                 "variant": str(row.get("variant") or "default"),
-                "role": str(row.get("role") or "CHA"),
+                "category": str(row.get("category") or ""),
                 "context": str(row.get("context") or "WORK"),
                 "asset_version": str(row.get("official") or "latest"),
                 "version_policy": "locked" if row.get("official") else "latest_approved",
-                "behavior": "CURVE" if str(row.get("role") or "").upper() == "CHA" else "STATIC",
+                "behavior": "CURVE" if str(row.get("category") or "").lower() == "character" else "STATIC",
                 "namespace": name,
                 "enabled": bool(row.get("use", True)),
             })
@@ -145,6 +146,53 @@ class ReviewBuildManagerService:
         self, identity: ShotIdentity, payload: dict, *, comment: str = ""
     ) -> Path:
         return self.review_workflow(identity).publish_layer_definition(payload, comment)
+
+    def planned_layer_definition(
+        self, identity: ShotIdentity, department: str = "anim",
+        planned_snapshot: dict | None = None,
+    ) -> tuple[dict, Path | None]:
+        """Load the Review Layers version locked by a Planned Snapshot."""
+        workflow = self.review_workflow(identity)
+        for row in (planned_snapshot or {}).get("inputs") or []:
+            if (str(row.get("type") or "").lower() != "review_layers"
+                    or str(row.get("name") or "main") != "main"):
+                continue
+            path_text = str(row.get("path") or "").strip()
+            if not path_text:
+                break
+            path = Path(path_text)
+            try:
+                path.resolve().relative_to(workflow.layer_definition_root.resolve())
+            except (OSError, ValueError):
+                raise ValueError("Planned Review Layers path is outside the resolved Review Layers root: " + path_text)
+            if not path.is_file():
+                raise FileNotFoundError("Planned Review Layers version is unavailable: " + path_text)
+            payload = read_json(path, {}) or {}
+            if not payload.get("layers"):
+                raise ValueError("Planned Review Layers version has no layers: " + path_text)
+            return payload, path
+        payload, path = workflow.latest_layer_definition()
+        if path:
+            return payload, path
+        return self.layer_definition(identity, department), None
+
+    def latest_review_snapshot(
+        self, identity: ShotIdentity, department: str = "anim",
+        delivery_profile: str = "internal",
+    ) -> dict:
+        """Return the immutable input snapshot from the latest submitted Review."""
+        expected_prefix = f"{delivery_profile}/"
+        for output in self.list_outputs(identity):
+            directory = Path(str(output.directory or ""))
+            if not output.version.startswith(expected_prefix):
+                continue
+            if directory.parent.parent.name.lower() != str(department).lower():
+                continue
+            source_manifest = read_json(directory / "source_manifest.json", {}) or {}
+            snapshot = source_manifest.get("planned_snapshot") or {}
+            if snapshot.get("inputs"):
+                return snapshot
+        return {}
 
     def review_definition_validation(
         self,
@@ -244,7 +292,7 @@ class ReviewBuildManagerService:
 
             metadata = read_json(Path(asset_root) / "asset.json", {}) or {}
             identity = AssetIdentity(
-                str(metadata.get("category") or Path(asset_root).parents[1].name),
+                canonical_asset_category(metadata.get("category") or Path(asset_root).parents[1].name, strict=True),
                 str(metadata.get("group") or Path(asset_root).parent.name),
                 str(metadata.get("asset") or metadata.get("name") or Path(asset_root).name),
                 variant or "default",
@@ -263,20 +311,65 @@ class ReviewBuildManagerService:
             from smartlib.core.path_resolver import AssetIdentity
 
             identity = AssetIdentity(
-                str(metadata.get("category") or Path(asset_root).parents[1].name),
+                canonical_asset_category(metadata.get("category") or Path(asset_root).parents[1].name, strict=True),
                 str(metadata.get("group") or Path(asset_root).parent.name),
                 str(metadata.get("asset") or metadata.get("name") or Path(asset_root).name),
                 "default",
             )
             return AssetContextService(self.project_config).stage_context_for_asset(identity, stage)
         except (AttributeError, FileNotFoundError, KeyError, TypeError, ValueError, IndexError):
-            asset_type = str(metadata.get("asset_type") or metadata.get("category") or "").lower()
+            asset_type = canonical_asset_category(metadata.get("asset_type") or metadata.get("category"))
             stage = "REND" if str(stage).upper() == "FINAL" else str(stage).upper()
             if asset_type in {"bg", "bga", "env", "environment", "set", "background"}:
                 return "REND" if stage == "REND" else "PROXY"
             if asset_type in {"ch", "character", "characters"}:
                 return "REND" if stage == "REND" else "LO" if stage == "FAST" else "ANIM"
             return "REND" if stage == "REND" else "LO"
+
+    def normalize_cast_contexts(
+        self,
+        identity: ShotIdentity,
+        contexts: dict[str, str] | None,
+        *,
+        default_context: str = "WORK",
+    ) -> dict[str, str]:
+        """Normalize saved overrides against current asset context profiles."""
+        normalized = {
+            str(key): str(value).strip().upper()
+            for key, value in (contexts or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+        load_cast = getattr(self.shots, "load_cast", None)
+        cast_data = load_cast(identity) if load_cast else {}
+        cast_rows = cast_data.get("cast") or {}
+        if not cast_rows:
+            load_sequence_cast = getattr(self.shots, "load_sequence_cast", None)
+            sequence_cast = (
+                load_sequence_cast(identity.episode, identity.sequence)
+                if load_sequence_cast else {}
+            )
+            cast_rows = sequence_cast.get("cast") or {}
+        for cast_key, entry in cast_rows.items():
+            if not isinstance(entry, dict):
+                continue
+            key = str(cast_key)
+            asset_root = self.shots.find_asset_root(str(entry.get("asset") or ""))
+            if not asset_root:
+                continue
+            variant = str(entry.get("variant") or "default")
+            options = self.asset_context_profiles_for_root(asset_root, variant)
+            current = normalized.get(key, "")
+            if current not in options:
+                fallback = str(
+                    self.default_asset_context(default_context, asset_root) or ""
+                ).upper()
+                if fallback not in options:
+                    fallback = options[0] if options else ""
+                if fallback:
+                    normalized[key] = fallback
+                else:
+                    normalized.pop(key, None)
+        return normalized
 
     def build_plan(
         self,
@@ -517,26 +610,11 @@ class ReviewBuildManagerService:
                 and name not in context_map
             ):
                 context_map[name] = saved_context
-        load_cast = getattr(self.shots, "load_cast", None)
-        cast_data = load_cast(identity) if load_cast else {}
-        cast_rows = cast_data.get("cast") or {}
-        if not cast_rows:
-            load_sequence_cast = getattr(self.shots, "load_sequence_cast", None)
-            sequence_cast = (
-                load_sequence_cast(identity.episode, identity.sequence)
-                if load_sequence_cast else {}
-            )
-            cast_rows = sequence_cast.get("cast") or {}
-        for cast_key, entry in cast_rows.items():
-            if not isinstance(entry, dict):
-                continue
-            asset_root = self.shots.find_asset_root(str(entry.get("asset") or ""))
-            if asset_root:
-                current = str(context_map.get(str(cast_key)) or "").upper()
-                if current in {"", "FAST", "WORK", "FINAL"}:
-                    context_map[str(cast_key)] = self.default_asset_context(
-                        current or default_context, asset_root
-                    )
+        context_map = self.normalize_cast_contexts(
+            identity,
+            context_map,
+            default_context=default_context,
+        )
         construct = self.shots.resolved_construct(
             identity,
             cast_contexts=context_map,
@@ -575,16 +653,30 @@ class ReviewBuildManagerService:
                     context,
                     version="latest",
                 )
-            path = Path(str(component.get("path") or ""))
+            path_text = str(component.get("path") or "")
+            camera_versions = []
+            if source.get("camera_package"):
+                from smartlib.core.camera_package import camera_package_info
+                for candidate in self.shots.list_camera_package_versions(identity):
+                    info = camera_package_info(candidate.path)
+                    if (info.get('target'), info.get('subset')) == (source.get('target'), source.get('subset')):
+                        camera_versions.append(dict(version=candidate.version, path=str(candidate.path),
+                                                    summary=info['summary'], latest=candidate.latest))
+            path = Path(path_text) if path_text else None
             official = str(component.get("version") or "")
             latest = latest_path.parent.name if latest_path else (
-                path.parent.name if is_usd and path.is_file() else ""
+                official if path and (path.is_file() or path.is_dir()) else ""
             )
             enabled = bool(component.get("enabled", True))
+            if camera_versions:
+                latest = next((v['version'] for v in camera_versions if v['latest']), latest)
             state = "EXCLUDED" if not enabled else "MISSING"
-            if enabled and (path.is_file() or path.is_dir()):
+            if enabled and path and (path.is_file() or path.is_dir()):
                 state = "UPDATE AVAILABLE" if latest and latest != official else "READY"
             note = str(component.get("note") or "")
+            if source.get("camera_package"):
+                from smartlib.core.camera_package import camera_package_info
+                note = camera_package_info(path_text).get('summary', 'Camera Package unavailable')
             if is_virtual_camera_dependency:
                 dependency_note = (
                     "from dependencies.json: "
@@ -601,7 +693,7 @@ class ReviewBuildManagerService:
                         else component_type
                     ),
                     "asset": asset,
-                    "role": str(source.get("role") or ""),
+                    "category": str(source.get("category") or ""),
                     "variant": variant,
                     "context": context,
                     "context_options": (
@@ -609,6 +701,7 @@ class ReviewBuildManagerService:
                         if is_asset_component and asset_root else []
                     ),
                     "official": official,
+                    "camera_versions": camera_versions,
                     "latest": latest,
                     "state": state,
                     "required": bool(component.get("required", True)),
@@ -617,13 +710,54 @@ class ReviewBuildManagerService:
                     "component": dict(component),
                 }
             )
+        # ``shots.paths`` is absent only in lightweight unit-test doubles that
+        # intentionally bypass normal service initialization.
+        if hasattr(self.shots, "paths"):
+            layer_definition, layer_path = self.review_workflow(identity).latest_layer_definition()
+            layer_version = layer_path.parent.name if layer_path else ""
+            layer_exists = bool(layer_path and layer_path.is_file() and layer_definition.get("layers"))
+            rows.append({
+                "cast_key": "main", "component_key": ["review_layers", "main", ""],
+                "type": "review_layers", "asset": "", "category": "", "variant": "default",
+                "context": "", "context_options": [], "official": layer_version,
+                "camera_versions": [], "latest": layer_version,
+                "state": "READY" if layer_exists else "MISSING", "required": True,
+                "enabled": True, "allow_disable": False, "persist_construct": False,
+                "note": ("Review Layer Definition (Display Layer / Cast membership)"
+                         if layer_exists else "Review Layer Definition is not published."),
+                "component": {
+                    "component_type": "review_layers", "name": "main",
+                    "path": str(layer_path or ""), "version": layer_version,
+                    "enabled": True, "required": True,
+                    "source": {"kind": "shot_data", "data_type": "review_layers"},
+                },
+            })
         return rows
 
     def save_build_contents(self, identity: ShotIdentity, rows: list[dict]) -> Path:
         return self.shots.write_construct(
             identity,
-            {"components": [dict(row.get("component") or {}) for row in rows]},
+            {"components": [dict(row.get("component") or {}) for row in rows
+                            if row.get("persist_construct", True)]},
         )
+
+    def select_camera_package_version(self, identity: ShotIdentity, rows: list[dict], row_index: int, path: str) -> None:
+        from smartlib.core.camera_package import camera_package_info
+        row = rows[row_index]
+        selected = next((v for v in row.get('camera_versions', []) if v['path'] == path), None)
+        if not selected or not camera_package_info(path):
+            raise ValueError('Selected Camera Package is unavailable. Refresh Build Contents.')
+        row['build_version'] = selected['version']
+        row['note'] = selected['summary']
+        row['component']['path'] = path
+        row['component']['version'] = selected['version']
+        row['component'].setdefault('source', {})['camera_package_version_locked'] = True
+        # One Primary package owns the generated-camera namespace in a Build.
+        for index, other in enumerate(rows):
+            if (other.get('component', {}).get('source') or {}).get('camera_package'):
+                other['enabled'] = index == row_index
+                other['component']['enabled'] = index == row_index
+        self.save_build_contents(identity, rows)
 
     def construct_diff(
         self,
@@ -1097,8 +1231,8 @@ class ReviewBuildManagerService:
                 str(cast_key)
                 for cast_key, entry in (cast_data.get("cast") or {}).items()
                 if bool((entry or {}).get("required", True))
-                and str((entry or {}).get("role") or "").strip().upper()
-                not in {"BG", "BGA", "ENV", "BACKGROUND", "SET"}
+                and str((entry or {}).get("category") or "").strip().lower()
+                != "environment"
                 and str(cast_key) not in excluded
                 and str(cast_key) not in curve_names
                 and (

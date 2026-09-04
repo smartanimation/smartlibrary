@@ -1,5 +1,10 @@
 schema_version: 1
 
+# Applies to maya_playblast profiles. GUI Maya is launched only on cache misses.
+gui_playblast:
+  startup_timeout_seconds: 180
+  stall_timeout_seconds: 300
+
 review_profiles:
   work_default:
     stage: WORK

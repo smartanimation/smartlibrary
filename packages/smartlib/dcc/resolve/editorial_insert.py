@@ -4,9 +4,9 @@ import json
 import subprocess
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json, write_json
@@ -15,8 +15,9 @@ from smartlib.core.versioning import format_version, next_version, parse_version
 from smartlib.editorial.policy import editorial_handle_policy
 
 
-SCHEMA = "smartpipeline.editorial_insert.v1"
-REGISTRY_SCHEMA = "smartpipeline.cg_shot_registry.v1"
+SCHEMA = "smartpipeline.editorial_insert.v2"
+REGISTRY_SCHEMA = "smartpipeline.cg_shot_registry.v2"
+EVENT_CUSTOM_DATA_KEY = "smartpipeline_editorial_event_id"
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class InsertShot:
     mark_out: int
     source_tc: str
     occurrence: int = 1
+    editorial_event_uid: str = ""
 
 
 def preview_editorial_insert(
@@ -56,29 +58,29 @@ def preview_editorial_insert(
     timeline = project.GetCurrentTimeline() if project else None
     if not timeline:
         raise RuntimeError("No current DaVinci Resolve timeline.")
+    _validate_request_policy(project_config, request)
     if project_config.project_root is None:
         raise RuntimeError("project_root is not configured.")
-    policy = editorial_handle_policy(project_config)
-    if (request.head_handle, request.tail_handle) != (policy.head, policy.tail):
-        raise ValueError(
-            "Editorial Handle Policy mismatch: "
-            f"requested H{request.head_handle}/T{request.tail_handle}, "
-            f"configured H{policy.head}/T{policy.tail}. Reload the UI."
-        )
     paths = configured_project_paths(project_config.project_root, project_config)
     registry_path = paths.editorial_identity_registry_path(request.episode)
-    registry = read_json(registry_path, {}) or {"schema": REGISTRY_SCHEMA, "shots": {}}
-    registry.setdefault("schema", REGISTRY_SCHEMA)
+    registry = read_json(registry_path, {}) or {"schema": REGISTRY_SCHEMA, "shots": {}, "events": {}}
+    registry["schema"] = REGISTRY_SCHEMA
     registry.setdefault("shots", {})
+    registry.setdefault("events", {})
+    markers = dict(timeline.GetMarkers() or {})
+    _ensure_marker_event_ids(timeline, markers)
     shots = build_insert_shots(
-        timeline.GetMarkers() or {}, registry=registry, episode=request.episode,
+        markers, registry=registry, episode=request.episode,
         production_sequence=request.production_sequence,
         timeline_start=int(timeline.GetStartFrame()), timeline_end=int(timeline.GetEndFrame()),
         fps=_timeline_fps(timeline, project_config), head_handle=request.head_handle,
         tail_handle=request.tail_handle,
     )
     write_json(registry_path, registry)
-    versions = {shot.occurrence: tuple(_shot_revisions(paths, request.episode, shot)) for shot in shots}
+    versions = {
+        shot.occurrence: tuple(_shot_revisions(paths, request.episode, shot))
+        for shot in shots
+    }
     return shots, versions
 
 
@@ -91,30 +93,24 @@ def export_editorial_insert(
     timeline = project.GetCurrentTimeline() if project else None
     if not timeline:
         raise RuntimeError("No current DaVinci Resolve timeline.")
+    _validate_request_policy(project_config, request)
     if project_config.project_root is None:
         raise RuntimeError("project_root is not configured.")
-    policy = editorial_handle_policy(project_config)
-    if (request.head_handle, request.tail_handle) != (policy.head, policy.tail):
-        raise ValueError(
-            "Editorial Handle Policy mismatch: "
-            f"requested H{request.head_handle}/T{request.tail_handle}, "
-            f"configured H{policy.head}/T{policy.tail}. Reload the UI."
-        )
     paths = configured_project_paths(project_config.project_root, project_config)
     shots, _versions = preview_editorial_insert(
         resolve_app=resolve_app, project_config=project_config, request=request
     )
     if not shots:
         raise RuntimeError("No timeline markers found.")
-    revision = _next_revision(paths.editorial_episode_revisions_root(request.episode))
-    revision_dir = paths.editorial_revision_dir(request.episode, revision)
-    clean_dir = paths.editorial_revision_clean_dir(request.episode, revision)
-    edit_dir = paths.editorial_revision_edit_dir(request.episode, revision)
-    revision_dir.mkdir(parents=True, exist_ok=False)
+
+    timeline_revision = _next_revision(paths.editorial_revisions_metadata_root(request.episode))
+    metadata_dir = paths.editorial_revision_dir(request.episode, timeline_revision)
+    metadata_dir.mkdir(parents=True, exist_ok=False)
+    publish_root = paths.editorial_episode_publish_root(request.episode)
     choices = {choice.occurrence: choice for choice in request.choices}
     fps = _timeline_fps(timeline, project_config)
     artifacts: list[dict[str, Any]] = []
-    render_rows: list[tuple[str, InsertShot, Path, ShotExportChoice]] = []
+    render_rows: list[tuple[str, InsertShot, Path, Path, str, ShotExportChoice]] = []
     new_rows = [
         (shot, choices.get(shot.occurrence, ShotExportChoice(shot.occurrence)))
         for shot in shots
@@ -123,21 +119,23 @@ def export_editorial_insert(
     codec = "reused"
     if new_rows:
         codec = _configure_prores_proxy(project)
-        clean_dir.mkdir(parents=True, exist_ok=True)
-        if any(choice.output_edit for _shot, choice in new_rows):
-            edit_dir.mkdir(parents=True, exist_ok=True)
         for shot, choice in new_rows:
-            if not choice.output_clean and not choice.output_edit:
-                continue
-            clean = clean_dir / media_filename(request, shot, revision, "clean")
+            media_version = _next_shot_media_version(paths, request.episode, shot)
+            storage_id = event_storage_id(shot)
+            clean_dir = paths.editorial_event_media_clean_dir(
+                request.episode, storage_id, media_version
+            )
+            edit_dir = paths.editorial_event_media_edit_dir(
+                request.episode, storage_id, media_version
+            )
+            clean_dir.mkdir(parents=True, exist_ok=False)
+            edit_dir.mkdir(parents=True, exist_ok=False)
+            clean = clean_dir / media_filename(request, shot, media_version, "clean")
+            edit = edit_dir / media_filename(request, shot, media_version, "edit")
             settings = {
-                "SelectAllFrames": False,
-                "MarkIn": shot.mark_in,
-                "MarkOut": shot.mark_out,
-                "TargetDir": clean.parent.as_posix(),
-                "CustomName": clean.stem,
-                "ExportVideo": True,
-                "ExportAudio": True,
+                "SelectAllFrames": False, "MarkIn": shot.mark_in, "MarkOut": shot.mark_out,
+                "TargetDir": clean.parent.as_posix(), "CustomName": clean.stem,
+                "ExportVideo": True, "ExportAudio": True,
             }
             if not project.SetRenderSettings(settings):
                 raise RuntimeError(
@@ -148,13 +146,13 @@ def export_editorial_insert(
             job_id = project.AddRenderJob()
             if not job_id:
                 raise RuntimeError(f"Resolve could not add a render job for {shot.shot}.")
-            render_rows.append((str(job_id), shot, clean, choice))
+            render_rows.append((str(job_id), shot, clean, edit, media_version, choice))
         if render_rows and not project.StartRendering([row[0] for row in render_rows], True):
             raise RuntimeError("Resolve could not start Editorial Insert rendering.")
         while project.IsRenderingInProgress():
             time.sleep(0.5)
 
-    rendered = {shot.occurrence: (job_id, clean, choice) for job_id, shot, clean, choice in render_rows}
+    rendered = {shot.occurrence: row for row in render_rows for shot in (row[1],)}
     for shot in shots:
         choice = choices.get(shot.occurrence, ShotExportChoice(shot.occurrence))
         base = _artifact_base(request, shot, choice.action)
@@ -164,11 +162,10 @@ def export_editorial_insert(
         if choice.action == "fixed":
             fixed = _fixed_artifact(paths, request.episode, choice.fixed_revision, shot)
             base.update({
-                "source_revision": choice.fixed_revision,
-                "clean": _fixed_media_reference(choice.fixed_revision, fixed.get("clean")),
-                "editorial_primary": _fixed_media_reference(
-                    choice.fixed_revision, fixed.get("editorial_primary")
-                ),
+                "media_version": choice.fixed_revision,
+                "source_timeline_revision": fixed.get("timeline_revision") or fixed.get("source_revision") or "",
+                "clean": str(fixed.get("clean") or ""),
+                "editorial_primary": str(fixed.get("editorial_primary") or ""),
             })
             artifacts.append(base)
             continue
@@ -177,43 +174,77 @@ def export_editorial_insert(
             base["export_action"] = "omit"
             artifacts.append(base)
             continue
-        job_id, clean, choice = row
+        job_id, _shot, clean, edit, media_version, _choice = row
         status = project.GetRenderJobStatus(job_id) or {}
         if str(status.get("JobStatus") or "").lower() not in {"complete", "completed"}:
             raise RuntimeError(f"Resolve render failed for {shot.shot}: {status}")
         if not clean.exists():
             raise FileNotFoundError(f"Rendered Clean movie was not found: {clean}")
-        if choice.output_edit:
-            edit = edit_dir / media_filename(request, shot, revision, "edit")
-            burn_in_hud(
-                ffmpeg_path=ffmpeg_path, font_path=font_path, clean=clean, output=edit,
-                shot=shot, request=request, revision=revision, fps=fps,
-            )
-            base["editorial_primary"] = edit.relative_to(revision_dir).as_posix()
-        if choice.output_clean:
-            base["clean"] = clean.relative_to(revision_dir).as_posix()
-        else:
-            clean.unlink(missing_ok=True)
+        burn_in_hud(
+            ffmpeg_path=ffmpeg_path, font_path=font_path, clean=clean, output=edit,
+            shot=shot, request=request, revision=media_version, fps=fps,
+        )
+        base.update({
+            "media_version": media_version,
+            "clean": clean.relative_to(publish_root).as_posix(),
+            "editorial_primary": edit.relative_to(publish_root).as_posix(),
+        })
         artifacts.append(base)
 
     manifest = {
-        "schema": SCHEMA, "episode": request.episode, "revision": revision,
+        "schema": SCHEMA, "episode": request.episode,
+        "timeline_revision": timeline_revision,
         "render": {"format": "QuickTime", "codec": codec, "fps": fps},
         "handle_policy": {"head": request.head_handle, "tail": request.tail_handle},
         "roles": {"edit": "editorial_insert_master", "clean": "clean_source_master"},
         "shots": artifacts,
     }
-    write_json(paths.editorial_revision_mapping_path(request.episode, revision), manifest)
+    mapping_path = paths.editorial_revision_mapping_path(request.episode, timeline_revision)
+    write_json(mapping_path, manifest)
     write_json(paths.editorial_episode_publish_root(request.episode) / "latest.json", {
-        "revision": revision, "mapping": f"revisions/{revision}/metadata/editorial_mapping.json",
+        "timeline_revision": timeline_revision,
+        "mapping": f"revisions/metadata/{timeline_revision}/editorial_mapping.json",
     })
-    return revision_dir
+    return metadata_dir
+
+
+def _validate_request_policy(project_config: ProjectConfig, request: InsertRequest) -> None:
+    policy = editorial_handle_policy(project_config)
+    if (request.head_handle, request.tail_handle) != (policy.head, policy.tail):
+        raise ValueError(
+            "Editorial Handle Policy mismatch: "
+            f"requested H{request.head_handle}/T{request.tail_handle}, "
+            f"configured H{policy.head}/T{policy.tail}. Reload the UI."
+        )
+
+
+def _ensure_marker_event_ids(timeline: Any, markers: dict[Any, Any]) -> None:
+    updater = getattr(timeline, "UpdateMarkerCustomData", None)
+    for key, marker in markers.items():
+        raw = str((marker or {}).get("customData") or "")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            payload = {"legacy_custom_data": raw}
+        if not isinstance(payload, dict):
+            payload = {"legacy_custom_data": raw}
+        event_uid = str(payload.get(EVENT_CUSTOM_DATA_KEY) or "")
+        if not event_uid:
+            event_uid = str(uuid.uuid4())
+            payload[EVENT_CUSTOM_DATA_KEY] = event_uid
+            if not callable(updater) or not updater(key, json.dumps(payload, ensure_ascii=False)):
+                raise RuntimeError(
+                    f"Could not persist stable Editorial Event ID on marker at {key}."
+                )
+        marker["_editorial_event_uid"] = event_uid
 
 
 def _artifact_base(request: InsertRequest, shot: InsertShot, action: str) -> dict[str, Any]:
     return {
         "shot": shot.shot, "cg_shot_id": shot.cg_shot_id,
+        "editorial_event_uid": shot.editorial_event_uid,
         "editorial_event_id": f"E{shot.occurrence:03d}",
+        "event_storage_id": event_storage_id(shot),
         "production_sequence": request.production_sequence,
         "cut_duration": shot.cut_duration,
         "head_handle": shot.marker_start - shot.mark_in,
@@ -222,46 +253,97 @@ def _artifact_base(request: InsertRequest, shot: InsertShot, action: str) -> dic
     }
 
 
-def _shot_revisions(paths: Any, episode: str, shot: InsertShot) -> list[str]:
-    result = []
-    root = paths.editorial_episode_revisions_root(episode)
-    for revision_dir in sorted(root.glob("v*"), reverse=True) if root.is_dir() else []:
+def event_storage_id(shot: InsertShot) -> str:
+    cg_short = shot.cg_shot_id.replace("-", "")[:8]
+    event_short = shot.editorial_event_uid.replace("-", "")[:8]
+    return f"CGID-{cg_short}_EVID-{event_short}"
+
+
+def _iter_editorial_mappings(paths: Any, episode: str) -> Iterable[tuple[str, dict[str, Any]]]:
+    metadata_root = paths.editorial_revisions_metadata_root(episode)
+    for revision_dir in sorted(metadata_root.glob("v*"), reverse=True) if metadata_root.is_dir() else []:
         data = read_json(paths.editorial_revision_mapping_path(episode, revision_dir.name), {}) or {}
-        expected_head = shot.marker_start - shot.mark_in
-        expected_tail = shot.mark_out - (shot.marker_start + shot.cut_duration - 1)
-        if any(
-            row.get("cg_shot_id") == shot.cg_shot_id
-            and row.get("export_action") != "omit"
-            and int(row.get("head_handle", -1)) == expected_head
-            and int(row.get("tail_handle", -1)) == expected_tail
-            for row in data.get("shots") or []
-        ):
-            result.append(revision_dir.name)
-    return result
+        yield revision_dir.name, data
+    legacy_root = paths.editorial_episode_revisions_root(episode)
+    for revision_dir in sorted(legacy_root.glob("v*"), reverse=True) if legacy_root.is_dir() else []:
+        data = read_json(paths.legacy_editorial_revision_mapping_path(episode, revision_dir.name), {}) or {}
+        if data:
+            yield revision_dir.name, data
 
 
-def _fixed_artifact(paths: Any, episode: str, revision: str, shot: InsertShot) -> dict[str, Any]:
-    if not revision:
-        raise ValueError(f"Fixed revision is required for {shot.shot} E{shot.occurrence:03d}.")
-    data = read_json(paths.editorial_revision_mapping_path(episode, revision), {}) or {}
-    matches = [row for row in data.get("shots") or [] if row.get("cg_shot_id") == shot.cg_shot_id]
-    if not matches:
-        raise ValueError(f"{shot.shot} is not available in {revision}.")
-    return matches[min(shot.occurrence - 1, len(matches) - 1)]
+def _artifact_matches_shot(row: dict[str, Any], shot: InsertShot) -> bool:
+    event_uid = str(row.get("editorial_event_uid") or "")
+    if event_uid:
+        return event_uid == shot.editorial_event_uid
+    return (
+        row.get("cg_shot_id") == shot.cg_shot_id
+        and row.get("editorial_event_id") == f"E{shot.occurrence:03d}"
+    )
+
+
+def _shot_revisions(paths: Any, episode: str, shot: InsertShot) -> list[str]:
+    expected_head = shot.marker_start - shot.mark_in
+    expected_tail = shot.mark_out - (shot.marker_start + shot.cut_duration - 1)
+    versions: set[str] = set()
+    for timeline_revision, data in _iter_editorial_mappings(paths, episode):
+        for row in data.get("shots") or []:
+            if not _artifact_matches_shot(row, shot) or row.get("export_action") == "omit":
+                continue
+            if int(row.get("head_handle", -1)) != expected_head or int(row.get("tail_handle", -1)) != expected_tail:
+                continue
+            versions.add(str(row.get("media_version") or timeline_revision))
+    return sorted(versions, key=lambda value: parse_version(value) or -1, reverse=True)
+
+
+def _fixed_artifact(paths: Any, episode: str, media_version: str, shot: InsertShot) -> dict[str, Any]:
+    if not media_version:
+        raise ValueError(f"Fixed media version is required for {shot.shot} E{shot.occurrence:03d}.")
+    for timeline_revision, data in _iter_editorial_mappings(paths, episode):
+        for row in data.get("shots") or []:
+            row_version = str(row.get("media_version") or timeline_revision)
+            if row_version == media_version and _artifact_matches_shot(row, shot):
+                result = dict(row)
+                result["timeline_revision"] = timeline_revision
+                if not row.get("media_version"):
+                    result["clean"] = _legacy_media_reference(timeline_revision, row.get("clean"))
+                    result["editorial_primary"] = _legacy_media_reference(
+                        timeline_revision, row.get("editorial_primary")
+                    )
+                return result
+    raise ValueError(f"{shot.shot} media {media_version} is not available.")
+
+
+def _legacy_media_reference(revision: str, value: Any) -> str:
+    return f"revisions/{revision}/{value}" if value else ""
 
 
 def _fixed_media_reference(revision: str, value: Any) -> str:
+    """Legacy helper retained for callers of the v1 mapping layout."""
     return f"../{revision}/{value}" if value else ""
+
+
+def _next_shot_media_version(paths: Any, episode: str, shot: InsertShot) -> str:
+    versions = [
+        parse_version(path.name)
+        for path in paths.editorial_event_media_root(episode, event_storage_id(shot)).glob("v*")
+        if path.is_dir()
+    ]
+    for timeline_revision, data in _iter_editorial_mappings(paths, episode):
+        for row in data.get("shots") or []:
+            if _artifact_matches_shot(row, shot) and row.get("export_action") != "omit":
+                versions.append(parse_version(str(row.get("media_version") or timeline_revision)))
+    return format_version(next_version([value for value in versions if value is not None]))
+
 
 def build_insert_shots(
     markers: dict[Any, Any], *, registry: dict[str, Any], episode: str,
     production_sequence: str, timeline_start: int, timeline_end: int, fps: float,
     head_handle: int, tail_handle: int,
 ) -> list[InsertShot]:
+    registry.setdefault("shots", {})
+    registry.setdefault("events", {})
     result = []
-    for occurrence, key in enumerate(
-        sorted(markers, key=lambda value: int(float(value))), start=1
-    ):
+    for occurrence, key in enumerate(sorted(markers, key=lambda value: int(float(value))), start=1):
         marker = markers[key] or {}
         shot = str(marker.get("name") or "").strip()
         if not shot:
@@ -271,18 +353,30 @@ def build_insert_shots(
         mark_in = max(timeline_start, marker_start - max(0, int(head_handle)))
         mark_out = min(timeline_end - 1, marker_start + duration + max(0, int(tail_handle)) - 1)
         registry_key = f"{episode}/{production_sequence}/{shot}"
+        event_uid = str(marker.get("_editorial_event_uid") or uuid.uuid4())
+        event_entry = registry["events"].get(event_uid) or {}
         entry = registry["shots"].get(registry_key)
-        if not entry:
+        if event_entry.get("cg_shot_id"):
+            entry = {
+                "cg_shot_id": str(event_entry["cg_shot_id"]), "episode": episode,
+                "production_sequence": production_sequence, "shot": shot,
+            }
+            registry["shots"].setdefault(registry_key, entry)
+        elif not entry:
             entry = {
                 "cg_shot_id": str(uuid.uuid4()), "episode": episode,
                 "production_sequence": production_sequence, "shot": shot,
             }
             registry["shots"][registry_key] = entry
+        registry["events"].setdefault(event_uid, {
+            "editorial_event_uid": event_uid, "cg_shot_id": str(entry["cg_shot_id"]),
+            "episode": episode, "production_sequence": production_sequence, "shot": shot,
+        })
         result.append(InsertShot(
             shot=shot, cg_shot_id=str(entry["cg_shot_id"]), marker_start=marker_start,
             cut_duration=duration, mark_in=mark_in, mark_out=mark_out,
-            source_tc=frame_to_timecode(mark_in, fps),
-            occurrence=occurrence,
+            source_tc=frame_to_timecode(mark_in, fps), occurrence=occurrence,
+            editorial_event_uid=event_uid,
         ))
     return result
 
@@ -294,7 +388,6 @@ def media_filename(request: InsertRequest, shot: InsertShot, revision: str, role
         f"{request.episode}_{request.production_sequence}_{shot.shot}"
         f"_CGID-{cg_short}_{event}_{role}_{revision}.mov"
     )
-
 
 def burn_in_hud(
     *, ffmpeg_path: str | Path, font_path: str | Path, clean: Path, output: Path,

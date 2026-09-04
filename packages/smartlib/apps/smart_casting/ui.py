@@ -13,14 +13,16 @@ from smartlib.apps.common.asset_cards import (
     configure_asset_card_list,
     set_label_thumbnail,
 )
+from smartlib.core.asset_categories import ASSET_CATEGORIES
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.icons import asset_category_icon_path
 
 
 ASSET_HEADERS = ["", "Category", "Group", "Asset Name", "Variant", "Description"]
 AVAILABLE_ASSET_HEADERS = ["", "Category", "Group", "Asset Name", "Variant", "FAST", "WORK", "FINAL", "Description"]
 SEQUENCE_CAST_HEADERS = ["Category", "Group", "Asset Name", "Variant"]
-CAST_DETAIL_KEYS = ["cast_key", "asset", "variant", "role", "namespace", "asset_publish", "required", "note"]
-EDITABLE_CAST_DETAIL_KEYS = {"asset", "variant", "role", "namespace", "asset_publish", "required", "note"}
+CAST_DETAIL_KEYS = ["cast_key", "asset", "category", "variant", "namespace", "asset_publish", "required", "note"]
+EDITABLE_CAST_DETAIL_KEYS = {"asset", "category", "variant", "namespace", "asset_publish", "required", "note"}
 
 
 def _qt():
@@ -33,6 +35,11 @@ def _qt():
 
 
 QtCore, QtGui, QtWidgets = _qt()
+
+
+def _category_icon(category: str):
+    path = asset_category_icon_path(category, size=20)
+    return QtGui.QIcon(str(path)) if path else QtGui.QIcon()
 
 
 def _default_config_dir() -> Path:
@@ -48,13 +55,18 @@ class AssetDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         layout = QtWidgets.QFormLayout(self)
-        self.category = QtWidgets.QLineEdit(asset.category if asset else "characters")
+        self.category = QtWidgets.QComboBox()
+        self.category.setIconSize(QtCore.QSize(20, 20))
+        for category in ASSET_CATEGORIES:
+            self.category.addItem(_category_icon(category), category)
+        if asset and self.category.findText(asset.category) >= 0:
+            self.category.setCurrentText(asset.category)
         self.group = QtWidgets.QLineEdit(asset.group if asset else "hero")
         self.asset = QtWidgets.QLineEdit(asset.asset if asset else "")
         self.variant = QtWidgets.QLineEdit("default" if asset is None else "")
         self.description = QtWidgets.QLineEdit("")
         if asset:
-            self.category.setReadOnly(True)
+            self.category.setEnabled(False)
             self.group.setReadOnly(True)
             self.asset.setReadOnly(True)
         for label, widget in (
@@ -72,7 +84,7 @@ class AssetDialog(QtWidgets.QDialog):
 
     def values(self) -> dict[str, str]:
         return {
-            "category": self.category.text().strip(),
+            "category": self.category.currentText().strip(),
             "group": self.group.text().strip(),
             "asset": self.asset.text().strip(),
             "variant": self.variant.text().strip() or "default",
@@ -161,6 +173,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.sequence_tree.setIndentation(12)
         self.sequence_tree.currentItemChanged.connect(lambda _current, _previous: self.on_sequence_tree_changed())
         self.category_filter = QtWidgets.QListWidget()
+        self.category_filter.setIconSize(QtCore.QSize(20, 20))
         self.category_filter.setMaximumHeight(150)
         self.category_filter.itemChanged.connect(lambda _item: self.populate_asset_table())
         left.addWidget(QtWidgets.QLabel("Sequence"))
@@ -195,6 +208,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         sequence_buttons.addWidget(self.publish_asset_sequence_cast_btn)
         self.asset_table = QtWidgets.QTableWidget(0, len(ASSET_HEADERS))
         self.asset_table.setHorizontalHeaderLabels(ASSET_HEADERS)
+        self.asset_table.setIconSize(QtCore.QSize(20, 20))
         self._hide_vertical_header(self.asset_table)
         self.asset_table.horizontalHeader().setStretchLastSection(True)
         self.asset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -204,6 +218,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.available_asset_label = QtWidgets.QLabel("Asset List")
         self.available_asset_table = QtWidgets.QTableWidget(0, len(AVAILABLE_ASSET_HEADERS))
         self.available_asset_table.setHorizontalHeaderLabels(AVAILABLE_ASSET_HEADERS)
+        self.available_asset_table.setIconSize(QtCore.QSize(20, 20))
         self._hide_vertical_header(self.available_asset_table)
         self.available_asset_table.horizontalHeader().setStretchLastSection(True)
         self.available_asset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -394,7 +409,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.category_filter.blockSignals(True)
         self.category_filter.clear()
         for category in categories:
-            item = QtWidgets.QListWidgetItem(category)
+            item = QtWidgets.QListWidgetItem(_category_icon(category), category)
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.Checked if check_all or category in valid_current else QtCore.Qt.Unchecked)
             self.category_filter.addItem(item)
@@ -449,6 +464,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 if column == 0 and asset.thumbnail:
                     item.setIcon(asset_icon(QtCore, QtGui, thumbnail=asset.thumbnail, label=asset.asset))
+                elif column == 1:
+                    item.setIcon(_category_icon(asset.category))
                 self.asset_table.setItem(row, column, item)
         self.asset_table.blockSignals(False)
         self._populating_asset_table = False
@@ -472,7 +489,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.asset_table.blockSignals(True)
         self.asset_table.setRowCount(0)
         for data in rows:
-            category = str(data.get("category") or data.get("role") or "")
+            category = str(data.get("category") or "")
             group = str(data.get("group") or data.get("namespace") or "")
             haystack = " ".join(
                 [
@@ -499,6 +516,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 item.setData(QtCore.Qt.UserRole + 1, self._sequence_cast_column_key(column))
                 if not self._sequence_cast_column_key(column):
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                if column == 0:
+                    item.setIcon(_category_icon(category))
                 self.asset_table.setItem(row, column, item)
         self.asset_table.blockSignals(False)
         self._populating_asset_table = False
@@ -544,6 +563,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 if column == 0 and asset.thumbnail:
                     item.setIcon(asset_icon(QtCore, QtGui, thumbnail=asset.thumbnail, label=asset.asset))
+                elif column == 1:
+                    item.setIcon(_category_icon(asset.category))
                 if column in {5, 6, 7}:
                     self._style_status_item(item, str(value))
                 self.available_asset_table.setItem(row, column, item)
@@ -672,7 +693,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.metadata_table.setRowCount(0)
         self.asset_info.setText(
             f"{data.get('asset', '')}\n"
-            f"Category: {data.get('category') or data.get('role') or ''}\n"
+            f"Category: {data.get('category') or ''}\n"
             f"Group: {data.get('group') or data.get('namespace') or ''}\n"
             f"Variant: {data.get('variant', 'default')}\n"
             f"Status: {data.get('asset_publish', 'approved')}"
@@ -747,7 +768,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         if row < 0:
             return
         values = [
-            str(data.get("category") or data.get("role") or ""),
+            str(data.get("category") or ""),
             str(data.get("group") or data.get("namespace") or ""),
             str(data.get("asset") or ""),
             str(data.get("variant") or "default"),
@@ -760,6 +781,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 item = QtWidgets.QTableWidgetItem(value)
                 self.asset_table.setItem(row, column, item)
             item.setText(value)
+            if column == 0:
+                item.setIcon(_category_icon(value))
             item.setData(QtCore.Qt.UserRole, data)
             item.setData(QtCore.Qt.UserRole + 1, self._sequence_cast_column_key(column))
             if not self._sequence_cast_column_key(column):
@@ -1018,7 +1041,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             group=group,
             variant=variant,
             status=str(entry.get("status") or getattr(asset_row, "status", "")),
-            asset_type=str(entry.get("role") or category),
+            asset_type=category,
             description=str(entry.get("note") or getattr(asset_row, "description", "")),
         )
         item = QtWidgets.QListWidgetItem(label)
@@ -1214,7 +1237,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 data.pop("contexts", None)
                 data.pop("thumbnail", None)
                 data.pop("description", None)
-                data.pop("category", None)
                 data.pop("group", None)
                 rows.append({"episode": episode, "sequence": sequence, **data})
             return rows

@@ -13,7 +13,11 @@ class EditorialHandlePolicy:
 
 
 def editorial_handle_policy(project_config: ProjectConfig) -> EditorialHandlePolicy:
-    editorial = project_config.base.get("editorial") or {}
+    return normalize_editorial_handle_policy(project_config.base)
+
+
+def normalize_editorial_handle_policy(data: dict[str, Any] | None) -> EditorialHandlePolicy:
+    editorial = (data or {}).get("editorial") or {}
     handles: dict[str, Any] = editorial.get("handle_policy") or {}
     return EditorialHandlePolicy(
         head=_non_negative_int(handles.get("head"), 8),

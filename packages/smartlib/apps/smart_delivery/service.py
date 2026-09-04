@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from datetime import datetime
@@ -8,10 +9,12 @@ from typing import Iterable
 
 from smartlib.apps.shot_manager import ShotIdentity, ShotManagerService
 from smartlib.core.config_loader import ProjectConfig, load_config, studio_config_path
-from smartlib.core.metadata import read_json
+from smartlib.core.asset_categories import canonical_asset_category
+from smartlib.core.metadata import read_json, write_json
 from smartlib.delivery import (
     AssetContext, DeliveryEngine, DeliveryInput, DeliveryPlanner, DeliveryProfile,
-    PackageProfile, ShotContext, VendorPackageBuilder,
+    EditorialPackageBuilder, PackageProfile, ShotContext, VendorPackageBuilder,
+    resolve_editorial_package_source,
 )
 from smartlib.core.versioning import parse_version
 from smartlib.review.decisions import ReviewDecisionService
@@ -56,11 +59,20 @@ class SmartDeliveryService:
         data = read_json(path, None)
         if not isinstance(data, dict):
             raise ValueError(f"Context manifest is not valid JSON: {path}")
+        if str(data.get("schema") or "") in {
+            "smartpipeline.editorial_insert.v1", "smartpipeline.editorial_insert.v2",
+        }:
+            return {
+                "delivery_type": "Editorial",
+                "episode": str(data.get("episode") or ""),
+                "revision": str(data.get("timeline_revision") or data.get("revision") or ""),
+                "manifest": path.as_posix(),
+            }
         context = dict(data.get("context") or {})
         target = dict(data.get("target") or {})
         metadata = dict(context.get("metadata") or {})
         kind = str(data.get("package_type") or context.get("kind") or context.get("name") or "asset").lower()
-        category = str(target.get("category") or data.get("category") or metadata.get("category") or "")
+        category = canonical_asset_category(target.get("category") or data.get("category") or metadata.get("category") or "character", strict=True)
         group = str(target.get("group") or data.get("group") or metadata.get("group") or "main")
         entity = str(target.get("asset") or data.get("asset") or context.get("entity") or metadata.get("asset") or "")
         variant = str(target.get("variant") or data.get("variant") or metadata.get("variant") or "default")
@@ -77,7 +89,7 @@ class SmartDeliveryService:
                     "shot": str(target.get("shot") or metadata.get("shot") or entity), "manifest": path.as_posix()}
         if not entity:
             raise ValueError("Manifest does not contain an Asset identity")
-        return {"delivery_type": "Asset", "scene": scene, "category": category or "CH", "group": group,
+        return {"delivery_type": "Asset", "scene": scene, "category": category, "group": group,
                 "asset": entity, "variant": variant, "manifest": path.as_posix()}
 
     def suggested_package_output(self, entity: str, *, profile: str | None = None) -> Path:
@@ -118,6 +130,210 @@ class SmartDeliveryService:
             raise FileNotFoundError(f"Smart Delivery package profile was not found: {path}")
         return PackageProfile.load(path)
 
+    def editorial_mapping_options(self) -> list[dict]:
+        root = self.shots.paths.editorial_publish_root()
+        options = []
+        if not root.is_dir():
+            return options
+        for episode_dir in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+            episode = episode_dir.name
+            metadata_root = self.shots.paths.editorial_revisions_metadata_root(episode)
+            candidates = [
+                self.shots.paths.editorial_revision_mapping_path(episode, path.name)
+                for path in metadata_root.glob("v*") if path.is_dir()
+            ] if metadata_root.is_dir() else []
+            legacy_root = self.shots.paths.editorial_episode_revisions_root(episode)
+            if legacy_root.is_dir():
+                candidates.extend(
+                    self.shots.paths.legacy_editorial_revision_mapping_path(episode, path.name)
+                    for path in legacy_root.glob("v*") if path.is_dir()
+                )
+            seen = set()
+            for mapping in candidates:
+                if not mapping.is_file() or mapping.resolve() in seen:
+                    continue
+                seen.add(mapping.resolve())
+                try:
+                    source = resolve_editorial_package_source(mapping, paths=self.shots.paths)
+                except (OSError, ValueError):
+                    continue
+                options.append({
+                    "label": f"{source.episode} / {source.timeline_revision}",
+                    "episode": source.episode,
+                    "timeline_revision": source.timeline_revision,
+                    "path": source.mapping_path,
+                    "mtime": source.mapping_path.stat().st_mtime,
+                })
+        return sorted(options, key=lambda row: (row["mtime"], row["episode"]), reverse=True)
+    def editorial_package_summary(self, mapping_path: str | Path) -> dict:
+        source = resolve_editorial_package_source(mapping_path, paths=self.shots.paths)
+        return {
+            "mapping": source.mapping_path,
+            "episode": source.episode,
+            "timeline_revision": source.timeline_revision,
+            "media": source.media,
+            "shots": source.shots,
+            "registry": source.registry_path,
+        }
+
+    def editorial_delivery_context(self, mapping_path: str | Path) -> dict:
+        summary = self.editorial_package_summary(mapping_path)
+        profile = self.package_profile("editorial")
+        index_path = self.shots.paths.delivery_editorial_revision_index(
+            profile.delivery_recipient, profile.delivery_process,
+            summary["episode"], summary["timeline_revision"],
+        )
+        history = read_json(index_path, {}) or {}
+        numbers = []
+        for row in history.get("deliveries") or []:
+            value = str(row.get("delivery_revision") or "")
+            if value.startswith("d") and value[1:].isdigit():
+                numbers.append(int(value[1:]))
+        pattern = f"{summary['episode']}_{summary['timeline_revision']}_d*.zip"
+        recipient_root = self.shots.paths.delivery_editorial_recipient_root(
+            profile.delivery_recipient
+        )
+        if recipient_root.is_dir():
+            for archive in recipient_root.rglob(pattern):
+                match = re.search(r"_d(\d+)\.zip$", archive.name, re.IGNORECASE)
+                if match:
+                    numbers.append(int(match.group(1)))
+        delivery_revision = f"d{max(numbers, default=0) + 1:03d}"
+        delivery_batch = self._next_dated_batch(recipient_root)
+        entity = (
+            f"{summary['episode']}_{summary['timeline_revision']}_{delivery_revision}"
+        )
+        output = self.shots.paths.delivery_editorial_package(
+            profile.delivery_recipient, delivery_batch,
+            profile.delivery_process, entity,
+        )
+        delivery_history = {"deliveries": []}
+        history_root = index_path.parent
+        history_paths = sorted(history_root.glob("v*.json")) if history_root.is_dir() else []
+        if index_path not in history_paths:
+            history_paths.append(index_path)
+        for history_path in history_paths:
+            data = history if history_path == index_path else (read_json(history_path, {}) or {})
+            delivery_history["deliveries"].extend(data.get("deliveries") or [])
+        delivery_history["deliveries"].sort(
+            key=lambda row: str(row.get("created_at") or "")
+        )
+        delivery_shots = self._editorial_shot_delivery_states(
+            summary["shots"], delivery_history
+        )
+        return {
+            **summary,
+            "delivery_shots": delivery_shots,
+            "recipient": profile.delivery_recipient,
+            "process": profile.delivery_process,
+            "delivery_revision": delivery_revision,
+            "delivery_batch": delivery_batch,
+            "index_path": index_path,
+            "output": output,
+        }
+
+    def _editorial_shot_delivery_states(self, shots, history: dict) -> list[dict]:
+        last_by_key = {}
+        for delivery in history.get("deliveries") or []:
+            delivered_at = str(delivery.get("created_at") or "")
+            records = list(delivery.get("shots") or [])
+            if not records and delivery.get("selected_shot_keys"):
+                try:
+                    prior = resolve_editorial_package_source(
+                        delivery.get("source_mapping"), paths=self.shots.paths,
+                    )
+                    selected = set(delivery.get("selected_shot_keys") or [])
+                    records = [
+                        {
+                            "shot_key": shot.key,
+                            "media_version": shot.media_version,
+                            "source": shot.source.as_posix() if shot.source else "",
+                        }
+                        for shot in prior.shots if shot.key in selected
+                    ]
+                except (OSError, TypeError, ValueError):
+                    records = []
+            for record in records:
+                key = str(record.get("shot_key") or "")
+                if key:
+                    last_by_key[key] = {
+                        "version": str(record.get("media_version") or ""),
+                        "delivered_at": delivered_at,
+                        "delivery_revision": str(delivery.get("delivery_revision") or ""),
+                    }
+
+        result = []
+        for shot in shots:
+            last = last_by_key.get(shot.key) or {}
+            delivered_version = str(last.get("version") or "")
+            if not shot.available:
+                status = "MISSING"
+                needs_delivery = False
+            elif not delivered_version:
+                status = "NEVER DELIVERED"
+                needs_delivery = True
+            elif delivered_version != shot.media_version:
+                status = f"UPDATE REQUIRED  {delivered_version} -> {shot.media_version}"
+                needs_delivery = True
+            else:
+                status = f"DELIVERED  {delivered_version}"
+                needs_delivery = False
+            result.append({
+                "shot": shot,
+                "latest_media_version": shot.media_version,
+                "last_delivered_version": delivered_version,
+                "last_delivered_at": str(last.get("delivered_at") or ""),
+                "last_delivery_revision": str(last.get("delivery_revision") or ""),
+                "needs_delivery": needs_delivery,
+                "status": status,
+            })
+        return result
+
+    def suggested_editorial_output(self, mapping_path: str | Path) -> Path:
+        return self.editorial_delivery_context(mapping_path)["output"]
+
+    def build_editorial_package(
+        self, *, mapping_path: str | Path, output: str | Path,
+        selected_shot_keys: set[str] | None = None,
+    ):
+        context = self.editorial_delivery_context(mapping_path)
+        result = EditorialPackageBuilder().build(
+            mapping_path=mapping_path, output=output,
+            recipient=context["recipient"], process=context["process"],
+            delivery_revision=context["delivery_revision"],
+            delivery_batch=context["delivery_batch"],
+            selected_shot_keys=selected_shot_keys, paths=self.shots.paths,
+        )
+        archive_sha256 = hashlib.sha256(result.archive.read_bytes()).hexdigest()
+        index = read_json(context["index_path"], {}) or {}
+        index.setdefault("schema", "smart_delivery.editorial_history.v1")
+        index["key"] = {
+            "episode": context["episode"],
+            "timeline_revision": context["timeline_revision"],
+            "recipient": context["recipient"],
+            "process": context["process"],
+        }
+        index.setdefault("deliveries", []).append({
+            "delivery_revision": context["delivery_revision"],
+            "delivery_batch": context["delivery_batch"],
+            "archive": result.archive.as_posix(),
+            "archive_sha256": archive_sha256,
+            "source_mapping": Path(mapping_path).as_posix(),
+            "selected_shot_keys": list((result.manifest.get("selection") or {}).get("selected_shot_keys") or []),
+            "shots": [
+                {
+                    "shot_key": row.get("shot_key"),
+                    "shot": row.get("shot"),
+                    "media_version": row.get("media_version"),
+                    "source": row.get("source"),
+                }
+                for row in result.manifest.get("files") or []
+                if row.get("role") == "editorial_hud"
+            ],
+            "created_at": datetime.now().astimezone().isoformat(),
+        })
+        write_json(context["index_path"], index)
+        return result
     def build_exchange_asset(self, *, profile: str, scene: str | Path,
                              texture_root: str | Path | None, output: str | Path,
                              category: str, group: str, asset: str, variant: str,

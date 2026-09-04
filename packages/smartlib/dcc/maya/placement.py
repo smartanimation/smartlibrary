@@ -54,15 +54,14 @@ class PlacementAttachTarget:
 
 
 def list_cast_members(project_config: ProjectConfig) -> list[CastMember]:
-    project_root = _project_root(project_config)
-    cast_data = _context_cast_data(project_root)
+    cast_data = _context_cast_data(project_config)
     cast = cast_data.get("cast") or {}
     rows: list[CastMember] = []
     for cast_key, entry in sorted(cast.items()):
         if not isinstance(entry, dict):
             continue
         asset_name = str(entry.get("asset") or "").strip()
-        asset_info = _asset_info(project_root, asset_name)
+        asset_info = _asset_info(project_config, asset_name)
         rows.append(
             CastMember(
                 name=str(cast_key),
@@ -173,8 +172,7 @@ def set_placement_motion(locator: str, motion: str) -> str:
 
 
 def add_assets_to_context_cast(project_config: ProjectConfig, assets: list[Any]) -> tuple[Path, list[dict[str, Any]]]:
-    project_root = _project_root(project_config)
-    context_root = _context_root(project_root)
+    context_root = _context_root(project_config)
     selections = [_asset_selection_payload(asset) for asset in assets]
     selections = [selection for selection in selections if selection.get("asset")]
     if not selections:
@@ -247,13 +245,12 @@ def add_and_reference_assets_to_context_cast(project_config: ProjectConfig, asse
 
 def constrain_member_to_placement(project_config: ProjectConfig, locator: str) -> PlacementAttachTarget:
     cmds = _maya_cmds()
-    project_root = _project_root(project_config)
     if not locator or not cmds.objExists(locator) or not _is_placement_locator(cmds, locator):
         raise RuntimeError("Select a placement locator.")
     member_name = _get_string_attr(cmds, locator, MEMBER_ATTR)
     if not member_name:
         raise RuntimeError(f"Placement has no assigned cast member: {locator}")
-    member = _cast_member_by_name(project_root, member_name)
+    member = _cast_member_by_name(project_config, member_name)
     target = resolve_attach_target(project_config, member)
     if not target.target or not cmds.objExists(target.target):
         raise RuntimeError(f"Attach target was not found for {member.name}. Tried namespace: {member.namespace}")
@@ -277,8 +274,7 @@ def constrain_member_to_placement(project_config: ProjectConfig, locator: str) -
 
 def resolve_attach_target(project_config: ProjectConfig, member: CastMember) -> PlacementAttachTarget:
     cmds = _maya_cmds()
-    project_root = _project_root(project_config)
-    metadata = _placement_metadata_for_member(project_root, member)
+    metadata = _placement_metadata_for_member(project_config, member)
     placement_data = metadata.get("placement") if isinstance(metadata.get("placement"), dict) else {}
     target_name = str(placement_data.get("attach_target") or metadata.get("world_control") or "").strip()
     mode = str(placement_data.get("attach_mode") or "parentConstraint").strip()
@@ -364,16 +360,30 @@ def delete_placements(nodes: list[str]) -> None:
         cmds.delete(targets)
 
 
-def export_metadata(project_config: ProjectConfig) -> tuple[Path, Path]:
-    base_dir = _placement_export_dir(_project_root(project_config))
+def export_metadata(project_config: ProjectConfig, target: str = "") -> tuple[Path, Path]:
+    placements_data, members_data = _collect_placement_metadata()
+    target_name = _placement_export_target(placements_data, target)
+    base_dir = _placement_export_dir(project_config, target_name)
     version_label = _next_data_version(base_dir)
     export_dir = base_dir / version_label
     export_dir.mkdir(parents=True, exist_ok=True)
-    placements_data, members_data = _collect_placement_metadata()
     placements_path = export_dir / "placements.json"
     members_path = export_dir / "placement_members.json"
     write_json(placements_path, placements_data)
     write_json(members_path, members_data)
+    write_json(
+        export_dir / "data.json",
+        {
+            "data_type": "placement",
+            "target": target_name,
+            "subset": "main",
+            "version": version_label,
+            "files": {
+                "placements": placements_path.name,
+                "placement_members": members_path.name,
+            },
+        },
+    )
     write_json(base_dir / "placements.json", {**placements_data, "version": version_label})
     write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/placements.json"})
     _update_versions(base_dir / "versions.json", version_label)
@@ -381,8 +391,7 @@ def export_metadata(project_config: ProjectConfig) -> tuple[Path, Path]:
 
 
 def publish_placement(project_config: ProjectConfig, comment: str = "") -> Path:
-    project_root = _project_root(project_config)
-    base_dir = _placement_publish_dir(project_root)
+    base_dir = _placement_publish_dir(project_config)
     version_label = _next_data_version(base_dir)
     version_dir = base_dir / version_label
     version_dir.mkdir(parents=True, exist_ok=True)
@@ -401,7 +410,7 @@ def publish_placement(project_config: ProjectConfig, comment: str = "") -> Path:
         },
         "comment": comment,
     }
-    _add_context_to_publish_record(project_root, publish_data)
+    _add_context_to_publish_record(project_config, publish_data)
     write_json(version_dir / "publish.json", publish_data)
     write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/placements.json"})
     _update_versions(base_dir / "versions.json", version_label)
@@ -461,18 +470,18 @@ def _strip_place_suffix(name: str) -> str:
     return name[:-10] if name.lower().endswith("_place_loc") else name
 
 
-def _context_cast_data(project_root: Path) -> dict[str, Any]:
-    path = _context_root(project_root) / "cast.json"
+def _context_cast_data(project_config: ProjectConfig) -> dict[str, Any]:
+    path = _context_root(project_config) / "cast.json"
     return read_json(path, {"cast": {}, "review_layers": {}})
 
 
-def _cast_member_by_name(project_root: Path, member_name: str) -> CastMember:
-    cast = (_context_cast_data(project_root).get("cast") or {})
+def _cast_member_by_name(project_config: ProjectConfig, member_name: str) -> CastMember:
+    cast = (_context_cast_data(project_config).get("cast") or {})
     entry = cast.get(member_name)
     if not isinstance(entry, dict):
         raise RuntimeError(f"Cast member was not found in cast.json: {member_name}")
     asset_name = str(entry.get("asset") or "").strip()
-    asset_info = _asset_info(project_root, asset_name)
+    asset_info = _asset_info(project_config, asset_name)
     return CastMember(
         name=member_name,
         asset=asset_name,
@@ -484,13 +493,13 @@ def _cast_member_by_name(project_root: Path, member_name: str) -> CastMember:
     )
 
 
-def _placement_metadata_for_member(project_root: Path, member: CastMember) -> dict[str, Any]:
-    asset_root = _find_asset_root(project_root, member.asset)
+def _placement_metadata_for_member(project_config: ProjectConfig, member: CastMember) -> dict[str, Any]:
+    asset_root = _find_asset_root(project_config, member.asset)
     if not asset_root:
         return {}
     candidates = []
     variant_names = []
-    cast = (_context_cast_data(project_root).get("cast") or {})
+    cast = (_context_cast_data(project_config).get("cast") or {})
     entry = cast.get(member.name) if isinstance(cast.get(member.name), dict) else {}
     variant_names.append(str(entry.get("variant") or "default"))
     if "default" not in variant_names:
@@ -530,58 +539,75 @@ def _latest_metadata_candidates(publish_root: Path) -> list[Path]:
     return [path for path in candidates if path.exists()]
 
 
-def _find_asset_root(project_root: Path, asset_name: str) -> Path | None:
+def _find_asset_root(project_config: ProjectConfig, asset_name: str) -> Path | None:
     if not asset_name:
         return None
-    assets_root = configured_project_paths(project_root).assets_root()
+    project_root = _project_root(project_config)
+    assets_root = configured_project_paths(project_root, project_config).assets_root()
     matches = sorted(assets_root.glob(f"*/*/{asset_name}"))
     return matches[0] if matches else None
 
 
-def _context_root(project_root: Path) -> Path:
+def _context_root(project_config: ProjectConfig) -> Path:
     cmds = _maya_cmds()
     scene_text = cmds.file(query=True, sceneName=True) or ""
     if not scene_text:
         raise RuntimeError("Save or stage the scene inside a shot/sequence workspace first.")
     scene = Path(scene_text).resolve()
-    paths = configured_project_paths(project_root)
-    sequence_root = paths.sequences_root().resolve()
-    shot_root = paths.shots_root().resolve()
-    try:
-        relative = scene.relative_to(sequence_root)
-        if len(relative.parts) >= 2:
-            return sequence_root / relative.parts[0] / relative.parts[1]
-    except Exception:
-        pass
-    try:
-        relative = scene.relative_to(shot_root)
-        if len(relative.parts) >= 3:
-            return shot_root / relative.parts[0] / relative.parts[1] / relative.parts[2]
-    except Exception:
-        pass
+    project_root = _project_root(project_config)
+    paths = configured_project_paths(project_root, project_config)
+    context = paths.context_root_from_scene_path(scene)
+    if context is not None:
+        return context[1]
     raise RuntimeError(f"Scene is not under shots or sequences: {scene}")
 
 
-def _placement_export_dir(project_root: Path) -> Path:
-    root = _context_root(project_root)
+def _placement_export_target(placements_data: dict[str, Any], target: str = "") -> str:
+    target_name = str(target or "").split("|")[-1].strip()
+    if not target_name:
+        try:
+            target_name = selected_placement_locator().split("|")[-1].strip()
+        except Exception:
+            target_name = ""
+    rows = [row for row in placements_data.get("placements", []) if isinstance(row, dict)]
+    if not target_name:
+        for row in rows:
+            locator = str(row.get("locator") or "").strip()
+            if locator and not str(row.get("parent") or "").strip():
+                target_name = locator
+                break
+    if not target_name and rows:
+        target_name = str(rows[0].get("locator") or "").strip()
+    return _clean_data_token(target_name or "placement")
+
+
+def _clean_data_token(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "_.-" else "_" for ch in str(value or ""))
+    cleaned = cleaned.strip("._-")
+    return cleaned or "placement"
+
+
+def _placement_export_dir(project_config: ProjectConfig, target: str = "") -> Path:
+    root = _context_root(project_config)
+    target_name = _clean_data_token(target or "placement")
     if root.parent.parent.name == "sequences":
-        return root / "layout" / "data" / "placements"
-    return root / "data" / "placements"
+        return root / "layout" / "data" / "placement" / target_name / "main"
+    return root / "data" / "placement" / target_name / "main"
 
 
 def _is_sequence_context(context_root: Path) -> bool:
     return context_root.parent.parent.name == "sequences"
 
 
-def _placement_publish_dir(project_root: Path) -> Path:
-    root = _context_root(project_root)
+def _placement_publish_dir(project_config: ProjectConfig) -> Path:
+    root = _context_root(project_config)
     if root.parent.parent.name == "sequences":
         return root / "publish" / "layout" / "placements"
     return root / "publish" / "layout" / "placements"
 
 
-def _add_context_to_publish_record(project_root: Path, publish_data: dict[str, Any]) -> None:
-    root = _context_root(project_root)
+def _add_context_to_publish_record(project_config: ProjectConfig, publish_data: dict[str, Any]) -> None:
+    root = _context_root(project_config)
     if root.parent.parent.name == "sequences":
         publish_data["episode"] = root.parent.name
         publish_data["sequence"] = root.name
@@ -623,10 +649,11 @@ def _update_versions(path: Path, version_label: str) -> None:
     write_json(path, next_versions)
 
 
-def _asset_info(project_root: Path, asset_name: str) -> dict[str, Any]:
+def _asset_info(project_config: ProjectConfig, asset_name: str) -> dict[str, Any]:
     if not asset_name:
         return {}
-    assets_root = configured_project_paths(project_root).assets_root()
+    project_root = _project_root(project_config)
+    assets_root = configured_project_paths(project_root, project_config).assets_root()
     if not assets_root.exists():
         return {}
     for asset_json in assets_root.glob("*/*/*/asset.json"):

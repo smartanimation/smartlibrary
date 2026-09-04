@@ -79,9 +79,10 @@ asset_subsets:
 work_subsets_by_category:
   model:
     default: [proxy, render]
-    characters: [low, high]
-    env: [proxy, render]
+    character: [low, high]
+    environment: [proxy, render]
     prop: [proxy, render]
+    vehicle: [proxy, render]
 
 # Artist workspace representation policy used by Build Manager's
 # "Project Default" selection. The UI's Maya/USD choices override it per build.
@@ -106,9 +107,10 @@ workspace_load_policy:
       mode: reference
       context: WORK
   category_classes:
-    character: [CH, char, character, characters, hero]
-    environment: [BG, env, environment, set, sets]
-    prop: [prop, props, bp, cp]
+    character: [character]
+    environment: [environment]
+    prop: [prop]
+    vehicle: [vehicle]
 
 staging_dependencies:
   model:
@@ -145,10 +147,10 @@ maya_reference_groups:
   default: assets_grp
   rules:
     - group: sets_grp
-      category: [env]
+      category: [environment]
     - group: props_grp
       category: [prop]
     - group: character_grp
-      category: [characters]
+      category: [character]
     - group: character_grp
       group_name: [hero]

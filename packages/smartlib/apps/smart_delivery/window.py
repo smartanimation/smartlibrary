@@ -9,6 +9,7 @@ except ImportError:
 
 from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.review.playblast_package import find_ffmpeg
+from smartlib.core.asset_categories import canonical_asset_category
 
 from .service import SmartDeliveryService, expand_sequence
 
@@ -38,7 +39,7 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         self.package_profile_combo = QtWidgets.QComboBox()
         self.package_profile_combo.addItems(self.service.package_profile_names())
         self.delivery_type_combo = QtWidgets.QComboBox()
-        self.delivery_type_combo.addItems(["Asset", "Shot"])
+        self.delivery_type_combo.addItems(["Asset", "Shot", "Editorial"])
         self.workflow_combo = QtWidgets.QComboBox()
         self.task_edit = QtWidgets.QLineEdit("preComp")
         self.version_spin = QtWidgets.QSpinBox(); self.version_spin.setRange(1, 9999); self.version_spin.setValue(1)
@@ -46,12 +47,19 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         self.browse_output_button = QtWidgets.QPushButton("Browse…")
         self.browse_output_button.clicked.connect(self._browse_output)
         self.manifest_edit = QtWidgets.QLineEdit()
-        self.manifest_edit.setPlaceholderText("smart_ingest.asset_package.v1 manifest.json")
+        self.manifest_edit.setPlaceholderText("Asset manifest or editorial_mapping.json")
         self.browse_manifest_button = QtWidgets.QPushButton("Browse Manifest…")
         self.browse_manifest_button.clicked.connect(self._browse_manifest)
+        self.editorial_mapping_label = QtWidgets.QLabel("Editorial Mapping")
+        self.editorial_mapping_combo = QtWidgets.QComboBox()
+        self.editorial_mapping_combo.setMinimumContentsLength(24)
+        self.refresh_editorial_button = QtWidgets.QPushButton("Refresh")
+        self.refresh_editorial_button.clicked.connect(self._populate_editorial_mappings)
+        self.output_override_check = QtWidgets.QCheckBox("Override Output")
+        self.output_override_check.toggled.connect(self._output_override_changed)
         self.asset_scene_edit = QtWidgets.QLineEdit()
         self.asset_texture_edit = QtWidgets.QLineEdit()
-        self.asset_identity_edit = QtWidgets.QLineEdit("CH/main/YOU/default")
+        self.asset_identity_edit = QtWidgets.QLineEdit("character/main/YOU/default")
         browse_scene = QtWidgets.QPushButton("Browse Scene…"); browse_scene.clicked.connect(self._browse_asset_scene)
         browse_texture = QtWidgets.QPushButton("Browse Texture…"); browse_texture.clicked.connect(self._browse_asset_texture)
         self.add_shot_files_button = QtWidgets.QPushButton("Add Shot Files…")
@@ -65,11 +73,12 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         form.addWidget(self.package_profile_label, 1, 4); form.addWidget(self.package_profile_combo, 1, 5)
         form.addWidget(self.task_label, 1, 2); form.addWidget(self.task_edit, 1, 3)
         form.addWidget(self.version_label, 1, 6); form.addWidget(self.version_spin, 1, 7)
-        form.addWidget(QtWidgets.QLabel("Package Output"), 2, 0); form.addWidget(self.output_edit, 2, 1, 1, 6); form.addWidget(self.browse_output_button, 2, 7)
+        form.addWidget(QtWidgets.QLabel("Package Output"), 2, 0); form.addWidget(self.output_edit, 2, 1, 1, 5); form.addWidget(self.output_override_check, 2, 6); form.addWidget(self.browse_output_button, 2, 7)
         form.addWidget(QtWidgets.QLabel("Delivery Type"), 0, 4); form.addWidget(self.delivery_type_combo, 0, 5)
         form.addWidget(QtWidgets.QLabel("Workflow"), 0, 6); form.addWidget(self.workflow_combo, 0, 7)
         self.manifest_label = QtWidgets.QLabel("Asset Manifest")
         form.addWidget(self.manifest_label, 3, 0); form.addWidget(self.manifest_edit, 3, 1, 1, 6); form.addWidget(self.browse_manifest_button, 3, 7)
+        form.addWidget(self.editorial_mapping_label, 3, 0); form.addWidget(self.editorial_mapping_combo, 3, 1, 1, 6); form.addWidget(self.refresh_editorial_button, 3, 7)
         self.asset_scene_label = QtWidgets.QLabel("Asset Scene")
         self.asset_texture_label = QtWidgets.QLabel("Texture Root (optional)")
         self.asset_identity_label = QtWidgets.QLabel("Asset Target")
@@ -84,6 +93,23 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         self.shot_list_label = QtWidgets.QLabel("Shots (Internal Review version / state)")
         layout.addWidget(self.shot_list_label)
         layout.addWidget(self.shot_list)
+
+        self.editorial_selection_bar = QtWidgets.QWidget()
+        editorial_selection_layout = QtWidgets.QHBoxLayout(self.editorial_selection_bar)
+        editorial_selection_layout.setContentsMargins(0, 0, 0, 0)
+        self.editorial_selection_label = QtWidgets.QLabel("Delivery Shots")
+        self.editorial_select_all = QtWidgets.QPushButton("Select All")
+        self.editorial_clear_all = QtWidgets.QPushButton("Clear All")
+        self.editorial_invert = QtWidgets.QPushButton("Invert")
+        self.editorial_select_all.clicked.connect(lambda: self._set_editorial_selection("all"))
+        self.editorial_clear_all.clicked.connect(lambda: self._set_editorial_selection("none"))
+        self.editorial_invert.clicked.connect(lambda: self._set_editorial_selection("invert"))
+        editorial_selection_layout.addWidget(self.editorial_selection_label)
+        editorial_selection_layout.addStretch(1)
+        editorial_selection_layout.addWidget(self.editorial_select_all)
+        editorial_selection_layout.addWidget(self.editorial_clear_all)
+        editorial_selection_layout.addWidget(self.editorial_invert)
+        layout.addWidget(self.editorial_selection_bar)
 
         self.inputs = QtWidgets.QTableWidget(0, 4)
         self.inputs.setHorizontalHeaderLabels(["Enabled", "Type / Review Layer", "Source", "Status"])
@@ -108,6 +134,7 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         self.workflow_combo.currentTextChanged.connect(self._workflow_changed)
         self.manifest_edit.editingFinished.connect(self._resolve)
         self.package_profile_combo.currentTextChanged.connect(self._resolve)
+        self.editorial_mapping_combo.currentIndexChanged.connect(self._editorial_mapping_changed)
         self._delivery_type_changed()
 
     def _apply_delivery_preferences(self):
@@ -135,7 +162,19 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
             profile = preferences.get("package_profile")
             if profile and self.package_profile_combo.findText(profile) >= 0:
                 self.package_profile_combo.setCurrentText(profile)
-            if defaults["delivery_type"] == "Asset":
+            if defaults["delivery_type"] == "Editorial":
+                self.package_profile_combo.setCurrentText("editorial")
+                mapping_value = str(Path(path))
+                index = self.editorial_mapping_combo.findData(mapping_value)
+                if index < 0:
+                    self.editorial_mapping_combo.addItem(
+                        f"{defaults.get('episode') or '-'} / {defaults.get('revision') or '-'}",
+                        mapping_value,
+                    )
+                    index = self.editorial_mapping_combo.count() - 1
+                self.editorial_mapping_combo.setCurrentIndex(index)
+                self.output_edit.setText(str(self.service.suggested_editorial_output(path)))
+            elif defaults["delivery_type"] == "Asset":
                 workflow = preferences.get("asset_workflow") or "Package ZIP"
                 if self.workflow_combo.findText(workflow) >= 0: self.workflow_combo.setCurrentText(workflow)
                 self.asset_identity_edit.setText("/".join(defaults[key] for key in ("category", "group", "asset", "variant")))
@@ -202,11 +241,17 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
 
     def _resolve(self):
         mode = self._mode()
+        if mode != "Editorial ZIP":
+            self.inputs.setColumnCount(4)
+            self.inputs.setHorizontalHeaderLabels(["Enabled", "Type / Review Layer", "Source", "Status"])
         if mode in {"Asset ZIP", "Asset Assembly ZIP"}:
             self._resolve_asset_zip()
             return
         if mode == "Shot ZIP":
             self._resolve_shot_zip()
+            return
+        if mode == "Editorial ZIP":
+            self._resolve_editorial_zip()
             return
         if mode == "Client Manifest":
             self._resolve_asset_package()
@@ -293,9 +338,80 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
             "Add Maya, After Effects, image sequence, cache, or USD files."
         )
 
+    def _populate_editorial_mappings(self):
+        current = self._editorial_mapping_path()
+        options = self.service.editorial_mapping_options()
+        self.editorial_mapping_combo.blockSignals(True)
+        self.editorial_mapping_combo.clear()
+        for row in options:
+            self.editorial_mapping_combo.addItem(row["label"], str(row["path"]))
+        if current:
+            index = self.editorial_mapping_combo.findData(current)
+            if index >= 0:
+                self.editorial_mapping_combo.setCurrentIndex(index)
+        self.editorial_mapping_combo.blockSignals(False)
+        self._editorial_mapping_changed()
+
+    def _editorial_mapping_path(self) -> str:
+        if hasattr(self, "editorial_mapping_combo"):
+            return str(self.editorial_mapping_combo.currentData() or "")
+        return ""
+
+    def _editorial_mapping_changed(self, *_args):
+        if self._mode() == "Editorial ZIP":
+            self._resolve_editorial_zip()
+
+    def _output_override_changed(self, enabled: bool):
+        is_editorial = self._mode() == "Editorial ZIP"
+        self.output_edit.setReadOnly(is_editorial and not enabled)
+        self.browse_output_button.setEnabled(not is_editorial or enabled)
+        if is_editorial and not enabled:
+            self._resolve_editorial_zip()
+    def _resolve_editorial_zip(self):
+        self.inputs.setRowCount(0)
+        mapping = self._editorial_mapping_path()
+        if not mapping:
+            self.report.setPlainText(
+                "Select revisions/metadata/v###/editorial_mapping.json.\n"
+                "The ZIP contains the mapping, Shot Registry, and non-OMIT HUD masters."
+            )
+            return
+        try:
+            summary = self.service.editorial_delivery_context(mapping)
+            self.inputs.setColumnCount(5)
+            self.inputs.setHorizontalHeaderLabels([
+                "Deliver", "Shot / IDs", "Latest Media", "Delivery Status", "Last Delivered"
+            ])
+            self.inputs.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+            for state in summary["delivery_shots"]:
+                self._add_editorial_row(state)
+            if not self.output_override_check.isChecked():
+                self.output_edit.setText(str(summary["output"]))
+            profile = self.service.package_profile("editorial")
+            self.report.setPlainText(
+                "Editorial Delivery ZIP\n"
+                f"Recipient: {profile.delivery_recipient}\n"
+                f"Process: {profile.delivery_process}\n"
+                f"Episode: {summary['episode']}\n"
+                f"Timeline Revision: {summary['timeline_revision']}\n"
+                f"Delivery Revision: {summary['delivery_revision']}\n"
+                f"Delivery Batch: {summary['delivery_batch']}\n"
+                f"Available HUD movies: {sum(shot.available for shot in summary['shots'])}\n"
+                f"Need delivery: {sum(row['needs_delivery'] for row in summary['delivery_shots'])}\n"
+                "Undelivered and updated shots are selected automatically."
+            )
+        except Exception as exc:
+            self.report.setPlainText(f"INVALID EDITORIAL MAPPING: {exc}")
     def _delivery_type_changed(self):
         delivery_type = self.delivery_type_combo.currentText()
-        workflows = ["Package ZIP", "Assembly ZIP", "Client Manifest"] if delivery_type == "Asset" else ["Package ZIP", "Reviewed Delivery"]
+        if delivery_type == "Asset":
+            workflows = ["Package ZIP", "Assembly ZIP", "Client Manifest"]
+        elif delivery_type == "Editorial":
+            workflows = ["Editorial ZIP"]
+            if self.package_profile_combo.findText("editorial") >= 0:
+                self.package_profile_combo.setCurrentText("editorial")
+        else:
+            workflows = ["Package ZIP", "Reviewed Delivery"]
         current = self.workflow_combo.currentText()
         self.workflow_combo.blockSignals(True)
         self.workflow_combo.clear(); self.workflow_combo.addItems(workflows)
@@ -310,25 +426,99 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         for widget in (self.episode_label, self.episode_combo, self.sequence_label, self.sequence_combo,
                        self.shot_list_label, self.shot_list, self.task_label, self.task_edit):
             widget.setVisible(is_shot)
+        is_editorial = mode == "Editorial ZIP"
         is_manifest = mode == "Client Manifest"
-        for widget in (self.manifest_label, self.manifest_edit, self.browse_manifest_button): widget.setVisible(is_manifest)
+        self.manifest_label.setText("Asset Manifest")
+        for widget in (self.manifest_label, self.manifest_edit, self.browse_manifest_button):
+            widget.setVisible(is_manifest)
+        for widget in (self.editorial_mapping_label, self.editorial_mapping_combo, self.refresh_editorial_button):
+            widget.setVisible(is_editorial)
+        self.output_override_check.setVisible(is_editorial)
+        self.editorial_selection_bar.setVisible(is_editorial)
+        self.output_edit.setReadOnly(is_editorial and not self.output_override_check.isChecked())
+        self.browse_output_button.setEnabled(not is_editorial or self.output_override_check.isChecked())
         is_asset = mode in {"Asset ZIP", "Asset Assembly ZIP"}
         for widget in self.asset_widgets: widget.setVisible(is_asset)
         self.add_shot_files_button.setVisible(mode == "Shot ZIP")
-        uses_package_profile = mode in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP"}
+        uses_package_profile = mode in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP", "Editorial ZIP"}
         self.package_profile_label.setVisible(uses_package_profile); self.package_profile_combo.setVisible(uses_package_profile)
         uses_client_profile = mode in {"Reviewed Shot", "Client Manifest"}
         self.client_profile_label.setVisible(uses_client_profile); self.profile_label.setVisible(uses_client_profile)
         uses_version = mode in {"Reviewed Shot", "Client Manifest"}
         self.version_label.setVisible(uses_version); self.version_spin.setVisible(uses_version)
-        self._resolve()
+        if is_editorial:
+            self._populate_editorial_mappings()
+        else:
+            self._resolve()
 
     def _mode(self):
         workflow = self.workflow_combo.currentText()
-        if self.delivery_type_combo.currentText() == "Asset":
+        delivery_type = self.delivery_type_combo.currentText()
+        if delivery_type == "Asset":
             if workflow == "Client Manifest": return "Client Manifest"
             return "Asset Assembly ZIP" if workflow == "Assembly ZIP" else "Asset ZIP"
+        if delivery_type == "Editorial":
+            return "Editorial ZIP"
         return "Reviewed Shot" if workflow == "Reviewed Delivery" else "Shot ZIP"
+
+    def _add_editorial_row(self, state):
+        shot = state["shot"]
+        row = self.inputs.rowCount()
+        self.inputs.insertRow(row)
+        enabled = QtWidgets.QTableWidgetItem()
+        enabled.setFlags(enabled.flags() | QtCore.Qt.ItemIsUserCheckable)
+        enabled.setCheckState(
+            QtCore.Qt.Checked if state["needs_delivery"] else QtCore.Qt.Unchecked
+        )
+        enabled.setData(QtCore.Qt.UserRole, shot.key)
+        if not shot.available:
+            enabled.setFlags(enabled.flags() & ~QtCore.Qt.ItemIsEnabled)
+        identity = " / ".join(value for value in (
+            shot.shot,
+            f"CGID-{shot.cg_shot_id[:8]}" if shot.cg_shot_id else "",
+            shot.editorial_event_id,
+            f"EVID-{shot.editorial_event_uid.replace('-', '')[:8]}" if shot.editorial_event_uid else "",
+        ) if value)
+        media_item = QtWidgets.QTableWidgetItem(
+            state["latest_media_version"] or "-"
+        )
+        media_item.setToolTip(str(shot.source or "HUD source not found"))
+        delivered_at = state["last_delivered_at"]
+        if delivered_at:
+            delivered_at = delivered_at.replace("T", " ")[:16]
+            revision = state["last_delivery_revision"]
+            if revision:
+                delivered_at = f"{delivered_at}  ({revision})"
+        self.inputs.setItem(row, 0, enabled)
+        self.inputs.setItem(row, 1, QtWidgets.QTableWidgetItem(identity or shot.key))
+        self.inputs.setItem(row, 2, media_item)
+        self.inputs.setItem(row, 3, QtWidgets.QTableWidgetItem(state["status"]))
+        self.inputs.setItem(row, 4, QtWidgets.QTableWidgetItem(delivered_at or "-"))
+
+    def _selected_editorial_shot_keys(self) -> set[str]:
+        selected = set()
+        for row in range(self.inputs.rowCount()):
+            item = self.inputs.item(row, 0)
+            if item and item.checkState() == QtCore.Qt.Checked:
+                key = str(item.data(QtCore.Qt.UserRole) or "")
+                if key:
+                    selected.add(key)
+        return selected
+
+    def _set_editorial_selection(self, mode: str):
+        for row in range(self.inputs.rowCount()):
+            item = self.inputs.item(row, 0)
+            if not item or not (item.flags() & QtCore.Qt.ItemIsEnabled):
+                continue
+            if mode == "all":
+                item.setCheckState(QtCore.Qt.Checked)
+            elif mode == "none":
+                item.setCheckState(QtCore.Qt.Unchecked)
+            else:
+                item.setCheckState(
+                    QtCore.Qt.Unchecked if item.checkState() == QtCore.Qt.Checked
+                    else QtCore.Qt.Checked
+                )
 
     def _add_row(self, label: str, source: str):
         row = self.inputs.rowCount(); self.inputs.insertRow(row)
@@ -339,7 +529,7 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         self.inputs.setItem(row, 0, enabled); self.inputs.setItem(row, 1, QtWidgets.QTableWidgetItem(label)); self.inputs.setItem(row, 2, QtWidgets.QTableWidgetItem(source)); self.inputs.setItem(row, 3, QtWidgets.QTableWidgetItem("FOUND" if found else "MISSING"))
 
     def _browse_output(self):
-        if self._mode() in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP"}:
+        if self._mode() in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP", "Editorial ZIP"}:
             path, _selected = QtWidgets.QFileDialog.getSaveFileName(
                 self, "Smart Delivery ZIP", self.output_edit.text(), "ZIP Archive (*.zip)")
             if path:
@@ -351,7 +541,7 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
 
     def _browse_manifest(self):
         path, _selected = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select Asset Package Manifest", self.manifest_edit.text(),
+            self, "Select Manifest", self.manifest_edit.text(),
             "JSON Manifest (*.json);;All Files (*)",
         )
         if path:
@@ -404,7 +594,7 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
     def _dry_run(self):
         try:
             mode = self._mode()
-            if mode in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP"}:
+            if mode in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP", "Editorial ZIP"}:
                 lines = self._package_preview(mode)
                 self.report.setPlainText("\n".join(lines))
                 return
@@ -418,14 +608,19 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
     def _build(self):
         try:
             mode = self._mode()
-            if mode in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP"}:
+            if mode in {"Asset ZIP", "Asset Assembly ZIP", "Shot ZIP", "Editorial ZIP"}:
                 QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
                 result = self._build_package_zip(mode)
+                delivery = result.manifest.get("delivery") or {}
                 lines = ["Delivery complete", f"Profile: {result.manifest.get('profile')}",
                          f"ZIP: {result.archive}", f"Members: {len(result.files)}",
+                         f"Delivery Revision: {delivery.get('delivery_revision') or '-'}",
+                         f"Delivery Batch: {delivery.get('delivery_batch') or '-'}",
                          f"Target: {(result.manifest.get('ingest') or {}).get('expected_target_root') or '-'}"]
                 self.report.setPlainText("\n".join(lines))
                 QtWidgets.QMessageBox.information(self, "Delivery complete", "\n".join(lines))
+                if mode == "Editorial ZIP":
+                    self._resolve_editorial_zip()
                 return
             plan = self._make_plan()
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
@@ -453,6 +648,17 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         if output.suffix.lower() != ".zip": raise ValueError("Package Output must be a .zip file.")
         if output.exists(): raise FileExistsError(f"Output ZIP already exists: {output}")
         profile = self.service.package_profile(self.package_profile_combo.currentText())
+        if mode == "Editorial ZIP":
+            summary = self.service.editorial_delivery_context(self._editorial_mapping_path())
+            return [
+                "Editorial ZIP Dry Run", f"Profile: {profile.id}", f"Output: {output}",
+                f"Episode: {summary['episode']}",
+                f"Timeline Revision: {summary['timeline_revision']}",
+                f"Delivery Revision: {summary['delivery_revision']}",
+                f"Delivery Batch: {summary['delivery_batch']}",
+                f"Selected HUD movies: {len(self._selected_editorial_shot_keys())}",
+                f"Shot Registry: {summary['registry'] or '(not found)'}",
+            ]
         if mode in {"Asset ZIP", "Asset Assembly ZIP"}:
             scene = Path(self.asset_scene_edit.text().strip())
             if not scene.is_file(): raise FileNotFoundError(f"Asset scene was not found: {scene}")
@@ -480,6 +686,12 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
 
     def _build_package_zip(self, mode: str):
         self._package_preview(mode)
+        if mode == "Editorial ZIP":
+            return self.service.build_editorial_package(
+                mapping_path=self._editorial_mapping_path(),
+                output=self.output_edit.text().strip(),
+                selected_shot_keys=self._selected_editorial_shot_keys(),
+            )
         if mode in {"Asset ZIP", "Asset Assembly ZIP"}:
             category, group, asset, variant = self._asset_target()
             return self.service.build_exchange_asset(
@@ -495,6 +707,7 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
     def _asset_target(self):
         parts = [value.strip() for value in self.asset_identity_edit.text().replace("\\", "/").split("/") if value.strip()]
         if len(parts) != 4: raise ValueError("Asset Target must be category/group/asset/variant.")
+        parts[0] = canonical_asset_category(parts[0], strict=True)
         return tuple(parts)
 
     def _shot_package_sources(self):

@@ -30,7 +30,7 @@ SCENE_DATA_ATTRS = {
     "updated_at": ("smartSetDressUpdatedAt", "string"),
     "dirty": ("smartSetDressDirty", "bool"),
 }
-ATTRIBUTES = (
+TRANSFORM_ATTRIBUTES = (
     "translateX", "translateY", "translateZ",
     "rotateX", "rotateY", "rotateZ",
     "scaleX", "scaleY", "scaleZ", "visibility",
@@ -41,7 +41,7 @@ ATTRIBUTES = (
 class NodeState:
     node_id: str
     node: str
-    values: dict[str, float | bool]
+    values: dict[str, Any]
 
 
 @dataclass
@@ -49,8 +49,8 @@ class Change:
     node_id: str
     node: str
     attribute: str
-    before: float | bool
-    after: float | bool
+    before: Any
+    after: Any
 
 
 @dataclass
@@ -109,7 +109,7 @@ def diff_states(
     changes: list[Change] = []
     for node_id in sorted(before_map.keys() & after_map.keys()):
         old, new = before_map[node_id], after_map[node_id]
-        for attribute in ATTRIBUTES:
+        for attribute in sorted(old.values.keys() & new.values.keys()):
             if attribute not in old.values or attribute not in new.values:
                 continue
             if _different(old.values[attribute], new.values[attribute], tolerance):
@@ -139,6 +139,81 @@ def remember_base(
         for attribute, value in item.values.items():
             stored.values.setdefault(attribute, value)
     return list(result.values())
+
+
+def layer_package(package: SetDressPackage, layer: SetDressLayer) -> SetDressPackage:
+    """Export one layer with only the base plugs owned by that layer."""
+    originals = {
+        (state.node_id, attribute): value
+        for state in package.base for attribute, value in state.values.items()
+    }
+    states = {}
+    for change in layer.changes:
+        state = states.setdefault(
+            change.node_id, NodeState(change.node_id, change.node, {})
+        )
+        state.values[change.attribute] = originals.get(
+            (change.node_id, change.attribute), change.before
+        )
+    context = dict(package.context)
+    context.update({
+        "package": layer.name, "scope": layer.scope, "target": layer.target,
+        "layer_id": layer.id,
+        "layer_order": (
+            package.context.get("layer_order", "0")
+            if len(package.layers) == 1 and package.context.get("layer_id") == layer.id
+            else str(package.layers.index(layer))
+        ),
+    })
+    return SetDressPackage.from_dict(SetDressPackage(
+        layers=[layer], base=list(states.values()), context=context,
+    ).to_dict())
+
+
+def layer_ids(data: dict) -> set[str]:
+    return {
+        str(layer["id"]) for layer in data.get("layers", [])
+        if layer.get("id") and layer.get("changes")
+    }
+
+
+def visible_work_packages(paths: Iterable[Path]) -> list[Path]:
+    """Hide superseded names/legacy bundles without deleting recovery files."""
+    entries = []
+    for path in paths:
+        try:
+            package = load_package(path)
+            entries.append((path, package))
+        except (OSError, ValueError, TypeError):
+            continue
+    newest = {}
+    for path, package in sorted(entries, key=lambda row: row[0].stat().st_mtime_ns):
+        if package.context.get("layer_id") and len(package.layers) == 1:
+            newest[package.layers[0].id] = path
+    covered = set(newest)
+    result = []
+    for path, package in entries:
+        if package.context.get("layer_id") and len(package.layers) == 1:
+            if newest.get(package.layers[0].id) == path:
+                result.append(path)
+        else:
+            ids = layer_ids(package.to_dict())
+            if not ids or not ids <= covered:
+                result.append(path)
+    return result
+
+
+def compose_packages(packages: Iterable[SetDressPackage]) -> SetDressPackage:
+    """Compose resolved Build inputs into one recoverable scene package."""
+    result = SetDressPackage()
+    packages = list(packages)
+    if packages and all("layer_order" in item.context for item in packages):
+        packages.sort(key=lambda item: int(item.context["layer_order"]))
+    for package in packages:
+        result.layers.extend(package.layers)
+        result.base = remember_base(result.base, package.base)
+        result.context.update(package.context)
+    return result
 
 
 def composed_values(layers: Iterable[SetDressLayer]) -> dict[tuple[str, str], Change]:
@@ -321,11 +396,13 @@ def capture_scene(selection_only: bool = True, cmds=None) -> list[NodeState]:
     states = []
     for node in nodes:
         values = {}
-        for attribute in ATTRIBUTES:
+        for attribute in recordable_attributes(cmds, node):
             plug = f"{node}.{attribute}"
             try:
                 if cmds.objExists(plug):
-                    values[attribute] = cmds.getAttr(plug)
+                    value = cmds.getAttr(plug)
+                    if _recordable_value(value):
+                        values[attribute] = value
             except Exception:
                 continue
         if values:
@@ -351,7 +428,11 @@ def apply_changes(changes: Iterable[Change], *, use_after: bool = True, cmds=Non
                 if cmds.getAttr(plug, lock=True):
                     warnings.append(f"Locked: {plug}")
                     continue
-                cmds.setAttr(plug, change.after if use_after else change.before)
+                value = change.after if use_after else change.before
+                if isinstance(value, str):
+                    cmds.setAttr(plug, value, type="string")
+                else:
+                    cmds.setAttr(plug, value)
             except Exception as exc:
                 warnings.append(f"{plug}: {exc}")
     finally:
@@ -416,12 +497,47 @@ def scene_context(cmds=None) -> dict[str, str]:
 
 def _capture_nodes(cmds, selection_only: bool) -> list[str]:
     if selection_only:
-        selected = cmds.ls(selection=True, long=True, type="transform") or []
-        descendants = cmds.listRelatives(selected, allDescendents=True, fullPath=True, type="transform") or []
-        nodes = selected + descendants
+        selected = cmds.ls(selection=True, long=True) or []
+        descendants = (
+            cmds.listRelatives(selected, allDescendents=True, fullPath=True) or []
+        )
+        candidates = selected + descendants
+        transforms = cmds.ls(candidates, long=True, type="transform") or []
+        shapes = cmds.ls(candidates, long=True, shapes=True) or []
     else:
-        nodes = cmds.ls(long=True, type="transform") or []
-    return list(dict.fromkeys(str(node) for node in nodes))
+        transforms = cmds.ls(long=True, type="transform") or []
+        shapes = cmds.ls(long=True, shapes=True) or []
+    return list(dict.fromkeys(str(node) for node in transforms + shapes))
+
+
+def recordable_attributes(cmds, node: str) -> list[str]:
+    """Return user-editable scalar plugs exposed by Maya's normal authoring UI."""
+    attributes = set(TRANSFORM_ATTRIBUTES)
+    for query in ({"keyable": True}, {"channelBox": True}):
+        try:
+            attributes.update(str(item) for item in (cmds.listAttr(node, **query) or []))
+        except Exception:
+            continue
+    result = []
+    for attribute in sorted(attributes):
+        plug = f"{node}.{attribute}"
+        try:
+            if not cmds.objExists(plug) or cmds.getAttr(plug, lock=True):
+                continue
+            attr_type = str(cmds.getAttr(plug, type=True) or "")
+            if attr_type not in {
+                "bool", "byte", "char", "short", "long", "enum",
+                "float", "double", "doubleAngle", "doubleLinear", "string",
+            }:
+                continue
+            result.append(attribute)
+        except Exception:
+            continue
+    return result
+
+
+def _recordable_value(value: Any) -> bool:
+    return value is None or isinstance(value, (bool, int, float, str))
 
 
 def _scene_data_node(cmds) -> str:

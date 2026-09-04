@@ -14,6 +14,84 @@ from smartlib.core.path_resolver import AssetIdentity
 
 
 class AssetContextRecipeTests(unittest.TestCase):
+    def test_config_creator_collapses_stage_aliases_and_renames_divergent_profiles(self):
+        from scripts.config_creator import ConfigCreatorApp
+
+        data = {
+            "quality_profiles": {
+                "LO": {"model": "low", "rig": "layout"},
+                "ANIM": {"model": "low", "rig": "anim"},
+                "REND": {"model": "high", "look": "high"},
+                "FAST": {"model": "low", "rig": "layout"},
+                "WORK": {"model": "low", "rig": "anim"},
+                "FINAL": {"model": "high", "look": "high"},
+            },
+            "asset_context_recipes": {
+                "character": {
+                    "profiles": {
+                        "LO": {"model": "low", "rig": "layout"},
+                    },
+                },
+                "prop": {
+                    "profiles": {
+                        "REND": {"model": "render", "look": "high"},
+                    },
+                },
+            },
+            "stage_profiles": {
+                "FAST": {"character": "FAST", "prop": "FAST"},
+                "WORK": {"character": "WORK", "prop": "WORK"},
+                "REND": {"character": "FINAL", "prop": "REND"},
+            },
+        }
+
+        ConfigCreatorApp._normalize_asset_profile_scopes(data)
+
+        self.assertNotIn("FAST", data["quality_profiles"])
+        self.assertNotIn("WORK", data["quality_profiles"])
+        self.assertNotIn("FINAL", data["quality_profiles"])
+        self.assertNotIn("profiles", data["asset_context_recipes"]["character"])
+        self.assertEqual(
+            data["asset_context_recipes"]["character"]["profile_names"],
+            ["CHAR_LO", "CHAR_ANIM", "CHAR_REND"],
+        )
+        self.assertIn("PROP_REND", data["quality_profiles"])
+        self.assertIn("PROP_REND", data["asset_context_recipes"]["prop"]["profile_names"])
+        self.assertEqual(data["stage_profiles"]["FAST"]["character"], "CHAR_LO")
+        self.assertEqual(data["stage_profiles"]["REND"]["character"], "CHAR_REND")
+        self.assertEqual(data["stage_profiles"]["REND"]["prop"], "PROP_REND")
+
+    def test_default_character_and_prop_inherit_common_anim_profile(self):
+        context = load_config(
+            Path(__file__).parents[1] / "config" / "default" / "contexts" / "asset" / "v001.yml"
+        )
+
+        self.assertEqual(
+            set(context["quality_profiles"]),
+            {
+                "CHAR_LO", "CHAR_ANIM", "CHAR_REND", "CHAR_MCP",
+                "BG_PROXY", "BG_REND",
+                "PROP_LO", "PROP_ANIM", "PROP_REND",
+            },
+        )
+        for asset_class, anim_id in (
+            ("character", "CHAR_ANIM"),
+            ("prop", "PROP_ANIM"),
+        ):
+            recipe = context["asset_context_recipes"][asset_class]
+            self.assertIn(anim_id, recipe["profile_names"])
+            profiles = {
+                name: context["quality_profiles"][name]
+                for name in recipe["profile_names"]
+            }
+            self.assertEqual(profiles[anim_id]["rig"], "anim")
+        self.assertEqual(context["profile_labels"]["CHAR_REND"], "REND")
+        self.assertEqual(context["profile_labels"]["BG_REND"], "REND")
+        self.assertEqual(context["profile_labels"]["PROP_REND"], "REND")
+        self.assertEqual(context["quality_profiles"]["CHAR_REND"]["groom"], "render")
+        self.assertNotIn("groom", context["quality_profiles"]["BG_REND"])
+        self.assertNotIn("groom", context["quality_profiles"]["PROP_REND"])
+
     def test_character_recipe_keeps_project_level_profiles(self):
         with TemporaryDirectory() as temporary:
             asset_root = Path(temporary) / "assets" / "CH" / "main" / "character"
@@ -46,10 +124,10 @@ class AssetContextRecipeTests(unittest.TestCase):
 
     def test_background_uses_assembly_recipe_without_rig_or_groom(self):
         with TemporaryDirectory() as temporary:
-            asset_root = Path(temporary) / "assets" / "BG" / "main" / "room"
+            asset_root = Path(temporary) / "assets" / "environment" / "main" / "room"
             asset_root.mkdir(parents=True)
             (asset_root / "asset.json").write_text(
-                json.dumps({"asset": "room", "asset_type": "BG"}),
+                json.dumps({"asset": "room", "asset_type": "environment"}),
                 encoding="utf-8",
             )
 
@@ -58,16 +136,21 @@ class AssetContextRecipeTests(unittest.TestCase):
             context = load_config(
                 Path(__file__).parents[1] / "config" / "default" / "contexts" / "asset" / "v001.yml"
             )
-            identity = AssetIdentity("BG", "main", "room", "default")
+            identity = AssetIdentity("environment", "main", "room", "default")
 
             asset_class, profiles = service._profiles_for_identity(identity, context)
 
             self.assertEqual(asset_class, "environment")
-            self.assertEqual(set(profiles), {"PROXY", "REND"})
-            self.assertEqual(profiles["PROXY"]["assembly"], "proxy")
-            self.assertIn(profiles["PROXY"]["look"], (None, "none"))
-            self.assertNotIn("rig", profiles["PROXY"])
-            self.assertNotIn("groom", profiles["PROXY"])
+            self.assertEqual(set(profiles), {"BG_PROXY", "BG_REND"})
+            self.assertEqual(profiles["BG_PROXY"]["assembly"], "proxy")
+            self.assertIn(profiles["BG_PROXY"]["look"], (None, "none"))
+            self.assertNotIn("rig", profiles["BG_PROXY"])
+            self.assertNotIn("groom", profiles["BG_PROXY"])
+            service.load_context = lambda *_args, **_kwargs: context
+            self.assertEqual(
+                service.quality_profiles_for_asset(identity),
+                ["PROXY", "REND"],
+            )
 
     def test_background_usd_only_assembly_can_be_verified_and_packed(self):
         with TemporaryDirectory() as temporary:

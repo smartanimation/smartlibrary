@@ -22,7 +22,6 @@ class AssetLoadDecision:
 def resolve_asset_load_policy(
     metadata: dict[str, Any] | None,
     *,
-    role: str = "",
     requested_context: str = "WORK",
     policy: dict[str, Any] | None = None,
 ) -> AssetLoadDecision:
@@ -67,10 +66,6 @@ def resolve_asset_load_policy(
         )
         if mode:
             return AssetLoadDecision(mode, context, f"{category_class} policy")
-
-    normalized_role = str(role or "").strip().upper()
-    if normalized_role in {"BG", "BGA", "ENV", "BACKGROUND", "SET"}:
-        return AssetLoadDecision("payload", explicit_context, "background role fallback")
 
     unknown = defaults.get("unknown") or {"mode": "reference"}
     if isinstance(unknown, str):

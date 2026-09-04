@@ -93,6 +93,25 @@ class ProjectPaths:
             )
         return self.delivery_editorial_batch(recipient, delivery_batch, process) / f"{entity}.zip"
 
+    def delivery_editorial_index_root(self, recipient: str) -> Path:
+        template = self._template("delivery_editorial_index_root")
+        if template:
+            return self._path_from_template(template, recipient=recipient)
+        return self.delivery_editorial_recipient_root(recipient) / "index"
+
+    def delivery_editorial_revision_index(
+        self, recipient: str, process: str, episode: str, timeline_revision: str
+    ) -> Path:
+        template = self._template("delivery_editorial_revision_index")
+        if template:
+            return self._path_from_template(
+                template, recipient=recipient, process=process,
+                episode=episode, timeline_revision=timeline_revision,
+            )
+        return (
+            self.delivery_editorial_index_root(recipient) / process / episode
+            / f"{timeline_revision}.json"
+        )
     def delivery_staging_root(self) -> Path:
         template = self._template("delivery_staging_root")
         return self._path_from_template(template) if template else self.workspace_root() / "delivery"
@@ -143,17 +162,53 @@ class ProjectPaths:
         """Resolve append-only Editorial revisions for an episode/unit."""
         return self.editorial_episode_publish_root(episode) / "revisions"
 
+    def editorial_revisions_metadata_root(self, episode: str) -> Path:
+        return self.editorial_episode_revisions_root(episode) / "metadata"
+
     def editorial_revision_dir(self, episode: str, revision: str) -> Path:
-        return self.editorial_episode_revisions_root(episode) / revision
-
-    def editorial_revision_clean_dir(self, episode: str, revision: str) -> Path:
-        return self.editorial_revision_dir(episode, revision) / "media" / "clean"
-
-    def editorial_revision_edit_dir(self, episode: str, revision: str) -> Path:
-        return self.editorial_revision_dir(episode, revision) / "media" / "edit"
+        return self.editorial_revisions_metadata_root(episode) / revision
 
     def editorial_revision_mapping_path(self, episode: str, revision: str) -> Path:
-        return self.editorial_revision_dir(episode, revision) / "metadata" / "editorial_mapping.json"
+        return self.editorial_revision_dir(episode, revision) / "editorial_mapping.json"
+
+    def editorial_revisions_media_root(self, episode: str) -> Path:
+        return self.editorial_episode_revisions_root(episode) / "media"
+
+    def editorial_event_media_root(self, episode: str, event_storage_id: str) -> Path:
+        return self.editorial_revisions_media_root(episode) / event_storage_id
+
+    def editorial_event_media_version_dir(
+        self, episode: str, event_storage_id: str, media_version: str
+    ) -> Path:
+        return self.editorial_event_media_root(episode, event_storage_id) / media_version
+
+    def editorial_event_media_clean_dir(
+        self, episode: str, event_storage_id: str, media_version: str
+    ) -> Path:
+        return self.editorial_event_media_version_dir(
+            episode, event_storage_id, media_version
+        ) / "clean"
+
+    def editorial_event_media_edit_dir(
+        self, episode: str, event_storage_id: str, media_version: str
+    ) -> Path:
+        return self.editorial_event_media_version_dir(
+            episode, event_storage_id, media_version
+        ) / "edit"
+
+    def legacy_editorial_revision_mapping_path(self, episode: str, revision: str) -> Path:
+        return (
+            self.editorial_episode_revisions_root(episode)
+            / revision / "metadata" / "editorial_mapping.json"
+        )
+
+    def editorial_revision_clean_dir(self, episode: str, revision: str) -> Path:
+        """Legacy global-revision Clean directory retained for read compatibility."""
+        return self.editorial_episode_revisions_root(episode) / revision / "media" / "clean"
+
+    def editorial_revision_edit_dir(self, episode: str, revision: str) -> Path:
+        """Legacy global-revision HUD directory retained for read compatibility."""
+        return self.editorial_episode_revisions_root(episode) / revision / "media" / "edit"
 
     def workspace_partition(self, department: str) -> str:
         department_name = str(department or "").strip()
@@ -378,6 +433,62 @@ class ProjectPaths:
 
     def sequence_workspace_root(self, episode: str, sequence: str) -> Path:
         return self.sequences_root() / episode / sequence
+
+    def context_root_from_scene_path(self, scene_path: str | Path, department: str = "") -> tuple[str, Path] | None:
+        """Resolve a scene path to the canonical shot or sequence context root."""
+
+        shot_root = self.shot_root_from_scene_path(scene_path, department)
+        if shot_root is not None:
+            return "shot", shot_root
+        sequence_root = self.sequence_root_from_scene_path(scene_path, department)
+        if sequence_root is not None:
+            return "sequence", sequence_root
+        return None
+
+    def shot_root_from_scene_path(self, scene_path: str | Path, department: str = "") -> Path | None:
+        scene = Path(scene_path).resolve()
+        for root in (self.shots_root(), self._workspace_shots_root(department)):
+            try:
+                relative = scene.relative_to(root.resolve())
+            except Exception:
+                continue
+            if len(relative.parts) >= 3:
+                return self.shot_root(relative.parts[0], relative.parts[1], relative.parts[2])
+        return None
+
+    def sequence_root_from_scene_path(self, scene_path: str | Path, department: str = "") -> Path | None:
+        scene = Path(scene_path).resolve()
+        for root in (self.sequences_root(), self._workspace_sequences_root(department)):
+            try:
+                relative = scene.relative_to(root.resolve())
+            except Exception:
+                continue
+            if len(relative.parts) >= 2:
+                return self.sequence_workspace_root(relative.parts[0], relative.parts[1])
+        return None
+
+    def _workspace_shots_root(self, department: str = "") -> Path:
+        for template_name in ("shot_workspace_root", "shot_work_root"):
+            template = self._template(template_name)
+            if template and "{episode}" in template:
+                return self._path_from_template(
+                    template.split("{episode}", 1)[0].rstrip("/\\"),
+                    department=department,
+                    dept=department,
+                    workspace_partition=self.workspace_partition(department),
+                )
+        return self.workspace_root() / self.workspace_partition(department) / "shots"
+
+    def _workspace_sequences_root(self, department: str = "") -> Path:
+        template = self._template("sequence_work_root")
+        if template and "{episode}" in template:
+            return self._path_from_template(
+                template.split("{episode}", 1)[0].rstrip("/\\"),
+                department=department,
+                dept=department,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return self.workspace_root() / self.workspace_partition(department) / "sequences"
 
     def sequence_build_root(self, episode: str, sequence: str, department: str = "") -> Path:
         template = self._template("sequence_build_root")

@@ -326,6 +326,64 @@ def extract_thumbnail_from_mov(
     return True, str(target)
 
 
+def render_internal_review_slate_png(
+    *,
+    slate_path: str | Path,
+    lines: list[str],
+    width: int,
+    height: int,
+    ffmpeg: str = "",
+) -> tuple[bool, str]:
+    """Render the complete immutable Review Snapshot as a standalone PNG."""
+    ffmpeg = ffmpeg or find_ffmpeg()
+    if not ffmpeg:
+        return False, "ffmpeg was not found."
+    target = Path(slate_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    width = max(320, int(width))
+    height = max(180, int(height))
+    text_path = target.with_name(f".{target.stem}.txt")
+    text_path.write_text("\n".join(str(line) for line in lines), encoding="utf-8")
+    font_denominator = _review_slate_font_denominator(len(lines))
+    escaped_text_path = (
+        text_path.resolve().as_posix().replace("\\", "/").replace(":", "\\:")
+        .replace("'", "\\'")
+    )
+    video_filter = (
+        "drawtext="
+        f"textfile='{escaped_text_path}':"
+        f"fontcolor=white:fontsize=h/{font_denominator}:line_spacing=4:"
+        "x=w*0.06:y=h*0.08"
+    )
+    command = [
+        ffmpeg, "-y", "-f", "lavfi", "-i",
+        f"color=c=0x202326:s={width}x{height}:r=1",
+        "-vf", video_filter, "-frames:v", "1", "-update", "1",
+        "-threads", "1", str(target),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode != 0:
+            return False, (result.stderr or result.stdout or "ffmpeg failed.").strip()
+        return True, str(target)
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        text_path.unlink(missing_ok=True)
+
+
+def _review_slate_font_denominator(line_count: int) -> int:
+    """Return a conservative h/N font size that keeps every slate row visible."""
+    return max(40, (max(1, int(line_count)) * 135 + 99) // 100)
+
+
 def _package_config(project_config: ProjectConfig) -> dict[str, Any]:
     data = project_config.load("review_package.yml")
     return (data.get("playblast_package") or {}) if isinstance(data, dict) else {}

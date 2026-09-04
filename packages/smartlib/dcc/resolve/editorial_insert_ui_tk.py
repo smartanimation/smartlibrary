@@ -61,7 +61,7 @@ def show(*, config_dir: str, resolve_app: Any) -> Any:
     canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-    headers = ("Output", "Shot", "Event", "Frames", "Action", "Fixed Version")
+    headers = ("Output", "Shot", "Event", "Frames", "Action", "Fixed Media Version")
     widths = (8, 18, 8, 10, 16, 15)
 
     def request_from_fields(choices=()) -> InsertRequest:

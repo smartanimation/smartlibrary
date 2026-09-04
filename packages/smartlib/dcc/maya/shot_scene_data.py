@@ -185,6 +185,9 @@ def import_scene_component_package(path: str | Path) -> list[str]:
     source = Path(path)
     if source.suffix.lower() == ".json":
         data = _read_json(source)
+        from .camera_publish import SUPPORTED_SCHEMAS, restore_package
+        if data.get('schema') in SUPPORTED_SCHEMAS:
+            return [restore_package(data, cmds=cmds, provenance=str(source))]
         filename = str((data.get("files") or {}).get("ma") or f"{data.get('data_type', source.stem)}.ma")
         source = source.parent / filename
     if not source.is_file():
@@ -286,8 +289,11 @@ def export_camera_selection(camera: str, output_dir: str | Path) -> dict[str, An
     return {"files": files, "errors": errors}
 
 
-def apply_camera_data(data: dict[str, Any], *, name: str | None = None) -> str:
+def apply_camera_data(data: dict[str, Any], *, name: str | None = None, provenance: str = '') -> str:
     cmds = _maya_cmds()
+    from .camera_publish import SUPPORTED_SCHEMAS, restore_package
+    if data.get("schema") in SUPPORTED_SCHEMAS:
+        return restore_package(data, cmds=cmds, provenance=provenance)
     camera_name = str(name or data.get("camera") or "camera")
     camera_name = camera_name.rsplit("|", 1)[-1]
     if cmds.objExists(camera_name):

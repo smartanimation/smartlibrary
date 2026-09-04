@@ -38,6 +38,20 @@ class CameraCmds:
         return None
 
 
+def test_camera_rig_resolver_uses_pipeline_template_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PROJECT_CONFIG_DIR", str(tmp_path / "missing_config"))
+
+    result = shot_builder._resolve_camera_rig(tmp_path / "project")
+
+    assert result == (
+        Path(shot_builder.__file__).resolve().parents[4]
+        / "templates" / "maya" / "shot" / "camerarig.ma"
+    )
+    assert result.is_file()
+
+
 def test_create_camera_supports_maya_camera_v1_samples(tmp_path: Path) -> None:
     camera_json = tmp_path / "camera.json"
     camera_json.write_text(
@@ -133,6 +147,12 @@ def test_stage_shot_applies_construct_cameras_for_layout(
         ),
     )
     curve_applied = []
+    set_dress_applied = []
+    monkeypatch.setattr(
+        shot_builder,
+        "_apply_construct_set_dress",
+        lambda root, value: set_dress_applied.append((root, value)),
+    )
     monkeypatch.setattr(
         shot_builder,
         "_apply_construct_animation_curves",
@@ -159,6 +179,7 @@ def test_stage_shot_applies_construct_cameras_for_layout(
 
     assert references == ["rig.ma"]
     assert applied == [(fake_cmds, tmp_path, shot_data, construct, 0.0)]
+    assert set_dress_applied == [(tmp_path, construct)]
     assert curve_applied == [(tmp_path, construct)]
 
 

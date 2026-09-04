@@ -166,7 +166,8 @@ class AssetContextService:
     ) -> list[str]:
         context = self.load_context(context_name, version)
         _asset_class, profiles = self._profiles_for_identity(identity, context)
-        return list(profiles.keys())
+        labels = context.get("profile_labels") or {}
+        return [str(labels.get(name) or name) for name in profiles]
 
     def asset_class_for_asset(
         self,
@@ -189,9 +190,20 @@ class AssetContextService:
         context = self.load_context(context_name, context_version)
         version_label = str(context.get("_version_label"))
         asset_class, profiles = self._profiles_for_identity(identity, context)
-        profile = profiles.get(quality_profile)
+        profile_id = str(quality_profile)
+        if profile_id not in profiles:
+            labels = context.get("profile_labels") or {}
+            matches = [
+                name
+                for name in profiles
+                if str(labels.get(name) or name).lower() == profile_id.lower()
+            ]
+            if len(matches) == 1:
+                profile_id = matches[0]
+        profile = profiles.get(profile_id)
         if not isinstance(profile, dict):
             raise KeyError(f"Quality profile was not found: {context_name}/{version_label}/{quality_profile}")
+        display_profile = str((context.get("profile_labels") or {}).get(profile_id) or profile_id)
 
         entries = []
         errors = []
@@ -222,7 +234,8 @@ class AssetContextService:
             "context": {
                 "name": str(context.get("name") or context_name),
                 "version": version_label,
-                "quality_profile": quality_profile,
+                "quality_profile": display_profile,
+                "profile_definition": profile_id,
                 "config": str(context.get("_path")),
                 "asset_class": asset_class,
             },
@@ -250,7 +263,7 @@ class AssetContextService:
             identity=identity,
             context_name=context_name,
             context_version=version_label,
-            quality_profile=quality_profile,
+            quality_profile=display_profile,
             entries=entries,
             errors=errors,
             manifest=manifest,
@@ -438,6 +451,15 @@ class AssetContextService:
             if not isinstance(recipe, dict) or not self._recipe_matches(recipe.get("match"), values):
                 continue
             profiles = recipe.get("profiles") or {}
+            selected_names = recipe.get("profile_names")
+            if isinstance(selected_names, (list, tuple, set)):
+                library = context.get("quality_profiles") or {}
+                selected_profiles = {
+                    str(name): dict(library[str(name)])
+                    for name in selected_names
+                    if str(name) in library and isinstance(library[str(name)], dict)
+                }
+                return str(asset_class), selected_profiles
             if isinstance(profiles, dict) and profiles:
                 if not bool(recipe.get("inherit_common_profiles", True)):
                     return str(asset_class), dict(profiles)
@@ -477,6 +499,7 @@ class AssetContextService:
             "environment": {"FAST": "PROXY", "WORK": "PROXY", "REND": "REND"},
             "character": {"FAST": "LO", "WORK": "ANIM", "REND": "REND"},
             "prop": {"FAST": "LO", "WORK": "LO", "REND": "REND"},
+            "vehicle": {"FAST": "LO", "WORK": "LO", "REND": "REND"},
         }.get(asset_class, {"FAST": "LO", "WORK": "ANIM", "REND": "REND"})
         return fallback.get(stage_name, stage_name)
 

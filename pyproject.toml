@@ -29,6 +29,7 @@ where = ["packages"]
 
 [tool.setuptools.package-data]
 "smartlib.apps.launcher" = ["ui/*.ui"]
+"smartlib.apps.smart_camera_playblast" = ["*.svg"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:cacheprovider"

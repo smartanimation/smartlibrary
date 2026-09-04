@@ -35,6 +35,7 @@ def stage_shot_from_preview(
         _load_shot_audio(cmds, Path(project_root) if project_root else None, shot_data or {})
     referenced = build_shot_from_preview(preview_items, shot_data)
     if project_root and construct_data:
+        _apply_construct_placements(cmds, Path(project_root), construct_data)
         _apply_construct_cameras(
             cmds,
             Path(project_root),
@@ -45,6 +46,7 @@ def stage_shot_from_preview(
         # WORK STAGE is data-driven regardless of department or Rig publish
         # representation. Apply curves after Rig references exist and resolve
         # only the destinations actually present in the selected Rig.
+        _apply_construct_set_dress(Path(project_root), construct_data)
         _apply_construct_animation_curves(Path(project_root), construct_data)
     if project_root and str(department or "").strip().lower() == "layout":
         _attach_shot_storyreel_picture_in_picture(
@@ -160,9 +162,9 @@ def stage_anim_from_input(
                     imported = [camera] if camera else []
                 _parent_imported_top_nodes(cmds, imported, _ensure_group(cmds, "camera_grp"))
                 _offset_animation_keys(cmds, imported, frame_offset)
-    if _construct_enabled(construct_data, "placement", "placements", "placements"):
-        placement_nodes = _apply_anim_placements(cmds, root, anim_input)
-        _offset_animation_keys(cmds, placement_nodes, frame_offset)
+    _apply_construct_placements(
+        cmds, root, construct_data, anim_input=anim_input, frame_offset=frame_offset,
+    )
     if not context_proxy and _construct_enabled(construct_data, "layout_overlay", "layout_overlay", "layout_overlay"):
         layout_overlay = _load_layout_overlay_usd(cmds, root, anim_input)
         if layout_overlay:
@@ -238,6 +240,10 @@ def update_anim_construct(
     ]
     referenced = build_shot_from_preview(changed_preview, shot_data or {})
     frame_offset = _anim_frame_offset(anim_input)
+    if selected_types & {"placement", "rig"}:
+        _apply_construct_placements(
+            cmds, root, construct_data, anim_input=anim_input, frame_offset=frame_offset,
+        )
     if "camera" in selected_types:
         _apply_construct_cameras(cmds, root, anim_input, construct_data, frame_offset)
     if "light" in selected_types:
@@ -360,7 +366,7 @@ def build_animation_review_scene(
             camera_path = camera_path.parent / camera_name
         if camera_path.name != "camera.json" or not camera_path.is_file():
             continue
-        camera = apply_camera_data(read_json(camera_path, {}) or {})
+        camera = apply_camera_data(read_json(camera_path, {}) or {}, provenance=str(camera_path))
         try:
             cmds.parent(camera, shots_group)
         except Exception:
@@ -507,9 +513,13 @@ def build_layout_sequence_all(
 
     camera_rig = _resolve_camera_rig(root)
     if not camera_rig:
+        pipeline_fallback = (
+            Path(__file__).resolve().parents[4]
+            / "templates" / "maya" / "shot" / "camerarig.ma"
+        )
         raise FileNotFoundError(
-            "Camera rig was not found. Expected: "
-            f"{root / 'library' / 'layout' / 'camerarig' / 'camerarig.ma'}"
+            "Camera rig was not found. Checked project configuration, project library, "
+            f"and pipeline fallback: {pipeline_fallback}"
         )
 
     shots = _sequence_shot_rows(root, episode, sequence)
@@ -1026,6 +1036,8 @@ def _resolve_camera_rig(project_root: Path) -> Path | None:
         if configured
         else None,
         project_root / "library" / "layout" / "camerarig" / "camerarig.ma",
+        Path(__file__).resolve().parents[4]
+        / "templates" / "maya" / "shot" / "camerarig.ma",
     ]
     return next((path for path in candidates if path and path.exists()), None)
 
@@ -1209,6 +1221,9 @@ def _create_camera_from_json(
     if not camera_json.exists():
         return ""
     data = read_json(camera_json, {}) or {}
+    from .camera_publish import SUPPORTED_SCHEMAS, restore_package
+    if data.get("schema") in SUPPORTED_SCHEMAS:
+        return restore_package(data, cmds=cmds, frame_offset=frame_offset, provenance=str(camera_json))
     shot_name = _clean_namespace(str(anim_input.get("shot") or data.get("shot") or "shot"))
     camera_name = _clean_namespace(camera_name) if camera_name else f"{shot_name}_anim_cam"
     if cmds.objExists(camera_name):
@@ -1313,6 +1328,17 @@ def _apply_construct_cameras(
         if not camera_path or not camera_path.is_file() or camera_path.resolve() in seen:
             continue
         seen.add(camera_path.resolve())
+        # Packages own all cameras and recipes. Never use name-based deletion
+        # or silently fall back to an incomplete legacy snapshot on failure.
+        if camera_path.suffix.lower() == ".json":
+            from .camera_publish import SUPPORTED_SCHEMAS, restore_package
+            package = read_json(camera_path, {}) or {}
+            if package.get("schema") in SUPPORTED_SCHEMAS:
+                package_root = restore_package(package, cmds=cmds, frame_offset=frame_offset,
+                                               provenance=str(camera_path))
+                cmds.parent(package_root, _ensure_group(cmds, "camera_grp"))
+                cameras.append(package_root)
+                continue
         camera_name = str(component.get("name") or "")
         source_kind = str((component.get("source") or {}).get("kind") or "")
         group = _ensure_group(cmds, "camera_grp")
@@ -1430,20 +1456,39 @@ def _apply_construct_playblast_settings(cmds, project_root: Path, construct_data
         "target", "subset", "version", "comment", "source_workfile", "files",
     ):
         data.pop(key, None)
-    save_scene_playblast_settings(data, cmds)
+    from .camera_publish import merge_build_settings
+    save_scene_playblast_settings(merge_build_settings(data, cmds), cmds)
     return str(path)
 
 
 def _apply_construct_set_dress(project_root: Path, construct_data: dict | None) -> list[str]:
     warnings = []
-    from smartlib.dcc.maya import set_dress
+    from smartlib.dcc.maya import set_dress, set_dress_usd
 
+    packages = []
+    package_paths = []
     for component in _enabled_construct_components(construct_data, "set_dress"):
         package_path = _project_path(project_root, str(component.get("path") or ""))
         if not package_path or not package_path.is_file():
             continue
-        package = set_dress.load_package(package_path)
-        warnings.extend(set_dress.apply_stack(package.layers, base=package.base))
+        packages.append(set_dress.load_package(package_path))
+        package_paths.append(package_path)
+    if not packages:
+        return warnings
+
+    package = set_dress.compose_packages(packages)
+    for target, backend in (("maya", set_dress), ("usd", set_dress_usd)):
+        layers = [layer for layer in package.layers if layer.target == target]
+        is_usd = target == "usd"
+        base = [state for state in package.base if ("," in state.node_id) == is_usd]
+        if layers or base:
+            warnings.extend(backend.apply_stack(layers, base=base))
+
+    set_dress.embed_package_in_scene(
+        package,
+        external_path=package_paths[0] if len(package_paths) == 1 else "",
+        dirty=False,
+    )
     return warnings
 
 
@@ -1550,6 +1595,44 @@ def _shot_data_from_anim_input(anim_input: dict) -> dict:
         "shot": anim_input.get("shot"),
         "editorial": editorial,
     }
+
+
+def _apply_construct_placements(
+    cmds, project_root: Path, construct_data: dict | None,
+    *, anim_input: dict | None = None, frame_offset: float = 0.0,
+) -> list[str]:
+    """Apply pinned Placement Data; use legacy input only without a data contract."""
+    components = [
+        component for component in (construct_data or {}).get("components", [])
+        if isinstance(component, dict)
+        and str(component.get("component_type") or component.get("type") or "").lower() == "placement"
+        and str((component.get("source") or {}).get("kind") or "") != "anim_input"
+    ]
+    if not components:
+        if _construct_enabled(construct_data, "placement", "placements", "placements"):
+            nodes = _apply_anim_placements(cmds, project_root, anim_input or {})
+            _offset_animation_keys(cmds, nodes, frame_offset)
+            return nodes
+        return []
+    nodes = []
+    applied_paths = set()
+    for component in components:
+        if not _truthy(component.get("enabled"), default=True):
+            continue
+        path = _project_path(project_root, str(component.get("path") or ""))
+        if not path or not path.is_file():
+            if _truthy(component.get("required"), default=True):
+                raise RuntimeError(
+                    f"Construct Snapshot Placement was not found: {component.get('name')}: {path}"
+                )
+            continue
+        if path in applied_paths:
+            continue
+        applied_paths.add(path)
+        # Scene Data is already in scene time; the old Animation Input offset
+        # must not be applied to these pinned versions.
+        nodes.extend(_apply_anim_placements(cmds, project_root, {"placements": str(path)}))
+    return list(dict.fromkeys(nodes))
 
 
 def _apply_anim_placements(cmds, project_root: Path, anim_input: dict) -> list[str]:

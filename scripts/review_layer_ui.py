@@ -62,25 +62,30 @@ def _is_maya_session() -> bool:
 
 
 class ReviewLayerWindow(QtWidgets.QDialog):
-    MEMBER_COLUMNS = ("Type", "Member", "Asset / Object", "Variant", "Role", "Namespace", "Status")
-    CAST_COLUMNS = ("Member", "Asset", "Variant", "Role", "Namespace", "Assigned Layer")
+    MEMBER_COLUMNS = ("Type", "Member", "Asset / Object", "Variant", "Category", "Namespace", "Status")
+    CAST_COLUMNS = ("Member", "Asset", "Variant", "Category", "Namespace", "Assigned Layer")
 
     def __init__(self, identity=None, config_dir=None, department=None, parent=None):
         super().__init__(parent)
         self.service, self.identity_cls = _service(config_dir)
+        from smartlib.apps.shot_manager.context import get_shot_context
+
+        self.shot_context = get_shot_context(self.service.project_config)
         self.is_maya_session = _is_maya_session()
-        self.identity = identity
-        self.fixed_identity = identity is not None
+        self.identity = self._working_shot_identity() if self.is_maya_session else identity
+        self.fixed_identity = self.is_maya_session or identity is not None
         if self.identity is None:
             self.identity = self._working_shot_identity()
         self.department = str(department or "anim").strip() or "anim"
         self._layers: dict[str, dict] = {}
         self._cast: dict[str, dict] = {}
+        self._scene_callbacks = []
         self.setWindowTitle(f"Review Layer Manager - {self.service.project_config.project_name}")
         self.resize(1120, 680)
         self._build_ui()
+        self.shot_combo.setVisible(not self.fixed_identity)
         if not self.fixed_identity:
-            self._populate_shots()
+            self._populate_shots(allow_default=False)
         else:
             self._set_context_label()
         self.refresh()
@@ -129,7 +134,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             self.select_maya_btn.setEnabled(False)
 
         self.shot_combo.currentIndexChanged.connect(self._shot_changed)
-        self.refresh_btn.clicked.connect(self.refresh)
+        self.refresh_btn.clicked.connect(self._refresh_context)
         self.layer_list.currentItemChanged.connect(lambda *_: self._refresh_member_views())
         self.add_layer_btn.clicked.connect(self.add_layer)
         self.duplicate_layer_btn.clicked.connect(self.duplicate_layer)
@@ -219,7 +224,68 @@ class ReviewLayerWindow(QtWidgets.QDialog):
         layout.addWidget(self.info_label)
         return widget
 
-    def _populate_shots(self) -> None:
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.shot_context.subscribe(self._selection_changed)
+        self._selection_changed(self.shot_context.selected_shot)
+        if self.is_maya_session and not self._scene_callbacks:
+            from maya.api import OpenMaya as om
+
+            for scene_event in (om.MSceneMessage.kAfterOpen, om.MSceneMessage.kAfterNew):
+                self._scene_callbacks.append(
+                    om.MSceneMessage.addCallback(scene_event, self._scene_changed)
+                )
+            self._scene_callbacks.append(
+                om.MSceneMessage.addCallback(om.MSceneMessage.kAfterSave, self._scene_saved)
+            )
+            self._scene_saved()
+
+    def closeEvent(self, event) -> None:
+        self.shot_context.unsubscribe(self._selection_changed)
+        if self._scene_callbacks:
+            from maya.api import OpenMaya as om
+
+            for callback in self._scene_callbacks:
+                om.MMessage.removeCallback(callback)
+            self._scene_callbacks.clear()
+        super().closeEvent(event)
+
+    def _reset_shot_contents(self) -> None:
+        self.identity = None
+        self._layers = {}
+        self._cast = {}
+        self.layer_list.blockSignals(True)
+        self.layer_list.clear()
+        self.layer_list.blockSignals(False)
+        self.cast_search.clear()
+        self.member_table.setRowCount(0)
+        self.cast_table.setRowCount(0)
+        self.display_layer_combo.blockSignals(True)
+        self.display_layer_combo.clear()
+        self.display_layer_combo.setEnabled(False)
+        self.display_layer_combo.blockSignals(False)
+        self.shot_combo.blockSignals(True)
+        self.shot_combo.clear()
+        self.shot_combo.blockSignals(False)
+        self.info_label.clear()
+        self.status_label.clear()
+        self._set_context_label()
+
+    def _scene_changed(self, *_args) -> None:
+        # Scene changes discard UI drafts only; never publish or modify Maya here.
+        self._reset_shot_contents()
+        try:
+            self.identity = self._working_shot_identity()
+            self._populate_shots(allow_default=False)
+            if self.identity is None:
+                self.status_label.setText("No shot identified from the current Maya scene")
+                return
+            self.refresh()
+        except Exception as exc:
+            self._reset_shot_contents()
+            self.status_label.setText(f"Failed to load scene shot: {exc}")
+
+    def _populate_shots(self, allow_default=True) -> None:
         preferred = self.identity
         self.shot_combo.blockSignals(True)
         self.shot_combo.clear()
@@ -230,42 +296,49 @@ class ReviewLayerWindow(QtWidgets.QDialog):
                 preferred_index = self.shot_combo.count() - 1
         if preferred_index >= 0:
             self.shot_combo.setCurrentIndex(preferred_index)
+        elif not allow_default:
+            self.shot_combo.setCurrentIndex(-1)
         self.shot_combo.blockSignals(False)
-        if self.shot_combo.count():
+        if allow_default and self.shot_combo.count():
             self.identity = self.shot_combo.currentData()
         self.shot_combo.setVisible(not self.fixed_identity)
         self._set_context_label()
 
     def _working_shot_identity(self):
         if self.is_maya_session:
-            try:
-                import maya.cmds as cmds
+            return self.shot_context.scene_shot(self.service)
+        return self.shot_context.selected_shot
 
-                scene_path = str(cmds.file(query=True, sceneName=True) or "")
-                identity = self.service.shot_identity_from_path(scene_path)
-                if identity is not None:
-                    return identity
-            except Exception:
-                pass
-
+    def _scene_saved(self, *_args) -> None:
         try:
-            _ensure_smartlib_on_path()
-            from smartlib.core.tokens import TokenContext
-
-            tokens = TokenContext.from_environment()
-            if tokens.episode and tokens.sequence and tokens.shot:
-                candidate = self.identity_cls(
-                    tokens.episode,
-                    tokens.sequence,
-                    tokens.shot,
-                )
-                if candidate in self.service.list_shots():
-                    return candidate
+            identity = self._working_shot_identity()
         except Exception:
-            pass
-        return None
+            self._scene_changed()
+            return
+        if identity != self.identity or identity is None:
+            self._scene_changed()
+
+    def _refresh_context(self) -> None:
+        if self.is_maya_session:
+            self._scene_changed()
+        else:
+            self.refresh()
+
+    def _selection_changed(self, identity) -> None:
+        if self.is_maya_session or self.fixed_identity or identity == self.identity:
+            return
+        self._reset_shot_contents()
+        try:
+            self.identity = identity
+            self._populate_shots(allow_default=False)
+            self.refresh()
+        except Exception as exc:
+            self._reset_shot_contents()
+            self.status_label.setText(f"Failed to load selected shot: {exc}")
 
     def _shot_changed(self) -> None:
+        if self.is_maya_session:
+            return
         identity = self.shot_combo.currentData()
         if identity:
             self.identity = identity
@@ -274,9 +347,12 @@ class ReviewLayerWindow(QtWidgets.QDialog):
 
     def _set_context_label(self) -> None:
         if self.identity:
+            source = "Maya Scene" if self.is_maya_session else "Selected Shot"
             self.context_label.setText(
-                f"{self.identity.episode} / {self.identity.sequence} / {self.identity.shot}"
+                f"{source}: {self.identity.episode} / {self.identity.sequence} / {self.identity.shot}"
             )
+        else:
+            self.context_label.setText("No shot selected")
 
     def refresh(self) -> None:
         if not self.identity:
@@ -545,7 +621,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
                 cast_key,
                 entry.get("asset", ""),
                 entry.get("variant", ""),
-                entry.get("role", ""),
+                entry.get("category", ""),
                 entry.get("namespace", ""),
                 "In Sync" if entry else "Missing",
             )
@@ -590,7 +666,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
             if assigned:
                 continue
             haystack = " ".join(
-                str(value) for value in (cast_key, entry.get("asset"), entry.get("variant"), entry.get("role"))
+                str(value) for value in (cast_key, entry.get("asset"), entry.get("variant"), entry.get("category"))
             ).lower()
             if query and query not in haystack:
                 continue
@@ -598,7 +674,7 @@ class ReviewLayerWindow(QtWidgets.QDialog):
                 cast_key,
                 entry.get("asset", ""),
                 entry.get("variant", ""),
-                entry.get("role", ""),
+                entry.get("category", ""),
                 entry.get("namespace", ""),
                 assigned or "-",
             )

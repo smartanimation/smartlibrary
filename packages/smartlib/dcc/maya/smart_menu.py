@@ -50,11 +50,6 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_preflight",
                     "enabled": True,
                 },
-                {
-                    "label": "Texture Path Repair",
-                    "command": "smartlib.dcc.maya.smart_menu.show_texture_path_repair",
-                    "enabled": True,
-                },
             ],
             "Sets": [
                 {
@@ -62,18 +57,13 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_asset_assembly",
                     "enabled": True,
                 },
-            ],
-            "Layout": [
-                {
-                    "label": "Smart Sequence Builder",
-                    "command": "smartlib.dcc.maya.smart_menu.show_smart_sequence_builder",
-                    "enabled": True,
-                },
                 {
                     "label": "Smart Set Dress",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_set_dress",
                     "enabled": True,
                 },
+            ],
+            "Layout": [
                 {
                     "label": "MAYA Layout Panel",
                     "command": "smartlib.dcc.maya.smart_menu.show_maya_layout_panel",
@@ -89,6 +79,8 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_shot",
                     "enabled": True,
                 },
+            ],
+            "Camera": [
                 {
                     "label": "SmartGateGuide",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_gate_guide",
@@ -101,6 +93,11 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_modeling_support",
                     "enabled": True,
                 },
+                {
+                    "label": "Texture Path Repair",
+                    "command": "smartlib.dcc.maya.smart_menu.show_texture_path_repair",
+                    "enabled": True,
+                },
             ],
             "Render": [
                 {
@@ -111,6 +108,11 @@ DEFAULT_MENU_CONFIG = {
                 {
                     "label": "Smart Playblast",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_playblast",
+                    "enabled": True,
+                },
+                {
+                    "label": "Smart Camera Playblast (Experimental)",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_camera_playblast",
                     "enabled": True,
                 },
                 {
@@ -273,7 +275,58 @@ def _load_menu_config() -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("maya_menu"), dict):
         return DEFAULT_MENU_CONFIG
     _ensure_sequence_manager_entry(data)
+    _ensure_camera_playblast_entry(data)
+    _organize_tool_categories(data)
     return data
+
+
+def _organize_tool_categories(data: dict) -> None:
+    """Apply the built-in tool placement to project menu overrides."""
+    categories = (data.get("maya_menu") or {}).get("categories")
+    if not isinstance(categories, dict):
+        return
+    destinations = {
+        "smartlib.dcc.maya.smart_menu.show_smart_set_dress": "Sets",
+        "smartlib.dcc.maya.smart_menu.show_texture_path_repair": "Modeling",
+        "smartlib.dcc.maya.smart_menu.show_smart_gate_guide": "Camera",
+        "smartlib.dcc.maya.smart_menu.show_smart_sequence_builder": None,
+    }
+    moved = []
+    for category, items in list(categories.items()):
+        retained = []
+        changed = False
+        for item in _menu_items_from_config(items):
+            command = str(item.get("command") or "").strip()
+            if command in destinations and destinations[command] != category:
+                changed = True
+                if destinations[command] is not None:
+                    moved.append((destinations[command], item))
+            else:
+                retained.append(item)
+        if changed:
+            categories[category] = retained
+    for category, item in moved:
+        items = _menu_items_from_config(categories.get(category, []))
+        command = str(item.get("command") or "").strip()
+        if not any(str(entry.get("command") or "").strip() == command for entry in items):
+            items.append(item)
+        categories[category] = items
+
+
+def _ensure_camera_playblast_entry(data: dict) -> None:
+    """Expose the separate experimental tool in older project menus too."""
+    categories = (data.get("maya_menu") or {}).get("categories")
+    if not isinstance(categories, dict):
+        return
+    items = categories.setdefault("Render", [])
+    command = "smartlib.dcc.maya.smart_menu.show_smart_camera_playblast"
+    if any(item.get("command") == command for item in _menu_items_from_config(items)):
+        return
+    label = "Smart Camera Playblast (Experimental)"
+    if isinstance(items, list):
+        items.append({"label": label, "command": command, "enabled": True})
+    elif isinstance(items, dict):
+        items[label] = {"command": command, "enabled": True}
 
 
 def _ensure_sequence_manager_entry(data: dict) -> None:
@@ -494,6 +547,16 @@ def show_smart_playblast() -> None:
     # window closes, so a version comparison can accidentally relaunch stale
     # drag/drop code when only the tool window is restarted.
     ui_module = importlib.reload(ui_module)
+    ui_module.show(config_dir=str(_config_dir()))
+
+
+def show_smart_camera_playblast() -> None:
+    ensure_runtime_paths()
+    _reload("smartlib.dcc.maya.camera_output", "smartlib.dcc.maya.review_playblast",
+            "smartlib.dcc.maya.camera_publish", "smartlib.dcc.maya.camera_live", "smartlib.dcc.maya.camera_native")
+    importlib.reload(importlib.import_module("smartlib.apps.smart_playblast.ui"))
+    importlib.reload(importlib.import_module("smartlib.apps.smart_camera_playblast.layer_list"))
+    ui_module = importlib.reload(importlib.import_module("smartlib.apps.smart_camera_playblast.ui"))
     ui_module.show(config_dir=str(_config_dir()))
 
 

@@ -12,6 +12,7 @@ from smartlib.apps.review_build_manager.service import (
 )
 from smartlib.apps.shot_manager import BuildPreviewItem, ShotIdentity, ShotManagerService
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.dcc.maya import placement as placement_tools
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -76,7 +77,7 @@ def test_construct_from_cast_resolves_rig_publish(tmp_path: Path) -> None:
                 "hero": {
                     "asset": "Hero",
                     "variant": "default",
-                    "role": "CHA",
+                    "category": "character",
                     "namespace": "hero",
                     "asset_publish": "approved",
                     "required": True,
@@ -374,7 +375,7 @@ def test_missing_background_asset_usd_is_visible_but_not_required(tmp_path: Path
         asset="Room",
         variant="default",
         namespace="Room_main",
-        role="BGA",
+        category="environment",
         review_layer="",
         asset_publish="approved",
         required=True,
@@ -423,7 +424,7 @@ def test_background_resolves_formal_asset_usda_after_pack(tmp_path: Path) -> Non
         asset="Room",
         variant="default",
         namespace="Room_main",
-        role="BGA",
+        category="environment",
         review_layer="",
         asset_publish="approved",
         required=True,
@@ -452,7 +453,7 @@ def test_resolved_construct_keeps_missing_background_optional() -> None:
                 "name": "Room_main",
                 "required": True,
                 "note": "old blocking background",
-                "source": {"kind": "cast_entry", "role": "BGA", "context": "WORK"},
+                "source": {"kind": "cast_entry", "category": "environment", "context": "WORK"},
             }
         ]
     }
@@ -465,7 +466,7 @@ def test_resolved_construct_keeps_missing_background_optional() -> None:
                 "required": False,
                 "enabled": True,
                 "note": "MISSING: Compose/Pack Asset USD required",
-                "source": {"kind": "cast_entry", "role": "BGA", "context": "WORK"},
+                "source": {"kind": "cast_entry", "category": "environment", "context": "WORK"},
             }
         ]
     }
@@ -512,7 +513,7 @@ def test_build_manager_contents_use_construct_components() -> None:
                     "path": "",
                     "enabled": False,
                     "required": True,
-                    "source": {"asset": "Hero", "role": "CHA"},
+                    "source": {"asset": "Hero", "category": "character"},
                 },
             ]
         },
@@ -528,6 +529,63 @@ def test_build_manager_contents_use_construct_components() -> None:
     assert rows[1]["note"] == "from dependencies.json: vcam_take30"
     assert rows[2]["context"] == "WORK"
     assert rows[2]["state"] == "EXCLUDED"
+
+
+def test_build_manager_discards_context_removed_from_asset_profiles() -> None:
+    manager = object.__new__(ReviewBuildManagerService)
+    manager.shots = SimpleNamespace(
+        load_cast=lambda _identity: {
+            "cast": {
+                "hero": {"asset": "Hero", "variant": "default"},
+            }
+        },
+        find_asset_root=lambda _asset: Path("assets/character/Hero"),
+    )
+    manager.asset_context_profiles_for_root = lambda *_args: ["LO", "ANIM", "REND"]
+    manager.default_asset_context = lambda *_args: "ANIM"
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    contexts = manager.normalize_cast_contexts(
+        identity,
+        {"hero": "CHAR_ANIM"},
+        default_context="WORK",
+    )
+
+    assert contexts == {"hero": "ANIM"}
+
+
+def test_build_manager_contents_show_existing_shot_data_version_as_latest(
+    tmp_path: Path,
+) -> None:
+    data_file = tmp_path / "v009" / "animation_curve.json"
+    data_file.parent.mkdir()
+    data_file.write_text("{}", encoding="utf-8")
+    manager = object.__new__(ReviewBuildManagerService)
+    manager.shots = SimpleNamespace(
+        resolved_construct=lambda *_args, **_kwargs: {
+            "components": [
+                {
+                    "component_type": "animation_curve",
+                    "name": "DLI_main",
+                    "version": "v009",
+                    "path": str(data_file),
+                    "enabled": True,
+                    "required": True,
+                    "source": {"kind": "animation_curve_data"},
+                }
+            ]
+        },
+        load_construct=lambda _identity: {"components": []},
+        load_cast=lambda _identity: {"cast": {}},
+        find_asset_root=lambda _asset: None,
+    )
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+
+    row = manager.build_contents(identity)[0]
+
+    assert row["latest"] == "v009"
+    assert row["official"] == "v009"
+    assert row["state"] == "READY"
 
 
 def test_work_stage_status_uses_construct_curves_without_animation_package(
@@ -556,7 +614,7 @@ def test_work_stage_status_uses_construct_curves_without_animation_package(
                 "path": str(rig),
                 "required": True,
                 "enabled": True,
-                "source": {"role": "CHA"},
+                "source": {"category": "character"},
             },
             {
                 "component_type": "animation_curve",
@@ -571,7 +629,7 @@ def test_work_stage_status_uses_construct_curves_without_animation_package(
     manager.shots = SimpleNamespace(
         resolved_construct=lambda *_args, **_kwargs: desired,
         load_cast=lambda _identity: {
-            "cast": {"hero": {"required": True, "role": "CHA"}}
+            "cast": {"hero": {"required": True, "category": "character"}}
         },
         load_sequence_cast=lambda *_args: {"cast": {}},
         load_shot=lambda _identity: {"status": "wip"},
@@ -609,11 +667,11 @@ def test_work_stage_status_reports_missing_required_animation_curve(
                 "path": str(rig),
                 "required": True,
                 "enabled": True,
-                "source": {"role": "CHA"},
+                "source": {"category": "character"},
             }]
         },
         load_cast=lambda _identity: {
-            "cast": {"hero": {"required": True, "role": "CHA"}}
+            "cast": {"hero": {"required": True, "category": "character"}}
         },
         load_sequence_cast=lambda *_args: {"cast": {}},
         load_shot=lambda _identity: {},
@@ -649,7 +707,7 @@ def test_work_stage_static_placement_does_not_require_animation_curve(
                 {"component_type": "placement", "name": "placements", "path": str(placements_path), "required": True, "enabled": True},
             ]
         },
-        load_cast=lambda _identity: {"cast": {"chair": {"required": True, "role": "CHA"}}},
+        load_cast=lambda _identity: {"cast": {"chair": {"required": True, "category": "prop"}}},
         load_sequence_cast=lambda *_args: {"cast": {}},
         load_shot=lambda _identity: {},
         shot_root=lambda _identity: tmp_path,
@@ -682,7 +740,7 @@ def test_work_stage_curve_placement_requires_animation_curve(tmp_path: Path) -> 
                 {"component_type": "placement", "name": "placements", "path": str(placements_path), "required": True, "enabled": True},
             ]
         },
-        load_cast=lambda _identity: {"cast": {"chair": {"required": True, "role": "CHA"}}},
+        load_cast=lambda _identity: {"cast": {"chair": {"required": True, "category": "prop"}}},
         load_sequence_cast=lambda *_args: {"cast": {}},
         load_shot=lambda _identity: {},
         shot_root=lambda _identity: tmp_path,
@@ -695,6 +753,27 @@ def test_work_stage_curve_placement_requires_animation_curve(tmp_path: Path) -> 
     assert status.state == "MISSING"
     assert "Animation Curves: chair" in status.message
 
+
+def test_smart_maker_export_writes_shot_data_placement_type(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(placement_tools, "_context_root", lambda _config: tmp_path)
+    monkeypatch.setattr(
+        placement_tools,
+        "_collect_placement_metadata",
+        lambda: (
+            {"placements": [{"locator": "hero_place_loc"}]},
+            {"placements": [{"locator": "hero_place_loc", "member": "hero"}]},
+        ),
+    )
+
+    placements_path, members_path = placement_tools.export_metadata(SimpleNamespace())
+
+    assert placements_path == tmp_path / "data/placement/hero_place_loc/main/v001/placements.json"
+    assert members_path == tmp_path / "data/placement/hero_place_loc/main/v001/placement_members.json"
+    assert json.loads((placements_path.parent / "data.json").read_text(encoding="utf-8"))["data_type"] == "placement"
+    assert json.loads((placements_path.parents[1] / "latest.json").read_text(encoding="utf-8")) == {
+        "version": "v001",
+        "path": "v001/placements.json",
+    }
 
 def test_work_stage_input_resolves_shot_data_camera_and_placements(tmp_path: Path) -> None:
     service = object.__new__(ShotManagerService)
@@ -715,6 +794,57 @@ def test_work_stage_input_resolves_shot_data_camera_and_placements(tmp_path: Pat
     assert service._latest_work_stage_camera(identity) == camera
     assert service._latest_work_stage_placements(identity) == placements
 
+
+def test_work_stage_input_prefers_exported_placement_data(tmp_path: Path) -> None:
+    service = object.__new__(ShotManagerService)
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+    placement_dir = tmp_path / "data" / "placement" / "chair_place_loc" / "main" / "v004"
+    placements = placement_dir / "placements.json"
+    write_json(placements, {"placements": []})
+    published = tmp_path / "publish" / "layout" / "placements" / "v002" / "placements.json"
+    write_json(published, {"placements": []})
+    service.list_shot_data_versions = lambda _identity: [
+        SimpleNamespace(name="placement/chair_place_loc/main", version="v004", path=str(placement_dir), latest=True)
+    ]
+    service.list_placement_publish_versions = lambda _identity: [
+        SimpleNamespace(version="v002", path=str(published), latest=True)
+    ]
+    service.shot_data_root = lambda _identity: tmp_path / "data"
+
+    assert service._latest_work_stage_placements(identity) == placements
+
+
+def test_construct_from_stage_inputs_includes_placement_data(tmp_path: Path) -> None:
+    service = object.__new__(ShotManagerService)
+    identity = SimpleNamespace(episode="ep01", sequence="sq01", shot="sh010")
+    placement_dir = tmp_path / "data" / "placement" / "chair_place_loc" / "main" / "v004"
+    placements = placement_dir / "placements.json"
+    write_json(placements, {"placements": []})
+    service.paths = SimpleNamespace(project_root=tmp_path)
+    service.latest_editorial_timing_path = lambda _identity: None
+    service.shot_data_root = lambda _identity: tmp_path / "data"
+    service.latest_anim_input = lambda _identity: None
+    service.list_shot_data_versions = lambda _identity: [
+        SimpleNamespace(name="placement/chair_place_loc/main", version="v004", path=str(placement_dir), latest=True)
+    ]
+    service.selected_virtual_camera_dependencies = lambda _identity: []
+    service._latest_review_camera_paths = lambda _identity: []
+    service.list_set_dress_data = lambda _identity: []
+    service.list_set_dress_publish_versions = lambda _identity: []
+    service.load_cast = lambda _identity: {"cast": {}}
+    service.load_sequence_cast = lambda *_args: {"cast": {}}
+    service.latest_animation_curve_path = lambda *_args, **_kwargs: None
+    service.build_preview = lambda *_args, **_kwargs: []
+
+    construct = service.construct_from_stage_inputs(identity)
+    placement_component = next(
+        row for row in construct["components"] if row["component_type"] == "placement"
+    )
+
+    assert placement_component["name"] == "chair_place_loc"
+    assert placement_component["version"] == "v004"
+    assert placement_component["path"] == str(placements)
+    assert placement_component["source"]["data_type"] == "placement"
 
 def test_construct_output_uses_workspace_and_reads_legacy_history(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
@@ -788,9 +918,10 @@ def test_construct_discovers_publishes_without_anim_input(tmp_path: Path) -> Non
     service = object.__new__(ShotManagerService)
     camera = tmp_path / "publish" / "camera" / "cam_main" / "main" / "v003" / "camera.json"
     set_dress = tmp_path / "publish" / "setdress" / "main" / "v002" / "main.setdress.json"
+    set_dress_work = tmp_path / "data" / "setdress" / "main.setdress.json"
     preview = tmp_path / "publish" / "preview_render" / "anim" / "packages" / "v004" / "render_manifest.json"
     animation = tmp_path / "publish" / "animation" / "package" / "main" / "v005" / "animation_manifest.json"
-    for path in (camera, set_dress, preview, animation):
+    for path in (camera, set_dress, set_dress_work, preview, animation):
         write_json(path, {"ok": True})
     service.latest_anim_input = lambda _identity: None
     service.list_shot_data_versions = lambda _identity: []
@@ -798,6 +929,14 @@ def test_construct_discovers_publishes_without_anim_input(tmp_path: Path) -> Non
     service._latest_review_camera_paths = lambda _identity: [str(camera)]
     service.list_set_dress_publish_versions = lambda _identity: [
         SimpleNamespace(name="set_dress/main", version="v002", path=str(set_dress), latest=True)
+    ]
+    service.list_set_dress_data = lambda _identity: [
+        SimpleNamespace(
+            name="set_dress_data/main",
+            version="WORK",
+            path=str(set_dress_work),
+            latest=True,
+        )
     ]
     service.list_preview_render_versions = lambda _identity: [
         SimpleNamespace(name="preview_render/anim", version="v004", path=str(preview), latest=True)
@@ -813,6 +952,12 @@ def test_construct_discovers_publishes_without_anim_input(tmp_path: Path) -> Non
     assert {row["component_type"] for row in result["components"]} == {
         "camera", "set_dress"
     }
+    set_dress_component = next(
+        row for row in result["components"] if row["component_type"] == "set_dress"
+    )
+    assert set_dress_component["version"] == "WORK"
+    assert set_dress_component["path"] == str(set_dress_work)
+    assert set_dress_component["source"]["kind"] == "set_dress_work_data"
 
 
 def test_latest_shot_camera_falls_back_to_direct_publish(tmp_path: Path) -> None:
@@ -899,3 +1044,83 @@ def test_camera_native_publish_files_are_registered(tmp_path: Path) -> None:
     }
     assert publish_data["files"]["camera"] == "camera.json"
     assert publish_data["files"]["ma"] == "cam_main.ma"
+
+
+def test_camera_package_uses_existing_publish_versions(tmp_path: Path) -> None:
+    from smartlib.dcc.maya.camera_publish import SCHEMA
+    config_dir = tmp_path / "config"
+    write_config(config_dir, tmp_path / "project")
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep001", "sq010", "sh0010")
+    payload = {"schema": SCHEMA, "camera": "primaryCam", "rows": [{"camera_key": "layer:CHA"}],
+               "cameras": [{"key": "primary", "role": "primary"}]}
+    first = service.publish_shot_scene_snapshot(identity, payload, data_type="camera")
+    second = service.publish_shot_scene_snapshot(identity, payload, data_type="camera")
+    assert json.loads(first.read_text(encoding="utf-8"))["version"] == "v001"
+    restored = json.loads(second.read_text(encoding="utf-8"))
+    assert restored["schema"] == SCHEMA
+    assert restored["cameras"] == payload["cameras"]
+    assert restored["rows"] == payload["rows"]
+    assert service._latest_shot_camera_publish(identity) == second
+    assert {row.version for row in service.list_shot_scene_publish_versions(identity, "camera")} == {"v001", "v002"}
+
+
+def test_camera_package_data_and_build_version_selection(tmp_path: Path) -> None:
+    from smartlib.core.camera_package import SCHEMA, camera_package_info
+    config_dir = tmp_path / "config"
+    write_config(config_dir, tmp_path / "project")
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity("ep001", "sq010", "sh0010")
+    payload = dict(schema=SCHEMA, reference_resolution=[1920, 1080],
+                   cameras=[dict(role='primary', name='creativeCam')],
+                   rows=[dict(layer='CHA', camera='smartCam_CHA', width=2048, height=858,
+                              start=1001, end=1100, version=2, take=3)])
+    first = service.publish_shot_scene_snapshot(identity, payload, data_type='camera')
+    second = service.publish_shot_scene_snapshot(identity, payload, data_type='camera')
+    assert len(service.list_camera_package_versions(identity)) == 2
+    assert 'smartCam_CHA' in camera_package_info(first)['summary']
+    manager = ReviewBuildManagerService(ProjectConfig(config_dir))
+    rows = manager.build_contents(identity)
+    index = next(i for i, row in enumerate(rows) if row.get('camera_versions'))
+    assert rows[index]['component']['path'] == str(second)
+    assert len(rows[index]['camera_versions']) == 2
+    manager.select_camera_package_version(identity, rows, index, str(first))
+    # A newly published version must not change the selected input.
+    service.publish_shot_scene_snapshot(identity, payload, data_type='camera')
+    rows = manager.build_contents(identity)
+    selected = next(row for row in rows if row.get('camera_versions'))
+    assert selected['official'] == 'v001'
+    assert selected['latest'] == 'v003'
+    assert selected['component']['path'] == str(first)
+    assert selected['component']['source']['camera_package_version_locked']
+    # Same target, different subset remains an independently selectable package.
+    other = service.publish_shot_scene_snapshot(identity, payload, data_type='camera', subset='alternate')
+    rows = manager.build_contents(identity)
+    assert sum(bool(row.get('camera_versions')) for row in rows) == 2
+    index = next(i for i, row in enumerate(rows) if row['component']['path'] == str(other))
+    manager.select_camera_package_version(identity, rows, index, str(other))
+    enabled = [row for row in manager.build_contents(identity) if row.get('camera_versions') and row['enabled']]
+    assert len(enabled) == 1 and enabled[0]['component']['path'] == str(other)
+
+
+def test_native_camera_publish_commits_only_after_dependency_export(tmp_path: Path) -> None:
+    import pytest
+    config_dir = tmp_path / 'config'
+    write_config(config_dir, tmp_path / 'project')
+    service = ShotManagerService(ProjectConfig(config_dir))
+    identity = ShotIdentity('ep001', 'sq010', 'sh0010')
+    payload = dict(schema='smartpipeline.camera_package.v2', cameras=[dict(role='primary', name='cam')], rows=[])
+    with pytest.raises(ValueError, match='requires'):
+        service.publish_shot_scene_snapshot(identity, payload, data_type='camera')
+    def export(directory):
+        (directory / 'primary.ma').write_text('// test native payload', encoding='utf-8')
+        return {'ma': 'primary.ma'}
+    published = service.publish_shot_scene_snapshot(identity, payload, data_type='camera', native_exporter=export)
+    assert json.loads(published.read_text(encoding='utf-8'))['files'] == {'ma': 'primary.ma'}
+    assert json.loads(published.with_name('publish.json').read_text(encoding='utf-8'))['files']['ma'] == 'primary.ma'
+    def fail(directory):
+        raise RuntimeError('dependency export failed')
+    with pytest.raises(RuntimeError):
+        service.publish_shot_scene_snapshot(identity, payload, data_type='camera', native_exporter=fail)
+    assert service._latest_shot_camera_publish(identity) == published
+    assert len(service.list_camera_package_versions(identity)) == 1

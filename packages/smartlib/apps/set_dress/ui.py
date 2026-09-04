@@ -61,7 +61,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.recorded = None
         self.recording_layer_id = ""
         self._autosave_enabled = False
-        self._scene_callback_id = None
+        self._scene_callback_ids = []
         self._build_ui()
         self.scope.setCurrentText(
             str(self.package.context.get("scope") or "shot")
@@ -85,7 +85,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
             )
         if self._recovery_error:
             self.status.setText(f"RECOVERY WARNING: {self._recovery_error}")
-        self._install_scene_save_callback()
+        self._install_scene_callbacks()
 
     def _build_ui(self):
         self.setWindowTitle("Smart Set Dress Manager")
@@ -94,6 +94,16 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(8, 8, 8, 8)
         self.setCentralWidget(central)
+
+        self.recording_banner = QtWidgets.QLabel()
+        self.recording_banner.setTextFormat(QtCore.Qt.PlainText)
+        self.recording_banner.setWordWrap(True)
+        self.recording_banner.setStyleSheet(
+            "background-color: #a51d2d; color: white; padding: 12px;"
+            "font-size: 16px; font-weight: bold; border-radius: 4px;"
+        )
+        self.recording_banner.hide()
+        layout.addWidget(self.recording_banner)
 
         splitter = QtWidgets.QSplitter()
         layout.addWidget(splitter, 1)
@@ -132,12 +142,13 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.scope = QtWidgets.QComboBox()
         self.scope.addItems(["shot", "sequence"])
         self.package_name = QtWidgets.QLineEdit("main")
+        self.package_name.setReadOnly(True)
         self.package_name.setMaximumWidth(140)
         top.addWidget(QtWidgets.QLabel("Target"))
         top.addWidget(self.target)
         top.addWidget(QtWidgets.QLabel("Save scope"))
         top.addWidget(self.scope)
-        top.addWidget(QtWidgets.QLabel("Package"))
+        top.addWidget(QtWidgets.QLabel("Layer"))
         top.addWidget(self.package_name)
         right_layout.addLayout(top)
         self.table = QtWidgets.QTableWidget(0, 4)
@@ -156,7 +167,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.stop_btn = QtWidgets.QPushButton("■  Stop && Capture")
         self.stop_btn.setEnabled(False)
         self.save_btn = QtWidgets.QPushButton("Save Layers")
-        self.publish_btn = QtWidgets.QPushButton("Publish")
+        self.publish_btn = QtWidgets.QPushButton("Publish Layer")
         self.load_btn = QtWidgets.QPushButton("Load")
         self.history_btn = QtWidgets.QPushButton("History")
         record_layout.addWidget(self.selection_only)
@@ -167,6 +178,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         record_layout.addWidget(self.history_btn)
         record_layout.addWidget(self.save_btn)
         record_layout.addWidget(self.publish_btn)
+        self.publish_btn.hide()
         right_layout.addWidget(record_box)
         self.status = QtWidgets.QLabel("READY TO RECORD")
         layout.addWidget(self.status)
@@ -238,6 +250,11 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
 
     def refresh_table(self):
         layer = self.current_layer()
+        self.package_name.setText(layer.name if layer else "")
+        if layer:
+            self.scope.blockSignals(True)
+            self.scope.setCurrentText(layer.scope)
+            self.scope.blockSignals(False)
         query = self.search.text().lower().strip()
         changes = [c for c in (layer.changes if layer else []) if not query or query in c.node.lower() or query in c.attribute.lower()]
         self.table.setRowCount(len(changes))
@@ -285,6 +302,8 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         if not layer:
             self.add_layer()
             layer = self.current_layer()
+        if not layer:
+            return
         try:
             backend = self._backend()
             if backend is set_dress_usd:
@@ -303,7 +322,25 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.target.setEnabled(False)
         self.record_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self._set_recording_visuals(True, layer.name)
         self.status.setText(f"RECORDING {len(self.recorded)} NODES — edit the Maya viewport")
+
+    def _set_recording_visuals(self, active, layer_name=""):
+        self.recording_banner.setText(
+            f"●  RECORDING  —  {layer_name}\n"
+            "Changes are being recorded. Finish with Stop & Capture."
+            if active else ""
+        )
+        self.recording_banner.setVisible(active)
+        self.setWindowTitle(
+            f"● RECORDING — {layer_name} — Smart Set Dress Manager"
+            if active else "Smart Set Dress Manager"
+        )
+        self.stop_btn.setStyleSheet(
+            "QPushButton { background-color: #a51d2d; color: white;"
+            "font-weight: bold; border: 2px solid #ef6473; padding: 5px; }"
+            if active else ""
+        )
 
     def stop_capture(self):
         try:
@@ -320,6 +357,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         self.record_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.target.setEnabled(True)
+        self._set_recording_visuals(False)
         self.refresh_layers(select_id=layer.id if layer else "")
         self._autosave()
         revision = self._create_revision()
@@ -354,11 +392,27 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
 
     def save(self):
         try:
+            if self.identity:
+                self._update_package_context()
+                paths = self.publish_service.save_layers(self.package, self.identity)
+                layer = self.current_layer()
+                self.path = paths.get(layer.id) if layer else None
+                set_dress.embed_package_in_scene(self.package, dirty=False)
+                for item in self.package.layers:
+                    if item.id in paths:
+                        set_dress.create_history_revision(
+                            set_dress.layer_package(self.package, item), paths[item.id]
+                        )
+                self.status.setText(f"SAVED {len(paths)} LAYERS")
+                return
             path = self._canonical_path(allow_dialog=True)
             if not path:
                 return
+            layer = self.current_layer()
+            if not layer:
+                return
             self._update_package_context()
-            self.path = set_dress.save_package(self.package, path)
+            self.path = set_dress.save_package(set_dress.layer_package(self.package, layer), path)
             set_dress.embed_package_in_scene(
                 self.package, external_path=self.path, dirty=False
             )
@@ -371,12 +425,16 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
     def publish(self):
         if self.identity is None:
             return self._error("Could not resolve the current shot identity.")
-        package_name = self.package_name.text().strip() or "main"
-        scope = self.scope.currentText()
+        layer = self.current_layer()
+        if not layer or not layer.changes:
+            return self._error("Select a layer with captured changes.")
+        package_name = layer.name
+        scope = layer.scope
         try:
-            self._autosave(force=True)
-            if not self.path:
-                raise RuntimeError("Set Dress working data could not be saved.")
+            paths = self.publish_service.save_layers(
+                set_dress.layer_package(self.package, layer), self.identity
+            )
+            self.path = paths[layer.id]
         except Exception as exc:
             return self._error(str(exc))
         comment, accepted = QtWidgets.QInputDialog.getText(
@@ -404,7 +462,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         if not path:
             return
         try:
-            self.package = set_dress.load_package(path)
+            self._merge_loaded_layers(set_dress.load_package(path))
             self.path = path
             self.package_name.setText(
                 self.package.context.get("package") or Path(path).name.split(".setdress.", 1)[0]
@@ -438,7 +496,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
             self._create_revision()
             restored = set_dress.load_package(revision)
             restored.context.update(self.package.context)
-            self.package = restored
+            self._merge_loaded_layers(restored)
             self.refresh_layers()
             self._apply_stack()
             self._autosave(force=True)
@@ -447,6 +505,9 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
             self._error(str(exc))
 
     def _update_package_context(self):
+        layer = self.current_layer()
+        if layer:
+            layer.scope = self.scope.currentText()
         self.package.context.update({
             "scope": self.scope.currentText(),
             "package": self.package_name.text().strip() or "main",
@@ -491,11 +552,14 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         return warnings
 
     def _canonical_path(self, *, allow_dialog=False):
+        layer = self.current_layer()
+        if not layer:
+            return None
         if self.identity:
             return self.publish_service.data_path(
                 self.identity,
-                self.package_name.text().strip() or "main",
-                scope=self.scope.currentText(),
+                layer.name,
+                scope=layer.scope,
             )
         if not allow_dialog:
             return self.path
@@ -511,18 +575,21 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         return Path(path) if path else None
 
     def _autosave(self, *_args, force=False):
+        if getattr(self, "_scene_changing", False):
+            return
         if not self._autosave_enabled and not force:
             return
         try:
             self._update_package_context()
-            path = self._canonical_path()
             set_dress.embed_package_in_scene(
-                self.package, external_path=path or "", dirty=True
+                self.package, dirty=True
             )
-            if path:
-                self.path = set_dress.save_package(self.package, path)
+            if self.identity:
+                paths = self.publish_service.save_layers(self.package, self.identity)
+                layer = self.current_layer()
+                self.path = paths.get(layer.id) if layer else None
                 set_dress.embed_package_in_scene(
-                    self.package, external_path=self.path, dirty=False
+                    self.package, dirty=False
                 )
             self.status.setText(
                 f"AUTO-SAVED {self.path}" if self.path else "AUTO-SAVED IN SCENE"
@@ -531,7 +598,9 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
             self.status.setText(f"AUTO-SAVE WARNING: {exc}")
 
     def _create_revision(self):
-        if not self.path:
+        layer = self.current_layer()
+        path = self._canonical_path()
+        if not path or not layer or not layer.changes:
             return None
         try:
             limit = int(os.environ.get("SMART_SET_DRESS_HISTORY_LIMIT", "30"))
@@ -539,33 +608,145 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
             limit = 30
         try:
             return set_dress.create_history_revision(
-                self.package, self.path, keep=max(0, limit)
+                set_dress.layer_package(self.package, layer), path, keep=max(0, limit)
             )
         except Exception as exc:
             self.status.setText(f"HISTORY WARNING: {exc}")
             return None
 
-    def _install_scene_save_callback(self):
+    def _merge_loaded_layers(self, loaded):
+        """Load/History replaces matching layers without discarding other layers."""
+        incoming = {layer.id: layer for layer in loaded.layers}
+        self.package.layers = [
+            incoming.pop(layer.id, layer) for layer in self.package.layers
+        ]
+        self.package.layers.extend(incoming.values())
+        self.package.base = set_dress.remember_base(
+            loaded.base, self.package.base
+        )
+
+    def _reset_for_scene_change(self, *_args):
+        """Discard all in-memory data before Maya replaces the current scene."""
+        self._scene_changing = True
+        self._autosave_enabled = False
+        self.package = set_dress.SetDressPackage()
+        self.path = None
+        self.identity = None
+        self.recorded = None
+        self.recording_layer_id = ""
+        self.layer_list.blockSignals(True)
+        self.layer_list.clear()
+        self.layer_list.blockSignals(False)
+        self.table.setRowCount(0)
+        self.record_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.target.setEnabled(True)
+        self.publish_btn.setEnabled(False)
+        self._set_recording_visuals(False)
+        self.status.setText("SCENE CHANGING — SET DRESS STATE RESET")
+
+    def _restore_current_scene(self, *_args):
+        """Restore only data embedded in the scene that Maya just opened."""
+        live_context = set_dress.scene_context()
+        package = set_dress.SetDressPackage(context=live_context)
+        path = None
+        recovery_error = ""
+        recovered = False
+        try:
+            embedded, embedded_path = set_dress.load_package_from_scene()
+            if embedded is not None:
+                package = embedded
+                package.context.update(
+                    {key: value for key, value in live_context.items() if value}
+                )
+                path = Path(embedded_path) if embedded_path else None
+                recovered = True
+        except Exception as exc:
+            recovery_error = str(exc)
+
+        self.package = package
+        self.path = path
+        try:
+            self.identity = self.publish_service.identity_from_context(
+                self.package.context
+            )
+        except ValueError:
+            self.identity = None
+        if self.identity and self.identity.shot:
+            self.package.context["shot_root"] = str(
+                self.publish_service.paths.shot_root(
+                    self.identity.episode,
+                    self.identity.sequence,
+                    self.identity.shot,
+                )
+            )
+
+        self.scope.setCurrentText(
+            str(self.package.context.get("scope") or "shot")
+        )
+        self.target.setCurrentText(
+            str(self.package.context.get("target") or "maya").upper()
+        )
+        self.package_name.setText(
+            str(self.package.context.get("package") or "main")
+        )
+        self.publish_btn.setEnabled(bool(self.identity and self.identity.shot))
+        if self.identity is None:
+            self.publish_btn.setToolTip(
+                "Open a shot scene whose episode and sequence can be resolved."
+            )
+        else:
+            self.publish_btn.setToolTip("")
+
+        if not self.package.layers:
+            self.add_layer(prompt=False)
+        else:
+            self.refresh_layers()
+        self._scene_changing = False
+        self._autosave_enabled = True
+        if recovery_error:
+            self.status.setText(f"RECOVERY WARNING: {recovery_error}")
+        elif recovered:
+            self.status.setText(
+                f"RECOVERED {len(self.package.layers)} LAYERS FROM SCENE"
+            )
+        else:
+            self.status.setText("NO SET DRESS DATA IN SCENE — STATE RESET")
+
+    def _before_scene_save(self, *_args):
+        if not getattr(self, "_scene_changing", False):
+            self._autosave(force=True)
+
+    def _install_scene_callbacks(self):
         try:
             import maya.OpenMaya as om
 
-            self._scene_callback_id = om.MSceneMessage.addCallback(
-                om.MSceneMessage.kBeforeSave,
-                lambda *_args: self._autosave(force=True),
+            callbacks = (
+                (om.MSceneMessage.kBeforeSave, self._before_scene_save),
+                (om.MSceneMessage.kBeforeOpen, self._reset_for_scene_change),
+                (om.MSceneMessage.kBeforeNew, self._reset_for_scene_change),
+                (om.MSceneMessage.kAfterOpen, self._restore_current_scene),
+                (om.MSceneMessage.kAfterNew, self._restore_current_scene),
             )
+            self._scene_callback_ids = [
+                om.MSceneMessage.addCallback(message, callback)
+                for message, callback in callbacks
+            ]
         except Exception:
-            self._scene_callback_id = None
+            self._scene_callback_ids = []
 
     def closeEvent(self, event):
-        self._autosave(force=True)
-        if self._scene_callback_id is not None:
+        if not getattr(self, "_scene_changing", False):
+            self._autosave(force=True)
+        if self._scene_callback_ids:
             try:
                 import maya.OpenMaya as om
 
-                om.MMessage.removeCallback(self._scene_callback_id)
+                for callback_id in self._scene_callback_ids:
+                    om.MMessage.removeCallback(callback_id)
             except Exception:
                 pass
-            self._scene_callback_id = None
+            self._scene_callback_ids = []
         super().closeEvent(event)
 
     def _error(self, message):

@@ -13,7 +13,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from smartlib.core.asset_categories import canonical_asset_category
 from smartlib.core.config_loader import ProjectConfig, load_config, studio_config_dir
+from smartlib.delivery import PackageProfile
 from smartlib.core.metadata import read_json, write_json
 from smartlib.core.path_resolver import ProjectPaths
 from smartlib.core.versioning import format_version, next_version, parse_version
@@ -82,7 +84,7 @@ class IngestMetadata:
     target_type: str = ""
     project: str = ""
     asset: str = ""
-    category: str = "characters"
+    category: str = "character"
     group: str = "main"
     variant: str = "default"
     department: str = ""
@@ -249,10 +251,16 @@ class SmartIngestService:
         if package:
             target = dict(package.get("target") or {})
             ingest = dict(package.get("ingest") or {})
+            package_profile = self._package_profile(str(package.get("profile") or ""))
+            source_category = str(target.get("category") or "character")
+            category = str(ingest.get("internal_category") or "")
+            if not category and package_profile is not None:
+                category = package_profile.inbound_category(source_category)
+            category = canonical_asset_category(category or source_category, strict=True)
             meta = IngestMetadata(
                 target_type=str(target.get("target_type") or package.get("package_type") or "").title(),
                 project=str(target.get("project") or self.project_name), asset=str(target.get("asset") or ""),
-                category=str(target.get("category") or "CH"), group=str(target.get("group") or "main"),
+                category=category, group=str(target.get("group") or "main"),
                 variant=str(target.get("variant") or "default"), department=str(target.get("department") or "assembly"),
                 subset=str(target.get("subset") or "vendor"), format=str(target.get("format") or "zip"),
                 episode=str(target.get("episode") or "ep001"), sequence=str(target.get("sequence") or "sq010"),
@@ -260,7 +268,13 @@ class SmartIngestService:
                 delivery_date=str((package.get("delivery") or {}).get("delivery_date") or ""),
                 comment=str((package.get("delivery") or {}).get("comment") or "Smart Delivery package"),
             )
-            target_path = self._package_target_root(ingest.get("expected_target_root"), meta)
+            expected_root = ingest.get("expected_target_root")
+            if meta.target_type == "Asset" and package_profile is not None:
+                expected_root = package_profile.asset_root.format(
+                    category=meta.category, group=meta.group, asset=meta.asset,
+                    variant=meta.variant, department=meta.department, subset=meta.subset,
+                )
+            target_path = self._package_target_root(expected_root, meta)
             if target_path.exists():
                 return self._item(source, target_path, "ZIP", "none", meta.target_type, "Conflict", "package target already exists", meta)
             return self._item(source, target_path, "ZIP", "expand_package", meta.target_type, "Ready", "manifest package expansion", meta, selected=True)
@@ -370,6 +384,13 @@ class SmartIngestService:
             return None
         return data
 
+    @staticmethod
+    def _package_profile(name: str) -> PackageProfile | None:
+        if not name:
+            return None
+        path = Path(__file__).resolve().parents[4] / "config" / "delivery" / "package_profiles" / f"{name}.json"
+        return PackageProfile.load(path) if path.is_file() else None
+
     def _package_target_root(self, expected: Any, metadata: IngestMetadata) -> Path:
         text = str(expected or "").replace("\\", "/").strip("/")
         if not text and metadata.target_type == "Asset":
@@ -468,7 +489,7 @@ class SmartIngestService:
         return [str(value).strip() for value in roles if str(value).strip()]
 
     def asset_categories(self) -> list[str]:
-        return self._child_dir_names(self.paths.assets_root(), fallback=["CH", "BG", "PR", "characters"])
+        return ["character", "environment", "prop", "vehicle"]
 
     def asset_groups(self, category: str) -> list[str]:
         return self._child_dir_names(self.paths.assets_root() / category, fallback=["main"])

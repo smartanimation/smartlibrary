@@ -352,7 +352,7 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
     def _get_gate_size(self, camera_path, vp_width, vp_height):
         camera_fn = om.MFnCamera(camera_path)
         camera_aspect_ratio = camera_fn.aspectRatio()
-        device_aspect_ratio = self._device_aspect_ratio()
+        device_aspect_ratio = self._device_aspect_ratio(camera_path)
         vp_aspect_ratio = vp_width / float(vp_height)
         scale = 1.0
 
@@ -391,6 +391,7 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
         return gate_width, gate_height
 
     def _parse_text(self, text, camera_path, data):
+        source_path = self._primary_camera_path(camera_path)
         current_time = oma.MAnimControl.currentTime().value
         current_frame = int(round(current_time))
         frame_start = int(round(oma.MAnimControl.minTime().value))
@@ -400,9 +401,11 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
             "{counter}": str(current_frame).zfill(data.counter_padding),
             "{animTime}": self._format_anim_time(current_frame),
             "{scene}": _SCENE_LABEL,
-            "{camera}": self._camera_transform_name(camera_path),
-            "{camera_clean}": self._camera_transform_name(camera_path, remove_namespace=True),
-            "{focal_length}": str(int(round(om.MFnCamera(camera_path).focalLength))),
+            "{camera}": self._camera_transform_name(source_path),
+            "{camera_clean}": self._camera_transform_name(source_path, remove_namespace=True),
+            "{focal_length}": str(int(round(om.MFnCamera(source_path).focalLength))),
+            "{output_camera}": self._camera_transform_name(camera_path),
+            "{output_focal_length}": str(int(round(om.MFnCamera(camera_path).focalLength))),
             "{frame_start}": str(frame_start),
             "{frame_end}": str(frame_end),
             "{total_frames}": str(frame_end - frame_start + 1),
@@ -416,7 +419,20 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
         return parsed
 
     @staticmethod
-    def _device_aspect_ratio():
+    def _device_aspect_ratio(camera_path=None):
+        # Managed output cameras have their own canvas; do not draw their
+        # Burn-in against a different layer's global resolution gate.
+        if camera_path is not None:
+            try:
+                transform_fn = om.MFnDependencyNode(camera_path.transform())
+                if (transform_fn.hasAttribute("smartCameraOutputSchema")
+                        and transform_fn.findPlug("smartCameraOutputSchema", False).asString() == "smartpipeline.camera_output.v1"):
+                    spec = json.loads(transform_fn.findPlug("smartCameraOutputSpec", False).asString())
+                    width, height = float(spec["width"]), float(spec["height"])
+                    if width > 0 and height > 0:
+                        return width / height
+            except (RuntimeError, ValueError, KeyError, TypeError):
+                pass
         try:
             selection = om.MSelectionList()
             selection.add("defaultResolution")
@@ -443,10 +459,33 @@ class SmartGateGuideDrawOverride(omr.MPxDrawOverride):
         return False
 
     def _is_camera_match(self, camera_path, name):
+        source_path = self._primary_camera_path(camera_path)
         return (
             self._camera_transform_name(camera_path) == name
             or self._camera_shape_name(camera_path) == name
+            or self._camera_transform_name(source_path) == name
+            or self._camera_shape_name(source_path) == name
         )
+
+    @staticmethod
+    def _primary_camera_path(camera_path):
+        """Only managed output cameras redirect creative Burn-in tokens."""
+        try:
+            transform_fn = om.MFnDependencyNode(camera_path.transform())
+            if not transform_fn.hasAttribute("smartCameraOutputSchema"):
+                return camera_path
+            if transform_fn.findPlug("smartCameraOutputSchema", False).asString() != "smartpipeline.camera_output.v1":
+                return camera_path
+            sources = transform_fn.findPlug("smartPrimaryCamera", False).connectedTo(True, False)
+            if len(sources) != 1:
+                return camera_path
+            source_path = om.MDagPath.getAPathTo(sources[0].node())
+            source_path.extendToShape()
+            if source_path.node().hasFn(om.MFn.kCamera):
+                return source_path
+        except RuntimeError:
+            pass
+        return camera_path
 
     def _is_default_camera(self, camera_path):
         return (

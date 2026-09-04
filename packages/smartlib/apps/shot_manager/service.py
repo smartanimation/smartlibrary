@@ -17,6 +17,7 @@ from smartlib.core.folder_structure import copy_entity_folder_structure, folder_
 from smartlib.core.output_resolver import OutputPathResolver
 from smartlib.core.asset_publish_resolver import AssetPublishResolver
 from smartlib.core.asset_load_policy import resolve_asset_load_policy
+from smartlib.core.asset_categories import canonical_asset_category
 from smartlib.core.credentials import credentials_path
 from smartlib.core.metadata import read_json, sidecar_path, write_json
 from smartlib.core.path_resolver import ProjectPaths
@@ -58,7 +59,7 @@ CAST_CSV_COLUMNS = [
     "cast_key",
     "asset",
     "variant",
-    "role",
+    "category",
     "namespace",
     "asset_publish",
     "required",
@@ -120,7 +121,7 @@ class CastEntry:
     entity_type: str = "asset"
     entity_id: str = ""
     variant: str = "default"
-    role: str = "CHA"
+    category: str = ""
     namespace: str = ""
     asset_publish: str = "approved"
     note: str = ""
@@ -154,7 +155,7 @@ class BuildPreviewItem:
     asset: str
     variant: str
     namespace: str
-    role: str
+    category: str
     review_layer: str
     asset_publish: str
     required: bool
@@ -401,9 +402,20 @@ class ShotManagerService:
         if not path:
             return None
         candidate = os.path.normcase(os.path.abspath(str(path)))
+        # Scene files live in Workspace while shot metadata lives in Production.
+        # Let the existing resolver map every configured department's workspace
+        # back to its canonical shot root; do not parse the hierarchy here.
+        canonical_roots = set()
+        for department in dict.fromkeys(self.shot_departments):
+            resolved = self.paths.shot_root_from_scene_path(path, department)
+            if resolved is not None:
+                canonical_roots.add(os.path.normcase(os.path.abspath(str(resolved))))
         matches: list[tuple[int, ShotIdentity]] = []
         for identity in self.list_shots():
             root = os.path.normcase(os.path.abspath(str(self.shot_root(identity))))
+            if root in canonical_roots:
+                matches.append((len(root), identity))
+                continue
             try:
                 common = os.path.commonpath([candidate, root])
             except ValueError:
@@ -2221,7 +2233,10 @@ class ShotManagerService:
         cast_contexts: dict[str, str] | None = None,
         exclude_cast: list[str] | None = None,
     ) -> list[BuildPreviewItem]:
-        cast_data = self.load_cast(identity)
+        cast_data = deepcopy(self.load_cast(identity))
+        # Review membership is an independent, published contract. Never
+        # infer it from an asset category or from Cast metadata.
+        cast_data["review_layers"] = self.review_layers(identity, department)
         excluded = {str(value) for value in (exclude_cast or [])}
         if excluded and isinstance(cast_data.get("cast"), dict):
             cast_data = deepcopy(cast_data)
@@ -2491,7 +2506,7 @@ class ShotManagerService:
                             "kind": "cast",
                             "asset": item.asset,
                             "variant": item.variant,
-                            "role": item.role,
+                            "category": item.category,
                             "status": item.status,
                             "asset_publish": item.asset_publish or "approved",
                         },
@@ -2598,6 +2613,7 @@ class ShotManagerService:
             path: str | Path,
             *,
             required: bool = False,
+            enabled: bool = True,
             mode: str = "file",
             source: dict[str, Any] | None = None,
         ) -> None:
@@ -2610,7 +2626,7 @@ class ShotManagerService:
                     namespace=name if component_type == "camera" else "",
                     path=str(path),
                     required=required,
-                    enabled=bool(path and Path(path).exists()),
+                    enabled=enabled and bool(path and Path(path).exists()),
                     note="" if path and Path(path).exists() else "Published data was not found.",
                     source=dict(source or {}),
                 )
@@ -2656,29 +2672,38 @@ class ShotManagerService:
         for camera_path_text in ([] if has_camera_data else self._latest_review_camera_paths(identity)):
             camera_path = Path(camera_path_text)
             camera_name = camera_path.parents[2].name if len(camera_path.parents) > 2 else camera_path.stem
+            from smartlib.core.camera_package import camera_package_info
+            package_info = camera_package_info(camera_path)
+            camera_source = {"kind": "published_camera"}
+            if package_info:
+                camera_name = f"Camera Package / {package_info['target']} / {package_info['subset']}"
+                camera_source.update(camera_package=True, target=package_info['target'], subset=package_info['subset'])
             add_published_component(
                 "camera",
                 camera_name,
                 camera_path.parent.name,
                 camera_path,
+                enabled=not package_info or not any(
+                    (c.get('source') or {}).get('camera_package') for c in components),
                 mode="import",
-                source={"kind": "published_camera"},
+                source=camera_source,
             )
 
-        # Root-based Camera/Light Data Publishes are direct WORK Construct
-        # inputs. Department publishes remain available and take precedence
-        # when they use the same component key.
+        # Root-based Camera/Light/Placement Data Publishes are direct WORK
+        # Construct inputs. Department publishes remain available and take
+        # precedence when they use the same component key.
         for row in latest_scene_data_rows:
             parts = str(row.name or "").split("/")
             component_type = parts[0] if parts else ""
-            if component_type not in {"camera", "light", "playblast_settings"}:
+            if component_type not in {"camera", "light", "placement", "playblast_settings"}:
                 continue
-            name = parts[1] if len(parts) > 1 else "main"
+            name = parts[1] if len(parts) > 1 else "placements" if component_type == "placement" else "main"
             if component_type == "light" and name == "lights_grp" and has_per_light_data:
                 continue
             version_dir = Path(row.path)
+            manifest_name = "placements.json" if component_type == "placement" else f"{component_type}.json"
             manifest_path = (
-                version_dir / f"{component_type}.json"
+                version_dir / manifest_name
                 if version_dir.is_dir() else version_dir
             )
             add_published_component(
@@ -2686,12 +2711,42 @@ class ShotManagerService:
                 name,
                 row.version,
                 manifest_path,
-                mode="apply" if component_type == "playblast_settings" else "import",
-                source={"kind": "scene_data", "scope": "shot"},
+                required=component_type == "placement",
+                mode="apply" if component_type == "playblast_settings" else "file" if component_type == "placement" else "import",
+                source={
+                    "kind": "scene_data",
+                    "scope": "shot",
+                    "data_type": component_type,
+                    "field": "placements" if component_type == "placement" else "",
+                },
             )
 
+        try:
+            set_dress_work_rows = self.list_set_dress_data(identity)
+        except (AttributeError, OSError):
+            set_dress_work_rows = []
+        for row in set_dress_work_rows:
+            if row.latest:
+                add_published_component(
+                    "set_dress",
+                    row.name.removeprefix("set_dress_data/"),
+                    row.version,
+                    row.path,
+                    source={"kind": "set_dress_work_data", "scope": "shot"},
+                )
+
+        # WORK Construct prefers editable Set Dress data. A publish with the
+        # same package name is deduplicated by the component key, while
+        # publish-only packages remain available.
+        from smartlib.dcc.maya.set_dress import layer_ids
+        work_layer_ids = set()
+        for row in set_dress_work_rows:
+            work_layer_ids.update(layer_ids(read_json(Path(row.path), {}) or {}))
         for row in self.list_set_dress_publish_versions(identity):
             if row.latest:
+                published_ids = layer_ids(read_json(Path(row.path), {}) or {})
+                if published_ids and published_ids <= work_layer_ids:
+                    continue
                 add_published_component(
                     "set_dress", row.name.removeprefix("set_dress/"), row.version,
                     row.path, source={"kind": "published_set_dress"},
@@ -2735,7 +2790,6 @@ class ShotManagerService:
         except Exception:
             preview = self.build_preview(identity)
         for item in preview:
-            role = _normalize_role(item.role)
             requested_context = str((cast_contexts or {}).get(item.cast_key) or "WORK")
             asset_metadata = self._asset_workspace_metadata(item)
             load_policy = {}
@@ -2750,7 +2804,6 @@ class ShotManagerService:
                     load_policy = {}
             decision = resolve_asset_load_policy(
                 asset_metadata,
-                role=role,
                 requested_context=requested_context,
                 policy=load_policy,
             )
@@ -2806,7 +2859,7 @@ class ShotManagerService:
                             "kind": "cast_entry",
                             "asset": item.asset,
                             "variant": item.variant,
-                            "role": item.role,
+                            "category": item.category,
                             "status": item.status,
                             "asset_publish": item.asset_publish or "approved",
                             "context": decision.context,
@@ -2893,10 +2946,15 @@ class ShotManagerService:
                 if field in saved:
                     merged[field] = saved[field]
             generated_source = component.get("source") or {}
+            if generated_source.get("camera_package") and (saved.get("source") or {}).get("camera_package_version_locked"):
+                for field in ("path", "version"):
+                    if field in saved:
+                        merged[field] = saved[field]
             is_optional_background = (
                 str(component.get("component_type") or "").lower() == "usd"
-                and _normalize_role(str(generated_source.get("role") or ""))
-                in {"BGA", "ENV"}
+                and canonical_asset_category(
+                    generated_source.get("category") or "", strict=False
+                ) == "environment"
             )
             # Older construct files may have persisted backgrounds as required
             # rig inputs. Formal Asset USD is intentionally optional while an
@@ -3839,6 +3897,9 @@ class ShotManagerService:
         return write_json(output_dir / "build_manifest.json", payload)
 
     def _latest_review_camera_paths(self, identity: ShotIdentity) -> list[str]:
+        package_paths = [str(row.path) for row in self.list_camera_package_versions(identity) if row.latest]
+        if package_paths:
+            return package_paths
         camera_root = self.shot_publish_root(identity) / "camera"
         by_target: dict[str, Path] = {}
         for latest_path in camera_root.glob("*/*/latest.json") if camera_root.exists() else []:
@@ -3875,13 +3936,20 @@ class ShotManagerService:
     def list_shot_data_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
         return self._list_data_versions(self.shot_data_root(identity))
 
+    def list_camera_package_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
+        """Published camera packages for Data inspection and explicit Build selection."""
+        from smartlib.core.camera_package import camera_package_info
+        return [row for row in self.list_shot_scene_publish_versions(identity, "camera")
+                if camera_package_info(row.path)]
+
     def list_set_dress_data(
         self,
         identity: ShotIdentity,
     ) -> list[ShotDataVersion]:
         root = self.shot_data_root(identity) / "setdress"
+        from smartlib.dcc.maya.set_dress import visible_work_packages
         rows = []
-        for path in root.glob("*.setdress.json") if root.is_dir() else []:
+        for path in visible_work_packages(root.glob("*.setdress.json") if root.is_dir() else []):
             rows.append(
                 ShotDataVersion(
                     name=f"set_dress_data/{path.name.removesuffix('.setdress.json')}",
@@ -4298,8 +4366,11 @@ class ShotManagerService:
         subset: str = "main",
         source_workfile: str | Path = "",
         comment: str = "",
+        native_exporter=None,
     ) -> Path:
         """Publish a camera or render-layer snapshot directly from a DCC scene."""
+        if payload.get('schema') == 'smartpipeline.camera_package.v2' and native_exporter is None:
+            raise ValueError('Native Camera Package requires its Primary dependency export.')
         clean_type = _clean_publish_token(data_type)
         if clean_type not in {"camera", "light"}:
             raise ValueError(f"Unsupported shot scene publish type: {data_type}")
@@ -4312,6 +4383,12 @@ class ShotManagerService:
         output_name = f"{clean_type}.json"
 
         published_data = dict(payload)
+        if native_exporter is not None:
+            published_data['files'] = dict(native_exporter(version_dir))
+            if payload.get('schema') == 'smartpipeline.camera_package.v2':
+                native_name = published_data['files'].get('ma', '')
+                if not native_name or Path(native_name).name != native_name or not (version_dir / native_name).is_file():
+                    raise ValueError('Primary dependency export did not produce a native Maya file.')
         published_data.update(
             {
                 "publish_type": clean_type,
@@ -4335,7 +4412,7 @@ class ShotManagerService:
                 "target": clean_target,
                 "subset": clean_subset,
                 "version": version_label,
-                "files": {clean_type: output_name},
+                "files": {clean_type: output_name, **published_data.get('files', {})},
                 "source_workfile": published_data.get("source_workfile", ""),
                 "comment": comment,
             },
@@ -4862,8 +4939,9 @@ class ShotManagerService:
 
     @staticmethod
     def _is_character_layout_cache_entry(entry: dict[str, Any]) -> bool:
-        role = _normalize_role(entry.get("role") or "")
-        return role in {"CHA", "CHB", "CHARACTER"}
+        return canonical_asset_category(
+            entry.get("category") or "", strict=False
+        ) == "character"
 
     @staticmethod
     def _layout_cache_frame_range(editorial: dict[str, Any], sequence_editorial: dict[str, Any]) -> tuple[int, int] | None:
@@ -5075,14 +5153,9 @@ class ShotManagerService:
             cast_contexts=cast_contexts,
             exclude_cast=exclude_cast,
         ):
-            role = _normalize_role(item.role)
             component_type = ""
-            if role in {"BGA", "ENV"}:
+            if item.category == "environment":
                 component_type = "background"
-            elif role == "CROWD":
-                component_type = "crowd"
-            elif role == "FX":
-                component_type = "fx"
             if not component_type:
                 continue
             source = self._asset_usd_for_preview(item, profile=profile)
@@ -5450,19 +5523,27 @@ class ShotManagerService:
         return Path(str(virtual_cameras[0]["path"])) if virtual_cameras else None
 
     def _latest_work_stage_placements(self, identity: ShotIdentity) -> Path | None:
-        """Resolve shot-local Placement Publish/Data without sequence dependency."""
+        """Resolve shot-local Placement Data/Publish without sequence dependency."""
 
+        for row in self.list_shot_data_versions(identity):
+            parts = str(row.name or "").split("/")
+            if not row.latest or not parts or parts[0] != "placement":
+                continue
+            version_dir = Path(row.path)
+            path = version_dir / "placements.json" if version_dir.is_dir() else version_dir
+            if path.is_file():
+                return path
         published = [row for row in self.list_placement_publish_versions(identity) if row.latest]
         if published:
             path = Path(published[0].path)
             if path.is_file():
                 return path
-        data_root = self.shot_data_root(identity) / "placements"
-        latest = read_json(data_root / "latest.json", {}) or {}
-        path = data_root / str(latest.get("path") or "")
+        legacy_data_root = self.shot_data_root(identity) / "placements"
+        latest = read_json(legacy_data_root / "latest.json", {}) or {}
+        path = legacy_data_root / str(latest.get("path") or "")
         if path.is_file():
             return path
-        fallback = data_root / "placements.json"
+        fallback = legacy_data_root / "placements.json"
         return fallback if fallback.is_file() else None
 
     @staticmethod
@@ -5637,6 +5718,9 @@ class ShotManagerService:
         }
         for cast_key, entry in sorted(cast.items()):
             asset_name = str(entry.get("asset") or "")
+            category = canonical_asset_category(
+                entry.get("category") or "", strict=True
+            )
             variant = str(entry.get("variant") or "default")
             asset_publish = str(entry.get("asset_publish") or "approved")
             required = bool(entry.get("required", True))
@@ -5648,7 +5732,7 @@ class ShotManagerService:
                         asset=asset_name,
                         variant=variant,
                         namespace=str(entry.get("namespace") or cast_key),
-                        role=str(entry.get("role") or ""),
+                        category=category,
                         review_layer=member_to_layer.get(cast_key, ""),
                         asset_publish=asset_publish,
                         required=required,
@@ -5666,7 +5750,7 @@ class ShotManagerService:
                         asset=asset_name,
                         variant=variant,
                         namespace=str(entry.get("namespace") or cast_key),
-                        role=str(entry.get("role") or ""),
+                        category=category,
                         review_layer=member_to_layer.get(cast_key, ""),
                         asset_publish=asset_publish,
                         required=required,
@@ -5700,7 +5784,7 @@ class ShotManagerService:
                     asset=asset_name,
                     variant=variant,
                     namespace=str(entry.get("namespace") or cast_key),
-                    role=str(entry.get("role") or ""),
+                    category=category,
                     review_layer=member_to_layer.get(cast_key, ""),
                     asset_publish=asset_publish,
                     required=required,
@@ -5972,7 +6056,7 @@ class ShotManagerService:
         path = self.shot_root(identity) / "cast.json"
         if path.exists():
             return path
-        return write_json(path, {"schema": "smartpipeline.cast.v2", "cast": {}})
+        return write_json(path, {"schema": "smartpipeline.cast.v3", "cast": {}})
 
     def shot_composition_path(self, identity: ShotIdentity) -> Path:
         return self.shot_root(identity) / "shot_composition.json"
@@ -5994,7 +6078,9 @@ class ShotManagerService:
                 "variant": str(row.get("variant") or "default"),
                 "version_policy": str(row.get("asset_publish") or "approved"),
                 "namespace": str(row.get("namespace") or uid),
-                "role": str(row.get("role") or "CHA"),
+                "category": canonical_asset_category(
+                    row.get("category") or "", strict=True
+                ),
                 "required": bool(row.get("required", True)),
             })
         return {
@@ -6055,17 +6141,19 @@ class ShotManagerService:
             member = dict(raw or {})
             uid = str(member.get("uid") or "")
             cast = cast_rows.get(uid) or {}
-            role = str(member.get("role") or cast.get("role") or "CHA").upper()
+            category = canonical_asset_category(
+                member.get("category") or cast.get("category") or "", strict=True
+            )
             member.update({
                 "name": str(member.get("name") or uid),
                 "asset": str(member.get("asset") or cast.get("asset") or uid),
                 "variant": str(member.get("variant") or cast.get("variant") or "default"),
                 "namespace": str(member.get("namespace") or cast.get("namespace") or uid),
-                "role": role,
+                "category": category,
                 "behavior": str(
                     member.get("behavior")
                     or cast.get("behavior")
-                    or ("CURVE" if role == "CHA" else "STATIC")
+                    or ("CURVE" if category == "character" else "STATIC")
                 ).upper(),
                 "enabled": bool(member.get("enabled", True)),
             })
@@ -6374,7 +6462,7 @@ class ShotManagerService:
         root.mkdir(parents=True, exist_ok=True)
         return write_json(
             root / "cast.json",
-            {"cast": cast_data.get("cast") or {}},
+            {"schema": "smartpipeline.cast.v3", "cast": cast_data.get("cast") or {}},
         )
 
     def review_layers(
@@ -6607,7 +6695,7 @@ class ShotManagerService:
                     "cast_key": cast_key,
                     "asset": entry.get("asset", ""),
                     "variant": entry.get("variant", "default"),
-                    "role": entry.get("role", ""),
+                    "category": entry.get("category", ""),
                     "namespace": entry.get("namespace", ""),
                     "asset_publish": entry.get("asset_publish", "approved"),
                     "required": "TRUE" if entry.get("required", True) else "FALSE",
@@ -6626,20 +6714,21 @@ class ShotManagerService:
             cast_key = str(row.get("cast_key") or row.get("Cast Key") or "").strip()
             if not cast_key:
                 continue
-            role = _normalize_role(row.get("role") or row.get("Role") or "CHA")
             entry = CastEntry(
                 asset=str(row.get("asset") or row.get("Asset") or "").strip(),
                 entity_type=str(row.get("entity_type") or row.get("Entity Type") or "asset").strip().lower(),
                 entity_id=str(row.get("entity_id") or row.get("Entity ID") or row.get("asset") or row.get("Asset") or "").strip(),
                 variant=str(row.get("variant") or row.get("Variant") or "default").strip() or "default",
-                role=role,
+                category=canonical_asset_category(
+                    row.get("category") or row.get("Category") or "", strict=True
+                ),
                 namespace=str(row.get("namespace") or row.get("Namespace") or cast_key).strip(),
                 asset_publish=str(row.get("asset_publish") or row.get("Asset Publish") or "approved").strip(),
                 note=str(row.get("note") or row.get("Note") or "").strip(),
                 required=_parse_bool(row.get("required", row.get("Required", True))),
             )
             cast[cast_key] = asdict(entry)
-        return {"cast": cast}
+        return {"schema": "smartpipeline.cast.v3", "cast": cast}
 
     def selected_asset_for_cast(self, existing_cast: dict[str, Any] | None = None) -> dict[str, Any]:
         selected = read_selected_asset(self.project_config)
@@ -6654,14 +6743,14 @@ class ShotManagerService:
     ) -> dict[str, Any]:
         if not selected.get("asset"):
             return {}
-        role = _role_from_asset_selection(selected)
+        category = canonical_asset_category(selected.get("category") or "", strict=True)
         cast_key = _unique_cast_key(existing_cast or {}, selected.get("asset"))
         namespace = _unique_namespace(existing_cast or {}, selected.get("asset"))
         return {
             "cast_key": cast_key,
             "asset": selected.get("asset", ""),
             "variant": selected.get("variant", "default") or "default",
-            "role": role,
+            "category": category,
             "namespace": namespace,
             "asset_publish": "approved",
             "required": True,
@@ -6712,7 +6801,7 @@ class ShotManagerService:
             cast[row["cast_key"]] = {
                 "asset": row["asset"],
                 "variant": row["variant"],
-                "role": row["role"],
+                "category": row["category"],
                 "namespace": row["namespace"],
                 "asset_publish": row["asset_publish"],
                 "required": row["required"],
@@ -6782,6 +6871,18 @@ def validate_cast_data(cast_data: dict[str, Any]) -> list[ValidationIssue]:
     namespaces: dict[str, str] = {}
 
     for cast_key, entry in cast.items():
+        if "role" in entry:
+            issues.append(ValidationIssue(
+                "cast_role_removed",
+                f"Cast role is not supported: {cast_key}",
+                "error",
+            ))
+        try:
+            canonical_asset_category(entry.get("category") or "", strict=True)
+        except ValueError as exc:
+            issues.append(ValidationIssue(
+                "invalid_asset_category", f"{cast_key}: {exc}", "error"
+            ))
         namespace = str(entry.get("namespace") or "")
         asset_publish = str(entry.get("asset_publish") or "")
         if namespace in namespaces:
@@ -6936,18 +7037,6 @@ def _playblast_settings_fingerprint(payload: dict[str, Any]) -> str:
 def _normalize_role(value: Any) -> str:
     role = str(value or "").strip().upper() or "CHA"
     return ROLE_ALIASES.get(role, role)
-
-
-def _role_from_asset_selection(selected: dict[str, Any]) -> str:
-    text = " ".join(
-        str(selected.get(key, ""))
-        for key in ("category", "group", "asset_type", "type")
-    ).lower()
-    if any(token in text for token in ("env", "environment", "bg", "background", "set")):
-        return "BGA"
-    if "fx" in text:
-        return "FX"
-    return "CHA"
 
 
 def _unique_cast_key(existing_cast: dict[str, Any], asset_name: Any) -> str:

@@ -115,12 +115,12 @@ def test_smart_casting_lists_assets_and_shots_from_configured_roots(tmp_path: Pa
     config_dir = tmp_path / "config"
     write_config(config_dir, project_root)
 
-    asset_root = project_root / "library" / "assets" / "props" / "bp" / "Chair"
-    write_json(asset_root / "asset.json", {"category": "props", "group": "bp", "asset": "Chair"})
+    asset_root = project_root / "library" / "assets" / "prop" / "bp" / "Chair"
+    write_json(asset_root / "asset.json", {"category": "prop", "group": "bp", "asset": "Chair"})
     write_json(asset_root / "default" / "variant.json", {"variant": "default", "status": "approved"})
     write_json(
         asset_root / "default" / "publish" / "asset" / "work" / "v001" / "asset.json",
-        {"category": "props", "group": "bp", "asset": "Chair"},
+        {"category": "prop", "group": "bp", "asset": "Chair"},
     )
     prop_root = project_root / "library" / "assets" / "prop" / "bp" / "Cup"
     write_json(prop_root / "asset.json", {"category": "prop", "group": "bp", "asset": "Cup"})
@@ -143,7 +143,8 @@ def test_smart_casting_lists_assets_and_shots_from_configured_roots(tmp_path: Pa
 
     assets = service.list_assets()
     assert [(row.category, row.group, row.asset, row.variant) for row in assets] == [
-        ("props", "bp", "Chair", "default")
+        ("prop", "bp", "Chair", "default"),
+        ("prop", "bp", "Cup", "default"),
     ]
     assert service.asset_root(assets[0]) == asset_root
 
@@ -169,7 +170,7 @@ def test_smart_casting_uses_spreadsheet_asset_list_cache(tmp_path: Path, monkeyp
         config_dir / ".cache" / "asset_list.json",
         [
             {
-                "category": "BG",
+                "category": "environment",
                 "group": "main",
                 "asset": "DeleinRoomB",
                 "variant": "default",
@@ -177,7 +178,7 @@ def test_smart_casting_uses_spreadsheet_asset_list_cache(tmp_path: Path, monkeyp
                 "description": "main room",
             },
             {
-                "category": "BP",
+                "category": "prop",
                 "group": "main",
                 "asset": "DeleinChair",
                 "variant": "default",
@@ -194,8 +195,8 @@ def test_smart_casting_uses_spreadsheet_asset_list_cache(tmp_path: Path, monkeyp
             },
         ],
     )
-    unlisted_root = project_root / "library" / "assets" / "CH" / "main" / "JIN"
-    write_json(unlisted_root / "asset.json", {"category": "CH", "group": "main", "asset": "JIN"})
+    unlisted_root = project_root / "library" / "assets" / "character" / "main" / "JIN"
+    write_json(unlisted_root / "asset.json", {"category": "character", "group": "main", "asset": "JIN"})
     write_json(unlisted_root / "default" / "variant.json", {"variant": "default"})
 
     service = SmartCastingService(ProjectConfig(config_dir))
@@ -207,8 +208,9 @@ def test_smart_casting_uses_spreadsheet_asset_list_cache(tmp_path: Path, monkeyp
 
     assets = service.list_assets()
     assert [(row.category, row.group, row.asset, row.variant, row.status, row.description) for row in assets] == [
-        ("BG", "main", "DeleinRoomB", "default", "Wait", "main room"),
-        ("BP", "main", "DeleinChair", "default", "Wait", "chair blueprint"),
+        ("environment", "main", "DeleinRoomB", "default", "Wait", "main room"),
+        ("prop", "bp", "Cup", "default", "Wait", "assembly only"),
+        ("prop", "main", "DeleinChair", "default", "Wait", "chair blueprint"),
     ]
     assert service.last_asset_source == "spreadsheet cache"
 
@@ -227,7 +229,7 @@ def test_smart_casting_saves_edited_namespace(tmp_path: Path) -> None:
                 "cast_key": "Chair_A",
                 "asset": "Chair",
                 "variant": "default",
-                "role": "BGA",
+                "category": "prop",
                 "namespace": "setChair_custom",
                 "asset_publish": "approved",
                 "required": True,
@@ -243,8 +245,8 @@ def test_smart_casting_asset_registration_defaults_namespace_to_asset_name(tmp_p
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     write_config(config_dir, project_root)
-    asset_root = project_root / "library" / "assets" / "CH" / "main" / "Chair"
-    write_json(asset_root / "asset.json", {"category": "CH", "group": "main", "asset": "Chair"})
+    asset_root = project_root / "library" / "assets" / "character" / "main" / "Chair"
+    write_json(asset_root / "asset.json", {"category": "character", "group": "main", "asset": "Chair"})
     write_json(asset_root / "default" / "variant.json", {"variant": "default"})
 
     service = SmartCastingService(ProjectConfig(config_dir))
@@ -265,8 +267,8 @@ def test_smart_casting_sequence_cast_rows_include_context_statuses(tmp_path: Pat
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     write_config(config_dir, project_root)
-    asset_root = project_root / "library" / "assets" / "props" / "bp" / "Chair"
-    write_json(asset_root / "asset.json", {"category": "props", "group": "bp", "asset": "Chair"})
+    asset_root = project_root / "library" / "assets" / "prop" / "bp" / "Chair"
+    write_json(asset_root / "asset.json", {"category": "prop", "group": "bp", "asset": "Chair"})
     write_json(asset_root / "default" / "variant.json", {"variant": "default"})
     write_json(asset_root / "default" / "publish" / "asset" / "work" / "versions.json", [{"version": "v001", "status": "approved"}])
     work_scene = asset_root / "default" / "publish" / "asset" / "work" / "v001" / "Chair.ma"
@@ -286,7 +288,7 @@ def test_smart_casting_sequence_cast_rows_include_context_statuses(tmp_path: Pat
                 "cast_key": "Chair_main",
                 "asset": "Chair",
                 "variant": "default",
-                "role": "BGA",
+                "category": "prop",
                 "namespace": "Chair_main",
                 "asset_publish": "approved",
                 "required": True,
@@ -303,10 +305,10 @@ def test_smart_casting_maps_environment_work_to_proxy(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     write_config(config_dir, project_root)
-    asset_root = project_root / "library" / "assets" / "BG" / "main" / "Room"
+    asset_root = project_root / "library" / "assets" / "environment" / "main" / "Room"
     write_json(
         asset_root / "asset.json",
-        {"category": "BG", "group": "main", "asset": "Room", "asset_type": "BG"},
+        {"category": "environment", "group": "main", "asset": "Room", "asset_type": "environment"},
     )
     write_json(asset_root / "default" / "variant.json", {"variant": "default"})
     proxy_root = asset_root / "default" / "publish" / "asset" / "proxy"
@@ -330,11 +332,11 @@ def test_context_statuses_for_identity_uses_exact_category_and_group(tmp_path: P
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     write_config(config_dir, project_root)
-    selected_root = project_root / "library" / "assets" / "BG" / "main" / "Room"
-    other_root = project_root / "library" / "assets" / "CH" / "hero" / "Room"
+    selected_root = project_root / "library" / "assets" / "environment" / "main" / "Room"
+    other_root = project_root / "library" / "assets" / "character" / "hero" / "Room"
     for root, category, group in (
-        (selected_root, "BG", "main"),
-        (other_root, "CH", "hero"),
+        (selected_root, "environment", "main"),
+        (other_root, "character", "hero"),
     ):
         write_json(
             root / "asset.json",
@@ -349,7 +351,7 @@ def test_context_statuses_for_identity_uses_exact_category_and_group(tmp_path: P
 
     service = SmartCastingService(ProjectConfig(config_dir))
     statuses = service.context_statuses_for_identity(
-        AssetIdentity("BG", "main", "Room", "default")
+        AssetIdentity("environment", "main", "Room", "default")
     )
 
     assert statuses["FAST"] == "WIP"
@@ -361,11 +363,11 @@ def test_sequence_cast_save_adds_missing_casts_to_shots_without_overwriting(tmp_
     project_root = tmp_path / "project"
     config_dir = tmp_path / "config"
     write_config(config_dir, project_root)
-    chair_root = project_root / "library" / "assets" / "CH" / "main" / "Chair"
-    table_root = project_root / "library" / "assets" / "BG" / "main" / "Table"
-    write_json(chair_root / "asset.json", {"category": "CH", "group": "main", "asset": "Chair"})
+    chair_root = project_root / "library" / "assets" / "character" / "main" / "Chair"
+    table_root = project_root / "library" / "assets" / "environment" / "main" / "Table"
+    write_json(chair_root / "asset.json", {"category": "character", "group": "main", "asset": "Chair"})
     write_json(chair_root / "default" / "variant.json", {"variant": "default"})
-    write_json(table_root / "asset.json", {"category": "BG", "group": "main", "asset": "Table"})
+    write_json(table_root / "asset.json", {"category": "environment", "group": "main", "asset": "Table"})
     write_json(table_root / "default" / "variant.json", {"variant": "default"})
     for shot in ("sh010", "sh020"):
         write_json(
@@ -390,7 +392,7 @@ def test_sequence_cast_save_adds_missing_casts_to_shots_without_overwriting(tmp_
                 "cast_key": "Chair_main",
                 "asset": "Chair",
                 "variant": "default",
-                "role": "CHA",
+                "category": "prop",
                 "namespace": "Chair_shot_override",
                 "asset_publish": "v003",
                 "required": False,
@@ -407,7 +409,7 @@ def test_sequence_cast_save_adds_missing_casts_to_shots_without_overwriting(tmp_
                 "cast_key": "Chair_main",
                 "asset": "Chair",
                 "variant": "default",
-                "role": "CHA",
+                "category": "prop",
                 "namespace": "Chair_main",
                 "asset_publish": "approved",
                 "required": True,
@@ -417,7 +419,7 @@ def test_sequence_cast_save_adds_missing_casts_to_shots_without_overwriting(tmp_
                 "cast_key": "Table_main",
                 "asset": "Table",
                 "variant": "default",
-                "role": "BGA",
+                "category": "prop",
                 "namespace": "Table_main",
                 "asset_publish": "approved",
                 "required": True,
@@ -444,7 +446,7 @@ def test_sequence_cast_save_adds_missing_casts_to_shots_without_overwriting(tmp_
                 "cast_key": "Chair_main",
                 "asset": "Chair",
                 "variant": "default",
-                "role": "CHA",
+                "category": "prop",
                 "namespace": "Chair_main",
                 "asset_publish": "approved",
                 "required": True,

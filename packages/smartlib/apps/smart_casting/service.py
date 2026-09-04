@@ -12,13 +12,14 @@ from urllib.request import Request, urlopen
 
 from smartlib.apps.asset_manager import AssetCreateRequest, AssetManagerService
 from smartlib.apps.shot_manager import SequenceIdentity, ShotIdentity, ShotManagerService
+from smartlib.core.asset_categories import canonical_asset_category
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.credentials import credentials_path
 from smartlib.core.metadata import read_json, write_json
 from smartlib.core.path_resolver import AssetIdentity, ProjectPaths
 
 CAST_CONTEXTS = ("FAST", "WORK", "FINAL")
-CASTING_EXCLUDED_CATEGORIES = {"prop"}
+CASTING_EXCLUDED_CATEGORIES: set[str] = set()
 GOOGLE_SHEET_ID_RE = re.compile(r"/spreadsheets/d/([^/?#]+)")
 
 
@@ -73,7 +74,7 @@ class SmartCastingService:
         for asset_json in root.glob("**/asset.json"):
             asset_root = asset_json.parent
             metadata = read_json(asset_json, {}) or {}
-            category = str(metadata.get("category") or asset_root.parent.parent.name)
+            category = canonical_asset_category(metadata.get("category") or asset_root.parent.parent.name, strict=True)
             group = str(metadata.get("group") or asset_root.parent.name)
             asset = str(metadata.get("asset") or metadata.get("name") or asset_root.name)
             if category.strip().lower() in CASTING_EXCLUDED_CATEGORIES:
@@ -157,7 +158,7 @@ class SmartCastingService:
     def _asset_rows_from_sheet_records(self, rows: list[dict[str, Any]]) -> list[CastingAsset]:
         assets: dict[tuple[str, str, str, str], CastingAsset] = {}
         for row in rows:
-            category = str(self._row_value(row, "category", "Category") or "").strip()
+            category = canonical_asset_category(self._row_value(row, "category", "Category"), strict=True)
             group = str(self._row_value(row, "group", "Group") or "").strip()
             asset = str(self._row_value(row, "asset", "Asset", "Asset Name", "AssetName", "name") or "").strip()
             variant = str(self._row_value(row, "variant", "Variant") or "default").strip() or "default"
@@ -378,10 +379,11 @@ class SmartCastingService:
             if context_service.asset_class_for_asset(identity) == "default":
                 resolved_contexts = {context: context for context in CAST_CONTEXTS}
             else:
-                resolved_contexts = {
-                    stage: context_service.stage_context_for_asset(identity, stage)
-                    for stage in CAST_CONTEXTS
-                }
+                labels = context_service.load_context("asset").get("profile_labels") or {}
+                resolved_contexts = {}
+                for stage in CAST_CONTEXTS:
+                    profile = context_service.stage_context_for_asset(identity, stage)
+                    resolved_contexts[stage] = str(labels.get(profile) or profile)
         except (FileNotFoundError, KeyError, TypeError, ValueError, IndexError):
             resolved_contexts = {context: context for context in CAST_CONTEXTS}
         statuses = {}

@@ -258,7 +258,7 @@ class ReviewWorkflowService:
         construct_snapshot: dict[str, Any],
         assembly_definition: dict[str, Any],
         layer_definition: dict[str, Any],
-        builder_version: str = "review_builder_v2",
+        builder_version: str = "review_builder_v3_snapshot_placements",
     ) -> str:
         return content_fingerprint({
             "construct_snapshot": construct_snapshot,
@@ -723,6 +723,8 @@ class ReviewWorkflowService:
         review_data: dict[str, Any],
         source_manifest: dict[str, Any],
         delivery_settings: dict[str, Any] | None = None,
+        version: str = "",
+        slate: str | Path | None = None,
     ) -> Path:
         movie = Path(movie)
         thumbnail = Path(thumbnail)
@@ -740,9 +742,9 @@ class ReviewWorkflowService:
         destination_root = self.review_destination_root(
             department, delivery_profile, delivery_settings
         )
-        version = self.next_review_version(
+        version = str(version or self.next_review_version(
             department, delivery_profile, delivery_settings
-        )
+        ))
         destination = destination_root / version
         temporary = destination.with_name(f".{destination.name}.submitting")
         if temporary.exists():
@@ -753,6 +755,9 @@ class ReviewWorkflowService:
         movie_name = f"review{movie.suffix.lower()}"
         shutil.copy2(movie, temporary / movie_name)
         shutil.copy2(thumbnail, temporary / "thumbnail.jpg")
+        slate = Path(slate) if slate else None
+        if slate and slate.is_file():
+            shutil.copy2(slate, temporary / "slate.png")
         payload = dict(review_data)
         payload.update({
             "schema": "smartpipeline.formal_review.v1",

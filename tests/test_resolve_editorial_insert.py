@@ -4,6 +4,9 @@ from smartlib.core.path_resolver import ProjectPaths
 from smartlib.dcc.resolve.editorial_insert import (
     _hud_filter,
     _configure_prores_proxy,
+    _ensure_marker_event_ids,
+    _next_shot_media_version,
+    event_storage_id,
     _fixed_artifact,
     _fixed_media_reference,
     _shot_revisions,
@@ -86,9 +89,11 @@ def test_existing_editorial_revision_can_be_fixed_without_rendering(tmp_path: Pa
     mapping = {
         "shots": [{
             "shot": "c001", "cg_shot_id": shot.cg_shot_id,
+            "editorial_event_uid": shot.editorial_event_uid,
             "clean": "media/clean/c001.mov",
             "editorial_primary": "media/edit/c001.mov",
-            "export_action": "new", "head_handle": 0, "tail_handle": 0,
+            "export_action": "new", "media_version": "v001",
+            "head_handle": 0, "tail_handle": 0,
         }]
     }
     write_json(paths.editorial_revision_mapping_path("op", "v001"), mapping)
@@ -132,14 +137,57 @@ def test_fixed_revision_requires_exact_effective_handles(tmp_path: Path):
     )[0]
     write_json(paths.editorial_revision_mapping_path("op", "v001"), {
         "shots": [{
-            "cg_shot_id": shot.cg_shot_id, "export_action": "new",
-            "head_handle": 0, "tail_handle": 0,
+            "cg_shot_id": shot.cg_shot_id, "editorial_event_uid": shot.editorial_event_uid,
+            "export_action": "new", "head_handle": 0, "tail_handle": 0,
         }]
     })
     write_json(paths.editorial_revision_mapping_path("op", "v002"), {
         "shots": [{
-            "cg_shot_id": shot.cg_shot_id, "export_action": "new",
-            "head_handle": 8, "tail_handle": 8,
+            "cg_shot_id": shot.cg_shot_id, "editorial_event_uid": shot.editorial_event_uid,
+            "export_action": "new", "head_handle": 8, "tail_handle": 8,
         }]
     })
     assert _shot_revisions(paths, "op", shot) == ["v002"]
+
+def test_shot_media_paths_separate_timeline_metadata_from_event_versions(tmp_path: Path):
+    paths = ProjectPaths(tmp_path)
+    assert paths.editorial_revision_mapping_path("op", "v003") == (
+        tmp_path / "production/editorial/publish/op/revisions/metadata/v003/editorial_mapping.json"
+    )
+    assert paths.editorial_event_media_edit_dir(
+        "op", "CGID-d1a48b0f_EVID-72a41c9e", "v005"
+    ) == (
+        tmp_path / "production/editorial/publish/op/revisions/media"
+        / "CGID-d1a48b0f_EVID-72a41c9e/v005/edit"
+    )
+
+
+def test_marker_custom_data_persists_stable_editorial_event_id():
+    class Timeline:
+        def UpdateMarkerCustomData(self, frame_id, value):
+            markers[frame_id]["customData"] = value
+            return True
+
+    markers = {12.0: {"name": "c001", "duration": 10, "customData": ""}}
+    _ensure_marker_event_ids(Timeline(), markers)
+    first = markers[12.0]["_editorial_event_uid"]
+    del markers[12.0]["_editorial_event_uid"]
+    _ensure_marker_event_ids(Timeline(), markers)
+    assert markers[12.0]["_editorial_event_uid"] == first
+
+
+def test_event_identity_preserves_cgid_when_marker_shot_name_changes():
+    registry = {"shots": {}, "events": {}}
+    first = build_insert_shots(
+        {0: {"name": "c001", "duration": 10, "_editorial_event_uid": "event-a"}},
+        registry=registry, episode="op", production_sequence="op01",
+        timeline_start=0, timeline_end=100, fps=24, head_handle=0, tail_handle=0,
+    )[0]
+    renamed = build_insert_shots(
+        {0: {"name": "c010", "duration": 10, "_editorial_event_uid": "event-a"}},
+        registry=registry, episode="op", production_sequence="op01",
+        timeline_start=0, timeline_end=100, fps=24, head_handle=0, tail_handle=0,
+    )[0]
+    assert renamed.cg_shot_id == first.cg_shot_id
+    assert event_storage_id(renamed).startswith("CGID-")
+    assert "_EVID-eventa" in event_storage_id(renamed)

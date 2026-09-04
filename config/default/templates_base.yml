@@ -75,6 +75,8 @@ templates:
   delivery_editorial_recipient_root: "{deliveries_editorial_dir}/{recipient}"
   delivery_editorial_batch: "{delivery_editorial_recipient_root}/{delivery_batch}/{process}"
   delivery_editorial_package: "{delivery_editorial_batch}/{entity}.zip"
+  delivery_editorial_index_root: "{delivery_editorial_recipient_root}/index"
+  delivery_editorial_revision_index: "{delivery_editorial_index_root}/{process}/{episode}/{timeline_revision}.json"
   deliveries_client_dir: "{delivery_root}/client"
   deliveries_archive_dir: "{delivery_root}/archive"
   incoming_root: "{project_root}/incoming"

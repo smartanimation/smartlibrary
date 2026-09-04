@@ -240,6 +240,45 @@ def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
     ) == tmp_path / "production/shots/ep02/s027/c001/publish/precomp"
 
 
+def test_project_paths_resolve_shot_context_from_workspace_scene(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={
+            "workspace_root": "{project_root}/workspace",
+            "production_root": "{project_root}/production",
+            "shots_root": "{production_root}/shots",
+            "sequences_root": "{production_root}/sequences",
+            "shot_root": "{shots_root}/{episode}/{sequence}/{shot}",
+            "shot_workspace_root": "{workspace_root}/{workspace_partition}/shots/{episode}/{sequence}/{shot}",
+        },
+        shot_dept_partitions={"default": "cg"},
+    )
+    scene = tmp_path / "workspace/cg/shots/ep02/s027/c002/work/anim/maya/preComp/main/scene.ma"
+
+    assert paths.context_root_from_scene_path(scene) == (
+        "shot",
+        tmp_path / "production/shots/ep02/s027/c002",
+    )
+
+
+def test_project_paths_resolve_sequence_context_from_workspace_scene(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={
+            "workspace_root": "{project_root}/workspace",
+            "production_root": "{project_root}/production",
+            "sequences_root": "{production_root}/sequences",
+            "sequence_work_root": "{workspace_root}/{workspace_partition}/sequences/{episode}/{sequence}/work",
+        },
+        shot_dept_partitions={"default": "cg"},
+    )
+    scene = tmp_path / "workspace/cg/sequences/ep02/s027/work/layout/maya/scene.ma"
+
+    assert paths.context_root_from_scene_path(scene) == (
+        "sequence",
+        tmp_path / "production/sequences/ep02/s027",
+    )
+
 def test_project_paths_use_default_workspace_partition_for_asset_root(tmp_path):
     paths = ProjectPaths(
         tmp_path,

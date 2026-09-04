@@ -1007,7 +1007,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             target_type=target_type,
             project=self.project_edit.text().strip(),
             asset=self._combo_text(self.asset_edit),
-            category=self._combo_text(self.category_edit) or "CH",
+            category=self._combo_text(self.category_edit) or "character",
             group=self._combo_text(self.group_edit) or "main",
             variant=self._combo_text(self.variant_edit) or "default",
             department=department,
@@ -1049,7 +1049,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
 
     def _refresh_asset_metadata_choices(self) -> None:
         self._refresh_combo_items(self.category_edit, self.service.asset_categories())
-        category = self._combo_text(self.category_edit) or "CH"
+        category = self._combo_text(self.category_edit) or "character"
         self._refresh_combo_items(self.group_edit, self.service.asset_groups(category))
         group = self._combo_text(self.group_edit) or "main"
         self._refresh_combo_items(self.asset_edit, self.service.asset_names(category, group))

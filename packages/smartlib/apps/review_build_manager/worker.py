@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import traceback
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +33,49 @@ def _write_status(path: Path, *, state: str, progress: int, task: str, message: 
 
 def _clean_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in "_-" else "_" for char in value)
+
+
+def _internal_review_slate_lines(
+    *,
+    project: str,
+    episode: str,
+    sequence: str,
+    shot: str,
+    department: str,
+    review_version: str,
+    planned_snapshot: dict,
+    frame_range: list[int],
+    handles: list[int],
+    fps: int | float,
+    created_at: datetime,
+) -> list[str]:
+    lines = [
+        f"PROJECT {project}",
+        "",
+        f"{episode} / {sequence} / {shot}",
+        "",
+        f"{ {'anim': 'ANIMATION'}.get(str(department).lower(), str(department or 'review').upper()) } REVIEW",
+        f"Review {review_version}",
+        "",
+    ]
+    for row in planned_snapshot.get("inputs") or []:
+        if not row.get("enabled", True):
+            continue
+        data_type = str(row.get("type") or "data")
+        name = str(row.get("name") or "main")
+        context = str(row.get("context") or "")
+        version = str(row.get("version") or "-")
+        detail = " ".join(value for value in (name, context, version) if value)
+        lines.append(f"{data_type:<18} {detail}")
+    lines.extend([
+        "",
+        f"Frames     {int(frame_range[0])}-{int(frame_range[1])}",
+        f"Handles    {int(handles[0])} / {int(handles[1])}",
+        f"FPS        {float(fps):g}",
+        "",
+        created_at.strftime("%Y-%m-%d"),
+    ])
+    return lines
 
 
 def _plugin_profile_name(operation: str) -> str:
@@ -158,8 +201,7 @@ def _camera_for_layer(cameras: list[str], layer_name: str, configured_name: str 
         if match:
             return match
     token = layer_name.strip().lower()
-    match = next((camera for camera in cameras if token and token in camera.lower()), "")
-    return match or _preferred_camera(cameras)
+    return next((camera for camera in cameras if token and token in camera.lower()), "")
 
 
 def _camera_leaf_name(camera: str) -> str:
@@ -393,8 +435,8 @@ def _render_camera_sequence(
                 pass
     preset_context = nullcontext()
     if project_config is not None and playblast_preset:
-        from smartlib.dcc.maya.playblast_preset import applied_playblast_preset
-        preset_context = applied_playblast_preset(project_config, playblast_preset)
+        from smartlib.dcc.maya.offscreen_preset import applied_offscreen_playblast_preset
+        preset_context = applied_offscreen_playblast_preset(project_config, playblast_preset)
     count = max(1, end - start + 1)
     try:
         with preset_context:
@@ -764,12 +806,6 @@ def _render_maya_sequencer(
 ) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
     count = max(1, end - start + 1)
-    fallback_cameras = [
-        parent
-        for shape in (cmds.ls(type="camera", long=True) or [])
-        for parent in (cmds.listRelatives(shape, parent=True, fullPath=True) or [])
-        if parent.split("|")[-1] not in {"persp", "top", "front", "side"}
-    ]
     for index, frame in enumerate(range(start, end + 1)):
         cmds.currentTime(frame, edit=True)
         camera = ""
@@ -779,9 +815,11 @@ def _render_maya_sequencer(
                 camera = cmds.shot(shot, query=True, currentCamera=True) or ""
         except Exception:
             camera = ""
-        camera = camera or _preferred_camera(fallback_cameras)
         if not camera:
-            raise RuntimeError(f"No Camera Sequencer camera was resolved at frame {frame}.")
+            raise RuntimeError(
+                "No Camera Sequencer camera was resolved at frame "
+                f"{frame}. Rendering will not fall back to another scene camera."
+            )
         rendered = Path(
             cmds.ogsRender(
                 camera=camera,
@@ -940,7 +978,7 @@ def _construct_snapshot_for_preview(shot_service, identity, preview) -> dict:
                     "kind": "cast_entry",
                     "asset": item.asset,
                     "variant": item.variant,
-                    "role": item.role,
+                    "category": item.category,
                     "status": item.status,
                 },
             }
@@ -1140,8 +1178,12 @@ def _run_scene_construction(
     from smartlib.dcc.maya.shot_builder import create_review_display_layers
 
     workflow = manager.review_workflow(identity)
-    layer_definition = manager.layer_definition(identity, plan.department)
-    _published_layer_definition, layer_definition_path = workflow.latest_layer_definition()
+    try:
+        planned_snapshot = json.loads(getattr(args, "planned_snapshot_json", "{}") or "{}")
+    except (TypeError, ValueError):
+        planned_snapshot = {}
+    layer_definition, layer_definition_path = manager.planned_layer_definition(
+        identity, plan.department, planned_snapshot)
     assembly_definition = manager.assembly_definition(identity)
     assembly_by_uid = {
         str(member.get("uid")): member
@@ -1368,111 +1410,162 @@ def _run_scene_construction(
                 if str(component.get("component_type") or "") == "light"
             ]
         }
+        from smartlib.dcc.maya.gui_review_playblast import BACKEND_VERSION, launch_playblast
+        from smartlib.dcc.maya.playblast_preset import _presets
         layer_cache_states = {}
-        for index, spec in enumerate(specs):
-            _activate_review_layer(cmds, specs, spec["name"])
-            layer_start, layer_end = spec["frame_range"]
-            layer_width, layer_height = spec["resolution"]
-            contract = spec.get("contract") or {}
-            layer_uid_members = list(contract.get("members") or [])
-            fingerprint, dependencies = workflow.layer_fingerprint(
-                contract,
-                member_snapshots=member_snapshots,
-                camera_snapshot={
-                    "name": spec["camera"],
-                    "contract": contract.get("camera") or {},
-                    "components": [
-                        component for component in construct_components
-                        if str(component.get("component_type") or "") == "camera"
-                    ],
-                },
-                light_snapshot=light_snapshot,
-                frame_range=[layer_start, layer_end],
-                review_profile=review_profile,
-                builder_version="review_builder_v2",
-            )
-            cache_policy = str(getattr(args, "review_cache_policy", "use") or "use")
-            rebuild_layers = {
-                str(value)
-                for value in json.loads(
-                    getattr(args, "rebuild_layers_json", "[]") or "[]"
+        pending_playblasts = []
+        playblast_presets = _presets(manager.project_config)
+        gui_playblast = review_profile.get("renderer", "maya_playblast") != "maya_render"
+        with ExitStack() as cache_resources:
+            for index, spec in enumerate(specs):
+                _activate_review_layer(cmds, specs, spec["name"])
+                layer_start, layer_end = spec["frame_range"]
+                layer_width, layer_height = spec["resolution"]
+                contract = spec.get("contract") or {}
+                layer_uid_members = list(contract.get("members") or [])
+                fingerprint, dependencies = workflow.layer_fingerprint(
+                    contract,
+                    member_snapshots=member_snapshots,
+                    camera_snapshot={
+                        "name": spec["camera"],
+                        "contract": contract.get("camera") or {},
+                        "components": [
+                            component for component in construct_components
+                            if str(component.get("component_type") or "") == "camera"
+                        ],
+                    },
+                    light_snapshot=light_snapshot,
+                    frame_range=[layer_start, layer_end],
+                    review_profile={**review_profile, "playblast_display": playblast_presets},
+                    builder_version=BACKEND_VERSION if gui_playblast else "review_builder_v3_offscreen_display",
                 )
-            }
-            layer_slug = str(contract.get("slug") or spec["name"])
-            force_miss = cache_policy in {"rebuild_all", "ignore_all"} or (
-                cache_policy == "rebuild_selected"
-                and (layer_slug in rebuild_layers or spec["name"] in rebuild_layers)
-            )
-            cache = workflow.find_layer_cache(
-                plan.department,
-                layer_slug,
-                fingerprint,
-                force_miss=force_miss,
-            )
-            cache, cache_lock = workflow.reserve_layer_cache(cache)
-            layer_cache_states[spec["name"]] = cache.state
-            extension = str(
-                contract.get("output_format")
-                or review_profile.get("image_format")
-                or "png"
-            ).lower().lstrip(".")
-            pattern = (
-                f"{_clean_name(str(contract.get('slug') or spec['name']))}.####.{extension}"
-            )
-            layer_dir = cache.directory
-            if cache.state == "HIT":
-                cache_manifest = json.loads(cache.manifest.read_text(encoding="utf-8-sig"))
-                cached_pattern = str((cache_manifest.get("frames") or {}).get("pattern") or "")
-                pattern_path = cache.directory / cached_pattern
-                sequence = str(pattern_path).replace("####", "%04d")
-                pattern = Path(cached_pattern).name
-                frames_dir = pattern_path.parent
-            else:
-                frames_dir = layer_dir / "frames"
-                sequence = _render_camera_sequence(
-                    cmds,
-                    camera=spec["camera"],
-                    output_dir=frames_dir,
-                    start=layer_start,
-                    end=layer_end,
-                    width=layer_width,
-                    height=layer_height,
-                    status_path=status_path,
-                    progress_start=65 + int(index / max(1, len(specs)) * 25),
-                    progress_end=65 + int((index + 1) / max(1, len(specs)) * 25),
-                    output_pattern=pattern,
-                    project_config=manager.project_config,
-                    playblast_preset=str(contract.get("playblast_preset") or ""),
-                    overscan=float(contract.get("overscan") or 1.0),
+                cache_policy = str(getattr(args, "review_cache_policy", "use") or "use")
+                rebuild_layers = {
+                    str(value)
+                    for value in json.loads(
+                        getattr(args, "rebuild_layers_json", "[]") or "[]"
+                    )
+                }
+                layer_slug = str(contract.get("slug") or spec["name"])
+                force_miss = cache_policy in {"rebuild_all", "ignore_all"} or (
+                    cache_policy == "rebuild_selected"
+                    and (layer_slug in rebuild_layers or spec["name"] in rebuild_layers)
                 )
-                workflow.write_layer_cache_manifest(
-                    cache,
-                    layer=contract,
-                    dependencies=dependencies,
-                    frame_pattern=f"frames/{pattern}",
-                    frame_count=max(1, layer_end - layer_start + 1),
+                cache = workflow.find_layer_cache(
+                    plan.department,
+                    layer_slug,
+                    fingerprint,
+                    force_miss=force_miss,
                 )
-                workflow.release_layer_cache(cache_lock)
-            review_sequences[spec["name"]] = sequence
-            first_file = frames_dir / pattern.replace("####", f"{layer_start:04d}")
-            last_file = frames_dir / pattern.replace("####", f"{layer_end:04d}")
-            review_output_records[spec["name"]] = {
-                "first_file": str(first_file),
-                "last_file": str(last_file),
-                "file_count": max(1, layer_end - layer_start + 1),
-                "members": list(spec.get("members") or []),
-                "placeholder": str(
-                    (spec.get("contract") or {}).get("precomp_placeholder")
-                    or spec["name"]
-                ),
-            }
-            review_layers[spec["name"]] = {
-                **spec,
-                "sequence": sequence,
-                "version": cache.version,
-                "fingerprint": fingerprint,
-                "cache": cache.state,
-            }
+                cache, cache_lock = workflow.reserve_layer_cache(cache)
+                cache_resources.callback(workflow.release_layer_cache, cache_lock)
+                layer_cache_states[spec["name"]] = cache.state
+                extension = str(
+                    contract.get("output_format")
+                    or review_profile.get("image_format")
+                    or "png"
+                ).lower().lstrip(".")
+                pattern = (
+                    f"{_clean_name(str(contract.get('slug') or spec['name']))}.####.{extension}"
+                )
+                layer_dir = cache.directory
+                if cache.state == "HIT":
+                    cache_manifest = json.loads(cache.manifest.read_text(encoding="utf-8-sig"))
+                    cached_pattern = str((cache_manifest.get("frames") or {}).get("pattern") or "")
+                    pattern_path = cache.directory / cached_pattern
+                    sequence = str(pattern_path).replace("####", "%04d")
+                    pattern = Path(cached_pattern).name
+                    frames_dir = pattern_path.parent
+                elif not gui_playblast:
+                    # Explicit render profiles (e.g. 16-bit EXR) are not
+                    # Playblast. Keep that existing renderer; never silently
+                    # convert HDR output to the GUI's 8-bit capture.
+                    frames_dir = layer_dir / "frames"
+                    sequence = _render_camera_sequence(
+                        cmds, camera=spec["camera"], output_dir=frames_dir,
+                        start=layer_start, end=layer_end,
+                        width=layer_width, height=layer_height,
+                        status_path=status_path,
+                        progress_start=65 + int(index / max(1, len(specs)) * 25),
+                        progress_end=65 + int((index + 1) / max(1, len(specs)) * 25),
+                        output_pattern=pattern, project_config=manager.project_config,
+                        playblast_preset=str(contract.get("playblast_preset") or ""),
+                        overscan=float(contract.get("overscan") or 1.0),
+                    )
+                    workflow.write_layer_cache_manifest(
+                        cache, layer=contract, dependencies=dependencies,
+                        frame_pattern=f"frames/{pattern}",
+                        frame_count=layer_end - layer_start + 1,
+                    )
+                else:
+                    frames_dir = layer_dir / "frames"
+                    preset_name = str(contract.get("playblast_preset") or "")
+                    if preset_name and preset_name not in playblast_presets:
+                        raise ValueError(f"Unknown Review Playblast preset: {preset_name}")
+                    sequence = str(frames_dir / pattern).replace("####", "%04d")
+                    pending_playblasts.append({
+                        "spec": spec, "cache": cache, "dependencies": dependencies,
+                        "pattern": pattern,
+                        "request": {
+                            "name": spec["name"], "display_layer": spec["display_layer"],
+                            "camera": spec["camera"], "frame_range": [layer_start, layer_end],
+                            "resolution": [layer_width, layer_height],
+                            "output_dir": str(frames_dir), "output_pattern": pattern,
+                            "overscan": float(contract.get("overscan") or 1.0),
+                            "display": (playblast_presets.get(preset_name) or {}).get("display") or {},
+                        },
+                    })
+                review_sequences[spec["name"]] = sequence
+                first_file = frames_dir / pattern.replace("####", f"{layer_start:04d}")
+                last_file = frames_dir / pattern.replace("####", f"{layer_end:04d}")
+                review_output_records[spec["name"]] = {
+                    "first_file": str(first_file),
+                    "last_file": str(last_file),
+                    "file_count": max(1, layer_end - layer_start + 1),
+                    "members": list(spec.get("members") or []),
+                    "placeholder": str(
+                        (spec.get("contract") or {}).get("precomp_placeholder")
+                        or spec["name"]
+                    ),
+                }
+                review_layers[spec["name"]] = {
+                    **spec,
+                    "sequence": sequence,
+                    "version": cache.version,
+                    "fingerprint": fingerprint,
+                    "cache": cache.state,
+                }
+            if pending_playblasts:
+                plugins = []
+                for row in (getattr(args, "plugin_report", None) or {}).get("plugins", []):
+                    if row.get("loaded"):
+                        plugins.append({
+                            "path": cmds.pluginInfo(row["name"], query=True, path=True),
+                            "required": row.get("requirement") == "required",
+                        })
+                gui_config = manager.review_profiles.config().get("gui_playblast") or {}
+                launch_playblast(
+                    cmds, scene=scene_path,
+                    layers=[row["request"] for row in pending_playblasts],
+                    all_layers=[spec["display_layer"] for spec in specs],
+                    status_path=status_path, plugins=plugins,
+                    startup_timeout=float(gui_config.get("startup_timeout_seconds", 180)),
+                    stall_timeout=float(gui_config.get("stall_timeout_seconds", 300)),
+                    progress=lambda fraction, message: _write_status(
+                        status_path, state="BUILDING", progress=65 + int(25 * fraction),
+                        task="GUI Playblast", message=message,
+                    ),
+                )
+                # Only publish complete caches once every requested frame has
+                # passed the GUI renderer's image/resolution validation.
+                for row in pending_playblasts:
+                    start_frame, end_frame = row["spec"]["frame_range"]
+                    workflow.write_layer_cache_manifest(
+                        row["cache"], layer=row["spec"]["contract"],
+                        dependencies=row["dependencies"],
+                        frame_pattern=f"frames/{row['pattern']}",
+                        frame_count=end_frame - start_frame + 1,
+                    )
 
         if review_sequences:
             workflow.cleanup_jobs(
@@ -1484,6 +1577,7 @@ def _run_scene_construction(
                 "review_profile": args.review_profile,
                 "delivery_profile": args.delivery_profile,
                 "layer_cache": layer_cache_states,
+                "planned_snapshot": planned_snapshot,
             })
             review_movie = review_output_dir / "output" / "review.mov"
             published_review_project = _latest_review_project(
@@ -1532,6 +1626,7 @@ def _run_scene_construction(
             from smartlib.review.playblast_package import (
                 extract_thumbnail_from_mov,
                 find_ffmpeg,
+                render_internal_review_slate_png,
             )
             thumbnail_ok, thumbnail_message = extract_thumbnail_from_mov(
                 mov_path=review_movie,
@@ -1557,6 +1652,54 @@ def _run_scene_construction(
                     target=thumbnail_target,
                     project_config=manager.project_config,
                 )
+            review_version = workflow.next_review_version(
+                plan.department, args.delivery_profile, delivery_profile
+            )
+            fps = float(shot_data.get("fps") or shot_service.project_fps)
+            handle_data = editorial.get("handles") or {}
+            handles = [
+                int(handle_data.get("head") or 0),
+                int(handle_data.get("tail") or 0),
+            ]
+            slate_data = {
+                "enabled": str(args.delivery_profile).lower() == "internal",
+                "source": "planned_snapshot",
+                "included_in_movie": False,
+            }
+            slate_path = None
+            if slate_data["enabled"]:
+                _write_status(
+                    status_path, state="BUILDING", progress=97,
+                    task="Render Internal Review Slate PNG",
+                )
+                slate_lines = _internal_review_slate_lines(
+                    project=manager.project_name,
+                    episode=identity.episode,
+                    sequence=identity.sequence,
+                    shot=identity.shot,
+                    department=plan.department,
+                    review_version=review_version,
+                    planned_snapshot=planned_snapshot,
+                    frame_range=[start, end],
+                    handles=handles,
+                    fps=fps,
+                    created_at=datetime.now(),
+                )
+                slate_path = review_output_dir / "output" / "slate.png"
+                slate_ok, slate_message = render_internal_review_slate_png(
+                    slate_path=slate_path,
+                    lines=slate_lines,
+                    width=width,
+                    height=height,
+                    ffmpeg=find_ffmpeg(manager.project_config),
+                )
+                if not slate_ok:
+                    raise RuntimeError(
+                        "Internal Review Slate could not be generated: "
+                        + slate_message
+                    )
+                slate_data["artifact"] = "slate.png"
+                slate_data["lines"] = slate_lines
             source_manifest = {
                 "schema": "smartpipeline.review_source_manifest.v1",
                 "construct": str(scene_path),
@@ -1572,6 +1715,8 @@ def _run_scene_construction(
                 "precomp": str(published_review_project),
                 "review_profile": review_profile,
                 "delivery_profile": delivery_profile,
+                "planned_snapshot": planned_snapshot,
+                "slate": slate_data,
                 "job_id": job_id,
             }
             submitted_dir = workflow.submit_review(
@@ -1585,11 +1730,17 @@ def _run_scene_construction(
                     "shot": identity.shot,
                     "department": plan.department,
                     "frame_range": [start, end],
+                    "content_frame_range": [start, end],
+                    "movie_frame_count": max(1, end - start + 1),
+                    "handles": {"head": handles[0], "tail": handles[1]},
+                    "slate": slate_data,
                     "resolution": [width, height],
-                    "fps": float(shot_data.get("fps") or shot_service.project_fps),
+                    "fps": fps,
                 },
                 source_manifest=source_manifest,
                 delivery_settings=delivery_profile,
+                version=review_version,
+                slate=slate_path,
             )
             job_data = json.loads(
                 (review_output_dir / "job.json").read_text(encoding="utf-8-sig")
@@ -2124,6 +2275,13 @@ def run(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from smartlib.apps.review_build_manager.job_request import expand_job_arguments
+
+    try:
+        argv = expand_job_arguments(list(sys.argv[1:] if argv is None else argv))
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"Could not load review job request: {exc}", file=sys.stderr)
+        return 1
     parser = argparse.ArgumentParser(description="Build one animation review output.")
     parser.add_argument("--config-dir", required=True)
     parser.add_argument("--maya-config", default="software_maya2024.yml")
@@ -2149,6 +2307,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--precomp", default="latest_approved")
     parser.add_argument("--review-cache-policy", default="use")
     parser.add_argument("--rebuild-layers-json", default="[]")
+    parser.add_argument("--planned-snapshot-json", default="{}")
     args = parser.parse_args(argv)
     try:
         return run(args)
