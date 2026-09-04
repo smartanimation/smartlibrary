@@ -20,9 +20,14 @@ from smartlib.review.workflow import (
 
 def test_profiles_inherit_and_keep_work_png_rend_exr(tmp_path: Path) -> None:
     service = ReviewProfileService(ProjectConfig(tmp_path))
+    fast = service.review_profile("fast_default")
     work = service.review_profile("work_default")
     rend = service.review_profile("rend_default")
+    assert service.default_review_profile_id() == "fast_default"
+    assert fast["stage"] == "FAST"
+    assert fast["renderer"] == "maya_hardware2"
     assert work["image_format"] == "png"
+    assert work["renderer"] == "maya_playblast"
     assert rend["image_format"] == "exr"
     assert work["resolution"] == [960, 540]
     assert rend["resolution"] == [960, 540]
@@ -43,6 +48,17 @@ def test_review_resolution_scale_follows_project_anchors(tmp_path: Path) -> None
 
     assert profile["resolution_scale"] == 0.5
     assert profile["resolution"] == [1024, 429]
+
+
+def test_default_review_profile_is_project_configurable(tmp_path: Path) -> None:
+    (tmp_path / "review.yml").write_text(
+        "default_review_profile: work_default\n",
+        encoding="utf-8",
+    )
+
+    service = ReviewProfileService(ProjectConfig(tmp_path))
+
+    assert service.default_review_profile_id() == "work_default"
 
 
 def test_profile_cycle_is_rejected(tmp_path: Path) -> None:
@@ -164,6 +180,10 @@ def test_render_manifest_export_requires_completed_material_outputs(tmp_path: Pa
 
     plan = service.plan_preview_render_publish(identity, payload, department="anim")
     group = plan["groups"][0]
+    assert group["take"] == "t03"
+    assert group["output_dir"].endswith(
+        "/workspace/cg/shots/ep01/sq01/sh0010/render/anim/layers/CHA/v002/t03"
+    )
     output_dir = Path(group["output_dir"])
     output_dir.mkdir(parents=True)
     image = output_dir / group["pattern"].replace("####", "1001")
@@ -192,10 +212,10 @@ def test_render_manifest_export_requires_completed_material_outputs(tmp_path: Pa
     assert settings["status"] == "complete"
     assert settings["fingerprint"]
     assert row["output_dir"].endswith(
-        "/workspace/cg/shots/ep01/sq01/sh0010/render/anim/layers/CHA/v002"
+        "/workspace/cg/shots/ep01/sq01/sh0010/render/anim/layers/CHA/v002/t03"
     )
-    assert row["receipt_path"].endswith("/v002/output_t003.json")
-    assert item["first_frame_file"].endswith("_v002_t003_1001.png")
+    assert row["receipt_path"].endswith("/v002/t03/output.json")
+    assert item["first_frame_file"].endswith("_v002_t03_1001.png")
 
     receipt = read_json(row["receipt_path"])
     assert receipt["settings_fingerprint"] == settings["fingerprint"]

@@ -3,13 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 try:
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:
-    from PySide2 import QtCore, QtWidgets
+    from PySide2 import QtCore, QtGui, QtWidgets
 
 from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.review.playblast_package import find_ffmpeg
 from smartlib.core.asset_categories import canonical_asset_category
+from smartlib.core.icons import tool_ico_path
 
 from .service import SmartDeliveryService, expand_sequence
 
@@ -17,6 +18,9 @@ from .service import SmartDeliveryService, expand_sequence
 class SmartDeliveryWindow(QtWidgets.QMainWindow):
     def __init__(self, config_dir: str | Path, parent=None):
         super().__init__(parent)
+        icon_path = tool_ico_path("smart_delivery")
+        if icon_path:
+            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
         self.service = SmartDeliveryService(config_dir)
         self._plan = None
         self.setWindowTitle("Smart Delivery")

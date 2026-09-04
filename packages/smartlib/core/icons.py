@@ -129,3 +129,47 @@ def build_content_icon_path(component_type: str, size: int = 24) -> Path | None:
         / f"{icon_name}.png"
     )
     return path if path.is_file() else None
+
+
+def sequence_input_icon_path(input_type: str, size: int = 24) -> Path | None:
+    """Resolve a Review Build Manager Sequence Recipe Input icon."""
+
+    normalized_type = str(input_type or "").strip().lower()
+    if normalized_type == "editorial":
+        return build_content_icon_path("editorial_timing", size=24)
+    if normalized_type in {"cast", "sequence_cast"}:
+        return tool_icon_path("smart_casting", size=20)
+    if normalized_type in {"storyreel", "story_reel"}:
+        return tool_icon_path("smart_editorial", size=20)
+    if normalized_type == "audio":
+        return build_content_icon_path("audio", size=24)
+    if normalized_type in {"light", "light_data"}:
+        return shot_data_icon_path("light", size=28)
+    icon_name = {
+        "mocap": "motion_capture",
+        "motion_capture": "motion_capture",
+        "virtual_camera": "virtual_camera",
+    }.get(normalized_type)
+    if not icon_name:
+        return None
+    variant = "24" if int(size) == 24 else "master"
+    path = (
+        pipeline_root()
+        / "resources"
+        / "icons"
+        / "review_build_manager"
+        / "sequence_inputs"
+        / variant
+        / f"{icon_name}.png"
+    )
+    return path if path.is_file() else None
+
+
+def tool_ico_path(tool_id: str) -> Path | None:
+    """Resolve a bundled multi-size Windows icon for a SmartPipeline tool."""
+
+    icon_name = _TOOL_ICON_NAMES.get(str(tool_id or "").strip().lower())
+    if not icon_name:
+        return None
+    path = pipeline_root() / "resources" / "icons" / "tools" / "ico" / f"{icon_name}.ico"
+    return path if path.is_file() else None

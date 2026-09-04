@@ -11,6 +11,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from smartlib.apps.smart_ingest.service import IngestMetadata, PlanItem, SmartIngestService
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
+from smartlib.core.icons import tool_ico_path
 
 
 TARGET_FILTERS = [
@@ -30,6 +31,9 @@ TARGET_FILTERS = [
 class SmartIngestWindow(QtWidgets.QMainWindow):
     def __init__(self, service: SmartIngestService):
         super().__init__()
+        icon_path = tool_ico_path("smart_ingest")
+        if icon_path:
+            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
         self.service = service
         self.items: list[PlanItem] = []
         self.current_row = -1

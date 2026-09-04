@@ -498,7 +498,14 @@ class ProjectPaths:
                 department=department, dept=department,
                 workspace_partition=self.workspace_partition(department),
             )
-        return self.project_root / "workspace" / episode / sequence / "build"
+        return (
+            self.workspace_root()
+            / self.workspace_partition(department)
+            / "sequences"
+            / episode
+            / sequence
+            / "build"
+        )
 
     def sequence_build_dir(
         self, episode: str, sequence: str, department: str, dcc: str, task: str, version: str
@@ -578,7 +585,15 @@ class ProjectPaths:
                 department=department, dept=department,
                 workspace_partition=self.workspace_partition(department),
             )
-        return self.project_root / "workspace" / episode / sequence / shot / "build"
+        return (
+            self.workspace_root()
+            / self.workspace_partition(department)
+            / "shots"
+            / episode
+            / sequence
+            / shot
+            / "build"
+        )
 
     def shot_build_dir(
         self, episode: str, sequence: str, shot: str, department: str,
@@ -721,7 +736,39 @@ class ProjectPaths:
                 department=department, dept=department, layer=layer, version=version,
                 workspace_partition=self.workspace_partition(department),
             )
-        return self.shot_render_layers_root(episode, sequence, shot, department) / layer / version
+        return self.shot_render_layer_dir(
+            episode, sequence, shot, department, layer
+        ) / version
+
+    def shot_render_layer_dir(
+        self, episode: str, sequence: str, shot: str, department: str,
+        layer: str,
+    ) -> Path:
+        template = self._template("shot_render_layer_root")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=department, dept=department, layer=layer,
+                workspace_partition=self.workspace_partition(department),
+            )
+        return self.shot_render_layers_root(
+            episode, sequence, shot, department
+        ) / layer
+
+    def shot_render_layer_take_dir(
+        self, episode: str, sequence: str, shot: str, department: str,
+        layer: str, version: str, take: str,
+    ) -> Path:
+        template = self._template("shot_render_layer_take")
+        if template:
+            return self._path_from_template(
+                template, episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=department, dept=department, layer=layer, version=version,
+                take=take, workspace_partition=self.workspace_partition(department),
+            )
+        return self.shot_render_layer_version_dir(
+            episode, sequence, shot, department, layer, version
+        ) / take
 
     def shot_review_build_dir(
         self, episode: str, sequence: str, shot: str, department: str,

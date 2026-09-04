@@ -63,6 +63,27 @@ class SmartCameraPlayblastWindow(SmartPlayblastWindow):
         version_take.addWidget(self.take_spin)
         version_take.addStretch(1)
         form.setLayout(version_row, QtWidgets.QFormLayout.FieldRole, version_take)
+        # Resolution is part of the selected camera rule. Move the existing
+        # controls beside that rule instead of leaving them in a distant form.
+        size_row = None
+        size_label = None
+        for row in range(form.rowCount()):
+            field = form.itemAt(row, QtWidgets.QFormLayout.FieldRole)
+            layout = field.layout() if field else None
+            if layout and any(
+                layout.itemAt(index).widget() in (self.width_spin, self.height_spin)
+                for index in range(layout.count())
+            ):
+                size_row = layout
+                label = form.itemAt(row, QtWidgets.QFormLayout.LabelRole)
+                size_label = label.widget() if label else None
+                break
+        if size_row is None:
+            raise RuntimeError("Width / Height controls were not found in OUTPUT CAMERA.")
+        form.removeItem(size_row)
+        if size_label is not None:
+            form.removeWidget(size_label)
+            size_label.hide()
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.camera_splitter = splitter
         splitter.setChildrenCollapsible(False)
@@ -133,26 +154,29 @@ class SmartCameraPlayblastWindow(SmartPlayblastWindow):
 
         generation_box = QtWidgets.QGroupBox("CAMERA GENERATION")
         generation_layout = QtWidgets.QVBoxLayout(generation_box)
+        rule_form = QtWidgets.QFormLayout()
+        rule_form.setContentsMargins(0, 0, 0, 0)
+        rule_form.setVerticalSpacing(6)
         self.fit_combo = QtWidgets.QComboBox()
         for label, policy in (("Use Primary — shared", "shared"), ("Expand by scale", "scale"),
                               ("Expand by material resolution", "resolution")):
             self.fit_combo.addItem(label, policy)
-        generation_layout.addWidget(QtWidgets.QLabel("Output rule — selected layer"))
-        generation_layout.addWidget(self.fit_combo)
+        rule_form.addRow("Output Rule", self.fit_combo)
         self.expansion_spin = QtWidgets.QDoubleSpinBox()
         self.expansion_spin.setRange(1., 10.)
         self.expansion_spin.setDecimals(3)
         self.expansion_spin.setSingleStep(.05)
         self.expansion_spin.setValue(1.1)
         self.expansion_spin.setSuffix(" ×")
-        generation_layout.addWidget(QtWidgets.QLabel("Expansion factor (width and height)"))
-        generation_layout.addWidget(self.expansion_spin)
+        rule_form.addRow("Expansion", self.expansion_spin)
+        rule_form.addRow("Width / Height", size_row)
+        generation_layout.addLayout(rule_form)
         self.camera_note = QtWidgets.QLabel()
         self.camera_note.setWordWrap(True)
         generation_layout.addWidget(self.camera_note)
         self.generate_camera_button = QtWidgets.QPushButton("Apply Live Camera Rules")
         self.generate_camera_button.setObjectName("generateCameras")
-        self.generate_camera_button.setMinimumHeight(42)
+        self.generate_camera_button.setMinimumHeight(30)
         generation_layout.addWidget(self.generate_camera_button)
         self.auto_update_cameras = QtWidgets.QCheckBox("Live cameras — no Bake before Playblast")
         self.auto_update_cameras.setChecked(True)
@@ -163,23 +187,22 @@ class SmartCameraPlayblastWindow(SmartPlayblastWindow):
         generation_layout.addWidget(note)
         right_layout.addWidget(generation_box)
         self.publish_camera_button = QtWidgets.QPushButton("Publish Camera Package…")
+        self.publish_camera_button.setObjectName("publishCameraPackage")
+        self.publish_camera_button.setMinimumHeight(46)
         self.publish_camera_button.setToolTip("Publish native Primary dependencies and checked layer rules. No Bake or frame scan.")
         self.publish_camera_button.clicked.connect(self.publish_camera_package)
-        generation_layout.addWidget(self.publish_camera_button)
         right_layout.addStretch()
         scroll = QtWidgets.QScrollArea()
         scroll.setMinimumWidth(340)
         scroll.setWidgetResizable(True)
         scroll.setWidget(right)
-        # Keep the primary action visible even when properties need scrolling.
-        generation_layout.removeWidget(self.generate_camera_button)
-        generation_layout.removeWidget(self.auto_update_cameras)
+        # Publishing is the durable pipeline action, so keep it visible and
+        # visually primary outside the scrolling editor.
         right_container = QtWidgets.QWidget()
         container_layout = QtWidgets.QVBoxLayout(right_container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.addWidget(scroll, 1)
-        container_layout.addWidget(self.auto_update_cameras)
-        container_layout.addWidget(self.generate_camera_button)
+        container_layout.addWidget(self.publish_camera_button)
         splitter.addWidget(right_container)
         splitter.setSizes([580, 540])
         splitter.setStretchFactor(0, 1)
@@ -218,8 +241,11 @@ class SmartCameraPlayblastWindow(SmartPlayblastWindow):
                 min-height: 22px; padding: 3px 8px; font-size: 12px; }
             QPushButton:hover { background: #414141; border-color: #6c6c6c; }
             QPushButton:pressed { background: #252525; }
-            QPushButton#generateCameras { background: #287543; border-color: #41955e; font-size: 14px; }
-            QPushButton#generateCameras:hover { background: #318c50; }
+            QPushButton#generateCameras { background: #303942; border-color: #526576; }
+            QPushButton#generateCameras:hover { background: #394754; border-color: #66829a; }
+            QPushButton#publishCameraPackage { background: #287543; border-color: #41955e;
+                font-size: 14px; font-weight: 600; }
+            QPushButton#publishCameraPackage:hover { background: #318c50; }
             QListView { background: #232323; border: 1px solid #393939; outline: none; }
             QScrollArea { border: none; background: #202020; }
             QScrollArea > QWidget > QWidget { background: #202020; }

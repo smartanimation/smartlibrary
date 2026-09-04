@@ -53,7 +53,7 @@ outputs:
     directory: "{shot_root}/publish/review/{department}/v{version}/t{take}/{preview}"
     filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
   preview_render:
-    directory: "{shot_render_root}/{department}/layers/{preview}/v{version}"
+    directory: "{shot_render_root}/{department}/layers/{preview}/v{version}/t{take}"
     filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"
   animation_review_scene:
     directory: "{shot_root}/output/review/{department}/{version}"

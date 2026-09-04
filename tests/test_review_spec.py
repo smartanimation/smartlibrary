@@ -330,13 +330,14 @@ def test_preview_render_record_stays_in_render_without_manifest(
     tmp_path: Path,
 ) -> None:
     service, identity = _service(tmp_path)
-    output_dir = service.paths.shot_render_layer_version_dir(
+    output_dir = service.paths.shot_render_layer_take_dir(
         identity.episode,
         identity.sequence,
         identity.shot,
         "anim",
         "CHA",
         "v001",
+        "t01",
     )
     output_dir.mkdir(parents=True)
     image = output_dir / "beauty_1001.png"
@@ -347,9 +348,9 @@ def test_preview_render_record_stays_in_render_without_manifest(
             {
                 "group": "CHA",
                 "version": "v001",
-                "take": "t001",
+                "take": "t01",
                 "output_dir": str(output_dir),
-                "output_record": "output_t001.json",
+                "output_record": "output.json",
                 "pattern": "beauty_####.png",
                 "camera": "cam_CHA",
                 "frame_range": [1001, 1001],
@@ -370,5 +371,50 @@ def test_preview_render_record_stays_in_render_without_manifest(
         },
     )
 
-    assert (output_dir / "output_t001.json").is_file()
+    assert (output_dir / "output.json").is_file()
     assert not list(service.shot_root(identity).glob("**/render_manifest.json"))
+
+
+def test_preview_render_plan_skips_legacy_and_new_take_locations(
+    tmp_path: Path,
+) -> None:
+    service, identity = _service(tmp_path)
+    version_dir = service.paths.shot_render_layer_version_dir(
+        identity.episode, identity.sequence, identity.shot, "anim", "CHA", "v001"
+    )
+    _write_json(version_dir / "output_t001.json", {"take": "t001"})
+    new_take = service.paths.shot_render_layer_take_dir(
+        identity.episode,
+        identity.sequence,
+        identity.shot,
+        "anim",
+        "CHA",
+        "v001",
+        "t02",
+    )
+    _write_json(new_take / "output.json", {"take": "t02"})
+
+    plan = service.plan_preview_render_publish(
+        identity,
+        {
+            "department": "anim",
+            "rows": [
+                {
+                    "enabled": True,
+                    "layer": "CHA",
+                    "camera": "cam_CHA",
+                    "version": 1,
+                    "take": 1,
+                    "start": 1001,
+                    "end": 1001,
+                    "width": 1280,
+                    "height": 720,
+                }
+            ],
+        },
+        department="anim",
+    )
+
+    assert plan["groups"][0]["take"] == "t03"
+    assert plan["groups"][0]["output_dir"].endswith("/CHA/v001/t03")
+    assert plan["groups"][0]["output_record"] == "output.json"

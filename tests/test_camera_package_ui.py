@@ -113,5 +113,18 @@ def test_data_tree_and_build_version_combo(tmp_path):
     reopened = BuildHarness()
     reopened._populate_build_contents(reopened.status_row)
     assert reopened.build_contents_table.cellWidget(index, 6).currentData() == str(second)
-    for widget in (data, build, reopened):
+    stale = BuildHarness()
+    stale._planned_snapshots[identity.shot] = {"inputs": [{
+        "type": "camera",
+        "name": snapshot["inputs"][index]["name"],
+        "enabled": True,
+        "version": "v999",
+        "path": str(second.parent.parent / "v999" / "camera.json"),
+    }]}
+    stale._populate_build_contents(stale.status_row)
+    stale_camera = stale.current_build_content_rows[index]
+    assert stale_camera["build_version"] == second.parent.name
+    assert stale_camera["component"]["path"] == str(second)
+    assert "using Latest" in stale_camera["note"]
+    for widget in (data, build, reopened, stale):
         widget.close()

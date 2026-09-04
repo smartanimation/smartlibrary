@@ -9,6 +9,33 @@ LIVE_ATTR = 'smartCameraLiveNodes'
 LIVE_SCHEMA = 'smartpipeline.camera_live.v1'
 
 
+def _rebindable_named_output(cmds, name, layer):
+    """Return an exact-name Live Camera that is safe to move to a new Primary.
+
+    An arbitrary, baked, referenced, or differently-owned node is never
+    adopted.  This keeps the existing collision guard while allowing the
+    tool's own per-layer Live Camera to follow an intentional Primary change.
+    """
+    occupied = cmds.ls(':' + name, long=True) or []
+    if len(occupied) != 1:
+        return None
+    node = occupied[0]
+    required = (co.OWNER_ATTR, co.SPEC_ATTR, LIVE_ATTR)
+    if any(not cmds.objExists(node + '.' + attr) for attr in required):
+        return None
+    if cmds.getAttr(node + '.' + co.OWNER_ATTR) != co.OWNER:
+        return None
+    try:
+        spec = json.loads(cmds.getAttr(node + '.' + co.SPEC_ATTR))
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    if spec.get('layer') != layer:
+        return None
+    if cmds.referenceQuery(node, isNodeReferenced=True):
+        raise ValueError('Cannot rebind a referenced output camera: ' + node)
+    return node
+
+
 def output_size(reference, rule):
     width, height = map(int, reference)
     if min(width, height) <= 0:
@@ -90,8 +117,15 @@ def configure(primary, rows, reference, *, cmds=None):
         existing = None
         if rule.get('mode', 'shared') != 'shared':
             existing = co._find_output(cmds, source, row['layer'])
-            if any(n != existing for n in (cmds.ls(':' + name, long=True) or [])):
-                raise ValueError('Camera name collision: ' + name)
+            occupied = cmds.ls(':' + name, long=True) or []
+            if any(n != existing for n in occupied):
+                rebind = (
+                    _rebindable_named_output(cmds, name, row['layer'])
+                    if existing is None else None
+                )
+                if rebind is None:
+                    raise ValueError('Camera name collision: ' + name)
+                existing = rebind
         spec = dict(layer=row['layer'], width=width, height=height, start=row['start'], end=row['end'],
                     reference_resolution=list(reference), rule=rule, schema=LIVE_SCHEMA)
         specs.append((spec, existing, name))

@@ -8083,9 +8083,15 @@ def show(parent=None) -> AssetManagerWindow:
         app = QtWidgets.QApplication([])
     _ensure_smartlib_on_path()
     from smartlib.core.qt import parent_for_maya
+    from smartlib.core.icons import tool_ico_path
 
     window_parent = parent_for_maya(QtWidgets, parent)
     _WINDOW = AssetManagerWindow(parent=window_parent)
+    icon_path = tool_ico_path("asset_manager")
+    if icon_path:
+        icon = QtGui.QIcon(str(icon_path))
+        app.setWindowIcon(icon)
+        _WINDOW.setWindowIcon(icon)
     if window_parent is not None:
         _WINDOW.setWindowFlags(_WINDOW.windowFlags() | QtCore.Qt.Window)
     _WINDOW.show()

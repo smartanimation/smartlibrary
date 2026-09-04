@@ -1,4 +1,5 @@
 schema_version: 1
+default_review_profile: fast_default
 
 # Applies to maya_playblast profiles. GUI Maya is launched only on cache misses.
 gui_playblast:
@@ -6,10 +7,10 @@ gui_playblast:
   stall_timeout_seconds: 300
 
 review_profiles:
-  work_default:
-    stage: WORK
+  fast_default:
+    stage: FAST
     dcc: maya
-    renderer: maya_playblast
+    renderer: maya_hardware2
     image_format: png
     bit_depth: 8
     alpha: true
@@ -18,6 +19,11 @@ review_profiles:
     frame_range: shot
     overscan: 1.0
     precomp: latest_approved
+
+  work_default:
+    extends: fast_default
+    stage: WORK
+    renderer: maya_playblast
 
   rend_default:
     extends: work_default
@@ -29,7 +35,7 @@ review_profiles:
 
 delivery_profiles:
   internal:
-    review_profile: work_default
+    review_profile: fast_default
     container: mov
     codec: prores_422_proxy
     filename: "{shot}_{department}_review_{version}.mov"

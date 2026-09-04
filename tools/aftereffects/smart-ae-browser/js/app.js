@@ -39,6 +39,7 @@
 
   var state = {
     manifests: [],
+    latestRenderOutputs: {},
     selectedManifestId: "",
     projects: [],
     launchContext: {},
@@ -52,7 +53,7 @@
     resolvedWorkRoots: {},
     resolvedReviewMoviePaths: {},
     rows: [],
-    activeTab: "watch",
+    activeTab: "queue",
     filters: {
       project: "",
       episode: "",
@@ -315,12 +316,10 @@
       "shotSelect",
       "manifestPath",
       "metadataRow",
-      "outputRows",
       "queueRows",
       "aepRows",
       "aepFileName",
       "renderRows",
-      "watchView",
       "queueView",
       "aepView",
       "renderView",
@@ -411,8 +410,10 @@
       }
       state.selectedAepPath = stored.selectedAepPath || "";
       state.restoredConfigDir = stored.configDir || "";
-      if (["watch", "queue", "aep", "render"].indexOf(stored.activeTab) >= 0) {
+      if (["queue", "aep", "render"].indexOf(stored.activeTab) >= 0) {
         state.activeTab = stored.activeTab;
+      } else if (stored.activeTab === "watch") {
+        state.activeTab = "queue";
       }
     } catch (error) {
       setStatus("Could not load saved panel state");
@@ -649,6 +650,7 @@
     var scriptPath;
     var python;
     var rows = {};
+    state.latestRenderOutputs = {};
     if (!fs || !pathModule || !childProcess || !project || !project.configDir) {
       return [];
     }
@@ -678,6 +680,12 @@
         return;
       }
       payload = parseLastJsonLine(result.stdout);
+      asArray(payload.latestOutputs || []).forEach(function (item) {
+        var itemContext = payload.context || context;
+        state.latestRenderOutputs[latestRenderOutputKey(
+          itemContext, itemContext.department || currentDepartment(), item.layer || item.name || item.id
+        )] = { manifest: itemContext, item: item };
+      });
       asArray(payload.manifests || []).forEach(function (entry) {
         var manifest = normalizeManifest(entry.data || {}, entry.path || "", entry.context || context);
         if (manifest.path) {
@@ -1252,10 +1260,15 @@
 
   function latestManifestItemForFootage(layer, context, department) {
     var targetLayer = normalizeLayerKey(layer);
+    var latestOutput;
     var candidates;
     var found = null;
     if (!targetLayer) {
       return null;
+    }
+    latestOutput = state.latestRenderOutputs[latestRenderOutputKey(context, department, targetLayer)];
+    if (latestOutput) {
+      return latestOutput;
     }
     candidates = state.manifests.filter(function (manifest) {
       var manifestContext;
@@ -1284,6 +1297,17 @@
       });
     });
     return found;
+  }
+
+  function latestRenderOutputKey(context, department, layer) {
+    return [
+      context.project,
+      context.episode,
+      context.sequence,
+      context.shot,
+      department,
+      layer
+    ].map(normalizeToken).join("|");
   }
 
   function inferFootageLayer(footage, sourcePath) {
@@ -1522,7 +1546,7 @@
     if (!match) {
       return "";
     }
-    return "t" + match[1].padStart(3, "0");
+    return "t" + String(Number(match[1])).padStart(2, "0");
   }
 
   function versionTakeLabel(version, take) {
@@ -1561,7 +1585,7 @@
     } catch (error) {
       return "";
     }
-    return max ? "t" + String(max).padStart(3, "0") : "";
+    return max ? "t" + String(max).padStart(2, "0") : "";
   }
 
   function replaceTakeInPath(path, take) {
@@ -1588,8 +1612,8 @@
     }
     newShort = String(newNumber).padStart(String(previous || "").replace(/\D/g, "").length || 2, "0");
     result = result.replace(new RegExp("([_\\-.])0*" + oldNumber + "(?=[_\\-.])", "g"), "$1" + newShort);
-    result = result.replace(new RegExp("([_\\-.])t0*" + oldNumber + "(?=[_\\-.])", "ig"), "$1t" + String(newNumber).padStart(3, "0"));
-    result = result.replace(new RegExp("([_\\-.])take0*" + oldNumber + "(?=[_\\-.])", "ig"), "$1take" + String(newNumber).padStart(3, "0"));
+    result = result.replace(new RegExp("([_\\-.])t0*" + oldNumber + "(?=[_\\-.])", "ig"), "$1t" + newShort);
+    result = result.replace(new RegExp("([_\\-.])take0*" + oldNumber + "(?=[_\\-.])", "ig"), "$1take" + newShort);
     return result;
   }
 
@@ -1628,9 +1652,9 @@
       return String(number).padStart(String(previous).length, "0");
     }
     if (/^take/i.test(String(previous || ""))) {
-      return "take" + String(number).padStart(String(previous).replace(/^take/i, "").length || 3, "0");
+      return "take" + String(number).padStart(String(previous).replace(/^take/i, "").length || 2, "0");
     }
-    return "t" + String(number).padStart(String(previous).replace(/^t/i, "").length || 3, "0");
+    return "t" + String(number).padStart(String(previous).replace(/^t/i, "").length || 2, "0");
   }
 
   function basename(path) {
@@ -2052,13 +2076,11 @@
 
   function renderRows() {
     var aepFiles;
-    elements.outputRows.innerHTML = "";
     elements.queueRows.innerHTML = "";
     elements.aepRows.innerHTML = "";
     elements.renderRows.innerHTML = "";
 
     getVisibleRows().forEach(function (row) {
-      elements.outputRows.appendChild(renderOutputRow(row));
       elements.queueRows.appendChild(renderQueueRow(row));
     });
     renderTakeSummary();
@@ -2072,25 +2094,6 @@
     });
     renderSelectedAepFileName();
     elements.renderRows.appendChild(renderRenderQueueRow(renderQueueContext()));
-  }
-
-  function renderOutputRow(row) {
-    var tr = document.createElement("tr");
-    tr.innerHTML = [
-      '<td><div class="path-cell"><span class="folder-icon"></span><span></span></div></td>',
-      "<td></td>",
-      "<td></td>",
-      '<td><span class="status"><span class="dot"></span><span></span></span></td>',
-      '<td><button class="row-action" title="Replace this item"></button></td>'
-    ].join("");
-    tr.querySelector(".path-cell span:last-child").textContent = row.outputPath || row.name;
-    tr.children[1].textContent = row.version || "-";
-    tr.children[2].textContent = row.latestVersion || "-";
-    setStatusCell(tr.children[3].querySelector(".status"), row.status);
-    tr.querySelector(".row-action").addEventListener("click", function () {
-      replaceRows([row]);
-    });
-    return tr;
   }
 
   function renderQueueRow(row) {
@@ -2198,9 +2201,9 @@
       dept: currentDepartment(),
       task: afterEffectsTask(),
       version: versionNumberLabel(versionTake.version || "v001"),
-      take: takeNumberLabel(versionTake.take || "t001"),
+      take: takeNumberLabel(versionTake.take || "t01"),
       version_label: versionLabel(versionTake.version || "v001"),
-      take_label: takeLabel(versionTake.take || "t001")
+      take_label: takeLabel(versionTake.take || "t01")
     };
     values.output_filename = afterEffectsFilename("output", values, "mov");
     return {
@@ -2272,7 +2275,7 @@
     }
     return {
       version: version || "v001",
-      take: take || "t001"
+      take: take || "t01"
     };
   }
 
@@ -2394,7 +2397,7 @@
 
   function takeNumberLabel(value) {
     var match = String(value || "").match(/(?:t|take)?0*(\d+)/i);
-    return String(match ? Number(match[1]) : 1).padStart(3, "0");
+    return String(match ? Number(match[1]) : 1).padStart(2, "0");
   }
 
   function sanitizeFilename(value) {
@@ -2433,11 +2436,10 @@
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (button) {
       button.classList.toggle("is-active", button.getAttribute("data-tab") === state.activeTab);
     });
-    elements.watchView.classList.toggle("is-hidden", state.activeTab !== "watch");
     elements.queueView.classList.toggle("is-hidden", state.activeTab !== "queue");
     elements.aepView.classList.toggle("is-hidden", state.activeTab !== "aep");
     elements.renderView.classList.toggle("is-hidden", state.activeTab !== "render");
-    elements.replaceAllButton.style.display = state.activeTab === "queue" || state.activeTab === "watch" ? "" : "none";
+    elements.replaceAllButton.style.display = state.activeTab === "queue" ? "" : "none";
     elements.renderCompButton.style.display = state.activeTab === "render" ? "" : "none";
     renderTakeSummary();
   }
@@ -2496,7 +2498,7 @@
         max = number;
       }
     });
-    return max ? "t" + String(max).padStart(3, "0") : "";
+    return max ? "t" + String(max).padStart(2, "0") : "";
   }
 
   function setStatus(message) {

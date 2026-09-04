@@ -15,7 +15,7 @@ from smartlib.apps.common.asset_cards import (
 )
 from smartlib.core.asset_categories import ASSET_CATEGORIES
 from smartlib.core.config_loader import ProjectConfig
-from smartlib.core.icons import asset_category_icon_path
+from smartlib.core.icons import asset_category_icon_path, tool_ico_path
 
 
 ASSET_HEADERS = ["", "Category", "Group", "Asset Name", "Variant", "Description"]
@@ -95,6 +95,9 @@ class AssetDialog(QtWidgets.QDialog):
 class SmartCastingWindow(QtWidgets.QMainWindow):
     def __init__(self, config_dir: str | os.PathLike[str] | None = None, parent=None):
         super().__init__(parent)
+        icon_path = tool_ico_path("smart_casting")
+        if icon_path:
+            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
         self.project_config = ProjectConfig(config_dir or _default_config_dir())
         self.service = SmartCastingService(self.project_config)
         self.asset_rows: list[CastingAsset] = []

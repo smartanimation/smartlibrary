@@ -12,7 +12,7 @@ from smartlib.apps.launcher.project_config_transfer import (
     import_project_config,
     inspect_project_config_archive,
 )
-from smartlib.core.icons import tool_icon_path
+from smartlib.core.icons import tool_icon_path, tool_ico_path
 
 # --- パス設定 ---
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -408,7 +408,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Smart Launcher")
-        launcher_icon = tool_icon_path("smart_launcher", 40)
+        launcher_icon = tool_ico_path("smart_launcher")
         if launcher_icon:
             self.setWindowIcon(QtGui.QIcon(str(launcher_icon)))
         self.studio_config = load_yml(os.path.join(SMARTPROJECTS_ROOT, "studio.yml"))
@@ -1360,6 +1360,9 @@ class SmartLauncher(QtWidgets.QMainWindow):
 def main():
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
+    icon_path = tool_ico_path("smart_launcher")
+    if icon_path:
+        app.setWindowIcon(QtGui.QIcon(str(icon_path)))
     launcher = SmartLauncher()
     launcher.show()
     return app.exec()

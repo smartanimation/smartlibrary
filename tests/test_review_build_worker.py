@@ -7,6 +7,19 @@ from smartlib.core.config_loader import ProjectConfig
 from smartlib.review import ae
 
 
+def test_review_render_backend_keeps_hardware_and_gui_explicit() -> None:
+    assert worker._review_render_backend({}) == "maya_hardware2"
+    assert worker._review_render_backend({"renderer": "maya_hardware2"}) == "maya_hardware2"
+    assert worker._review_render_backend({"renderer": "maya_playblast"}) == "maya_playblast"
+
+
+def test_review_render_backend_rejects_unknown_renderer() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="Unsupported Review renderer"):
+        worker._review_render_backend({"renderer": "viewport_magic"})
+
+
 def test_review_relink_creates_queue_from_configured_final_comp(
     tmp_path: Path, monkeypatch
 ) -> None:

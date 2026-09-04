@@ -26,11 +26,12 @@ from smartlib.core.versioning import format_version, next_version, parse_version
 
 DEFAULT_REVIEW_CONFIG: dict[str, Any] = {
     "schema_version": 1,
+    "default_review_profile": "fast_default",
     "review_profiles": {
-        "work_default": {
-            "stage": "WORK",
+        "fast_default": {
+            "stage": "FAST",
             "dcc": "maya",
-            "renderer": "maya_playblast",
+            "renderer": "maya_hardware2",
             "image_format": "png",
             "bit_depth": 8,
             "alpha": True,
@@ -39,6 +40,11 @@ DEFAULT_REVIEW_CONFIG: dict[str, Any] = {
             "frame_range": "shot",
             "overscan": 1.0,
             "precomp": "latest_approved",
+        },
+        "work_default": {
+            "extends": "fast_default",
+            "stage": "WORK",
+            "renderer": "maya_playblast",
         },
         "rend_default": {
             "extends": "work_default",
@@ -51,7 +57,7 @@ DEFAULT_REVIEW_CONFIG: dict[str, Any] = {
     },
     "delivery_profiles": {
         "internal": {
-            "review_profile": "work_default",
+            "review_profile": "fast_default",
             "container": "mov",
             "codec": "prores_422_proxy",
             "filename": "{shot}_{department}_review_{version}.mov",
@@ -164,6 +170,14 @@ class ReviewProfileService:
 
     def review_profile_ids(self) -> list[str]:
         return list((self.config().get("review_profiles") or {}).keys())
+
+    def default_review_profile_id(self) -> str:
+        config = self.config()
+        profiles = config.get("review_profiles") or {}
+        configured = str(config.get("default_review_profile") or "fast_default")
+        if configured in profiles:
+            return configured
+        return next(iter(profiles), "work_default")
 
     def delivery_profile_ids(self) -> list[str]:
         return list((self.config().get("delivery_profiles") or {}).keys())

@@ -71,6 +71,9 @@ class ReviewBuildManagerService:
     def review_profile_ids(self) -> list[str]:
         return self.review_profiles.review_profile_ids()
 
+    def default_review_profile_id(self) -> str:
+        return self.review_profiles.default_review_profile_id()
+
     def delivery_profile_ids(self) -> list[str]:
         return self.review_profiles.delivery_profile_ids()
 

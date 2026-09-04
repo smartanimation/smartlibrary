@@ -100,10 +100,13 @@ Restart After Effects, then open `Window > Extensions > smart AE browser`.
 ## Current Behavior
 
 - `Import Manifest...`: opens a JSON manifest via After Effects file dialog.
-- `Build`: converts the selected manifest into Output Watch and Replace Queue rows.
+- `Build`: builds the selected Render Manifest into the active AE project.
 - `Open`: opens saved browser state.
 - `Save`: saves browser state as JSON.
-- `Refresh`: polls output paths through ExtendScript file snapshots.
+- `Refresh`: compares active AE footage with the latest complete Render Layer
+  Material receipts resolved for the selected shot.
+- New Render Layer Material uses `layers/{layer}/v###/t##/output.json`.
+  Legacy `v###/output_t###.json` receipts remain readable.
 - `Replace All`: replaces AE footage whose current source path or item name matches the manifest row.
 - `Publish`: saves the active AEP, validates the final and `stage`
   compositions in After Effects, snapshots footage/font dependencies, and calls

@@ -43,6 +43,17 @@ gui_playblast:
   stall_timeout_seconds: 300
 ```
 
+## FAST Profileと描画Backend
+
+標準Review Profileは`fast_default`で、`renderer: maya_hardware2`を使用する。
+構築済みシーンをmayapy内のViewport 2.0 OGSでバックグラウンド描画し、
+GUI Mayaは起動しない。問題があるShotではReview Build Managerの
+Review Profileを`work_default`へ変更し、`renderer: maya_playblast`の
+専用GUI Maya Playblastへ明示的に切り替える。
+
+BackendはキャッシュFingerprintの一部とし、Hardware 2.0とGUI Playblastの
+Render Layer Materialを相互に再利用しない。
+
 ## 実機検証
 
 `tools/maya/validate_gui_review_playblast.py`を設定済みmayapyで実行する。

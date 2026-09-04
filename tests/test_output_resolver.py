@@ -167,6 +167,27 @@ def test_project_paths_partition_workspace_by_shot_department(tmp_path):
     ) == tmp_path / "workspace/drawing/ep02/s027/build/drawing/clipstudio/main/v002"
 
 
+def test_project_paths_default_build_roots_use_entity_collections(tmp_path):
+    paths = ProjectPaths(
+        tmp_path,
+        templates={"workspace_root": "{project_root}/workspace"},
+        shot_dept_partitions={"default": "cg"},
+    )
+
+    assert paths.sequence_build_dir(
+        "ep02", "s027", "layout", "maya", "preComp", "v001"
+    ) == (
+        tmp_path
+        / "workspace/cg/sequences/ep02/s027/build/layout/maya/preComp/v001"
+    )
+    assert paths.shot_build_dir(
+        "ep02", "s027", "c001", "layout", "maya", "preComp", "v001"
+    ) == (
+        tmp_path
+        / "workspace/cg/shots/ep02/s027/c001/build/layout/maya/preComp/v001"
+    )
+
+
 def test_project_paths_lists_shot_construct_builds_across_tasks(tmp_path):
     paths = ProjectPaths(
         tmp_path,
@@ -212,7 +233,9 @@ def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
             "shot_workspace_root": "{workspace_root}/{workspace_partition}/shots/{episode}/{sequence}/{shot}",
             "shot_render_root": "{shot_workspace_root}/render",
             "shot_render_layers_root": "{shot_render_root}/{department}/layers",
-            "shot_render_layer_version": "{shot_render_layers_root}/{layer}/{version}",
+            "shot_render_layer_root": "{shot_render_layers_root}/{layer}",
+            "shot_render_layer_version": "{shot_render_layer_root}/{version}",
+            "shot_render_layer_take": "{shot_render_layer_version}/{take}",
             "shot_review_root": "{shot_workspace_root}/review",
             "shot_review_movie": "{shot_review_root}/{department}/mov",
             "shot_review_build": "{shot_review_root}/review_build/{version}/{take}",
@@ -223,6 +246,9 @@ def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
     assert paths.shot_render_layer_version_dir(
         "ep02", "s027", "c001", "anim", "CHA", "v002"
     ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/render/anim/layers/CHA/v002"
+    assert paths.shot_render_layer_take_dir(
+        "ep02", "s027", "c001", "anim", "CHA", "v002", "t03"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/render/anim/layers/CHA/v002/t03"
     assert paths.shot_review_build_dir(
         "ep02", "s027", "c001", "anim", "v003", "t004"
     ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/review/review_build/v003/t004"

@@ -729,7 +729,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                 self.table.item(table_row, 6).setText(str(take))
                 matched += 1
                 matched_labels.append(
-                    f"{layer_name} v{version:03d}/t{take:03d}"
+                    f"{layer_name} v{version:03d}/t{take:02d}"
                 )
         finally:
             self.table.blockSignals(False)
@@ -749,7 +749,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self.table.item(row, 6).setText(str(take))
         self._load_properties()
         self._save_scene_settings()
-        self.status.setText(f"New Take: t{take:03d}")
+        self.status.setText(f"New Take: t{take:02d}")
 
     def version_up(self):
         row = self.table.currentRow()
@@ -761,7 +761,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self.table.item(row, 6).setText("1")
         self._load_properties()
         self._save_scene_settings()
-        self.status.setText(f"Version UP: v{version:03d} / t001")
+        self.status.setText(f"Version UP: v{version:03d} / t01")
 
     def _set_all_version_take(self, version, take):
         self._loading = True
@@ -1228,7 +1228,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             "preview": _layer_key(row.get("layer", ""), {}),
             "cam": _dag_leaf(row.get("camera", "")),
             "version": f"{int(row.get('version', 1)):03d}",
-            "take": f"{int(row.get('take', 1)):03d}",
+            "take": f"{int(row.get('take', 1)):02d}",
             "frame": "####",
             "ext": "png",
             "shot_root": self.service.shot_root(self.identity).as_posix(),

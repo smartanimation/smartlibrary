@@ -5907,9 +5907,15 @@ def show(config_dir: str | os.PathLike[str] | None = None, parent=None):
         pass
     _ensure_smartlib_on_path()
     from smartlib.core.qt import parent_for_maya
+    from smartlib.core.icons import tool_ico_path
 
     window_parent = parent_for_maya(QtWidgets, parent)
     _window = ShotManagerWindow(config_dir=config_dir, parent=window_parent)
+    icon_path = tool_ico_path("shot_manager")
+    if icon_path:
+        icon = QtGui.QIcon(str(icon_path))
+        QtWidgets.QApplication.instance().setWindowIcon(icon)
+        _window.setWindowIcon(icon)
     if window_parent is not None:
         _window.setWindowFlags(_window.windowFlags() | QtCore.Qt.Window)
     _window.show()

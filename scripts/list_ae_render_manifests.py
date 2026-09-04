@@ -14,6 +14,35 @@ def _bootstrap() -> None:
             sys.path.insert(0, text)
 
 
+def _absolute_receipt_path(directory: Path, value: object) -> str:
+    path = Path(str(value or ""))
+    if not str(path):
+        return ""
+    return (path if path.is_absolute() else directory / path).as_posix()
+
+
+def _latest_output_rows(service, identity, department: str) -> list[dict[str, object]]:
+    rows = []
+    for layer, source in service.latest_preview_render_outputs(
+        identity, department=department or "anim"
+    ).items():
+        output = dict(source)
+        output_dir = Path(str(output.get("output_dir") or ""))
+        output.update(
+            {
+                "id": layer,
+                "name": layer,
+                "layer": layer,
+                "outputPath": _absolute_receipt_path(output_dir, output.get("pattern")),
+                "first_frame_file": _absolute_receipt_path(
+                    output_dir, output.get("first_file")
+                ),
+            }
+        )
+        rows.append(output)
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     _bootstrap()
 
@@ -80,7 +109,24 @@ def main(argv: list[str] | None = None) -> int:
         ),
         reverse=True,
     )
-    print(json.dumps({"ok": True, "manifests": manifests}, ensure_ascii=False))
+    latest_outputs = _latest_output_rows(service, identity, department)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "manifests": manifests,
+                "latestOutputs": latest_outputs,
+                "context": {
+                    "project": service.project_config.project_name,
+                    "episode": identity.episode,
+                    "sequence": identity.sequence,
+                    "shot": identity.shot,
+                    "department": department or "anim",
+                },
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

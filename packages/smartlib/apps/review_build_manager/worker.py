@@ -401,6 +401,17 @@ def _activate_review_layer(cmds, specs: list[dict], active_name: str) -> None:
         cmds.editDisplayLayerGlobals(currentDisplayLayer="defaultLayer")
 
 
+def _review_render_backend(review_profile: dict) -> str:
+    renderer = str(review_profile.get("renderer") or "maya_hardware2").strip().lower()
+    supported = {"maya_hardware2", "maya_playblast", "maya_render"}
+    if renderer not in supported:
+        raise ValueError(
+            f"Unsupported Review renderer: {renderer}. "
+            f"Expected one of: {', '.join(sorted(supported))}"
+        )
+    return renderer
+
+
 def _render_camera_sequence(
     cmds,
     *,
@@ -1415,7 +1426,13 @@ def _run_scene_construction(
         layer_cache_states = {}
         pending_playblasts = []
         playblast_presets = _presets(manager.project_config)
-        gui_playblast = review_profile.get("renderer", "maya_playblast") != "maya_render"
+        render_backend = _review_render_backend(review_profile)
+        gui_playblast = render_backend == "maya_playblast"
+        builder_version = {
+            "maya_hardware2": "review_builder_v5_maya_hardware2",
+            "maya_playblast": BACKEND_VERSION,
+            "maya_render": "review_builder_v3_offscreen_display",
+        }[render_backend]
         with ExitStack() as cache_resources:
             for index, spec in enumerate(specs):
                 _activate_review_layer(cmds, specs, spec["name"])
@@ -1437,7 +1454,7 @@ def _run_scene_construction(
                     light_snapshot=light_snapshot,
                     frame_range=[layer_start, layer_end],
                     review_profile={**review_profile, "playblast_display": playblast_presets},
-                    builder_version=BACKEND_VERSION if gui_playblast else "review_builder_v3_offscreen_display",
+                    builder_version=builder_version,
                 )
                 cache_policy = str(getattr(args, "review_cache_policy", "use") or "use")
                 rebuild_layers = {
@@ -1477,9 +1494,9 @@ def _run_scene_construction(
                     pattern = Path(cached_pattern).name
                     frames_dir = pattern_path.parent
                 elif not gui_playblast:
-                    # Explicit render profiles (e.g. 16-bit EXR) are not
-                    # Playblast. Keep that existing renderer; never silently
-                    # convert HDR output to the GUI's 8-bit capture.
+                    # maya_hardware2 and explicit render profiles use Maya's
+                    # headless OGS renderer. GUI Playblast remains an explicit
+                    # selectable fallback and never shares this cache.
                     frames_dir = layer_dir / "frames"
                     sequence = _render_camera_sequence(
                         cmds, camera=spec["camera"], output_dir=frames_dir,

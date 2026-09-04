@@ -1484,17 +1484,8 @@ class ShotManagerService:
             output_override = str(row.get("output_override") or "").strip()
             pattern_template = output_override or filename_template
             output = None
-            reserved_output_dir = str(row.get("output_dir") or "").strip()
-            reserved_pattern = str(row.get("output_pattern") or "").strip()
             while True:
-                take_label = f"t{take_number:03d}"
-                if reserved_output_dir and reserved_pattern:
-                    output_directory = Path(reserved_output_dir)
-                    pattern = Path(reserved_pattern).name
-                    output_record_name = Path(
-                        str(row.get("receipt_path") or f"output_{take_label}.json")
-                    ).name
-                    break
+                take_label = f"t{take_number:02d}"
                 output = self.output_resolver.resolve(
                     "__preview_render_override__" if output_override else "preview_render",
                     {
@@ -1509,37 +1500,49 @@ class ShotManagerService:
                         "preview": clean_group,
                         "cam": camera_name,
                         "version": f"{requested_version:03d}",
-                        "take": f"{take_number:03d}",
+                        "take": f"{take_number:02d}",
                         "frame": "####",
                         "ext": output_format,
                     },
-                    default_directory="{shot_render_root}/{department}/layers/{preview}/v{version}",
+                    default_directory=(
+                        "{shot_render_root}/{department}/layers/{preview}/"
+                        "v{version}/t{take}"
+                    ),
                     default_filename=pattern_template.replace("*", "_"),
                 )
                 # The common ProjectPaths resolver owns the physical Render Layer
                 # location. A naming config may customize the filename, but must
                 # not redirect layer material under the production shot root.
-                output_directory = (
-                    output.directory
-                    if output_override
-                    else self.paths.shot_render_layer_version_dir(
-                        identity.episode,
-                        identity.sequence,
-                        identity.shot,
-                        clean_department,
-                        clean_group,
-                        version_label,
-                    )
+                output_directory = self.paths.shot_render_layer_take_dir(
+                    identity.episode,
+                    identity.sequence,
+                    identity.shot,
+                    clean_department,
+                    clean_group,
+                    version_label,
+                    take_label,
                 )
-                output_record = output_directory / f"output_{take_label}.json"
-                if not output_record.exists() and not any(
-                    output_directory.glob(output.filename.replace("####", "*"))
+                output_record = output_directory / "output.json"
+                legacy_version_dir = self.paths.shot_render_layer_version_dir(
+                    identity.episode,
+                    identity.sequence,
+                    identity.shot,
+                    clean_department,
+                    clean_group,
+                    version_label,
+                )
+                legacy_record = legacy_version_dir / f"output_t{take_number:03d}.json"
+                if (
+                    not output_record.exists()
+                    and not legacy_record.exists()
+                    and not any(
+                        output_directory.glob(output.filename.replace("####", "*"))
+                    )
                 ):
                     break
                 take_number += 1
-            if not reserved_output_dir:
-                pattern = output.filename
-                output_record_name = f"output_{take_label}.json"
+            pattern = output.filename
+            output_record_name = "output.json"
             groups.append(
                 {
                     "group": clean_group,
@@ -1547,6 +1550,13 @@ class ShotManagerService:
                     "order": order,
                     "version": version_label,
                     "take": take_label,
+                    "layer_root": self.paths.shot_render_layer_dir(
+                        identity.episode,
+                        identity.sequence,
+                        identity.shot,
+                        clean_department,
+                        clean_group,
+                    ).as_posix(),
                     "output_dir": output_directory.as_posix(),
                     "output_record": output_record_name,
                     "pattern": pattern,
@@ -1668,15 +1678,17 @@ class ShotManagerService:
                 "settings_fingerprint": str(group.get("settings_fingerprint") or ""),
                 "settings_path": str(group.get("settings_path") or ""),
             }
-            output_record = str(group.get("output_record") or f"output_{take_label}.json")
+            output_record = str(group.get("output_record") or "output.json")
             written.append(write_json(output_dir / output_record, output_data))
-            group_base = output_dir.parent
+            group_base = Path(
+                str(group.get("layer_root") or output_dir.parent.parent)
+            )
             write_json(
                 group_base / "latest.json",
                 {
                     "version": version_label,
                     "take": take_label,
-                    "path": f"{version_label}/{output_record}",
+                    "path": f"{version_label}/{take_label}/{output_record}",
                 },
             )
             versions_path = group_base / "versions.json"

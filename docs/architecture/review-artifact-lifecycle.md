@@ -37,8 +37,10 @@ Maya、Houdini、BlenderなどのDCCに依存しないAE Build入力Manifest。
 Scale、Position、Anchor Pointおよび確定した構図は所有しない。
 
 Smart Playblastはシーン内設定を使用してRender Layer Materialを生成し、各Layerの
-生成結果をVersionディレクトリの`output_t###.json`へReceiptとして記録する。
+生成結果を`v###/t##/output.json`へReceiptとして記録する。
 Receiptは実フレーム数、解像度、先頭・末尾ファイルを所有する。
+Render Layer Material、作業AEPおよびWorking Review MovieのTakeは`t##`の2桁表記とする。
+旧`v###/output_t###.json`構造は読み取り互換のみ維持し、新規出力には使用しない。
 
 Render Manifestは、必要な全LayerのReceiptと実ファイルが揃った後にのみ、
 Shot Managerの`Export Data`からVersion化できる。Export時に実際のVersion、Take、
@@ -117,7 +119,7 @@ InternalまたはClient向け成果物をOutput
 ```text
 Smart Playblastが連番を生成
         ↓
-Layerごとにoutput_t###.jsonを記録（complete）
+Layerごとにv###/t##/output.jsonを記録（complete）
         ↓
 Shot ManagerでRender ManifestをExport Data
         ↓
@@ -167,14 +169,16 @@ Render Layer Materialの連番生成に成功しただけでは、Review素材�
 │  └─ {dept}/
 │     └─ layers/
 │        ├─ CHA/
-│        │  └─ v001/  # 連番名とoutput_t###.jsonでTakeを識別
+│        │  └─ v001/
+│        │     └─ t01/  # 連番とoutput.json
 │        └─ BGA/
-│           └─ v001/  # 連番名とoutput_t###.jsonでTakeを識別
+│           └─ v001/
+│              └─ t01/  # 連番とoutput.json
 │
 ├─ review/
 │  ├─ {dept}/
 │  │  └─ mov/
-│  │     └─ {project}_{episode}_{sequence}_{shot}_{task}_v001_t001.mov
+│  │     └─ {project}_{episode}_{sequence}_{shot}_{task}_v001_t01.mov
 │  └─ review_build/
 │     └─ v001/
 │        └─ t001/

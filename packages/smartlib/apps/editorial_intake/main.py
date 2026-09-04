@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from smartlib.apps.editorial_intake.service import SmartEditorialIntakeService
 from smartlib.core.config_loader import ProjectConfig
+from smartlib.core.icons import tool_ico_path
 
 
 class EditorialIntakeWindow(tk.Tk):
@@ -15,6 +16,9 @@ class EditorialIntakeWindow(tk.Tk):
         super().__init__()
         self.service = service
         self.title("Smart Editorial Intake")
+        icon_path = tool_ico_path("smart_editorial")
+        if icon_path:
+            self.iconbitmap(default=str(icon_path))
         self.geometry("310x500")
         self.minsize(290, 460)
 

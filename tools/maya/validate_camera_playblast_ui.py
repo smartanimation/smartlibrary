@@ -67,6 +67,10 @@ def main():
         assert window.layer_list.sizeHintForRow(0) == 58
         assert window.version_spin.width() <= 100
         assert window.width_spin.height() <= 26
+        assert abs(
+            window.width_spin.mapTo(window, ui.QtCore.QPoint()).y()
+            - window.fit_combo.mapTo(window, ui.QtCore.QPoint()).y()
+        ) < 90
         assert window.version_spin.mapTo(window, ui.QtCore.QPoint()).y() == window.take_spin.mapTo(window, ui.QtCore.QPoint()).y()
         window.version_spin.setValue(4)
         window.take_spin.setValue(3)
@@ -111,6 +115,8 @@ def main():
         assert window.width() <= 700, window.minimumSizeHint().width()
         assert window.layer_list.width() >= 180
         assert window.generate_camera_button.isVisible()
+        assert window.publish_camera_button.isVisible()
+        assert window.publish_camera_button.objectName() == "publishCameraPackage"
         # Exercise the actual Publish button handler, but never write a project publish.
         from smartlib.apps.shot_manager import ShotIdentity
         from smartlib.dcc.maya import camera_publish, camera_native

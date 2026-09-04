@@ -18,7 +18,7 @@ from smartlib.apps.review_build_manager.service import (
 from smartlib.apps.review_build_manager.orchestrator import BUILD_MODES
 from smartlib.apps.review_build_manager.job_request import write_job_request
 from smartlib.core.config_loader import ProjectConfig
-from smartlib.core.icons import build_content_icon_path
+from smartlib.core.icons import build_content_icon_path, sequence_input_icon_path, tool_ico_path
 from smartlib.core.tokens import TokenContext
 
 
@@ -39,6 +39,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
 
     def __init__(self, parent=None, *, config_dir: str | os.PathLike[str]):
         super().__init__(parent)
+        icon_path = tool_ico_path("build_manager")
+        if icon_path:
+            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
         self.service = ReviewBuildManagerService(ProjectConfig(config_dir))
         self.rows: list[ReviewShotStatus] = []
         self.current_filter = "ALL"
@@ -258,6 +261,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.sequence_inputs_tree.setHeaderLabels(
             ["Use", "Input", "Required", "State", "Version", "Source", "Adapter"]
         )
+        self.sequence_inputs_tree.setIconSize(QtCore.QSize(24, 24))
         self.sequence_inputs_tree.header().setStretchLastSection(True)
         layout.addWidget(self.sequence_inputs_tree)
         return self.sequence_inputs_panel
@@ -437,6 +441,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         settings = QtWidgets.QHBoxLayout()
         self.review_profile_combo = QtWidgets.QComboBox()
         self.review_profile_combo.addItems(self.service.review_profile_ids())
+        default_review_profile = self.service.default_review_profile_id()
+        default_review_index = self.review_profile_combo.findText(default_review_profile)
+        if default_review_index >= 0:
+            self.review_profile_combo.setCurrentIndex(default_review_index)
         self.delivery_profile_combo = QtWidgets.QComboBox()
         self.delivery_profile_combo.addItems(self.service.delivery_profile_ids())
         self.precomp_combo = QtWidgets.QComboBox()
@@ -1112,11 +1120,28 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 same_context = not saved_input.get("context") or (
                     saved_input["context"] == data.get("context")
                 )
-                if same_context and saved_input.get("version"):
+                saved_path = str(saved_input.get("path") or "")
+                managed_version_type = str(data.get("type") or "")
+                unavailable_managed_version = (
+                    managed_version_type in {"camera", "review_layers"}
+                    and saved_path
+                    and not Path(saved_path).is_file()
+                )
+                if same_context and saved_input.get("version") and not unavailable_managed_version:
                     component["version"] = str(saved_input["version"])
                     data["build_version"] = str(saved_input["version"])
-                if same_context and saved_input.get("path"):
-                    component["path"] = str(saved_input["path"])
+                if same_context and saved_path and not unavailable_managed_version:
+                    component["path"] = saved_path
+                if unavailable_managed_version:
+                    input_label = (
+                        "Camera Package"
+                        if managed_version_type == "camera"
+                        else "Review Layers"
+                    )
+                    data["note"] = (
+                        f"Saved {input_label} {saved_input.get('version') or '-'} is unavailable; "
+                        f"using Latest {data.get('build_version') or '-'}"
+                    )
             data["state"] = self._local_content_state(data, enabled)
             if enabled:
                 settings["excluded"].discard(key[1])
@@ -1577,6 +1602,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 ),
                 "path": str(component.get("path") or ""),
                 "state": str(row.get("state") or ""),
+                "required": bool(row.get("required", True)),
             })
         return {
             "schema": "smartpipeline.planned_review_snapshot.v1",
@@ -1912,6 +1938,17 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self._submit_for_review()
 
     def _submit_for_review(self) -> None:
+        try:
+            self._submit_for_review_impl()
+        except Exception as exc:
+            self.generate_review_check.setChecked(False)
+            message = str(exc) or exc.__class__.__name__
+            self.footer_label.setText("Submit for Review failed: " + message)
+            QtWidgets.QMessageBox.critical(
+                self, "Submit for Review", "Could not submit the Review:\n\n" + message
+            )
+
+    def _submit_for_review_impl(self) -> None:
         status = self._selected_status()
         if not status:
             return
@@ -1935,8 +1972,23 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             )
             return
         identity = status.identity
-        self.generate_review_check.setChecked(True)
         planned_snapshot = self._planned_snapshot_payload(identity)
+        missing_required = [
+            f"{row.get('type') or 'data'} / {row.get('name') or 'main'}"
+            for row in planned_snapshot.get("inputs") or []
+            if row.get("enabled", True)
+            and row.get("required", True)
+            and str(row.get("state") or "").upper() == "MISSING"
+        ]
+        if missing_required:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Submit for Review",
+                "Required Planned Snapshot inputs are missing:\n\n- "
+                + "\n- ".join(missing_required),
+            )
+            return
+        self.generate_review_check.setChecked(True)
         planned_snapshot["created_at"] = datetime.now().isoformat(timespec="seconds")
         self._review_submission_profiles = {
             (identity.episode, identity.sequence, identity.shot): {
@@ -1949,8 +2001,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             }
         }
         submission_key = (identity.episode, identity.sequence, identity.shot)
-        self._enqueue_builds([submission_key])
-        self.generate_review_check.setChecked(False)
+        try:
+            self._enqueue_builds([submission_key])
+        finally:
+            self.generate_review_check.setChecked(False)
 
     def _selected_status(self) -> ReviewShotStatus | None:
         selected = self.shot_table.selectionModel().selectedRows()
@@ -2915,6 +2969,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     ]
                 )
                 item.setData(0, QtCore.Qt.UserRole, data.key)
+                icon_path = sequence_input_icon_path(data.key, size=24)
+                if icon_path:
+                    item.setIcon(1, QtGui.QIcon(str(icon_path)))
                 item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
                 item.setCheckState(0, QtCore.Qt.Checked if data.enabled else QtCore.Qt.Unchecked)
                 self.sequence_inputs_tree.addTopLevelItem(item)
@@ -2924,6 +2981,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     )
                     child_item.setData(0, QtCore.Qt.UserRole, child.key)
                     child_item.setData(0, QtCore.Qt.UserRole + 1, data.key)
+                    if icon_path:
+                        child_item.setIcon(1, QtGui.QIcon(str(icon_path)))
                     if child.key == plan.virtual_camera_take:
                         child_item.setSelected(True)
                     item.addChild(child_item)
