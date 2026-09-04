@@ -46,6 +46,7 @@ class SequenceBuildPlan:
     validation: tuple[ValidationResult, ...]
     output_scene: str
     manifest_path: str
+    recipe_inputs: tuple[str, ...] = ()
 
     @property
     def can_build(self) -> bool:
@@ -80,7 +81,7 @@ class SmartSequenceBuilderService:
         return {
             "Standard Sequence": {
                 "version": "v001",
-                "inputs": ["editorial", "virtual_camera", "cast", "storyreel", "audio", "light"],
+                "inputs": ["editorial", "cast", "storyreel", "audio", "light"],
             },
             "Mocap Only": {
                 "version": "v001",
@@ -125,7 +126,11 @@ class SmartSequenceBuilderService:
             if recipe_inputs
             else {}
         )
-        enabled_map.update(enabled or {})
+        # A saved Use override may outlive a recipe switch. Overrides only
+        # apply to inputs declared by the active recipe.
+        for key, value in (enabled or {}).items():
+            if key in recipe_inputs:
+                enabled_map[key] = bool(value)
         inputs = self._resolve_inputs(
             identity, sequence_data, virtual_camera_take, enabled_map
         )
@@ -149,6 +154,14 @@ class SmartSequenceBuilderService:
             validation=validation,
             output_scene=str(output_scene),
             manifest_path=str(manifest),
+            recipe_inputs=tuple(
+                key
+                for key in (
+                    "editorial", "mocap", "virtual_camera", "cast",
+                    "storyreel", "audio", "light",
+                )
+                if key in recipe_inputs
+            ),
         )
 
     def build(self, plan: SequenceBuildPlan) -> BuildResult:

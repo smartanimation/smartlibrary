@@ -33,6 +33,14 @@ STATE_COLORS = {
 BUILDABLE_STATES = {"READY", "DIRTY", "UP TO DATE"}
 
 
+def build_content_state_color(state: str) -> str:
+    return {
+        "READY": "#80bd72",
+        "UPDATE AVAILABLE": "#f2ae30",
+        "EXCLUDED": "#999999",
+    }.get(str(state or "").upper(), "#ef665d")
+
+
 class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
     SETTINGS_ORGANIZATION = "SmartPipeline"
     SETTINGS_APPLICATION = "ReviewBuildManager"
@@ -514,10 +522,11 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         cache_row.addWidget(self.planned_snapshot_state_label)
         root.addLayout(cache_row)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        splitter.setChildrenCollapsible(False)
-        inputs_group = QtWidgets.QGroupBox("Resolved Inputs")
-        inputs_layout = QtWidgets.QVBoxLayout(inputs_group)
+        self.planned_snapshot_tabs = QtWidgets.QTabWidget()
+        self.planned_snapshot_tabs.setDocumentMode(True)
+        inputs_page = QtWidgets.QWidget()
+        inputs_layout = QtWidgets.QVBoxLayout(inputs_page)
+        inputs_layout.setContentsMargins(4, 4, 4, 4)
         self.planned_inputs_table = QtWidgets.QTableWidget(0, 7)
         self.planned_inputs_table.setHorizontalHeaderLabels(
             ["Use", "Type", "Name", "Category", "Context", "Version", "State"]
@@ -529,10 +538,11 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.planned_inputs_table.verticalHeader().setVisible(False)
         self.planned_inputs_table.horizontalHeader().setStretchLastSection(True)
         inputs_layout.addWidget(self.planned_inputs_table)
-        splitter.addWidget(inputs_group)
+        self.planned_snapshot_tabs.addTab(inputs_page, "Resolved Inputs")
 
-        layers_group = QtWidgets.QGroupBox("Review Layers / Expected Cache Action")
-        layers_layout = QtWidgets.QVBoxLayout(layers_group)
+        layers_page = QtWidgets.QWidget()
+        layers_layout = QtWidgets.QVBoxLayout(layers_page)
+        layers_layout.setContentsMargins(4, 4, 4, 4)
         self.planned_layers_table = QtWidgets.QTableWidget(0, 5)
         self.planned_layers_table.setHorizontalHeaderLabels(
             ["Rebuild", "Layer", "Members", "Camera", "Expected"]
@@ -543,9 +553,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.planned_layers_table.horizontalHeader().setStretchLastSection(True)
         self.planned_layers_table.itemChanged.connect(self._planned_layer_changed)
         layers_layout.addWidget(self.planned_layers_table)
-        splitter.addWidget(layers_group)
-        splitter.setSizes([300, 260])
-        root.addWidget(splitter, 1)
+        self.planned_snapshot_tabs.addTab(layers_page, "Review Layers")
+        root.addWidget(self.planned_snapshot_tabs, 1)
         return page
 
     def _build_right_panel(self) -> QtWidgets.QWidget:
@@ -1192,8 +1201,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             for column, key in ((6, "build_version"), (7, "last_review_version"), (8, "state"), (9, "note")):
                 item = QtWidgets.QTableWidgetItem(str(data[key]))
                 if column == 8:
-                    color = "#80bd72" if data[key] == "READY" else "#f2ae30" if data[key] == "UPDATE AVAILABLE" else "#999999" if data[key] == "EXCLUDED" else "#ef665d"
-                    item.setForeground(QtGui.QColor(color))
+                    item.setForeground(
+                        QtGui.QColor(build_content_state_color(data[key]))
+                    )
                 self.build_contents_table.setItem(row, column, item)
             if data.get('camera_versions'):
                 version_combo = QtWidgets.QComboBox()
@@ -1241,11 +1251,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if state_item:
             state_item.setText(state)
             state_item.setForeground(
-                QtGui.QColor(
-                    "#80bd72" if state == "READY"
-                    else "#999999" if state == "EXCLUDED"
-                    else "#ef665d"
-                )
+                QtGui.QColor(build_content_state_color(state))
             )
         enabled_count = sum(bool(row.get("enabled")) for row in self.current_build_content_rows)
         self.contents_summary_label.setText(
@@ -1374,11 +1380,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 if state_item:
                     state_item.setText(state)
                     state_item.setForeground(
-                        QtGui.QColor(
-                            "#80bd72" if state == "READY"
-                            else "#999999" if state == "EXCLUDED"
-                            else "#ef665d"
-                        )
+                        QtGui.QColor(build_content_state_color(state))
                     )
             enabled_count = sum(
                 bool(row.get("enabled")) for row in self.current_build_content_rows
@@ -1767,9 +1769,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     data.get("state"),
                 ]
                 for column, value in enumerate(values, start=2):
-                    self.planned_inputs_table.setItem(
-                        row, column, QtWidgets.QTableWidgetItem(str(value or "-"))
-                    )
+                    item = QtWidgets.QTableWidgetItem(str(value or "-"))
+                    if column == 6:
+                        item.setForeground(
+                            QtGui.QColor(build_content_state_color(str(value or "")))
+                        )
+                    self.planned_inputs_table.setItem(row, column, item)
                 options = list(data.get("context_options") or [])
                 if options:
                     combo = QtWidgets.QComboBox()
@@ -2961,7 +2966,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.sequence_inputs_tree.blockSignals(True)
         self.sequence_inputs_tree.clear()
         try:
+            recipe_inputs = set(getattr(plan, "recipe_inputs", ()))
             for data in plan.inputs:
+                if recipe_inputs and data.key not in recipe_inputs:
+                    continue
                 item = QtWidgets.QTreeWidgetItem(
                     [
                         "", data.label, "Required" if data.required else "Optional",

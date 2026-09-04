@@ -1113,11 +1113,11 @@ def test_native_camera_publish_commits_only_after_dependency_export(tmp_path: Pa
     with pytest.raises(ValueError, match='requires'):
         service.publish_shot_scene_snapshot(identity, payload, data_type='camera')
     def export(directory):
-        (directory / 'primary.ma').write_text('// test native payload', encoding='utf-8')
-        return {'ma': 'primary.ma'}
+        (directory / 'primary_cam.ma').write_text('// test native payload', encoding='utf-8')
+        return {'ma': 'primary_cam.ma'}
     published = service.publish_shot_scene_snapshot(identity, payload, data_type='camera', native_exporter=export)
-    assert json.loads(published.read_text(encoding='utf-8'))['files'] == {'ma': 'primary.ma'}
-    assert json.loads(published.with_name('publish.json').read_text(encoding='utf-8'))['files']['ma'] == 'primary.ma'
+    assert json.loads(published.read_text(encoding='utf-8'))['files'] == {'ma': 'primary_cam.ma'}
+    assert json.loads(published.with_name('publish.json').read_text(encoding='utf-8'))['files']['ma'] == 'primary_cam.ma'
     def fail(directory):
         raise RuntimeError('dependency export failed')
     with pytest.raises(RuntimeError):

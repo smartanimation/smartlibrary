@@ -599,7 +599,10 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         review_layout = QtWidgets.QVBoxLayout(review_group)
         self.review_profiles_edit = QtWidgets.QPlainTextEdit()
         self.review_profiles_edit.setPlaceholderText(
-            "work_default:\n  stage: WORK\n  image_format: png"
+            "fast_default:\n  stage: FAST\n  renderer: maya_hardware2\n  image_format: png"
+        )
+        self.review_profiles_edit.textChanged.connect(
+            self._sync_default_review_profile_choices
         )
         review_layout.addWidget(self.review_profiles_edit)
         delivery_group = QtWidgets.QGroupBox("Delivery Profiles")
@@ -613,6 +616,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         editors.addWidget(delivery_group)
         layout.addWidget(editors, 1)
         policy = QtWidgets.QFormLayout()
+        self.default_review_profile_combo = QtWidgets.QComboBox()
+        self.default_review_profile_combo.setEditable(True)
+        self.default_review_profile_combo.setToolTip(
+            "Default selected by Review Build Manager for a new Planned Snapshot."
+        )
         self.workspace_representation_combo = QtWidgets.QComboBox()
         self.workspace_representation_combo.addItem("Maya Reference", "maya")
         self.workspace_representation_combo.addItem("USD Payload", "usd")
@@ -633,6 +641,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.review_failed_days.setRange(0, 3650)
         self.review_logs_days = QtWidgets.QSpinBox()
         self.review_logs_days.setRange(0, 3650)
+        policy.addRow("Default Review Profile:", self.default_review_profile_combo)
         policy.addRow("Default Asset Loading:", self.workspace_representation_combo)
         policy.addRow("Missing PreComp:", self.missing_precomp_policy_combo)
         policy.addRow("Default PreComp:", self.default_precomp_edit)
@@ -655,6 +664,11 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.review_profiles_edit.setPlainText(
             yaml.dump(review_profiles, sort_keys=False, allow_unicode=True)
         )
+        self._sync_default_review_profile_choices()
+        default_review_profile = str(
+            data.get("default_review_profile") or "fast_default"
+        )
+        self.default_review_profile_combo.setCurrentText(default_review_profile)
         self.delivery_profiles_edit.setPlainText(
             yaml.dump(data.get("delivery_profiles") or {}, sort_keys=False, allow_unicode=True)
         )
@@ -669,6 +683,24 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.review_failed_days.setValue(int(jobs.get("retain_failed_days", 30)))
         self.review_logs_days.setValue(int(jobs.get("retain_logs_days", 90)))
 
+    def _sync_default_review_profile_choices(self):
+        current = self.default_review_profile_combo.currentText().strip()
+        try:
+            profiles = yaml.safe_load(self.review_profiles_edit.toPlainText()) or {}
+        except yaml.YAMLError:
+            return
+        if not isinstance(profiles, dict):
+            return
+        names = [str(name) for name in profiles]
+        self.default_review_profile_combo.blockSignals(True)
+        self.default_review_profile_combo.clear()
+        self.default_review_profile_combo.addItems(names)
+        if current:
+            self.default_review_profile_combo.setCurrentText(current)
+        elif "fast_default" in names:
+            self.default_review_profile_combo.setCurrentText("fast_default")
+        self.default_review_profile_combo.blockSignals(False)
+
     def _review_config_from_ui(self):
         review_profiles = yaml.safe_load(self.review_profiles_edit.toPlainText()) or {}
         delivery_profiles = yaml.safe_load(self.delivery_profiles_edit.toPlainText()) or {}
@@ -678,8 +710,17 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             if not isinstance(profile, dict):
                 raise ValueError(f"Review Profile {name} must be a mapping.")
             stage = str(profile.get("stage") or "WORK").upper()
-            if stage not in {"WORK", "REND"}:
-                raise ValueError(f"Review Profile {name}: stage must be WORK or REND.")
+            if stage not in {"FAST", "WORK", "REND"}:
+                raise ValueError(
+                    f"Review Profile {name}: stage must be FAST, WORK or REND."
+                )
+            renderer = str(profile.get("renderer") or "").strip().lower()
+            if renderer and renderer not in {
+                "maya_hardware2", "maya_playblast", "maya_render"
+            }:
+                raise ValueError(
+                    f"Review Profile {name}: unsupported renderer {renderer}."
+                )
             image_format = str(profile.get("image_format") or "png").lower()
             if image_format not in {"png", "exr", "jpg", "jpeg"}:
                 raise ValueError(f"Review Profile {name}: unsupported image_format {image_format}.")
@@ -702,8 +743,16 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 raise ValueError(
                     f"Delivery Profile {name}: Review Profile {review_profile} was not found."
                 )
+        default_review_profile = self.default_review_profile_combo.currentText().strip()
+        if not default_review_profile:
+            raise ValueError("Default Review Profile is required.")
+        if default_review_profile not in review_profiles:
+            raise ValueError(
+                f"Default Review Profile {default_review_profile} was not found."
+            )
         return {
             "schema_version": 1,
+            "default_review_profile": default_review_profile,
             "review_profiles": review_profiles,
             "delivery_profiles": delivery_profiles,
             "missing_precomp_policy": self.missing_precomp_policy_combo.currentText(),

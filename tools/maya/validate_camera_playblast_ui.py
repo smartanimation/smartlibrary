@@ -58,6 +58,8 @@ def main():
         assert window.fit_combo.currentData() == "scale"
         assert window.playblast_button.text() == "Playblast Image Sequence"
         assert window.preset_combo.count() > 0
+        assert window.preset_combo.currentData() == "layout_lighting"
+        assert window._row(0)["preset"] == "layout_lighting"
         window.show()
         app.processEvents()
         assert window.width() == 680, window.width()
@@ -130,11 +132,17 @@ def main():
             payload['files'] = kwargs['native_exporter'](Path(temporary.name))
             return Path(temporary.name) / 'camera.json'
         service.publish_shot_scene_snapshot = publish
+        portable_exports = []
         with patch.object(ui.QtWidgets.QDialog, 'exec_', return_value=ui.QtWidgets.QDialog.Accepted), \
+             patch('smartlib.core.maya_runtime.resolve_mayapy', return_value=Path(sys.executable)), \
+             patch.object(window, '_start_portable_camera_export', side_effect=lambda path, _cmds: portable_exports.append(path)), \
              patch.object(ui.QtWidgets.QMessageBox, 'information'):
             window.publish_camera_package()
         assert len(published_payloads) == 1, errors
         assert published_payloads[0]['schema'] == camera_native.SCHEMA
+        assert published_payloads[0]['portable_export']['camera_name'] == 'primary_cam'
+        assert published_payloads[0]['portable_export']['status'] == 'pending'
+        assert portable_exports == [Path(temporary.name) / 'camera.json']
         window._suppress_scene_save = True
         window.close()
         app.processEvents()

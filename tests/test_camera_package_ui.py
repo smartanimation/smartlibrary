@@ -23,6 +23,8 @@ def test_data_tree_and_build_version_combo(tmp_path):
     identity = ShotIdentity('ep001', 'sq010', 'sh0010')
     payload = dict(schema=SCHEMA, reference_resolution=[1920, 1080],
                    cameras=[dict(role='primary', name='creativeCam')],
+                   portable_export=dict(status='complete', camera_name='primary_cam',
+                                        files=dict(usd='primary_cam.usd', fbx='primary_cam.fbx')),
                    rows=[dict(layer='CHA', camera='smartCam_CHA', width=2048, height=858,
                               start=1001, end=1100, version=2, take=3)])
     first = manager.shots.publish_shot_scene_snapshot(identity, payload, data_type='camera')
@@ -66,6 +68,7 @@ def test_data_tree_and_build_version_combo(tmp_path):
     QtCore.QTimer.singleShot(0, inspect_dialog)
     data._show_camera_package_details(version)
     assert 'Primary: creativeCam' in dialogs[0] and str(second) in dialogs[0]
+    assert 'Exchange: primary_cam | COMPLETE (fbx, usd)' in dialogs[0]
 
     class BuildHarness(ReviewBuildManagerWindow):
         def __init__(self):

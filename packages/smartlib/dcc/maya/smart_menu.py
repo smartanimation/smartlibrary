@@ -79,6 +79,11 @@ DEFAULT_MENU_CONFIG = {
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_shot",
                     "enabled": True,
                 },
+                {
+                    "label": "Sequence Cast Publisher",
+                    "command": "smartlib.dcc.maya.smart_menu.show_sequence_cast_publisher",
+                    "enabled": True,
+                },
             ],
             "Camera": [
                 {
@@ -275,6 +280,7 @@ def _load_menu_config() -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("maya_menu"), dict):
         return DEFAULT_MENU_CONFIG
     _ensure_sequence_manager_entry(data)
+    _ensure_sequence_cast_publisher_entry(data)
     _ensure_camera_playblast_entry(data)
     _organize_tool_categories(data)
     return data
@@ -348,6 +354,22 @@ def _ensure_sequence_manager_entry(data: dict) -> None:
             "command": entry["command"],
             "enabled": entry["enabled"],
         }
+
+
+def _ensure_sequence_cast_publisher_entry(data: dict) -> None:
+    """Add Sequence Cast Publisher to older project menu configs."""
+    categories = (data.get("maya_menu") or {}).get("categories")
+    if not isinstance(categories, dict):
+        return
+    items = categories.setdefault("Layout", [])
+    command = "smartlib.dcc.maya.smart_menu.show_sequence_cast_publisher"
+    if any(str(item.get("command") or "").strip() == command for item in _menu_items_from_config(items)):
+        return
+    entry = {"label": "Sequence Cast Publisher", "command": command, "enabled": True}
+    if isinstance(items, list):
+        items.append(entry)
+    elif isinstance(items, dict):
+        items[entry["label"]] = {"command": command, "enabled": True}
 
 
 def _resolve_command(path: str):
@@ -501,6 +523,14 @@ def show_sequence_manager() -> None:
     from smartlib.apps import sequence_manager
 
     sequence_manager.show(config_dir=str(_config_dir()))
+
+
+def show_sequence_cast_publisher() -> None:
+    ensure_runtime_paths()
+    _unload_module_tree("smartlib.apps.sequence_cast_publisher")
+    from smartlib.apps import sequence_cast_publisher
+
+    sequence_cast_publisher.show(config_dir=str(_config_dir()))
 
 
 def show_smart_preflight() -> None:

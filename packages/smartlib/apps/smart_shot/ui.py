@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from pathlib import Path
 
 from smartlib.core.config_loader import ProjectConfig
-from smartlib.core.path_resolver import configured_project_paths
 
 
 def _qt_modules():
@@ -41,7 +39,6 @@ class SmartShotWindow(QtWidgets.QMainWindow):
         self.validation_issues = {}
         self._build_ui()
         self.refresh()
-        self.validate()
 
     def _build_ui(self) -> None:
         ui_path = Path(__file__).resolve().parent / "ui" / "smart_shot.ui"
@@ -232,7 +229,7 @@ class SmartShotWindow(QtWidgets.QMainWindow):
                 self.shot_table.setItem(row, column, item)
         self.shot_table.clearSelection()
         self._apply_validation_colors()
-        self.status_label.setText(f"{len(self.shots)} sequencer shots")
+        self.status_label.setText(f"{len(self.shots)} sequencer shots. Validate manually if needed.")
 
     def validate(self) -> None:
         from smartlib.dcc.maya import smart_shot
@@ -380,23 +377,9 @@ class SmartShotWindow(QtWidgets.QMainWindow):
             self._warn("Publish Camera", str(exc))
 
     def quick_open_latest_package_in_rv(self) -> None:
-        from smartlib.dcc.maya import smart_shot
-
         try:
-            project_root = self.project_config.project_root
-            if project_root is None:
-                raise RuntimeError("project_root is not set in templates_base.yml")
-            episode, sequence = smart_shot.scene_episode_sequence(project_root)
-            latest_json = configured_project_paths(project_root, self.project_config).sequence_workspace_root(
-                episode, sequence
-            ) / "output" / "review" / "layout" / "main" / "latest.json"
-            latest = _read_json(latest_json)
-            if not latest.get("path"):
-                raise FileNotFoundError(f"Latest review package was not found: {latest_json}")
-            review_json = latest_json.parent / latest["path"]
-            selected_shots = self._selected_shot_names()
-            _open_review_json_in_smart_review_rv(self.project_config, review_json, selected_shots=selected_shots)
-            self.status_label.setText(f"Launched RV Smart Review plugin: {review_json}")
+            _open_rv(self.project_config)
+            self.status_label.setText("Launched RV")
         except Exception as exc:
             self._warn("Quick Open Package in RV", str(exc))
 
@@ -493,33 +476,13 @@ def _read_json(path: str | os.PathLike[str]) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _open_review_json_in_smart_review_rv(
-    project_config: ProjectConfig,
-    review_json: str | os.PathLike[str],
-    selected_shots: list[str] | None = None,
-) -> None:
+def _open_rv(project_config: ProjectConfig) -> None:
     from smartlib.review.rv import find_rv_executable
 
-    review_path = Path(review_json)
-    if not review_path.exists():
-        raise FileNotFoundError(f"Review package was not found: {review_path}")
     rv = find_rv_executable(project_config)
     if not rv:
         raise RuntimeError("OpenRV was not found. Set tools.openrv.path or OPENRV_PATH.")
-    root = Path(os.environ.get("SMARTPIPELINE_ROOT") or os.environ.get("SMARTLIBRARY_ROOT") or Path(__file__).resolve().parents[4])
-    env = os.environ.copy()
-    env.setdefault("SMARTLIBRARY_ROOT", str(root))
-    env.setdefault("SMARTPIPELINE_ROOT", str(root))
-    env["SMART_REVIEW_PROJECT"] = project_config.project_name
-    env["SMART_REVIEW_CONFIG_DIR"] = str(project_config.config_dir)
-    env["SMART_REVIEW_REVIEW_JSON"] = str(review_path)
-    env["SMART_REVIEW_AUTO_LOAD"] = "1"
-    env["SMART_REVIEW_SHOW_PANEL"] = "1"
-    if selected_shots:
-        env["SMART_REVIEW_SELECTED_SHOTS"] = json.dumps(selected_shots)
-    if project_config.project_root:
-        env["SMART_REVIEW_PROJECT_ROOT"] = str(project_config.project_root)
-    subprocess.Popen([str(rv)], cwd=str(review_path.parent), env=env)
+    subprocess.Popen([str(rv)])
 
 
 _WINDOW = None

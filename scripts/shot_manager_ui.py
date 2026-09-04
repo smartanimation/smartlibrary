@@ -2350,16 +2350,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         )
 
     def _shot_thumbnail_path(self, identity, shot_data: dict) -> Path | None:
-        candidates = []
-        thumbnail = str(shot_data.get("thumbnail") or "").strip()
-        if thumbnail:
-            candidates.append(Path(thumbnail))
-            candidates.append(self.service.shot_root(identity) / thumbnail)
-        candidates.extend(
-            self.service.shot_root(identity) / name
-            for name in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png")
-        )
-        return next((candidate for candidate in candidates if candidate.exists()), None)
+        return self.service.shot_thumbnail_path(identity, shot_data)
 
     def _populate_shot_info_table(self, identity, shot_data: dict, cast_data: dict) -> None:
         editorial = shot_data.get("editorial") or {}

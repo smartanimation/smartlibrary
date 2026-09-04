@@ -76,7 +76,7 @@ def main():
             payload = native.collect(cam, rows, [1920, 1080], cmds)
             assert not any('unrelatedBackground' in n for n in payload['dependency_nodes'])
             payload['files'] = native.export_native(payload, folder, cmds)
-        scene = Path(folder) / 'primary.ma'
+        scene = Path(folder) / 'primary_cam.ma'
         text = scene.read_text(encoding='utf-8')
         assert 'unrelatedBackground' not in text
         assert 'smartCam_BGA' not in text
@@ -112,7 +112,7 @@ def main():
         ref_dir = Path(folder) / 'reference_test'
         ref_dir.mkdir()
         ref_payload['files'] = native.export_native(ref_payload, ref_dir, cmds)
-        native_text = (ref_dir / 'primary.ma').read_text(encoding='utf-8')
+        native_text = (ref_dir / 'primary_cam.ma').read_text(encoding='utf-8')
         assert 'file -r ' not in native_text and 'file -rdi' not in native_text
         cmds.file(new=True, force=True)
         cmds.undoInfo(state=True)

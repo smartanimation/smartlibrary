@@ -188,6 +188,30 @@ def test_recipe_inputs_define_default_enabled_components(tmp_path: Path) -> None
     assert plan.can_build
 
 
+def test_standard_sequence_excludes_mocap_and_virtual_camera(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    service = SmartSequenceBuilderService(_config(tmp_path / "config", project_root))
+    sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
+    _json(
+        sequence_root / "sequence.json",
+        {"episode": "ep02", "sequence": "s027", "shots": []},
+    )
+    _json(sequence_root / "cast.json", {"cast": {}})
+
+    plan = service.plan(
+        "ep02",
+        "s027",
+        "Standard Sequence",
+        enabled={"mocap": True, "virtual_camera": True},
+    )
+
+    assert "mocap" not in plan.recipe_inputs
+    assert "virtual_camera" not in plan.recipe_inputs
+    enabled = {item.key: item.enabled for item in plan.inputs}
+    assert not enabled["mocap"]
+    assert not enabled["virtual_camera"]
+
+
 def test_sequence_audio_uses_latest_manifest_version(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     service = SmartSequenceBuilderService(_config(tmp_path / "config", project_root))

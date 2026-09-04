@@ -74,7 +74,7 @@ def collect(primary, rows, reference, cmds):
 
 def export_native(payload, directory, cmds):
     # Called by the existing publish service BEFORE camera.json / latest are committed.
-    path = Path(directory) / 'primary.ma'
+    path = Path(directory) / 'primary_cam.ma'
     selection = cmds.ls(selection=True, long=True) or []
     try:
         cmds.select(payload['dependency_nodes'], replace=True, noExpand=True)

@@ -8,6 +8,7 @@ from typing import Any
 
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json
+from smartlib.core.path_resolver import AssetIdentity
 
 
 VERSION_RE = re.compile(r"^v\d+$", re.IGNORECASE)
@@ -89,6 +90,27 @@ class AssetPublishResolver:
             path = self._resolve_context(publish_root / context, alias, rule.formats)
             if path:
                 return path
+        return None
+
+    def identity_from_publish_path(self, publish_path: str | Path) -> AssetIdentity | None:
+        """Resolve an Asset identity from its canonical asset.json ancestor."""
+        path = Path(publish_path)
+        for parent in (path.parent, *path.parents):
+            metadata_path = parent / "asset.json"
+            if not metadata_path.is_file():
+                continue
+            metadata = read_json(metadata_path, {}) or {}
+            category = str(metadata.get("category") or "").strip()
+            group = str(metadata.get("group") or "").strip()
+            asset = str(metadata.get("asset") or metadata.get("name") or "").strip()
+            if not category or not group or not asset:
+                return None
+            variant = str(metadata.get("default_variant") or "default").strip() or "default"
+            for candidate in path.parents:
+                if candidate.parent == parent and candidate.name:
+                    variant = candidate.name
+                    break
+            return AssetIdentity(category, group, asset, variant)
         return None
 
     def _asset_context_for_stage(self, variant_root: Path, value: str) -> str:

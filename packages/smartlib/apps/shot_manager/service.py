@@ -1375,6 +1375,23 @@ class ShotManagerService:
         work_path = Path(path)
         return work_path.parent / ".thumbnails" / f"{work_path.stem}.jpg"
 
+    def shot_thumbnail_path(
+        self,
+        identity: ShotIdentity,
+        shot_data: dict[str, Any] | None = None,
+    ) -> Path | None:
+        """Resolve the same thumbnail candidates shown by Shot Manager."""
+        data = shot_data if shot_data is not None else self.load_shot(identity)
+        candidates = []
+        thumbnail = str(data.get("thumbnail") or "").strip()
+        if thumbnail:
+            candidates.extend((Path(thumbnail), self.shot_root(identity) / thumbnail))
+        candidates.extend(
+            self.shot_root(identity) / name
+            for name in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png")
+        )
+        return next((path for path in candidates if path.is_file()), None)
+
     def next_shot_scene_archive_path(
         self,
         identity: ShotIdentity,

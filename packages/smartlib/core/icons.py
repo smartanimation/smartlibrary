@@ -63,6 +63,8 @@ _BUILD_CONTENT_SHOT_DATA_TYPES = {
     "camera": "camera",
     "virtual_camera": "camera",
     "light": "light",
+    "review_layer": "review_layers",
+    "review_layers": "review_layers",
     "set_dress": "set_dress_data",
     "set_dress_data": "set_dress_data",
 }

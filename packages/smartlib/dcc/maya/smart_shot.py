@@ -48,8 +48,10 @@ def list_sequencer_shots() -> list[SequencerShot]:
     try:
         project_config = current_project_config()
         if project_config and project_config.project_root:
-            episode, sequence = scene_episode_sequence(project_config.project_root)
-            locks = _preview_locks(project_config.project_root, episode, sequence)
+            context = _scene_episode_sequence_from_path(project_config.project_root)
+            if context:
+                episode, sequence = context
+                locks = _preview_locks(project_config.project_root, episode, sequence)
     except Exception:
         locks = {}
     rows = []
@@ -313,23 +315,32 @@ def official_editorial_shots(project_config: ProjectConfig) -> list[EditorialSho
     return shots
 
 
-def scene_episode_sequence(project_root: Path) -> tuple[str, str]:
+def _scene_episode_sequence_from_path(project_root: Path) -> tuple[str, str] | None:
     cmds = _maya_cmds()
     scene = Path(cmds.file(query=True, sceneName=True) or "")
     paths = configured_project_paths(project_root)
-    if scene:
-        try:
-            relative = scene.resolve().relative_to(paths.sequences_root().resolve())
-            if len(relative.parts) >= 2:
-                return relative.parts[0], relative.parts[1]
-        except Exception:
-            pass
-        try:
-            relative = scene.resolve().relative_to(paths.shots_root().resolve())
-            if len(relative.parts) >= 2:
-                return relative.parts[0], relative.parts[1]
-        except Exception:
-            pass
+    if not scene:
+        return None
+    try:
+        relative = scene.resolve().relative_to(paths.sequences_root().resolve())
+        if len(relative.parts) >= 2:
+            return relative.parts[0], relative.parts[1]
+    except Exception:
+        pass
+    try:
+        relative = scene.resolve().relative_to(paths.shots_root().resolve())
+        if len(relative.parts) >= 2:
+            return relative.parts[0], relative.parts[1]
+    except Exception:
+        pass
+    return None
+
+
+def scene_episode_sequence(project_root: Path) -> tuple[str, str]:
+    context = _scene_episode_sequence_from_path(project_root)
+    if context:
+        return context
+    cmds = _maya_cmds()
     shots = list_sequencer_shots()
     if shots:
         # Fall back to the first shot metadata if a later build embeds it.

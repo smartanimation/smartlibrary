@@ -24,6 +24,15 @@ def camera_package_info(path):
     primary = next((c for c in cameras if c.get('role') == 'primary'), {})
     lines = [f"Primary: {primary.get('name', '(missing)')}",
              f"Reference: {' × '.join(map(str, data.get('reference_resolution', [])))}"]
+    portable = data.get('portable_export') or {}
+    if portable:
+        status = str(portable.get('status') or 'unknown').upper()
+        camera_name = str(portable.get('camera_name') or 'primary_cam')
+        formats = ', '.join(sorted((portable.get('files') or {}).keys()))
+        suffix = f" ({formats})" if formats else ''
+        lines.append(f"Exchange: {camera_name} | {status}{suffix}")
+        if portable.get('error'):
+            lines.append(f"Exchange error: {portable['error']}")
     for row in rows:
         rule = row.get('camera_rule') or {}
         mode = rule.get('mode', row.get('camera_fit', 'horizontal'))
@@ -34,4 +43,5 @@ def camera_package_info(path):
                      f"{mode} | v{row.get('version')} / t{row.get('take')}")
     return dict(target=data.get('target', 'main'), subset=data.get('subset', 'main'),
                 version=data.get('version', ''), summary='\n'.join(lines),
-                primary=primary.get('name', ''), path=str(path))
+                primary=primary.get('name', ''), path=str(path),
+                portable_status=str(portable.get('status') or ''))

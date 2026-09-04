@@ -15,7 +15,7 @@ v0.8では日常PlayblastとCamera Package PublishからBakeを除去した。
 - Playblast前にも設定の差分確認だけを行う。設定が同じ既存ライブCameraは再作成しない。
 - 拡張Camera名は`smartCam_CHA`などを維持し、Burn-inのCamera/Lens情報はPrimaryを参照する。
 
-Camera Package v2 (`smartpipeline.camera_package.v2`) は`primary.ma`とLayerの差分ルールを保存する。
+Camera Package v2 (`smartpipeline.camera_package.v2`) は`primary_cam.ma`とLayerの差分ルールを保存する。
 Primaryの親階層・上流アニメーション・Constraint等の接続をネイティブ出力し、無関係な兄弟ノードは含めない。
 参照リグは必要なノードを埋め込んで公開する。元の参照ファイルへのライブ依存は残さない。
 ネイティブ出力成功後にのみcamera.json / publish.json / latestを登録する。
@@ -26,7 +26,12 @@ Dataタブでの確認とBuild ManagerのSelected Version固定は引き続き�
 外部キャッシュ、Plugin依存、動的getAttr/eval等のExpressionは公開を拒否する。
 元の時間依存を維持するため、非ゼロのBuild Frame Offsetは未対応として停止する。
 ネイティブ出力自体は現在のMayaで同期実行する（バックグラウンドジョブ化は未実装）。
-FBX/USDへの独立Camera受け渡しが必要な場合のBakeは、この日常Playblast経路とは別の処理とする。
+Publish後、別mayapyプロセスがPrimaryを親なしの`primary_cam`へWorld Bakeし、
+`primary_cam.usd`と`primary_cam.fbx`を同じPublish Versionへ追加する。
+Bake WorkerはReview Buildと同じMaya Software設定およびProcess Environmentを使用する。
+Authoring Mayaより古いWorkerしか解決できない場合は、Version作成前にPublishを停止する。
+Bakeは有効Layer範囲の最小Frameから最大Frameまで、整数Frameをstep 1でサンプリングする。
+交換ファイルの状態は`portable_export`の`pending / complete / failed`で確認する。
 
 検証：`tools/maya/validate_camera_live.py`（Maya standalone専用）、`tests/test_camera_live.py`。
 
@@ -135,12 +140,13 @@ DataタブはPublish済みファイルを閲覧するだけで、Data領域へ�
 コード更新後はShot ManagerとBuild Managerを再起動してから確認する。
 
 - Publish前に`Generate / Update Cameras`を実行する。
-- Publish対象はPrimary、チェック済みの生成カメラ、Reference Resolution、Layerごとの
+- Publish対象はPrimary、Reference Resolution、Layerごとの
   Resolution / Frame Range / Fit Policy / Version / Take。
-- Schemaは`smartpipeline.camera_package.v1`。Primaryは論理キー`primary`、生成カメラは
-  `layer:<layer>`で関連付ける。Maya UUIDとfull DAG pathはBuild間の識別子として保存しない。
+- Schemaは`smartpipeline.camera_package.v2`。Primaryは論理キー`primary`で常に1つとする。
+  Maya UUIDとfull DAG pathはBuild間の識別子として保存しない。
 - Camera名は`smartCam_CHA`のような表示名を維持する。識別用IDを名前へ追加しない。
-- Primaryと生成カメラのWorld Matrix、投影に必要なShape属性、評価済みFrustumを各整数Frameで保存する。
+- Maya Build用には非Bakeの`primary_cam.ma`とLayer差分ルールを保存する。
+  DCC交換用にはWorld Bake済みの`primary_cam.usd`と`primary_cam.fbx`を保存する。
 - source rig、Constraint、Render Layer素材、AEのScale / Position / Anchor / 構図は含めない。
 - 検証の不一致、古い生成設定、同名Node、単位不一致、別Primary由来のCameraは停止する。
   同名Nodeを削除、上書き、自動採番しない。
@@ -157,7 +163,7 @@ Buildを停止する。複数Camera Publishの合成や、同名Cameraの推測�
 
 このCamera PackageはMaya Shot Build入力であり、AE Buildの`render_manifest.json`ではない。
 既存Render Manifestの責務と、Mayaシーン内Playblast SettingsをAE Build入力にしない規則は変更しない。
-FBX/USDが必要な場合はBuild後に復元された通常のBake済みCameraを既存Exporterへ渡す。
+FBX/USDはCamera Package Publish後のバックグラウンド処理で生成する。
 
 ## Burn-inと交換
 

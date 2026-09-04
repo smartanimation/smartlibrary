@@ -20,6 +20,7 @@ WINDOW_OBJECT_NAME = "SmartPlayblastWindow"
 UI_VERSION = 26
 TOOL_VERSION = "1.0.0"
 ALL_LAYER_LABEL = "ALL"
+DEFAULT_PLAYBLAST_PRESET = "layout_lighting"
 
 
 class _ReorderTable(QtWidgets.QTableWidget):
@@ -492,7 +493,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                 mode=previous.get("mode", "Animation"),
                 preset=previous.get(
                     "preset",
-                    contract.get("playblast_preset") or self.preset_combo.itemData(0) or "",
+                    contract.get("playblast_preset") or self._default_playblast_preset(),
                 ),
                 output_override=previous.get("output_override", ""),
             )
@@ -599,7 +600,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
                     version=version,
                     take=take,
                     mode="Custom",
-                    preset=self.preset_combo.itemData(0) or "",
+                    preset=self._default_playblast_preset(),
                 )
         finally:
             self.table.blockSignals(False)
@@ -636,7 +637,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             version=version,
             take=take,
             mode="Animation",
-            preset=self.preset_combo.itemData(0) or "",
+            preset=self._default_playblast_preset(),
         )
         self.table.setCurrentCell(self.table.rowCount() - 1, 1)
         self._layer_order = [
@@ -827,7 +828,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.table.item(row, 5).setText(str(version))
             self.table.item(row, 6).setText(str(take))
 
-    def _append_row(self, *, enabled, camera, layer, start, end, width, height, version, take, mode, preset="", output_override="", display_layer="", source_type="review_layers"):
+    def _append_row(self, *, enabled, camera, layer, start, end, width, height, version, take, mode, preset=None, output_override="", display_layer="", source_type="review_layers"):
         row = self.table.rowCount()
         self.table.insertRow(row)
         use = QtWidgets.QTableWidgetItem()
@@ -841,7 +842,10 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.table.setItem(row, column, item)
         use.setData(QtCore.Qt.UserRole, {
             "start": int(start), "end": int(end), "width": int(width), "height": int(height),
-            "mode": mode, "preset": str(preset or ""),
+            "mode": mode,
+            "preset": str(
+                self._default_playblast_preset() if preset is None else preset
+            ),
             "output_override": str(output_override or ""),
             "display_layer": str(display_layer or layer),
             "source_type": str(source_type or "review_layers"),
@@ -1562,6 +1566,14 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self.preset_combo.clear()
         for name in preset_names(self.project_config):
             self.preset_combo.addItem(preset_label(self.project_config, name), name)
+        default_index = self.preset_combo.findData(DEFAULT_PLAYBLAST_PRESET)
+        if default_index >= 0:
+            self.preset_combo.setCurrentIndex(default_index)
+
+    def _default_playblast_preset(self):
+        if self.preset_combo.findData(DEFAULT_PLAYBLAST_PRESET) >= 0:
+            return DEFAULT_PLAYBLAST_PRESET
+        return str(self.preset_combo.itemData(0) or "")
 
 
 def show(config_dir=None, parent=None):

@@ -23,6 +23,7 @@ def test_build_contents_reuses_existing_shot_data_icons() -> None:
         "camera": "camera.png",
         "virtual_camera": "camera.png",
         "light": "light.png",
+        "review_layers": "review_layers.png",
         "set_dress": "set_dress_work_data.png",
     }
     for component_type, filename in expected_names.items():
