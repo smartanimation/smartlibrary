@@ -29,3 +29,9 @@ Review関連実装の正本は[`docs/architecture/review-artifact-lifecycle.md`]
 ## Conflict Handling
 
 依頼内容が上記規則または正本のアーキテクチャ文書と矛盾する場合、実装前に矛盾点と影響範囲を説明して確認する。
+
+## Test Hygiene
+
+- pytestの一時出力をリポジトリ直下へ作成しない。
+- `--basetemp`が必要な場合は`.tmp/pytest/<task-name>`配下を使用する。
+- ATOM roundtripなどの検証成果物は`.tmp/`配下へ出力し、リポジトリ直下へ保存しない。

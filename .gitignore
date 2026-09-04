@@ -29,6 +29,8 @@ dist/
 /.tmp_*/
 /.pytest_tmp_*/
 /{workspace_root}/
+/atom_*
+/animation_curve_roundtrip_report.json
 
 # Retired source and local holding areas
 /old/
