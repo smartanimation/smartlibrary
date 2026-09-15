@@ -66,7 +66,15 @@ class LayerCardDelegate(QtWidgets.QStyledItemDelegate):
 
     def helpEvent(self, event, view, option, index):
         camera = str(index.sibling(index.row(), 1).data() or "")
-        QtWidgets.QToolTip.showText(event.globalPos(), f"Camera: {camera}", view)
+        row_data = dict(index.data(QtCore.Qt.UserRole) or {})
+        timing = (
+            f"Hold Frame: {row_data.get('camera_frame')}"
+            if row_data.get("camera_timing") == "hold"
+            else "Camera Timing: Follow Scene"
+        )
+        QtWidgets.QToolTip.showText(
+            event.globalPos(), f"Camera: {camera}\n{timing}", view
+        )
         return True
 
     def editorEvent(self, event, model, option, index):

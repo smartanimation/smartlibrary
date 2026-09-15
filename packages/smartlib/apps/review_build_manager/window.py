@@ -41,7 +41,10 @@ def build_content_state_color(state: str) -> str:
     }.get(str(state or "").upper(), "#ef665d")
 
 
-class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
+from .composition_ui import CompositionSnapshotMixin
+
+
+class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
     SETTINGS_ORGANIZATION = "SmartPipeline"
     SETTINGS_APPLICATION = "ReviewBuildManager"
 
@@ -73,6 +76,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.resize(1500, 860)
         self.setMinimumSize(1050, 620)
         self._build_ui()
+        self._setup_composition_tab()
         self._connect_signals()
         self._restore_settings()
         self.scan_updates()
@@ -89,6 +93,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.project_combo = QtWidgets.QComboBox()
         self.project_combo.addItem(self.service.project_name)
         self.project_combo.setFixedWidth(150)
+        self.dcc_combo = QtWidgets.QComboBox()
+        self.dcc_combo.addItems(["Maya", "Houdini"])
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItems(BUILD_MODES)
         self.mode_combo.setToolTip(
@@ -118,6 +124,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(project_label)
         toolbar.addWidget(self.project_combo)
         toolbar.addStretch(1)
+        toolbar.addWidget(QtWidgets.QLabel("DCC"))
+        toolbar.addWidget(self.dcc_combo)
         toolbar.addWidget(QtWidgets.QLabel("Mode"))
         toolbar.addWidget(self.mode_combo)
         toolbar.addWidget(QtWidgets.QLabel("Scope"))
@@ -398,7 +406,6 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.workflow_tabs.addTab(build_page, "Build")
         self.planned_snapshot_page = self._build_planned_snapshot_page()
         self.workflow_tabs.addTab(self.planned_snapshot_page, "Planned Snapshot")
-        self.workflow_tabs.addTab(self._build_right_panel(), "Output")
         lower_layout.addWidget(self.workflow_tabs)
         self.center_splitter.addWidget(lower_panel)
         self.center_splitter.setSizes([330, 430])
@@ -427,8 +434,11 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.job_queue_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.job_queue_splitter.setChildrenCollapsible(False)
         self.job_queue_splitter.addWidget(self.queue_table)
-        detail_group = QtWidgets.QGroupBox("Job Details / Error Details")
-        detail_layout = QtWidgets.QVBoxLayout(detail_group)
+
+        self.job_queue_detail_tabs = QtWidgets.QTabWidget()
+        self.job_queue_detail_tabs.setDocumentMode(True)
+        detail_page = QtWidgets.QWidget()
+        detail_layout = QtWidgets.QVBoxLayout(detail_page)
         detail_layout.setContentsMargins(7, 7, 7, 7)
         self.job_detail_text = QtWidgets.QPlainTextEdit()
         self.job_detail_text.setReadOnly(True)
@@ -437,7 +447,12 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             "Select a Job Queue row to inspect its full result or error."
         )
         detail_layout.addWidget(self.job_detail_text)
-        self.job_queue_splitter.addWidget(detail_group)
+        self.job_queue_detail_tabs.addTab(
+            detail_page, "Job Details / Error Details"
+        )
+        self.output_page = self._build_right_panel()
+        self.job_queue_detail_tabs.addTab(self.output_page, "Output")
+        self.job_queue_splitter.addWidget(self.job_queue_detail_tabs)
         self.job_queue_splitter.setSizes([510, 230])
         layout.addWidget(self.job_queue_splitter, 1)
         return page
@@ -524,6 +539,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
 
         self.planned_snapshot_tabs = QtWidgets.QTabWidget()
         self.planned_snapshot_tabs.setDocumentMode(True)
+        self.usd_snapshot_text = QtWidgets.QPlainTextEdit()
+        self.usd_snapshot_text.setReadOnly(True)
         inputs_page = QtWidgets.QWidget()
         inputs_layout = QtWidgets.QVBoxLayout(inputs_page)
         inputs_layout.setContentsMargins(4, 4, 4, 4)
@@ -539,6 +556,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self.planned_inputs_table.horizontalHeader().setStretchLastSection(True)
         inputs_layout.addWidget(self.planned_inputs_table)
         self.planned_snapshot_tabs.addTab(inputs_page, "Resolved Inputs")
+        self.planned_snapshot_tabs.addTab(self.usd_snapshot_text, "USD Build Snapshot")
 
         layers_page = QtWidgets.QWidget()
         layers_layout = QtWidgets.QVBoxLayout(layers_page)
@@ -594,6 +612,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         return panel
 
     def _connect_signals(self) -> None:
+        self.dcc_combo.currentTextChanged.connect(self._refresh_plan_columns)
         self.scan_btn.clicked.connect(self.scan_updates)
         self.build_selected_btn.clicked.connect(self.build_selected)
         self.build_all_changes_btn.clicked.connect(self.build_all_changes)
@@ -694,6 +713,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             else:
                 self._focus_working_shot()
             self._update_build_buttons()
+            if self.queue_table.currentRow() >= 0:
+                self._show_selected_job_details()
             dirty = sum(row.state == "DIRTY" for row in self.rows)
             missing = sum(row.state == "MISSING" for row in self.rows)
             self.footer_label.setText(
@@ -918,6 +939,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     identity,
                     plan.department,
                     plan.task,
+                    self.dcc_combo.currentText().lower(),
                 )
             state = QtWidgets.QTableWidgetItem(display_state)
             state.setForeground(
@@ -933,6 +955,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         self._update_build_buttons()
 
     def _show_details(self, row_data: ReviewShotStatus | None) -> None:
+        if hasattr(self, "composition_versions"):
+            self._refresh_compositions()
         self.output_table.setRowCount(0)
         self.construct_list.clear()
         self.open_output_btn.setEnabled(False)
@@ -1117,6 +1141,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 component["version"] = str(latest_camera.get("version") or "")
             if key not in saved_inputs:
                 continue
+            if str(data.get("type")) in {"rig", "usd"}:
+                self._restore_snapshot_context_marker(data, saved_inputs[key])
+                continue  # Review snapshot overrides do not own scene Build asset choices.
             saved_input = saved_inputs[key]
             if "context_override" in saved_input:
                 data["context_override"] = bool(saved_input["context_override"])
@@ -1143,7 +1170,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     component["path"] = saved_path
                 if unavailable_managed_version:
                     input_label = (
-                        "Camera Package"
+                        "Review Camera Rules"
                         if managed_version_type == "camera"
                         else "Review Layers"
                     )
@@ -1205,6 +1232,21 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                         QtGui.QColor(build_content_state_color(data[key]))
                     )
                 self.build_contents_table.setItem(row, column, item)
+            if data.get('asset_versions'):
+                version_combo = QtWidgets.QComboBox()
+                for option in data['asset_versions']:
+                    version_combo.addItem(option['version'], option['path'])
+                    version_combo.setItemData(version_combo.count() - 1, option['path'], QtCore.Qt.ToolTipRole)
+                selected_path = str(data['component'].get('path') or '')
+                index = version_combo.findData(selected_path)
+                if index < 0:
+                    version_combo.addItem(str(data['build_version']) + ' (current)', selected_path)
+                    index = version_combo.count() - 1
+                version_combo.setCurrentIndex(index)
+                version_combo.setToolTip('Select the Asset Release used by scene Build.')
+                version_combo.setProperty('content_row', row_index)
+                version_combo.activated.connect(self._build_asset_version_changed)
+                self.build_contents_table.setCellWidget(row, 6, version_combo)
             if data.get('camera_versions'):
                 version_combo = QtWidgets.QComboBox()
                 for option in data['camera_versions']:
@@ -1224,6 +1266,20 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         enabled = sum(bool(row["enabled"]) for row in rows)
         self.contents_summary_label.setText(f"{enabled} of {len(rows)} items enabled")
         self.build_contents_table.blockSignals(False)
+
+    def _build_asset_version_changed(self, *_args):
+        status = self._selected_status()
+        combo = self.sender()
+        if not status or combo is None:
+            return
+        try:
+            self.service.select_build_asset_version(status.identity, self.current_build_content_rows,
+                int(combo.property("content_row")), combo.currentData())
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Build Version", str(exc))
+            return
+        self._populate_build_contents(status)
+        self._refresh_plan_columns()
 
     def _content_item_changed(self, item) -> None:
         if item.column() != 0:
@@ -1278,7 +1334,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             self._populate_build_contents(status)
             self._populate_planned_snapshot(status)
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, 'Camera Package Selection', str(exc))
+            QtWidgets.QMessageBox.warning(self, 'Review Camera Rules Selection', str(exc))
 
     def _content_context_changed(self, context: str) -> None:
         status = self._selected_status()
@@ -1316,6 +1372,18 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 entry.pop("path", None)
             result["inputs"].append(entry)
         return result
+
+    @staticmethod
+    def _restore_snapshot_context_marker(data: dict, saved_input: dict) -> None:
+        """Keep an explicit Context choice while re-resolving its version/path."""
+
+        if "context_override" not in saved_input:
+            return
+        explicit = bool(saved_input.get("context_override"))
+        data["context_override"] = explicit
+        component = data.get("component")
+        if isinstance(component, dict):
+            component.setdefault("source", {})["context_override"] = explicit
 
     def _planned_context_changed(self, *_args) -> None:
         combo = self.sender()
@@ -1714,6 +1782,36 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         result["components"] = components
         return result
 
+    @staticmethod
+    def _concrete_asset_version(data):
+        component = data.get("component") or {}
+        selected_path = str(component.get("path") or "")
+        option = next((option for option in data.get("asset_versions", [])
+                       if Path(option["path"]) == Path(selected_path)), None) if selected_path else None
+        if option:
+            data["build_version"] = option["version"]
+            component["version"] = option["version"]
+        return option
+
+    def _planned_asset_version_changed(self, *_args):
+        status = self._selected_status()
+        combo = self.sender()
+        if not status or combo is None:
+            return
+        row = self.current_build_content_rows[int(combo.property("content_row"))]
+        selected = next((v for v in row.get("asset_versions", [])
+                         if v["path"] == combo.currentData()), None)
+        if not selected or not Path(selected["path"]).is_file():
+            QtWidgets.QMessageBox.warning(self, "Asset Version", "Selected publish is unavailable. Refresh the inputs.")
+            return
+        row["component"]["path"] = selected["path"]
+        row["component"]["version"] = selected["version"]
+        row["build_version"] = selected["version"]
+        row["state"] = self._local_content_state(row, row.get("enabled", True))
+        self._planned_controls_changed()
+        self._populate_build_contents(status)
+        self._populate_planned_snapshot(status)
+
     def _populate_planned_snapshot(self, row_data: ReviewShotStatus | None) -> None:
         self.planned_inputs_table.blockSignals(True)
         self.planned_layers_table.blockSignals(True)
@@ -1724,6 +1822,15 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 self.planned_snapshot_state_label.setText("Select a shot")
                 return
             identity = row_data.identity
+            if self.dcc_combo.currentText() == "Houdini":
+                try:
+                    from .houdini_ui import inputs
+                    self.usd_snapshot_text.setPlainText(json.dumps(inputs(self, identity), ensure_ascii=False, indent=2))
+                except Exception as exc:
+                    self.usd_snapshot_text.setPlainText(str(exc))
+            else:
+                self.usd_snapshot_text.setPlainText("Select Houdini to preview the USD Build Snapshot.")
+
             saved = dict(self._planned_snapshots.get(self._planned_snapshot_key(identity)) or {})
             for combo, value, by_data in (
                 (self.review_profile_combo, saved.get("review_profile"), False),
@@ -1743,6 +1850,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     combo.setCurrentIndex(index)
                     combo.blockSignals(was_blocked)
             for row_index, data in enumerate(self.current_build_content_rows):
+                self._concrete_asset_version(data)
                 row = self.planned_inputs_table.rowCount()
                 self.planned_inputs_table.insertRow(row)
                 use = QtWidgets.QTableWidgetItem()
@@ -1791,6 +1899,21 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     combo.setProperty("content_row", row_index)
                     combo.currentIndexChanged.connect(self._planned_context_changed)
                     self.planned_inputs_table.setCellWidget(row, 4, combo)
+                if data.get("asset_versions"):
+                    versions = QtWidgets.QComboBox()
+                    for option in data["asset_versions"]:
+                        versions.addItem(option["version"], option["path"])
+                        versions.setItemData(versions.count() - 1, option["path"], QtCore.Qt.ToolTipRole)
+                    path = str((data.get("component") or {}).get("path") or "")
+                    index = versions.findData(path)
+                    if index < 0:
+                        versions.addItem("Current input (outside listed publishes)", path)
+                        index = versions.count() - 1
+                    versions.setCurrentIndex(index)
+                    versions.setToolTip("Select a fixed Asset publish version. This does not approve the Asset.")
+                    versions.setProperty("content_row", row_index)
+                    versions.activated.connect(self._planned_asset_version_changed)
+                    self.planned_inputs_table.setCellWidget(row, 5, versions)
             selected = set(saved.get("rebuild_layers") or [])
             definition = self.service.layer_definition(
                 identity, self.department_combo.currentText()
@@ -2189,6 +2312,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         return identities
 
     def _enqueue_builds(self, identities: list[tuple[str, str, str]]) -> None:
+        if self.dcc_combo.currentText() == "Houdini":
+            from .houdini_ui import enqueue
+            enqueue(self, identities)
+            return
         from smartlib.apps.shot_manager import SequenceIdentity, ShotIdentity
 
         scope = self.scope_combo.currentText().lower()
@@ -2228,11 +2355,19 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                             comment=self.input_comment_edit.text().strip(),
                         )
                     elif plan.department == "anim":
+                        stage_input_policy = (
+                            "REGENERATE SELECTED"
+                            if self.generate_review_check.isChecked()
+                            else self._input_policy()
+                        )
                         self.service.ensure_stage_input(
                             identity,
-                            policy=self._input_policy(),
+                            policy=stage_input_policy,
                             overrides=self._stage_input_overrides(identity),
-                            comment=self.input_comment_edit.text().strip(),
+                            comment=(
+                                self.input_comment_edit.text().strip()
+                                or "Generated from Planned Snapshot for Review Submit"
+                            ),
                         )
                     plan = self._build_plan(identity)
                 except Exception as exc:
@@ -2396,6 +2531,13 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         job["state"] = "STARTING"
         job["task"] = "Start mayapy"
         job["elapsed"].start()
+        if job.get("dcc") == "houdini":
+            from .houdini_ui import start
+            start(self, job)
+            return
+        if job.get("kind") == "animation_publish":
+            self._start_animation_job(job)
+            return
         self._update_queue_row(job)
         try:
             mayapy = self.service.resolve_mayapy()
@@ -2456,6 +2598,8 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                 str(job.get("canonical_fingerprint") or ""),
                 "--reuse-construct",
                 str(job.get("reuse_construct") or ""),
+                "--composition-snapshot",
+                str(job.get("composition_snapshot") or ""),
                 "--operation",
                 job["mode"],
                 "--generate-review",
@@ -2522,7 +2666,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         process = self.sender()
         if process is not self.worker_process or not self.active_job:
             return
-        self.active_job["task"] = f"Initialize Maya (mayapy PID {process.processId()})"
+        self.active_job["task"] = f"Initialize {self.active_job.get('dcc', 'maya')} (PID {process.processId()})"
         self._update_queue_row(self.active_job)
 
     def _worker_process_error(self, error) -> None:
@@ -2530,7 +2674,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if process is not self.worker_process or not self.active_job:
             return
         failed_start = error == QtCore.QProcess.FailedToStart
-        label = "mayapy failed to start" if failed_start else "mayapy process error"
+        label = "DCC failed to start" if failed_start else "DCC process error"
         message = f"{label}: {process.errorString()}"
         job = self.active_job
         job["message"] = message
@@ -2577,7 +2721,10 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if self.sender() is not self.worker_process or not self.active_job:
             return
         self._poll_active_job()
-        self._finish_active_job(exit_code == 0)
+        success = exit_code == 0
+        if self.active_job.get("kind") == "animation_publish":
+            success = self._complete_animation_job(self.active_job, success)
+        self._finish_active_job(success)
 
     def _finish_active_job(self, success: bool) -> None:
         job = self.active_job
@@ -2695,6 +2842,13 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             sections.extend(["", "Message / Traceback:", message])
         if job.get("launch_details"):
             sections.extend(["", "Worker launch:", str(job["launch_details"])])
+        if job.get("log_file"):
+            sections.extend(["", "Worker Log: " + job["log_file"], "Source Scene: " + job.get("source_scene", "")])
+            log_path = Path(job["log_file"])
+            if log_path.is_file():
+                with log_path.open("rb") as stream:
+                    stream.seek(max(0, log_path.stat().st_size - 65536))
+                    sections.append(self._decode_process_output(stream.read()))
         if job.get("request_file"):
             sections.extend(["Job Request File: " + str(job["request_file"])])
         if job.get("stdout"):
@@ -2702,6 +2856,114 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         if stderr and stderr not in message:
             sections.extend(["", "Worker stderr:", stderr])
         self.job_detail_text.setPlainText("\n".join(sections))
+        self._show_job_output(job)
+
+    def _show_job_output(self, job: dict) -> None:
+        """Show Output History for the identity selected in Job Queue."""
+
+        raw_identity = tuple(job.get("identity") or ())
+        if len(raw_identity) < 2:
+            return
+        is_sequence = job.get("scope") == "sequence"
+        row_data = next(
+            (
+                status
+                for status in self.rows
+                if status.identity.episode == raw_identity[0]
+                and status.identity.sequence == raw_identity[1]
+                and (
+                    is_sequence
+                    or (
+                        len(raw_identity) >= 3
+                        and status.identity.shot == raw_identity[2]
+                    )
+                )
+            ),
+            None,
+        )
+
+        self.output_table.setRowCount(0)
+        self.construct_list.clear()
+        self.open_output_btn.setEnabled(False)
+        if row_data is None:
+            label = "/".join(str(value) for value in raw_identity if value)
+            self.detail_title.setText(f"Output History - {label}")
+            self.detail_summary.setText(
+                "Output information is unavailable. Refresh the Build scan."
+            )
+            self.construct_title.setText("Construct Scene Files")
+            return
+
+        identity = row_data.identity
+        if is_sequence:
+            from smartlib.apps.shot_manager import SequenceIdentity
+
+            sequence_identity = SequenceIdentity(identity.episode, identity.sequence)
+            constructs = self.service.list_sequence_constructs(
+                sequence_identity,
+                str(job.get("department") or self.department_combo.currentText()),
+                str(job.get("task_name") or self.task_combo.currentText()),
+            )
+            self.detail_title.setText(
+                f"Sequence - {identity.episode}/{identity.sequence}"
+            )
+            self.detail_summary.setText(
+                f"Sequence: {identity.episode}/{identity.sequence}\n"
+                f"Construct versions: {len(constructs)}"
+            )
+            self.construct_title.setText(
+                f"Sequence Construct: {identity.sequence} / {len(constructs)} versions"
+            )
+        else:
+            constructs = self.service.list_constructs(
+                identity,
+                str(job.get("department") or self.department_combo.currentText()),
+                str(job.get("task_name") or self.task_combo.currentText()),
+            )
+            self.detail_title.setText(
+                f"Output History - {identity.episode}/{identity.sequence}/{identity.shot}"
+            )
+            self.detail_summary.setText(
+                f"State: {row_data.state}\n"
+                f"Animation Curves: {row_data.source_version or '-'}\n"
+                f"Construct: {row_data.output_label}\n"
+                f"{row_data.message}"
+            )
+            for output in row_data.outputs:
+                row = self.output_table.rowCount()
+                self.output_table.insertRow(row)
+                self.output_table.setItem(
+                    row, 0, QtWidgets.QTableWidgetItem(output.version)
+                )
+                self.output_table.setItem(
+                    row, 1, QtWidgets.QTableWidgetItem(output.state)
+                )
+                self.output_table.setItem(
+                    row, 2, QtWidgets.QTableWidgetItem(output.updated)
+                )
+                movie = QtWidgets.QTableWidgetItem(
+                    Path(output.movie).name if output.movie else "-"
+                )
+                movie.setData(QtCore.Qt.UserRole, output.directory)
+                self.output_table.setItem(row, 3, movie)
+            self.open_output_btn.setEnabled(bool(row_data.outputs))
+            self.construct_title.setText(
+                f"Construct: {identity.shot} / {len(constructs)} versions"
+            )
+
+        for construct in constructs:
+            scene = Path(construct["scene"]).name if construct["scene"] else "-"
+            item = QtWidgets.QTreeWidgetItem(
+                [construct["version"], construct["state"], construct["updated"], scene]
+            )
+            item.setData(0, QtCore.Qt.UserRole, construct["scene"])
+            color = (
+                "#80bd72"
+                if construct["state"] in {"PASSED", "READY", "OK"}
+                else "#f2ae30"
+            )
+            item.setForeground(1, QtGui.QColor(color))
+            self.construct_list.addTopLevelItem(item)
 
     @staticmethod
     def _decode_process_output(payload: bytes) -> str:
@@ -2844,6 +3106,20 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
             settings = self.build_content_settings.get(key) or {}
             contexts = dict(settings.get("contexts") or {})
             excluded = set(settings.get("excluded") or set())
+            planned_snapshot = self._planned_snapshots.get(
+                self._planned_snapshot_key(identity)
+            ) or {}
+            for row in planned_snapshot.get("inputs") or []:
+                if bool(row.get("enabled", True)):
+                    continue
+                component_type = str(row.get("type") or "").lower()
+                name = str(row.get("name") or "")
+                if component_type == "placement":
+                    overrides["use_placements"] = False
+                elif component_type == "layout_overlay":
+                    overrides["layout_overlay"] = False
+                elif component_type in {"rig", "usd"} and name:
+                    excluded.add(name)
             construct = self.service.shots.load_construct(identity)
             for component in construct.get("components") or []:
                 name = str(component.get("name") or "")
@@ -2860,7 +3136,7 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
                     excluded.add(name)
             contexts = self._snapshot_contexts(
                 contexts,
-                self._planned_snapshots.get(self._planned_snapshot_key(identity)) or {},
+                planned_snapshot,
                 stage_context,
             )
             contexts = self.service.normalize_cast_contexts(
@@ -2884,6 +3160,9 @@ class ReviewBuildManagerWindow(QtWidgets.QMainWindow):
         return self._stage_input_overrides(ShotIdentity(*raw_identity))
 
     def _build_plan(self, identity):
+        if self.dcc_combo.currentText() == "Houdini":
+            from .houdini_ui import plan
+            return plan(self, identity)
         if self.scope_combo.currentText() == "Sequence":
             from smartlib.apps.shot_manager import SequenceIdentity
 

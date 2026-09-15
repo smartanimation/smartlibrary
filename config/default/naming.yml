@@ -20,7 +20,7 @@ smart_ingest:
     # Editorial structures and linked media have independent version streams.
     episode_prefixes: [ep]
     sequence_prefixes: [seq, sq, s]
-    filename: "{episode}_{sequence}{extension}"
+    filename: "{episode}_{editorial_unit}{extension}"
     roles:
       edit_source:
         extensions: [aaf, edl, xml, otio]
@@ -28,6 +28,8 @@ smart_ingest:
         extensions: [mov, mp4, wav]
       shot_media:
         extensions: [mov, mp4]
+      storyboard:
+        extensions: [pdf]
 
 smart_playblast:
   filename: "{project_name}_{episode}_{sequence}_{shot}_{department}_{preview}_v{version}_t{take}_{frame}.{ext}"

@@ -61,7 +61,50 @@ class AssetContextRecipeTests(unittest.TestCase):
         self.assertEqual(data["stage_profiles"]["REND"]["character"], "CHAR_REND")
         self.assertEqual(data["stage_profiles"]["REND"]["prop"], "PROP_REND")
 
-    def test_default_character_and_prop_inherit_common_anim_profile(self):
+    def test_config_creator_removes_unreferenced_divergent_stage_aliases(self):
+        from scripts.config_creator import ConfigCreatorApp
+
+        data = {
+            "quality_profiles": {
+                "LO": {"model": "low", "rig": "layout"},
+                "ANIM": {"model": "low", "rig": "anim"},
+                "REND": {"model": "high", "look": "high"},
+                "FAST": {"model": "proxy", "rig": "layout"},
+                "WORK": {"model": "proxy", "rig": "anim"},
+                "FINAL": {"model": "render", "look": "high"},
+            },
+            "asset_context_recipes": {
+                "character": {
+                    "inherit_common_profiles": False,
+                    "profiles": {
+                        "LO": {"model": "low", "rig": "layout"},
+                        "ANIM": {"model": "low", "rig": "anim"},
+                        "REND": {"model": "high", "look": "high"},
+                        "FAST": {"model": "low", "rig": "layout"},
+                        "WORK": {"model": "low", "rig": "anim"},
+                        "FINAL": {"model": "high", "look": "high"},
+                    },
+                },
+            },
+            "stage_profiles": {
+                "FAST": {"character": "LO"},
+                "WORK": {"character": "ANIM"},
+                "REND": {"character": "REND"},
+            },
+        }
+
+        ConfigCreatorApp._normalize_asset_profile_scopes(data)
+
+        for stage_name in ("FAST", "WORK", "FINAL"):
+            self.assertNotIn(stage_name, data["quality_profiles"])
+        self.assertEqual(data["stage_profiles"]["FAST"]["character"], "CHAR_LO")
+        self.assertEqual(data["stage_profiles"]["WORK"]["character"], "CHAR_ANIM")
+        self.assertEqual(data["stage_profiles"]["REND"]["character"], "CHAR_REND")
+        self.assertIn("CHAR_FAST", data["quality_profiles"])
+        self.assertIn("CHAR_WORK", data["quality_profiles"])
+        self.assertIn("CHAR_FINAL", data["quality_profiles"])
+
+    def test_default_asset_types_expose_only_the_expected_profiles(self):
         context = load_config(
             Path(__file__).parents[1] / "config" / "default" / "contexts" / "asset" / "v001.yml"
         )
@@ -72,25 +115,29 @@ class AssetContextRecipeTests(unittest.TestCase):
                 "CHAR_LO", "CHAR_ANIM", "CHAR_REND", "CHAR_MCP",
                 "BG_PROXY", "BG_REND",
                 "PROP_LO", "PROP_ANIM", "PROP_REND",
+                "VEH_LO", "VEH_ANIM", "VEH_REND",
             },
         )
-        for asset_class, anim_id in (
-            ("character", "CHAR_ANIM"),
-            ("prop", "PROP_ANIM"),
-        ):
+        expected_profiles = {
+            "character": ["CHAR_LO", "CHAR_ANIM", "CHAR_REND", "CHAR_MCP"],
+            "environment": ["BG_PROXY", "BG_REND"],
+            "prop": ["PROP_LO", "PROP_ANIM", "PROP_REND"],
+            "vehicle": ["VEH_LO", "VEH_ANIM", "VEH_REND"],
+        }
+        for asset_class, expected in expected_profiles.items():
             recipe = context["asset_context_recipes"][asset_class]
-            self.assertIn(anim_id, recipe["profile_names"])
-            profiles = {
-                name: context["quality_profiles"][name]
-                for name in recipe["profile_names"]
-            }
-            self.assertEqual(profiles[anim_id]["rig"], "anim")
+            self.assertEqual(recipe["profile_names"], expected)
         self.assertEqual(context["profile_labels"]["CHAR_REND"], "REND")
         self.assertEqual(context["profile_labels"]["BG_REND"], "REND")
         self.assertEqual(context["profile_labels"]["PROP_REND"], "REND")
+        self.assertEqual(context["profile_labels"]["VEH_REND"], "REND")
         self.assertEqual(context["quality_profiles"]["CHAR_REND"]["groom"], "render")
         self.assertNotIn("groom", context["quality_profiles"]["BG_REND"])
         self.assertNotIn("groom", context["quality_profiles"]["PROP_REND"])
+        self.assertNotIn("groom", context["quality_profiles"]["VEH_REND"])
+        self.assertEqual(context["stage_profiles"]["FAST"]["vehicle"], "VEH_LO")
+        self.assertEqual(context["stage_profiles"]["WORK"]["vehicle"], "VEH_ANIM")
+        self.assertEqual(context["stage_profiles"]["REND"]["vehicle"], "VEH_REND")
 
     def test_character_recipe_keeps_project_level_profiles(self):
         with TemporaryDirectory() as temporary:

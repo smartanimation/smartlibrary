@@ -14,16 +14,21 @@ def camera_package_info(path):
         data = read_json(path, {}) or {}
     except (OSError, ValueError):
         return {}
-    if not isinstance(data, dict) or data.get('schema') not in (SCHEMA, 'smartpipeline.camera_package.v2'):
+    if not isinstance(data, dict) or data.get('schema') not in (
+        SCHEMA, 'smartpipeline.camera_package.v2', 'smartpipeline.review_camera_rules.v1'
+    ):
         return {}
-    cameras, rows = data.get('cameras'), data.get('rows')
+    cameras, rows = data.get('cameras') or [], data.get('rows')
     if not isinstance(cameras, list) or not isinstance(rows, list):
         return {}
     if any(not isinstance(c, dict) for c in cameras + rows):
         return {}
     primary = next((c for c in cameras if c.get('role') == 'primary'), {})
-    lines = [f"Primary: {primary.get('name', '(missing)')}",
+    reference = data.get('primary_camera') or {}
+    lines = [f"Primary: {primary.get('name') or reference.get('camera') or '(missing)'}",
              f"Reference: {' × '.join(map(str, data.get('reference_resolution', [])))}"]
+    if reference:
+        lines.append(f"Primary Publish: {reference.get('version', '')} | {reference.get('path', '')}")
     portable = data.get('portable_export') or {}
     if portable:
         status = str(portable.get('status') or 'unknown').upper()
@@ -41,7 +46,12 @@ def camera_package_info(path):
         lines.append(f"{row.get('layer', '')}: {row.get('camera', '')} | "
                      f"{row.get('width')} × {row.get('height')} | {row.get('start')}–{row.get('end')} | "
                      f"{mode} | v{row.get('version')} / t{row.get('take')}")
-    return dict(target=data.get('target', 'main'), subset=data.get('subset', 'main'),
+    kind = (
+        'Review Camera Rules'
+        if data.get('schema') == 'smartpipeline.review_camera_rules.v1'
+        else 'Camera Package'
+    )
+    return dict(kind=kind, target=data.get('target', 'main'), subset=data.get('subset', 'main'),
                 version=data.get('version', ''), summary='\n'.join(lines),
-                primary=primary.get('name', ''), path=str(path),
+                primary=primary.get('name') or reference.get('camera', ''), path=str(path),
                 portable_status=str(portable.get('status') or ''))

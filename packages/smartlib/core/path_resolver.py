@@ -29,6 +29,32 @@ class ProjectPaths:
     templates: dict[str, str] | None = None
     project_name: str = ""
     shot_dept_partitions: dict[str, str] | None = None
+    review_delivery_templates: dict[str, str] | None = None
+
+    @staticmethod
+    def rvio_executable(rv_executable: str | Path) -> Path:
+        rv = Path(rv_executable)
+        return rv.with_name("rvio" + rv.suffix)
+
+    def color_config_file(self, config_dir: str | Path, reference: str) -> Path:
+        """Resolve OCIO relative to project config, using the common resolver."""
+        path = Path(reference)
+        return (path if path.is_absolute() else Path(config_dir) / path).resolve()
+
+    def color_validation_dir(self, run_id: str, *, baseline: bool = False) -> Path:
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", run_id):
+            raise ValueError("Invalid color validation run ID.")
+        return self.workspace_root() / "validation" / "color" / ("baselines" if baseline else "runs") / run_id
+
+    @staticmethod
+    def color_evidence_file(directory: str | Path, filename: str) -> Path:
+        if not filename or Path(filename).name != filename or filename in {".", ".."} or chr(92) in filename:
+            raise ValueError("Color validation filename must be a basename.")
+        return Path(directory) / filename
+
+    def color_validation_file(self, run_id: str, filename: str, *, baseline: bool = False) -> Path:
+        return self.color_evidence_file(self.color_validation_dir(run_id, baseline=baseline), filename)
 
     def production_root(self) -> Path:
         template = self._template("production_root")
@@ -119,6 +145,16 @@ class ProjectPaths:
     def editorial_data_root(self) -> Path:
         template = self._template("editorial_data_root")
         return self._path_from_template(template) if template else self.production_root() / "editorial" / "data"
+
+    def editorial_unit_data_dir(self, episode: str, editorial_unit: str, role: str = "") -> Path:
+        """Received editorial identity; existing sequence-named folders stay valid."""
+        return self.editorial_data_root() / episode / editorial_unit / role
+
+    def editorial_unit_work_dir(self, episode: str, editorial_unit: str) -> Path:
+        return self.editorial_work_root() / episode / editorial_unit
+
+    def editorial_unit_delivery_manifest(self, episode: str, editorial_unit: str, delivery: str) -> Path:
+        return self.editorial_unit_data_dir(episode, editorial_unit) / "deliveries" / delivery / "manifest.json"
 
     def editorial_root(self) -> Path:
         template = self._template("editorial_root")
@@ -265,8 +301,62 @@ class ProjectPaths:
             )
         return self.assets_root() / identity.category / identity.group / identity.name
 
+    def asset_usd_root(self, identity: AssetIdentity) -> Path:
+        """Asset-wide, versioned USD entrypoints, independent of variant."""
+        template = self._template("asset_usd_root")
+        if template:
+            return self._path_from_template(
+                template, asset_root=self.asset_root(identity), category=identity.category,
+                group=identity.group, asset=identity.name, asset_name=identity.name,
+            )
+        return self.asset_root(identity) / "usd" / "asset"
+
+    def asset_usd_version_dir(self, identity: AssetIdentity, version: str) -> Path:
+        return self.asset_usd_root(identity) / self.pipeline_version(version)
+
     def asset_variant_root(self, identity: AssetIdentity) -> Path:
         return self.asset_root(identity) / identity.variant
+
+    def retarget_path(self, identity: AssetIdentity, area: str, version: str = "", filename: str = "") -> Path:
+        """Character-wide storage, independent of clothing variants."""
+        # A dot resolves the existing required variant token to the character root.
+        shared = AssetIdentity(identity.category, identity.group, identity.name, ".")
+        if area in {"work", "test"}:
+            root = self.asset_work_dir(shared, "rig", "maya") / "retarget"
+            if area == "test":
+                root = root / "tests"
+        elif area == "data":
+            root = self.asset_data_dir(shared, "retarget", "")
+        elif area == "publish":
+            root = self.asset_publish_dir(shared, "retarget", "")
+        else:
+            raise ValueError(area)
+        for part in (version, filename):
+            if part and (Path(part).name != part or part in {".", ".."} or "/" in part or chr(92) in part):
+                raise ValueError("Retarget path components must be basenames")
+        return root / version / filename
+
+    def retarget_library(self, kind: str) -> Path:
+        if kind not in {"templates", "test_motion"}:
+            raise ValueError(kind)
+        return self.project_root / "library" / "anim" / "retarget" / kind
+
+    def legacy_retarget_roots(self, identity: AssetIdentity, area: str) -> list[Path]:
+        if area not in {"data", "publish"}:
+            raise ValueError(area)
+        default = AssetIdentity(identity.category, identity.group, identity.name)
+        configured = self.asset_data_dir(default, "retarget", "") if area == "data" else self.asset_publish_dir(default, "retarget", "")
+        return list(dict.fromkeys([configured, self.asset_root(default) / "default" / area / "retarget"]))
+
+    def legacy_retarget_profiles(self, identity: AssetIdentity) -> list[Path]:
+        root = self.asset_root(identity)
+        return [root / "default" / "work" / "rig" / "retarget" / f"{identity.name}_retarget.json",
+                root / "rig" / "retarget" / f"{identity.name}.json"]
+
+    def legacy_retarget_rig(self, identity: AssetIdentity, role: str) -> Path:
+        if role not in {"MCR", "ANM"}:
+            raise ValueError(role)
+        return self.asset_root(identity) / "rig" / role / f"{identity.name}.mb"
 
     def asset_work_dir(
         self, identity: AssetIdentity, department: str, dcc: str = "maya"
@@ -287,6 +377,41 @@ class ProjectPaths:
                 workspace_partition=self.workspace_partition(department),
             )
         return self.asset_work_root(identity, department) / department / dcc
+
+    def _motion_path(self, key: str, identity: AssetIdentity, fallback: str, **extra) -> Path:
+        fields = dict(category=identity.category, group=identity.group, asset_name=identity.name,
+                      variant=identity.variant, workspace_partition=self.workspace_partition("anim"), **extra)
+        for value in fields.values():
+            self.pipeline_token(str(value))
+        return self._path_from_template(self._template(key) or fallback, **fields)
+
+    def motion_work_dir(self, identity: AssetIdentity, clip: str) -> Path:
+        return self._motion_path("motion_work", identity,
+            "{workspace_root}/{workspace_partition}/motion/{category}/{group}/{asset_name}/{variant}/work/anim/maya/{clip}", clip=clip)
+
+    def motion_work_file(self, identity: AssetIdentity, clip: str, version: str, take: str, ext: str = "mb") -> Path:
+        import re
+        self.pipeline_version(version)
+        if not re.fullmatch(r"t[0-9]{2,}", take):
+            raise ValueError("Motion Work take must be t##.")
+        name = self._motion_path("motion_work_filename", identity,
+            "{project_name}_{asset_name}_{variant}_anim_{clip}_{version}_{take}.{ext}",
+            clip=clip, version=version, take=take, ext=ext)
+        return self.artifact_file(self.motion_work_dir(identity, clip), str(name))
+
+    def motion_reference_dir(self, identity: AssetIdentity, receipt: str) -> Path:
+        return self._motion_path("motion_reference", identity,
+            "{production_root}/motion/{category}/{group}/{asset_name}/{variant}/reference/motion/{receipt}", receipt=receipt)
+
+    def motion_publish_dir(self, identity: AssetIdentity, clip: str, version: str = "") -> Path:
+        root = self._motion_path("motion_publish", identity,
+            "{production_root}/motion/{category}/{group}/{asset_name}/{variant}/publish/clip/{clip}", clip=clip)
+        return root / self.pipeline_version(version) if version else root
+
+    def motion_publish_file(self, identity: AssetIdentity, clip: str, version: str, ext: str) -> Path:
+        name = self._motion_path("motion_publish_filename", identity,
+            "{asset_name}_{variant}_{clip}.{ext}", clip=clip, ext=ext)
+        return self.artifact_file(self.motion_publish_dir(identity, clip, version), str(name))
 
     def assembly_root(self, identity: AssemblyIdentity) -> Path:
         template = self._template("assembly_root")
@@ -365,6 +490,25 @@ class ProjectPaths:
 
     def asset_publish_root(self, identity: AssetIdentity) -> Path:
         return self._asset_area_root("asset_publish_root", identity, "publish")
+
+    def studio_delivery_path(
+        self, identity: AssetIdentity, area: str, entry: str = "", filename: str = "",
+    ) -> Path:
+        """Asset-wide delivery versions, independent of variants and recipients."""
+        for value in (identity.category, identity.group, identity.name):
+            self.pipeline_token(value)
+        shared = AssetIdentity(identity.category, identity.group, identity.name, ".")
+        if area == "jobs":
+            root = self.asset_work_dir(shared, "delivery", "maya") / "studio_delivery"
+        elif area == "publish":
+            root = self.asset_publish_dir(shared, "studio_delivery", "")
+        elif area == "events":
+            root = self.asset_data_dir(shared, "studio_delivery", "events")
+        else:
+            raise ValueError(f"Unknown studio delivery area: {area}")
+        if entry:
+            root = root / self.pipeline_token(entry)
+        return self.artifact_file(root, filename) if filename else root
 
     def asset_reference_root(self, identity: AssetIdentity) -> Path:
         return self._asset_area_root("asset_reference_root", identity, "reference")
@@ -817,6 +961,30 @@ class ProjectPaths:
             episode, sequence, shot, department
         ) / "review" / audience
 
+    def shot_review_read_roots(
+        self, episode: str, sequence: str, shot: str, department: str,
+        audience: str,
+    ) -> list[Path]:
+        """Read canonical submissions plus configured historical delivery locations.
+
+        Compatibility is read-only: it must not change the canonical output destination.
+        """
+        roots = [self.shot_review_output_root(episode, sequence, shot, department, audience)]
+        template = str((self.review_delivery_templates or {}).get(audience) or "").strip()
+        if template:
+            template = template.replace("\\", "/").rstrip("/")
+            if template.endswith("/{version}"):
+                template = template[:-len("/{version}")]
+            configured = self._path_from_template(
+                template, shot_root=self.shot_root(episode, sequence, shot).as_posix(),
+                episode=episode, sequence=sequence, seq=sequence, shot=shot,
+                department=self.pipeline_token(department),
+                profile=self.pipeline_token(audience),
+            )
+            if configured not in roots:
+                roots.append(configured)
+        return roots
+
     def shot_review_publish_root(
         self, episode: str, sequence: str, shot: str, department: str
     ) -> Path:
@@ -894,6 +1062,88 @@ class ProjectPaths:
     ) -> Path:
         return self.shot_publish_dir(episode, sequence, shot, publish_type, subset) / version
 
+    @staticmethod
+    def pipeline_token(value: str) -> str:
+        import re
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", value):
+            raise ValueError(f"Invalid pipeline path token: {value!r}")
+        return value
+
+    def animation_artifact_dir(
+        self, episode: str, sequence: str, shot: str, target: str, product: str,
+        version: str = "",
+    ) -> Path:
+        parts = [self.pipeline_token(v) for v in (episode, sequence, shot, target, product)]
+        root = self.shot_publish_root(*parts[:3]) / "animation" / parts[3] / parts[4]
+        return root / self.pipeline_version(version) if version else root
+
+    @staticmethod
+    def pipeline_version(version: str) -> str:
+        import re
+        if not isinstance(version, str) or not re.fullmatch(r"v[0-9]{3,}", version) or int(version[1:]) < 1:
+            raise ValueError(f"An explicit positive version is required: {version!r}")
+        return version
+
+    def composition_dir(
+        self, episode: str, sequence: str, shot: str, department: str = "animation",
+        version: str = "",
+    ) -> Path:
+        for value in (episode, sequence, shot):
+            self.pipeline_token(value)
+        if department not in {"animation", "effects", "lighting", "usd"}:
+            raise ValueError(f"Unsupported composition department: {department}")
+        root = self.shot_publish_root(episode, sequence, shot) / department / "composition"
+        return root / self.pipeline_version(version) if version else root
+
+    def animation_build_dir(self, episode: str, sequence: str, shot: str, version: str = "") -> Path:
+        for value in (episode, sequence, shot):
+            self.pipeline_token(value)
+        directory = self.shot_build_dir(
+            episode, sequence, shot, "anim", "maya", "animation", self.pipeline_version(version or "v001")
+        )
+        return directory if version else directory.parent
+
+    def artifact_file(self, directory: str | Path, name: str) -> Path:
+        """Resolve a single artifact member; never allow a filename to escape its directory."""
+        return Path(directory) / self.pipeline_token(name)
+
+    def usd_handoff_dir(self, episode: str, sequence: str, shot: str,
+                        kind: str, target: str, version: str = "") -> Path:
+        """Profile-independent products; never stored under Review output."""
+        if kind not in {"animation", "assets", "camera", "layout"}:
+            raise ValueError(f"Unsupported USD handoff kind: {kind}")
+        root = self.shot_publish_dir(episode, sequence, shot, "usd", kind)
+        root = self.artifact_file(root, target)
+        return root / self.pipeline_version(version) if version else root
+
+    def usd_handoff_build_dir(self, episode: str, sequence: str, shot: str,
+                              version: str = "") -> Path:
+        root = self.shot_build_dir(episode, sequence, shot, "anim", "maya",
+                                   "usd_handoff", self.pipeline_version(version or "v001"))
+        return root if version else root.parent
+
+    def manifest_source(self, manifest: str | Path, source: str) -> Path:
+        """Resolve Build Manifest-relative sources and fixed project-relative dependencies."""
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("Manifest source is empty")
+        path = Path(source)
+        return path.resolve() if path.is_absolute() else (Path(manifest).parent / path).resolve()
+
+    def dependency_files(self, value: str | Path) -> list[Path]:
+        """Resolve texture sequences/UDIMs in dependency manifests centrally."""
+        path = self.project_dependency(value)
+        pattern = path.name.replace("<UDIM>", "[0-9][0-9][0-9][0-9]").replace("<udim>", "[0-9][0-9][0-9][0-9]")
+        if pattern != path.name:
+            matches = sorted(path.parent.glob(pattern))
+            if not matches:
+                raise FileNotFoundError(f"No dependency tiles found: {path}")
+            return matches
+        return [path]
+
+    def project_dependency(self, value: str | Path) -> Path:
+        path = Path(value)
+        return path.resolve() if path.is_absolute() else (self.project_root / path).resolve()
+
     def _template(self, name: str) -> str:
         return str((self.templates or {}).get(name) or "").strip()
 
@@ -956,10 +1206,18 @@ def configured_project_paths(project_root: str | Path, project_config=None) -> P
     templates = {}
     project_name = Path(project_root).name
     partitions = {}
+    review_templates = {}
     if project_config is not None:
         configured_root = getattr(project_config, "project_root", None)
         if configured_root is None or Path(configured_root).resolve() == Path(project_root).resolve():
             templates = dict(getattr(project_config, "templates", {}) or {})
             project_name = str(getattr(project_config, "project_name", project_name) or project_name)
             partitions = dict((getattr(project_config, "base", {}) or {}).get("shot_dept_partitions") or {})
-    return ProjectPaths(Path(project_root), templates, project_name, partitions)
+            load = getattr(project_config, "load", None)
+            review = (load("review.yml") or {}) if callable(load) else {}
+            review_templates = {
+                name: str(settings.get("target_template") or "")
+                for name, settings in (review.get("delivery_profiles") or {}).items()
+                if isinstance(settings, dict)
+            }
+    return ProjectPaths(Path(project_root), templates, project_name, partitions, review_templates)

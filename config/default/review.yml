@@ -40,7 +40,7 @@ delivery_profiles:
     codec: prores_422_proxy
     filename: "{shot}_{department}_review_{version}.mov"
     target_template: "{shot_root}/review/{department}/{profile}/{version}"
-    include: [movie, thumbnail, review_metadata, source_manifest]
+    include: [movie, review_report, review_metadata, source_manifest]
 
 missing_precomp_policy: allow_project_default
 default_precomp: "{project_root}/templates/review/base_comp.aep"

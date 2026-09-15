@@ -71,6 +71,18 @@ Publish済みPreCompとRender Layer Materialを使用して生成する、再合
 
 Review Build内のMovieはBuild結果の技術確認用であり、それだけではInternalまたはClientへの提出物を意味しない。
 
+SmartGateGuideはMaya Viewport内の撮影範囲Previewとし、PreCompやReview Movieへ直接取り込まない。
+Review用の技術OverlayはPrimary Cameraの情報をheadlessで評価した`review_overlay.json`
+（`smartpipeline.review_overlay.v1`）を正本とし、ASSへコンパイルする。Review BuildのClean Movieを
+保持し、Internal ReviewではBuild完了後にFFmpegでBurn-inを重ねた派生Movieを生成する。
+レイヤー数に比例するCamera Bake、GUI Mayaの起動、AEの二重Renderは行わない。
+
+Formal Reviewの同梱資料は`review_report.pdf`とする。PDFにはClean Movieから抽出した
+代表フレーム、Shot/Task/日付、Frame Range、使用したAEPのファイル名、Primary Camera名・焦点距離・画角、
+解決済み入力を記録する。AEPはPublish元と、Render用に生成した作業コピーのファイル名を区別して記録する。
+抽出した`thumbnail.jpg`はJob内の中間生成物であり、Formal Reviewへコピーしない。
+旧`slate.png`もFormal Review成果物には含めない。
+
 ### Working Review Movie
 
 Smart AE BrowserのRenderから、現在の作業AEPを確認するために直接生成するMOV。

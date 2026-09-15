@@ -62,7 +62,7 @@ DEFAULT_REVIEW_CONFIG: dict[str, Any] = {
             "codec": "prores_422_proxy",
             "filename": "{shot}_{department}_review_{version}.mov",
             "target_template": "{shot_root}/review/{department}/{profile}/{version}",
-            "include": ["movie", "thumbnail", "review_metadata", "source_manifest"],
+            "include": ["movie", "review_report", "review_metadata", "source_manifest"],
         }
     },
     "missing_precomp_policy": "allow_project_default",
@@ -313,6 +313,64 @@ class ReviewWorkflowService:
         return self._resolved("shot_review_jobs_root") or (
             self.workspace_shot_root / "jobs" / "review"
         )
+
+    def review_build_dir(
+        self, department: str, version: str, take: str = "t001"
+    ) -> Path:
+        """Resolve one durable Review Build package; never use the Job root."""
+        resolved = self._resolved(
+            "shot_review_build_dir",
+            safe_slug(department),
+            str(version),
+            str(take),
+        )
+        if resolved is not None:
+            return resolved
+        return self.workspace_shot_root / "review" / "review_build" / version / take
+
+    def preserve_review_build(
+        self, *, department: str, version: str, take: str,
+        clean_movie: str | Path, overlay_json: str | Path | None,
+        overlay_ass: str | Path | None, manifest: dict[str, Any],
+    ) -> Path:
+        """Atomically preserve the clean master and reproducible overlay contract."""
+        import shutil
+        destination = self.review_build_dir(department, version, take)
+        if destination.exists():
+            raise FileExistsError(f"Review Build already exists: {destination}")
+        temporary = destination.with_name(f".{destination.name}.building")
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        temporary.mkdir(parents=True)
+        clean_movie = Path(clean_movie)
+        if not clean_movie.is_file():
+            raise FileNotFoundError(f"Clean Review Movie was not found: {clean_movie}")
+        shutil.copy2(clean_movie, temporary / "review_clean.mov")
+        for source, name in (
+            (overlay_json, "review_overlay.json"),
+            (overlay_ass, "review_overlay.ass"),
+        ):
+            path = Path(source) if source else None
+            if path and path.is_file():
+                shutil.copy2(path, temporary / name)
+        durable_manifest = dict(manifest)
+        durable_manifest.update({
+            "schema": "smartpipeline.review_build.v1",
+            "version": version,
+            "take": take,
+            "clean_movie": "review_clean.mov",
+            "review_overlay": "review_overlay.json" if overlay_json else "",
+            "review_overlay_ass": "review_overlay.ass" if overlay_ass else "",
+        })
+        write_json(temporary / "review_build_manifest.json", durable_manifest)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary.replace(destination)
+        write_json(destination.parent.parent / "latest.json", {
+            "version": version,
+            "take": take,
+            "path": f"{version}/{take}/review_build_manifest.json",
+        })
+        return destination
 
     def layer_root(self, department: str, layer_slug: str) -> Path:
         resolved = self._resolved(
@@ -680,6 +738,33 @@ class ReviewWorkflowService:
                 return project
         return None
 
+    def list_precomp_publishes(
+        self, *, approved_only: bool = True
+    ) -> list[dict[str, Any]]:
+        """Return published PreComp projects and their recorded source AEPs."""
+        publishes: list[dict[str, Any]] = []
+        for number in sorted(_versions(self.precomp_root), reverse=True):
+            version = format_version(number)
+            root = self.precomp_root / version
+            metadata_path = root / "metadata" / "publish.json"
+            publish = read_json(metadata_path, {}) or {}
+            status = str(publish.get("status") or "").lower()
+            if approved_only and status not in {"approved", "published"}:
+                continue
+            project = root / "aftereffects" / "precomp.aep"
+            if not project.is_file():
+                continue
+            publishes.append({
+                "version": str(publish.get("version") or version),
+                "status": status,
+                "latest": not publishes,
+                "source": str(publish.get("source") or ""),
+                "project": project.as_posix(),
+                "metadata": metadata_path.as_posix(),
+                "created_at": str(publish.get("created_at") or ""),
+            })
+        return publishes
+
     def create_job(self, payload: dict[str, Any]) -> tuple[str, Path]:
         job_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         job_dir = self.jobs_root / job_id
@@ -733,26 +818,16 @@ class ReviewWorkflowService:
         department: str,
         delivery_profile: str,
         movie: str | Path,
-        thumbnail: str | Path,
         review_data: dict[str, Any],
         source_manifest: dict[str, Any],
         delivery_settings: dict[str, Any] | None = None,
         version: str = "",
-        slate: str | Path | None = None,
+        report: str | Path | None = None,
+        artifacts: dict[str, Path] | None = None,
     ) -> Path:
         movie = Path(movie)
-        thumbnail = Path(thumbnail)
         if not movie.is_file():
             raise FileNotFoundError(f"Review movie was not generated: {movie}")
-        if not thumbnail.is_file():
-            raise FileNotFoundError(f"Review thumbnail was not generated: {thumbnail}")
-        if thumbnail.suffix.lower() in {".jpg", ".jpeg"}:
-            with thumbnail.open("rb") as stream:
-                if stream.read(2) != b"\xff\xd8":
-                    raise ValueError(
-                        "Review thumbnail has a JPEG extension but is not JPEG data: "
-                        f"{thumbnail}"
-                    )
         destination_root = self.review_destination_root(
             department, delivery_profile, delivery_settings
         )
@@ -768,17 +843,27 @@ class ReviewWorkflowService:
         import shutil
         movie_name = f"review{movie.suffix.lower()}"
         shutil.copy2(movie, temporary / movie_name)
-        shutil.copy2(thumbnail, temporary / "thumbnail.jpg")
-        slate = Path(slate) if slate else None
-        if slate and slate.is_file():
-            shutil.copy2(slate, temporary / "slate.png")
+        report = Path(report) if report else None
+        if not report or not report.is_file():
+            raise FileNotFoundError(f"Review Report PDF was not generated: {report}")
+        with report.open("rb") as stream:
+            if stream.read(5) != b"%PDF-":
+                raise ValueError(f"Review Report is not valid PDF data: {report}")
+        shutil.copy2(report, temporary / "review_report.pdf")
+        for name, artifact in (artifacts or {}).items():
+            if name not in {"original", "applied", "comparison_50"}:
+                raise ValueError("Unknown Review comparison artifact: " + name)
+            shutil.copy2(artifact, temporary / (name + ".mov"))
         payload = dict(review_data)
+        if artifacts:
+            payload["comparison_movies"] = {name:name + ".mov" for name in artifacts}
         payload.update({
             "schema": "smartpipeline.formal_review.v1",
             "version": version,
             "profile": delivery_profile,
             "state": "SUBMITTED",
             "movie": movie_name,
+            "report": "review_report.pdf",
             "created_at": datetime.now().isoformat(timespec="seconds"),
         })
         write_json(temporary / "review.json", payload)

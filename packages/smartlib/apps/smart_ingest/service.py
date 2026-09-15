@@ -46,7 +46,7 @@ SUPPORTED_EXTENSIONS = {
     ".pdf",
     ".png",
 }
-EDITORIAL_EXTENSIONS = {".aaf", ".edl", ".mov", ".mp4", ".otio", ".xml"}
+EDITORIAL_EXTENSIONS = {".aaf", ".edl", ".mov", ".mp4", ".otio", ".xml", ".pdf"}
 ASSET_EXTENSIONS = {".abc", ".fbx", ".ma", ".mb", ".tga", ".tif", ".tiff", ".usd", ".usda", ".usdc"}
 SHOT_EXTENSIONS = {".abc", ".fbx", ".mov", ".mp4", ".usd", ".usda", ".usdc", ".wav"}
 SEQUENCE_EXTENSIONS = SHOT_EXTENSIONS | {".edl", ".otio", ".xml"}
@@ -96,6 +96,12 @@ class IngestMetadata:
     vendor: str = ""
     delivery_date: str = ""
     comment: str = "ingest via Smart Ingest"
+    editorial_unit: str | None = None
+
+    @property
+    def received_editorial_unit(self) -> str:
+        # Legacy requests used sequence as the received editorial identity.
+        return self.sequence if self.editorial_unit is None else self.editorial_unit
 
 
 @dataclass(frozen=True)
@@ -264,6 +270,7 @@ class SmartIngestService:
                 variant=str(target.get("variant") or "default"), department=str(target.get("department") or "assembly"),
                 subset=str(target.get("subset") or "vendor"), format=str(target.get("format") or "zip"),
                 episode=str(target.get("episode") or "ep001"), sequence=str(target.get("sequence") or "sq010"),
+                editorial_unit=target.get("editorial_unit"),
                 shot=str(target.get("shot") or ""), vendor=str((package.get("delivery") or {}).get("received_from") or ""),
                 delivery_date=str((package.get("delivery") or {}).get("delivery_date") or ""),
                 comment=str((package.get("delivery") or {}).get("comment") or "Smart Delivery package"),
@@ -486,7 +493,7 @@ class SmartIngestService:
 
     def editorial_data_roles(self) -> list[str]:
         roles = self.editorial_naming.get("roles") or {}
-        return [str(value).strip() for value in roles if str(value).strip()]
+        return _unique_preserve_order([str(value).strip() for value in roles if str(value).strip()] + ["storyboard"])
 
     def asset_categories(self) -> list[str]:
         return ["character", "environment", "prop", "vehicle"]
@@ -648,6 +655,7 @@ class SmartIngestService:
             parts
             and source.suffix.lower() in EDITORIAL_EXTENSIONS
             and parts[0] in {"client", "editorial"}
+            and (source.suffix.lower() != ".pdf" or parts[0] == "editorial")
         )
         if is_editorial_delivery:
             editorial_subset, editorial_shot = self._editorial_role(source, episode, sequence)
@@ -658,7 +666,8 @@ class SmartIngestService:
                 subset=editorial_subset,
                 format=extension,
                 episode=episode,
-                sequence=sequence,
+                sequence="",
+                editorial_unit=self._infer_editorial_identity(source)[1] or "",
                 shot=editorial_shot or shot,
                 delivery_date=delivery_text,
             )
@@ -721,14 +730,13 @@ class SmartIngestService:
             subset = metadata.subset or self._infer_editorial_subset(source)
             if subset == "shot_media" and not metadata.shot:
                 return None, "shot is required for editorial shot_media"
-            version = self._next_editorial_data_version(metadata.episode, metadata.sequence, subset)
+            unit = metadata.received_editorial_unit.strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", unit):
+                return None, "Editorial Unit is required (letters, numbers, underscores or hyphens)"
+            version = self._next_editorial_data_version(metadata.episode, unit, subset)
             filename = self._editorial_filename(source, metadata)
             return (
-                self._editorial_data_root()
-                / "data"
-                / metadata.episode
-                / metadata.sequence
-                / subset
+                self.paths.editorial_unit_data_dir(metadata.episode, unit, subset)
                 / version
                 / filename
             ), "editorial data copy"
@@ -963,9 +971,9 @@ class SmartIngestService:
         files.sort(key=lambda value: (value.get("format", ""), value.get("name", "")))
         manifest.update(
             {
-                "schema": "smartpipeline.editorial_data.v1",
+                "schema": "smartpipeline.editorial_data.v2",
                 "episode": item.metadata.episode,
-                "sequence": item.metadata.sequence,
+                "editorial_unit": item.metadata.received_editorial_unit,
                 "subset": item.metadata.subset,
                 "version": version_dir.name,
                 "received_at": item.metadata.delivery_date or datetime.now().strftime("%Y%m%d"),
@@ -974,6 +982,7 @@ class SmartIngestService:
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
             }
         )
+        manifest.pop("sequence", None)
         write_json(manifest_path, manifest)
         write_json(
             version_dir / "validation.json",
@@ -992,26 +1001,18 @@ class SmartIngestService:
         grouped: dict[tuple[str, str, str], list[tuple[PlanItem, Path]]] = {}
         for item, target_path in records:
             delivery_id = self._delivery_id(item.source_path)
-            key = (item.metadata.episode, item.metadata.sequence, delivery_id)
+            key = (item.metadata.episode, item.metadata.received_editorial_unit, delivery_id)
             grouped.setdefault(key, []).append((item, target_path))
 
         written = []
         for (episode, sequence, delivery_id), values in grouped.items():
-            manifest_path = (
-                self._editorial_data_root()
-                / "data"
-                / episode
-                / sequence
-                / "deliveries"
-                / delivery_id
-                / "manifest.json"
-            )
+            manifest_path = self.paths.editorial_unit_delivery_manifest(episode, sequence, delivery_id)
             data = read_json(manifest_path, {}) or {}
             entries = data.get("entries") if isinstance(data.get("entries"), list) else []
             by_output = {str(entry.get("output")): dict(entry) for entry in entries if isinstance(entry, dict)}
             for item, target_path in values:
                 relative_output = target_path.relative_to(
-                    self._editorial_data_root() / "data" / episode / sequence
+                    self.paths.editorial_unit_data_dir(episode, sequence)
                 ).as_posix()
                 by_output[relative_output] = {
                     "role": item.metadata.subset,
@@ -1023,9 +1024,9 @@ class SmartIngestService:
                 }
             data.update(
                 {
-                    "schema": "smartpipeline.editorial_delivery.v1",
+                    "schema": "smartpipeline.editorial_delivery.v2",
                     "episode": episode,
-                    "sequence": sequence,
+                    "editorial_unit": sequence,
                     "delivery": delivery_id,
                     "received_at": values[0][0].metadata.delivery_date
                     or datetime.now().strftime("%Y%m%d"),
@@ -1033,6 +1034,7 @@ class SmartIngestService:
                     "updated_at": datetime.now().isoformat(timespec="seconds"),
                 }
             )
+            data.pop("sequence", None)
             written.append(write_json(manifest_path, data))
         return written
 
@@ -1349,6 +1351,8 @@ class SmartIngestService:
 
     def _infer_editorial_subset(self, source: Path) -> str:
         extension = source.suffix.lower()
+        if extension == ".pdf":
+            return "storyboard"
         if extension in {".mov", ".mp4"}:
             return "offline"
         if extension in {".edl", ".xml", ".otio"}:
@@ -1367,6 +1371,8 @@ class SmartIngestService:
 
     def _editorial_role(self, source: Path, episode: str, sequence: str) -> tuple[str, str]:
         extension = source.suffix.lower().lstrip(".")
+        if extension == "pdf":
+            return "storyboard", ""
         edit_extensions = self._editorial_role_extensions("edit_source", {"aaf", "edl", "xml", "otio"})
         sequence_extensions = self._editorial_role_extensions("offline", {"mov", "mp4"})
         shot_extensions = self._editorial_role_extensions("shot_media", {"mov", "mp4"})
@@ -1406,17 +1412,18 @@ class SmartIngestService:
         return ""
 
     def _next_editorial_data_version(self, episode: str, sequence: str, subset: str) -> str:
-        return self._next_version(self._editorial_data_root() / "data" / episode / sequence / subset)
+        return self._next_version(self.paths.editorial_unit_data_dir(episode, sequence, subset))
 
     def _next_version(self, root: Path) -> str:
         versions = [parse_version(path.name) for path in root.glob("v*") if path.is_dir()] if root.exists() else []
         return format_version(next_version([value for value in versions if value]))
 
     def _editorial_filename(self, source: Path, metadata: IngestMetadata) -> str:
-        template = str(self.editorial_naming.get("filename") or "{episode}_{sequence}{extension}")
+        template = str(self.editorial_naming.get("filename") or "{episode}_{editorial_unit}{extension}")
         base_name = template.format(
             episode=metadata.episode,
-            sequence=metadata.sequence,
+            sequence=metadata.received_editorial_unit,
+            editorial_unit=metadata.received_editorial_unit,
             extension=source.suffix.lower(),
             stem=source.stem,
         )

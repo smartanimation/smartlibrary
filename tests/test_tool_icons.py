@@ -13,6 +13,7 @@ TOOL_IDS = (
     "smart_ae_browser",
     "smart_editorial",
     "smart_delivery",
+    "smart_preflight",
 )
 
 

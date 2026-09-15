@@ -1,2 +1,12 @@
 active_contexts:
   asset: v001
+
+# Config Creator > Project Profile selects a versioned Animation publish contract.
+# Leave unset to preserve the existing project workflow.
+# pipeline_profile: usd_animation  # or alembic_cache / maya_rend_atom
+# pipeline_profile_version: 1
+
+# Config Creator > Project Profile > USD Stage Settings.
+usd:
+  meters_per_unit: 0.01
+  up_axis: Y

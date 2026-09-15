@@ -259,7 +259,7 @@ class AssetContextService:
                 "errors": errors,
             },
         }
-        return AssetContextAssembly(
+        assembled = AssetContextAssembly(
             identity=identity,
             context_name=context_name,
             context_version=version_label,
@@ -268,6 +268,11 @@ class AssetContextService:
             errors=errors,
             manifest=manifest,
         )
+
+        if self.is_environment_release_pack(assembled):
+            from .environment_release import latest_release
+            return latest_release(self, assembled)
+        return assembled
 
     def pack(
         self,
@@ -278,6 +283,9 @@ class AssetContextService:
     ) -> PackedAssetContext:
         if assembly.errors:
             raise RuntimeError("Context pack is blocked by unresolved representations.")
+        if self.is_environment_release_pack(assembly):
+            from .environment_pack import pack_environment
+            return pack_environment(self, assembly)
         if not self.has_pack_changes(assembly):
             raise RuntimeError("Context pack is unchanged from the latest pack.")
         assembled = assembled or self.current_assembly(assembly)
@@ -582,6 +590,12 @@ class AssetContextService:
         the authoritative input for the selected Context.
         """
 
+        if self.is_environment_release_pack(assembly):
+            raise ValueError(
+                "Environment Pack requires published Release inputs. "
+                "Publish the source scene in the Publish tab, then click Context > Assemble."
+            )
+
         source_scene = Path(source_scene)
         if not source_scene.is_file():
             raise FileNotFoundError(f"Current Maya scene was not found: {source_scene}")
@@ -732,7 +746,35 @@ class AssetContextService:
             return int(composition.get("maya_snapshot_revision") or 0) == self.MAYA_SNAPSHOT_REVISION
         return True
 
+    @staticmethod
+    def is_environment_release_pack(assembly: AssetContextAssembly) -> bool:
+        return (assembly.context_name == "asset"
+                and str(assembly.manifest.get("context", {}).get("asset_class")) == "environment"
+                and assembly.quality_profile.lower() in {"proxy", "render"})
+
     def has_pack_changes(self, assembly: AssetContextAssembly) -> bool:
+        if self.is_environment_release_pack(assembly):
+            from .environment_pack import digest
+            if assembly.manifest.get("source_policy") == "asset_release":
+                from .environment_pack import current_members
+                member = current_members(self, assembly.identity).get(assembly.identity.variant, {}).get(assembly.quality_profile.lower(), {})
+                entry = assembly.entries[0]
+                return member.get("release_files") != {"maya": entry.files.get("mb"), "usd": entry.files.get("usd")}
+            root = self.paths.asset_publish_dir(assembly.identity, "asset", assembly.quality_profile.lower())
+            latest = read_json(self.paths.artifact_file(root, "latest.json"), {}) or {}
+            if not latest.get("version"):
+                return True
+            directory = self.paths.asset_publish_version_dir(assembly.identity, "asset", assembly.quality_profile.lower(), latest["version"])
+            record = read_json(self.paths.artifact_file(directory, "publish.json"), {}) or {}
+            entries = [e for e in assembly.entries if e.status in {"RESOLVED", "FALLBACK"}]
+            if len(entries) != 1:
+                return True
+            entry = entries[0]
+            maya = entry.files.get("mb") or entry.files.get("ma")
+            usd = entry.files.get("usd") or entry.files.get("usda") or entry.files.get("usdc")
+            if not maya or not usd or not Path(maya).is_file() or not Path(usd).is_file():
+                return True
+            return record.get("release_hashes") != {"maya": digest(maya), "usd": digest(usd)}
         packs = self.list_packs(
             assembly.identity,
             quality_profile=assembly.quality_profile,
@@ -864,7 +906,7 @@ class AssetContextService:
         for version_dir in sorted(base_dir.glob("v*"), reverse=True):
             manifest_path = version_dir / "build_manifest.json"
             manifest = read_json(manifest_path, {})
-            if not version_dir.is_dir() or not isinstance(manifest, dict) or not manifest:
+            if (version_dir / "_building").exists() or not version_dir.is_dir() or not isinstance(manifest, dict) or not manifest:
                 continue
             packs.append(
                 {

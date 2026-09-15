@@ -68,6 +68,14 @@ class ReviewBuildManagerService:
             identity=(identity.episode, identity.sequence, identity.shot),
         )
 
+    def list_review_animation_sources(self, identity, *, department="anim", task=""):
+        from .composition_sources import list_submitted_builds
+        return list_submitted_builds(self, identity, department=department, task=task)
+
+    def resolve_review_animation_source(self, identity, source_manifest, *, department="anim", task=""):
+        from .composition_sources import resolve_submitted_build
+        return resolve_submitted_build(self, identity, source_manifest, department=department, task=task)
+
     def review_profile_ids(self) -> list[str]:
         return self.review_profiles.review_profile_ids()
 
@@ -657,6 +665,12 @@ class ReviewBuildManagerService:
                     version="latest",
                 )
             path_text = str(component.get("path") or "")
+            asset_versions = []
+            if is_asset_component:
+                list_versions = getattr(self.shots.asset_publish_resolver, "list_context_versions", None)
+                if list_versions:
+                    asset_versions = list_versions(variant_root, context,
+                        formats=("usd", "usda", "usdc") if is_usd else ("ma", "mb"))
             camera_versions = []
             if source.get("camera_package"):
                 from smartlib.core.camera_package import camera_package_info
@@ -679,7 +693,7 @@ class ReviewBuildManagerService:
             note = str(component.get("note") or "")
             if source.get("camera_package"):
                 from smartlib.core.camera_package import camera_package_info
-                note = camera_package_info(path_text).get('summary', 'Camera Package unavailable')
+                note = camera_package_info(path_text).get('summary', 'Review Camera Rules unavailable')
             if is_virtual_camera_dependency:
                 dependency_note = (
                     "from dependencies.json: "
@@ -705,6 +719,7 @@ class ReviewBuildManagerService:
                     ),
                     "official": official,
                     "camera_versions": camera_versions,
+                    "asset_versions": asset_versions,
                     "latest": latest,
                     "state": state,
                     "required": bool(component.get("required", True)),
@@ -744,22 +759,36 @@ class ReviewBuildManagerService:
                             if row.get("persist_construct", True)]},
         )
 
+    def select_build_asset_version(self, identity, rows, row_index, path):
+        row = rows[row_index]
+        selected = next((v for v in row.get("asset_versions", []) if v["path"] == path), None)
+        if not selected or not Path(path).is_file():
+            raise ValueError("Selected Asset Release is unavailable. Refresh Build Contents.")
+        component = row["component"]
+        component["path"] = path
+        component["version"] = selected["version"]
+        component.setdefault("source", {})["asset_version_locked"] = True
+        row["build_version"] = selected["version"]
+        self.save_build_contents(identity, rows)
+
     def select_camera_package_version(self, identity: ShotIdentity, rows: list[dict], row_index: int, path: str) -> None:
         from smartlib.core.camera_package import camera_package_info
         row = rows[row_index]
         selected = next((v for v in row.get('camera_versions', []) if v['path'] == path), None)
         if not selected or not camera_package_info(path):
-            raise ValueError('Selected Camera Package is unavailable. Refresh Build Contents.')
+            raise ValueError('Selected Review Camera Rules are unavailable. Refresh Build Contents.')
         row['build_version'] = selected['version']
         row['note'] = selected['summary']
         row['component']['path'] = path
         row['component']['version'] = selected['version']
         row['component'].setdefault('source', {})['camera_package_version_locked'] = True
-        # One Primary package owns the generated-camera namespace in a Build.
+        # Review Rules restore their locked Primary themselves. Other Camera
+        # components must not import a second Primary into the same Build.
         for index, other in enumerate(rows):
-            if (other.get('component', {}).get('source') or {}).get('camera_package'):
+            component = other.get('component', {})
+            if str(component.get('component_type') or '') == 'camera':
                 other['enabled'] = index == row_index
-                other['component']['enabled'] = index == row_index
+                component['enabled'] = index == row_index
         self.save_build_contents(identity, rows)
 
     def construct_diff(

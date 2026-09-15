@@ -6,7 +6,7 @@ stage_profiles:
     character: CHAR_LO
     environment: BG_PROXY
     prop: PROP_LO
-    vehicle: PROP_LO
+    vehicle: VEH_LO
     purpose: proxy
     load_payloads: false
     load_crowds: false
@@ -14,7 +14,7 @@ stage_profiles:
     character: CHAR_ANIM
     environment: BG_PROXY
     prop: PROP_LO
-    vehicle: PROP_LO
+    vehicle: VEH_ANIM
     purpose: proxy
     load_payloads: true
     load_crowds: true
@@ -22,7 +22,7 @@ stage_profiles:
     character: CHAR_REND
     environment: BG_REND
     prop: PROP_REND
-    vehicle: PROP_REND
+    vehicle: VEH_REND
     purpose: render
     load_payloads: true
     load_crowds: true
@@ -65,6 +65,17 @@ quality_profiles:
   PROP_REND:
     model: high
     look: high
+  VEH_LO:
+    model: low
+    look: low
+    rig: layout
+  VEH_ANIM:
+    model: low
+    look: low
+    rig: anim
+  VEH_REND:
+    model: high
+    look: high
 
 profile_labels:
   CHAR_LO: LO
@@ -76,6 +87,9 @@ profile_labels:
   PROP_LO: LO
   PROP_ANIM: ANIM
   PROP_REND: REND
+  VEH_LO: LO
+  VEH_ANIM: ANIM
+  VEH_REND: REND
 
 asset_context_recipes:
   character:
@@ -111,9 +125,9 @@ asset_context_recipes:
       asset_type:
         - vehicle
     profile_names:
-      - PROP_LO
-      - PROP_ANIM
-      - PROP_REND
+      - VEH_LO
+      - VEH_ANIM
+      - VEH_REND
 viewport:
   background: bbox
   textures: low

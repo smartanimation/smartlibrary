@@ -42,6 +42,7 @@ def create_asset_profile() -> PreflightProfile:
             CheckDefinition("no_local_texture_paths", "Local texture paths", checks.no_local_texture_paths),
             CheckDefinition("textures_inside_project", "Project texture paths", checks.textures_inside_project),
             CheckDefinition("valid_node_names", "Node naming", checks.valid_node_names),
+            CheckDefinition("unique_asset_node_names", "Duplicate node names", checks.unique_asset_node_names),
             CheckDefinition("no_asset_namespaces", "Asset namespaces", checks.no_asset_namespaces),
             CheckDefinition("all_rig_set", "allRigSet", checks.all_rig_set),
             CheckDefinition(

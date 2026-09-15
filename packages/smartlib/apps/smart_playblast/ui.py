@@ -256,6 +256,14 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         range_row.addWidget(self.start_spin)
         range_row.addWidget(QtWidgets.QLabel("to"))
         range_row.addWidget(self.end_spin)
+        self.camera_timing_combo = QtWidgets.QComboBox()
+        self.camera_timing_combo.addItems(["Follow Scene", "Hold Frame"])
+        self.camera_frame_spin = _frame_spin()
+        self.camera_frame_spin.setEnabled(False)
+        camera_timing_row = QtWidgets.QHBoxLayout()
+        camera_timing_row.addWidget(self.camera_timing_combo)
+        camera_timing_row.addWidget(QtWidgets.QLabel("Frame"))
+        camera_timing_row.addWidget(self.camera_frame_spin)
         self.width_spin = QtWidgets.QSpinBox()
         self.width_spin.setRange(1, 16384)
         self.width_spin.setValue(1280)
@@ -281,6 +289,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         form.addRow("Review Layer", layer_row)
         form.addRow("Frame Range", self.range_combo)
         form.addRow("Start / End", range_row)
+        form.addRow("Camera Timing", camera_timing_row)
         form.addRow("Width / Height", size_row)
         form.addRow("Version", self.version_spin)
         form.addRow("Take", self.take_spin)
@@ -326,7 +335,10 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         self.preset_preview_button.clicked.connect(self.preview_preset)
         self.layer_combo.currentTextChanged.connect(lambda *_: self._apply_properties())
         self.range_combo.currentTextChanged.connect(self._range_mode_changed)
-        for spin in (self.start_spin, self.end_spin, self.width_spin, self.height_spin, self.version_spin, self.take_spin):
+        self.camera_timing_combo.currentTextChanged.connect(
+            self._camera_timing_changed
+        )
+        for spin in (self.start_spin, self.end_spin, self.camera_frame_spin, self.width_spin, self.height_spin, self.version_spin, self.take_spin):
             spin.valueChanged.connect(lambda *_: self._apply_properties())
         self.output_override.editingFinished.connect(self._apply_properties)
         self.solo_button.clicked.connect(self.preview_solo)
@@ -828,7 +840,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             self.table.item(row, 5).setText(str(version))
             self.table.item(row, 6).setText(str(take))
 
-    def _append_row(self, *, enabled, camera, layer, start, end, width, height, version, take, mode, preset=None, output_override="", display_layer="", source_type="review_layers"):
+    def _append_row(self, *, enabled, camera, layer, start, end, width, height, version, take, mode, preset=None, output_override="", display_layer="", source_type="review_layers", camera_timing="follow", camera_frame=None):
         row = self.table.rowCount()
         self.table.insertRow(row)
         use = QtWidgets.QTableWidgetItem()
@@ -849,6 +861,8 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             "output_override": str(output_override or ""),
             "display_layer": str(display_layer or layer),
             "source_type": str(source_type or "review_layers"),
+            "camera_timing": "hold" if str(camera_timing).lower() == "hold" else "follow",
+            "camera_frame": int(start if camera_frame is None else camera_frame),
         })
 
     def _row(self, row):
@@ -879,6 +893,11 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         _select_text(self.range_combo, data.get("mode", "Animation"))
         self.start_spin.setValue(data["start"])
         self.end_spin.setValue(data["end"])
+        _select_text(
+            self.camera_timing_combo,
+            "Hold Frame" if data.get("camera_timing") == "hold" else "Follow Scene",
+        )
+        self.camera_frame_spin.setValue(int(data.get("camera_frame", data["start"])))
         self.width_spin.setValue(data["width"])
         self.height_spin.setValue(data["height"])
         self.version_spin.setValue(data["version"])
@@ -888,6 +907,7 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         custom = self.range_combo.currentText() == "Custom"
         self.start_spin.setEnabled(custom)
         self.end_spin.setEnabled(custom)
+        self.camera_frame_spin.setEnabled(data.get("camera_timing") == "hold")
         self._update_output_preview()
 
     def _apply_properties(self):
@@ -903,6 +923,10 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
             "mode": self.range_combo.currentText(),
             "preset": self.preset_combo.currentData() or "",
             "output_override": self.output_override.text().strip(),
+            "camera_timing": (
+                "hold" if self.camera_timing_combo.currentText() == "Hold Frame" else "follow"
+            ),
+            "camera_frame": self.camera_frame_spin.value(),
         })
         self.table.item(row, 0).setData(QtCore.Qt.UserRole, data)
         layer_value = (
@@ -918,6 +942,14 @@ class SmartPlayblastWindow(QtWidgets.QDialog):
         for column, value in enumerate(values, 1):
             self.table.item(row, column).setText(str(value))
         self._update_output_preview()
+
+    def _camera_timing_changed(self, mode):
+        if self._loading:
+            return
+        self.camera_frame_spin.setEnabled(mode == "Hold Frame")
+        if mode == "Hold Frame" and self.camera_frame_spin.value() == 0:
+            self.camera_frame_spin.setValue(self.start_spin.value())
+        self._apply_properties()
 
     def _range_mode_changed(self, mode):
         if self._loading:

@@ -274,6 +274,9 @@ class ShotDataCopyDialog(QtWidgets.QDialog):
         self.accept()
 
 
+_ensure_smartlib_on_path()
+
+
 class ShotManagerWindow(QtWidgets.QMainWindow):
     SETTINGS_ORGANIZATION = "smartpipeline"
     SETTINGS_APPLICATION = "ShotManager"
@@ -311,6 +314,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.restoreGeometry(geometry)
 
     def closeEvent(self, event) -> None:
+        panel = getattr(self, 'animation_publish_panel', None)
+        if panel is not None and panel._running():
+            panel.status.appendPlainText('USD generation is running; wait for completion before closing Shot Manager.')
+            event.ignore()
+            return
         self._window_settings().setValue(self.SETTINGS_GEOMETRY_KEY, self.saveGeometry())
         self._save_window_state()
         super().closeEvent(event)
@@ -448,15 +456,16 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.apply_animation_curves_btn = QtWidgets.QPushButton("Apply Animation Curves")
         self.export_scene_data_btn = QtWidgets.QPushButton("Export Data")
         self.apply_scene_data_btn = QtWidgets.QPushButton("Apply Data")
+        self.publish_review_camera_rules_btn = QtWidgets.QPushButton("Publish Review Camera Rules")
         self.copy_shot_data_btn = QtWidgets.QPushButton("Copy & Publish")
-        self.publish_animation_btn = QtWidgets.QPushButton("Publish Animation Package")
+        self.publish_animation_btn = QtWidgets.QPushButton("Publish Animation")
         self.publish_animation_cache_btn = QtWidgets.QPushButton("Publish Animation USD")
         self.publish_animation_alembic_btn = QtWidgets.QPushButton("Publish Alembic Cache")
         self.build_animation_package_btn = QtWidgets.QPushButton("Build Package")
         self.build_animation_review_scene_btn = QtWidgets.QPushButton("Build Review Scene")
         self.export_camera_btn = QtWidgets.QPushButton("Export Camera")
         self.apply_camera_btn = QtWidgets.QPushButton("Apply Camera")
-        self.publish_camera_btn = QtWidgets.QPushButton("Publish Camera")
+        self.publish_camera_btn = QtWidgets.QPushButton("Publish Primary Camera")
         self.publish_preview_render_btn = QtWidgets.QPushButton("Publish Preview Render")
         self.apply_set_dress_btn = QtWidgets.QPushButton("Apply Set Dress")
         self.data_type_list = QtWidgets.QListWidget()
@@ -515,6 +524,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.export_scene_data_btn.setToolTip("Available inside Maya.")
             self.apply_scene_data_btn.setEnabled(False)
             self.apply_scene_data_btn.setToolTip("Available inside Maya.")
+            self.publish_review_camera_rules_btn.setEnabled(False)
+            self.publish_review_camera_rules_btn.setToolTip("Available inside Maya.")
             self.publish_animation_cache_btn.setEnabled(False)
             self.publish_animation_cache_btn.setToolTip("Available inside Maya.")
             self.publish_animation_alembic_btn.setEnabled(False)
@@ -635,6 +646,16 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             widget.setReadOnly(True)
 
         self.create_action.triggered.connect(self.create_shot)
+        action_cls = getattr(QtGui, "QAction", None) or QtWidgets.QAction
+        self.import_shot_list_action = action_cls("Import Shot List...", self)
+        self.import_shot_list_action.triggered.connect(self.import_shot_list)
+        for menu in self.findChildren(QtWidgets.QMenu):
+            if self.create_action in menu.actions():
+                menu.insertAction(self.refresh_action if self.refresh_action in menu.actions() else None,
+                                  self.import_shot_list_action)
+                break
+        else:
+            self.menuBar().addAction(self.import_shot_list_action)
         self.refresh_action.triggered.connect(self.refresh)
         self.add_cast_btn.clicked.connect(self.open_smart_casting)
         self.add_cast_btn.setText("Edit in Smart Casting")
@@ -667,6 +688,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.apply_animation_curves_btn.clicked.connect(self.apply_animation_curves)
         self.export_scene_data_btn.clicked.connect(self.export_scene_component_data)
         self.apply_scene_data_btn.clicked.connect(self.apply_scene_component_data)
+        self.publish_review_camera_rules_btn.clicked.connect(self.publish_review_camera_rules)
         self.copy_shot_data_btn.clicked.connect(self.open_shot_data_copy)
         self.publish_animation_btn.clicked.connect(self.publish_animation)
         self.publish_animation_cache_btn.clicked.connect(self.publish_animation_cache)
@@ -1120,6 +1142,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             action_layout.addStretch(1)
             action_layout.addWidget(self.publish_animation_curves_btn)
             action_layout.addWidget(self.apply_animation_curves_btn)
+            action_layout.addWidget(self.publish_review_camera_rules_btn)
             action_layout.addWidget(self.export_scene_data_btn)
             action_layout.addWidget(self.apply_scene_data_btn)
             action_layout.addWidget(self.copy_shot_data_btn)
@@ -1164,9 +1187,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         type_layout.addWidget(QtWidgets.QLabel("Publish Type :"))
         for label, key in (
             ("Camera", "camera"),
-            ("Animation Cache", "animation_cache"),
-            ("Alembic Cache", "animation_alembic"),
-            ("Animation Package", "animation_package"),
+            ("Animation", "animation_cache"),
             ("Placements", "placements"),
             ("Set Dress", "set_dress"),
             ("Preview Render", "preview_render"),
@@ -1216,7 +1237,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 
         splitter.addWidget(type_widget)
         splitter.addWidget(target_widget)
-        splitter.addWidget(version_widget)
+        self.publish_details_stack = QtWidgets.QStackedWidget()
+        self.publish_details_stack.addWidget(version_widget)
+        from smartlib.apps.shot_manager.animation_publish_panel import AnimationPublishPanel
+        self.animation_publish_panel = AnimationPublishPanel(self.service, self.publish_details_stack,
+            is_maya_session=self.is_maya_session)
+        self.animation_publish_panel.data_published.connect(lambda _path: self.populate_data_tree())
+        self.publish_details_stack.addWidget(self.animation_publish_panel)
+        splitter.addWidget(self.publish_details_stack)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 0)
         splitter.setStretchFactor(2, 1)
@@ -2371,6 +2399,15 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.shot_info_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
         self.shot_info_table.resizeColumnsToContents()
 
+    def import_shot_list(self) -> None:
+        from smartlib.apps.shot_manager.shot_list_ui import ShotListDialog
+        dialog = ShotListDialog(self.service, self)
+        dialog.exec()
+        if dialog.created:
+            self.refresh()
+            self._select_identity(dialog.created[-1])
+            self.status_label.setText(f"Created {len(dialog.created)} shots from Shot List")
+
     def create_shot(self) -> None:
         dialog = ShotCreateDialog(self, fps=self.service.project_fps)
         if dialog.exec() != QtWidgets.QDialog.Accepted:
@@ -2569,7 +2606,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 from smartlib.core.camera_package import camera_package_info
                 package_info = camera_package_info(row_data.path) if data_prefix == "camera" else {}
                 if package_info:
-                    version_labels.append("Camera Package")
+                    version_labels.append(package_info["kind"])
                 version_item = QtWidgets.QTreeWidgetItem([
                     row_data.version,
                     " / ".join(version_labels),
@@ -2606,7 +2643,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not info:
             return
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle(f"Camera Package — {info['target']} / {info['subset']} / {info['version']}")
+        dialog.setWindowTitle(f"{info['kind']} — {info['target']} / {info['subset']} / {info['version']}")
         dialog.resize(640, 360)
         layout = QtWidgets.QVBoxLayout(dialog)
         details = QtWidgets.QPlainTextEdit()
@@ -2674,6 +2711,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             button.setVisible(is_animation)
         self.export_scene_data_btn.setVisible(is_scene_data)
         self.apply_scene_data_btn.setVisible(is_applicable_scene_data)
+        self.publish_review_camera_rules_btn.setVisible(data_type == "review_layers")
         self.copy_shot_data_btn.setVisible(data_type in {"set_dress_data", "set_dress"})
         self.build_animation_package_btn.setVisible(False)
         if hasattr(self, "data_target_label"):
@@ -2889,6 +2927,13 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         return []
 
     def populate_publish_tree(self) -> None:
+        if hasattr(self, 'publish_details_stack'):
+            inline_animation = self._current_publish_type() == 'animation_cache'
+            self.publish_details_stack.setCurrentIndex(1 if inline_animation else 0)
+            if inline_animation:
+                self.animation_publish_panel.set_context(
+                    self.active_shot_identity or self.current_identity(), self._current_publish_target())
+                return
         self.publish_tree.clear()
         rows = self._publish_rows()
         parent_items = {}
@@ -5018,11 +5063,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return
         try:
             _ensure_smartlib_on_path()
-            import maya.cmds as cmds
-            from smartlib.dcc.maya.animation_curves import export_animation_atom_for_cast
-
-            source_workfile = cmds.file(query=True, sceneName=True) or ""
-            start, end = self.service.shot_frame_range(identity)
+            from smartlib.dcc.maya.animation_data_publish import publish_current_animation_data
             cast_rows = self._selected_data_cast_rows_data()
             if not cast_rows:
                 QtWidgets.QMessageBox.warning(
@@ -5033,29 +5074,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 return
             exported = []
             for cast_row in cast_rows:
-                namespace = cast_row["namespace"] or cast_row["cast_key"]
-                plan = self.service.plan_animation_atom_export(
-                    identity,
-                    target=cast_row["cast_key"],
-                    subset="curves",
-                )
-                manifest = export_animation_atom_for_cast(
-                    plan["atom_path"],
-                    cast_key=cast_row["cast_key"],
-                    asset=cast_row["asset"],
-                    namespace=namespace,
-                    source_workfile=source_workfile,
-                    frame_range=(start, end),
-                )
-                path = self.service.finalize_animation_atom_export(
-                    identity,
-                    manifest,
-                    target=cast_row["cast_key"],
-                    subset="curves",
-                    version=plan["version"],
-                    source_workfile=source_workfile,
-                    comment=comment.strip(),
-                )
+                path = publish_current_animation_data(self.service, identity,
+                    target=cast_row['cast_key'], comment=comment.strip())
                 exported.append(path)
             message = f"Exported authoritative Animation ATOM for {len(exported)} cast(s)."
             self.status_label.setText(message)
@@ -5120,7 +5140,19 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             else:
                 QtWidgets.QMessageBox.critical(self, "Apply Animation Curves Failed", str(exc))
 
+    def _open_animation_composition(self):
+        from smartlib.apps.review_build_manager.window import show
+        window = show(config_dir=self.service.project_config.config_dir, parent=self, initial_scope="Shot")
+        identity = self.current_identity()
+        if identity:
+            window._restore_shot_selection(identity, ("shot", identity.episode, identity.sequence, identity.shot))
+        window.workflow_tabs.setCurrentWidget(window.composition_tab)
+        self._review_build_manager_window = window
+
     def publish_animation(self) -> None:
+        if self.service.project_config.pipeline_profile:
+            self._open_animation_composition()
+            return
         identity = self.current_identity()
         if not identity:
             self.status_label.setText("Select a shot first")
@@ -5156,6 +5188,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self._publish_animation_cache_format(format_name="abc", subset="alembic")
 
     def _publish_animation_cache_format(self, *, format_name: str, subset: str) -> None:
+        if self.service.project_config.pipeline_profile:
+            self._open_animation_composition()
+            return
         identity = self.current_identity()
         if not identity:
             self.status_label.setText("Select a shot first")
@@ -5267,6 +5302,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Publish Cache Failed", str(exc))
 
     def build_animation_package(self) -> None:
+        if self.service.project_config.pipeline_profile:
+            self._open_animation_composition()
+            return
         identity = self.current_identity()
         if not identity:
             self.status_label.setText("Select a shot first")
@@ -5412,6 +5450,92 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
     def publish_camera_data(self) -> None:
         self._publish_scene_component_data("camera")
 
+    def publish_review_camera_rules(self) -> None:
+        """Publish rules for every enabled published Review Layer."""
+        identity = self.active_shot_identity or self.current_identity()
+        if not identity:
+            self.status_label.setText("Select a shot first")
+            return
+        if not self.is_maya_session:
+            QtWidgets.QMessageBox.information(
+                self, "Publish Review Camera Rules", "Available inside Maya."
+            )
+            return
+        comment, accepted = QtWidgets.QInputDialog.getText(
+            self, "Publish Review Camera Rules", "Comment"
+        )
+        if not accepted:
+            return
+        try:
+            import maya.cmds as cmds
+            from smartlib.dcc.maya import review_camera_rules
+            from smartlib.dcc.maya.review_playblast import load_scene_playblast_settings
+
+            settings_plug = ":smartCameraPlayblastInfo.settingsJson"
+            if not cmds.objExists(settings_plug):
+                raise RuntimeError(
+                    "Review Camera Rules draft was not found. Open Smart Camera "
+                    "Playblast and apply the live camera rules first."
+                )
+            try:
+                camera_prefs = json.loads(cmds.getAttr(settings_plug) or "{}")
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("Review Camera Rules draft is invalid.") from exc
+            primary = str(camera_prefs.get("primary") or "").strip()
+            if not primary:
+                raise RuntimeError(
+                    "Primary Camera is not recorded. Apply the live camera rules first."
+                )
+            playblast_settings = load_scene_playblast_settings(cmds) or {}
+            rows = list(playblast_settings.get("rows") or [])
+            if not rows:
+                raise RuntimeError("Review Layer playblast settings were not found.")
+            department = self.work_dept_combo.currentText().strip() or "anim"
+            published_layers = self.service.review_layers(identity, department)
+            primary_publish = self.service.latest_primary_camera_publish(identity)
+            if not primary_publish:
+                raise RuntimeError(
+                    "Primary Camera Publish was not found. Publish Primary Camera first."
+                )
+            reference_resolution = list(camera_prefs.get("reference_resolution") or [])
+            if len(reference_resolution) != 2:
+                reference_resolution = [
+                    cmds.getAttr("defaultResolution.width"),
+                    cmds.getAttr("defaultResolution.height"),
+                ]
+            payload = review_camera_rules.collect_for_review_layers(
+                primary,
+                rows,
+                published_layers,
+                reference_resolution,
+                primary_publish,
+                cmds,
+                layer_rules=camera_prefs.get("layer_rules") or {},
+            )
+            payload["department"] = department
+            published = self.service.publish_shot_scene_snapshot(
+                identity,
+                payload,
+                data_type="camera",
+                target="review",
+                subset="main",
+                source_workfile=cmds.file(query=True, sceneName=True) or "",
+                comment=comment.strip(),
+            )
+            self.status_label.setText(f"Review Camera Rules published: {published}")
+            self.populate_data_tree()
+            QtWidgets.QMessageBox.information(
+                self,
+                "Review Camera Rules Published",
+                f"{published}\n\nAll enabled Published Review Layers were included. "
+                "Smart Camera Playblast checkboxes only control the current render.",
+            )
+        except Exception as exc:
+            self.status_label.setText(str(exc))
+            QtWidgets.QMessageBox.critical(
+                self, "Review Camera Rules Publish Failed", str(exc)
+            )
+
     def _export_scene_component_data(self, data_type: str) -> None:
         identity = self.active_shot_identity or self.current_identity()
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
@@ -5553,7 +5677,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 
     def _publish_scene_component_data(self, data_type: str) -> None:
         identity = self.current_identity()
-        title = "Camera"
+        title = "Primary Camera"
         if not identity:
             self.status_label.setText("Select a shot first")
             return
@@ -5569,12 +5693,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return
         try:
             import maya.cmds as cmds
-            from smartlib.dcc.maya.shot_scene_data import (
-                collect_camera_data,
-                export_camera_selection,
-            )
+            from smartlib.dcc.maya import camera_portable, primary_camera
 
-            payload = collect_camera_data(target)
+            frame_range = self.service.shot_frame_range(identity)
+            payload = primary_camera.collect(target, frame_range, cmds)
             published = self.service.publish_shot_scene_snapshot(
                 identity,
                 payload,
@@ -5583,23 +5705,23 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 subset="main",
                 source_workfile=cmds.file(query=True, sceneName=True) or "",
                 comment=comment.strip(),
+                native_exporter=lambda directory: primary_camera.export_native(
+                    payload, directory, cmds
+                ),
             )
-            export_result = export_camera_selection(target, published.parent)
-            self.service.register_shot_scene_publish_files(
-                published,
-                export_result.get("files") or {},
-                errors=export_result.get("errors") or {},
+            camera_portable.start_background_export(
+                published, self.service.project_config, cmds, QtCore,
+                parent=QtWidgets.QApplication.instance(),
             )
-            self.status_label.setText(f"Published {title}: {published}")
+            self.status_label.setText(f"Published Primary Camera; USD/FBX Bake running: {published}")
             self._populate_publish_targets()
             self.populate_publish_tree()
-            exported_names = ", ".join(
-                sorted((export_result.get("files") or {}).values())
-            )
             QtWidgets.QMessageBox.information(
                 self,
                 f"Publish {title}",
-                f"Published:\n{published}\n\nSelection exports: {exported_names}",
+                f"Published:\n{published}\n\n"
+                "primary_cam.ma is ready. World-baked primary_cam.usd / .fbx "
+                "are exporting in the background.",
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, f"Publish {title} Failed", str(exc))

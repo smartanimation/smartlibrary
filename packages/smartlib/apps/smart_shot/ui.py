@@ -103,7 +103,7 @@ class SmartShotWindow(QtWidgets.QMainWindow):
 
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setWordWrap(True)
-        self.publish_camera_btn = QtWidgets.QPushButton("Publish Camera")
+        self.publish_camera_btn = QtWidgets.QPushButton("Publish Primary Camera")
         self.quick_open_rv_btn = QtWidgets.QPushButton("Quick Open Package in RV")
         self.publish_camera_btn.setStyleSheet(
             "QPushButton { background-color: #2f5f9f; color: white; font-weight: bold; }"
@@ -363,18 +363,32 @@ class SmartShotWindow(QtWidgets.QMainWindow):
     def publish_camera(self) -> None:
         from smartlib.dcc.maya import smart_shot
 
-        variant, ok = QtWidgets.QInputDialog.getText(self, "Publish Camera", "Camera option", text="main")
+        variant, ok = QtWidgets.QInputDialog.getText(
+            self, "Publish Primary Camera", "Camera option", text="main"
+        )
         if not ok:
             return
         try:
+            import maya.cmds as cmds
+            from smartlib.dcc.maya import camera_portable
+
+            def start_exchange(snapshot):
+                camera_portable.start_background_export(
+                    snapshot, self.project_config, cmds, QtCore,
+                    parent=QtWidgets.QApplication.instance(),
+                )
+
             path = smart_shot.publish_selected_cameras(
                 self.project_config,
                 self._selected_shot_nodes(),
                 camera_variant=variant.strip() or "main",
+                on_published=start_exchange,
             )
-            self.status_label.setText(f"Camera published: {path}")
+            self.status_label.setText(
+                f"Primary Camera published; USD/FBX Bake running: {path}"
+            )
         except Exception as exc:
-            self._warn("Publish Camera", str(exc))
+            self._warn("Publish Primary Camera", str(exc))
 
     def quick_open_latest_package_in_rv(self) -> None:
         try:

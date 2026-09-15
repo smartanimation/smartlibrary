@@ -4,6 +4,7 @@ import argparse
 import csv
 import importlib
 import json
+import re
 import os
 import site
 import subprocess
@@ -345,7 +346,8 @@ def stage_editorial_source(
     timeline_import_path = None
     shot_media_links = []
     marker_count = 0
-    aaf_fallback = False
+    marker_fallback = False
+    import_error = ""
     timeline_start_frame = None
     if reference_path:
         reference = Path(reference_path)
@@ -360,30 +362,43 @@ def stage_editorial_source(
                 shot_media = latest_ingested_shot_media(project_config, episode, sequence)
                 if shot_media:
                     shot_media_links = _link_timeline_to_shot_media(timeline, shot_media)
-            except RuntimeError:
-                if reference_type.lower() != "aaf":
-                    raise
-                markers = _parse_aaf_markers(reference)
+            except RuntimeError as exc:
+                import_error = str(exc)
+                kind = reference_type.lower()
+                if kind == "aaf":
+                    markers = _parse_aaf_markers(reference)
+                elif kind == "xml":
+                    markers = _parse_xml_markers(reference, fps=_project_fps(project_config))
+                else:
+                    markers = _parse_edl_markers(reference, fps=_project_fps(project_config))
+                if not markers:
+                    raise RuntimeError(f"{kind.upper()} contains no usable picture edit points: {reference.name}") from exc
                 timeline = _create_offline_timeline(
                     resolve_app,
                     imported_media,
                     timeline_name=f"{episode}_{sequence}",
                 )
                 timeline_import_path = reference
-                aaf_fallback = True
+                marker_fallback = True
+                if kind in {"xml", "edl"}:
+                    timeline_start_frame = 0 if kind == "xml" else min(m["start"] for m in markers)
+                    _set_timeline_start_frame(timeline, timeline_start_frame, _project_fps(project_config))
+                    if kind == "edl":
+                        markers = [{**m, "start": m["start"] - timeline_start_frame, "frame_space": "relative"} for m in markers]
         if reference_type.lower() == "aaf":
             timeline_start_frame = _first_shot_cut_in(
                 project_config,
                 episode,
                 sequence,
                 timeline,
+                allow_production_lookup=not bool((read_json(reference.parent / "manifest.json", {}) or {}).get("editorial_unit")),
             )
             if timeline_start_frame is not None:
                 _set_timeline_start_frame(
                     timeline, timeline_start_frame, _project_fps(project_config)
                 )
         rule = shot_naming_rule(project_config, profile_name=shot_naming_profile)
-        if aaf_fallback:
+        if marker_fallback:
             marker_count = _add_reference_markers(
                 resolve_app,
                 markers,
@@ -418,7 +433,8 @@ def stage_editorial_source(
             "timeline_import_file": timeline_import_path.name if timeline_import_path else "",
             "timeline_import_path": timeline_import_path.as_posix() if timeline_import_path else "",
             "timeline_import_type": timeline_import_path.suffix.lower().lstrip(".") if timeline_import_path else "",
-            "timeline_import_mode": "aaf_markers_on_offline" if aaf_fallback else "resolve_timeline_import",
+            "timeline_import_mode": f"{reference_type.lower()}_markers_on_offline" if marker_fallback else "resolve_timeline_import",
+            "timeline_import_error": import_error,
             "timeline_start_frame": timeline_start_frame,
             "cutting_markers": marker_count,
             "shot_media_links": shot_media_links,
@@ -440,8 +456,7 @@ def ingested_editorial_files(
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
     role_root = (
-        configured_project_paths(project_root, project_config).editorial_data_root()
-        / episode / sequence / role
+        configured_project_paths(project_root, project_config).editorial_unit_data_dir(episode, sequence, role)
     )
     if not role_root.exists():
         return []
@@ -471,7 +486,7 @@ def ingested_editorial_files(
 def ingested_editorial_episode_sequences(
     project_config: ProjectConfig,
 ) -> list[tuple[str, str]]:
-    """Return episode/sequence pairs created by Smart Ingest."""
+    """Return episode/Editorial Unit pairs (legacy API name)."""
     project_root = project_config.project_root
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
@@ -512,8 +527,7 @@ def latest_ingested_shot_media(
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
     root = (
-        configured_project_paths(project_root, project_config).editorial_data_root()
-        / episode / sequence / "shot_media"
+        configured_project_paths(project_root, project_config).editorial_unit_data_dir(episode, sequence, "shot_media")
     )
     if not root.exists():
         return []
@@ -592,7 +606,8 @@ def write_work_manifest(
     if manifest_data:
         manifest.update({key: value for key, value in manifest_data.items() if value is not None})
     manifest["episode"] = episode
-    manifest["sequence"] = sequence
+    manifest.pop("sequence", None)
+    manifest["editorial_unit"] = sequence
     manifest["updated_at"] = datetime.now().replace(microsecond=0).isoformat()
     with manifest_path.open("w", encoding="utf-8") as stream:
         json.dump(manifest, stream, indent=2, ensure_ascii=False)
@@ -610,7 +625,7 @@ def editorial_work_sequence_dir(project_config: ProjectConfig, episode: str, seq
     if project_root is None:
         raise RuntimeError("project_root is not set in templates_base.yml")
     paths = configured_project_paths(project_root, project_config)
-    return paths.editorial_work_root() / episode / sequence
+    return paths.editorial_unit_work_dir(episode, sequence)
 
 
 def editorial_work_versions(project_config: ProjectConfig, episode: str, sequence: str) -> list[str]:
@@ -831,9 +846,10 @@ def _first_shot_cut_in(
     episode: str,
     sequence: str,
     timeline: Any,
+    *, allow_production_lookup: bool = True,
 ) -> int | None:
     project_root = project_config.project_root
-    if project_root is not None:
+    if project_root is not None and allow_production_lookup:
         paths = configured_project_paths(project_root, project_config)
         sequence_root = paths.sequence_workspace_root(episode, sequence)
         sequence_data = read_json(sequence_root / "sequence.json", {}) or {}
@@ -1060,7 +1076,7 @@ def _create_markers_from_reference_or_timeline(
     shot_padding: int = 4,
 ) -> int:
     if reference_type.lower() == "edl":
-        markers = _parse_edl_markers(reference_path)
+        markers = _parse_edl_markers(reference_path, fps=int(float(_current_timeline(resolve_app).GetSetting("timelineFrameRate") or 24)))
         if markers:
             return _add_reference_markers(resolve_app, markers, sequence_note, shot_prefix, shot_start, shot_step, shot_padding)
     if reference_type.lower() == "xml":
@@ -1107,7 +1123,7 @@ def _add_reference_markers(
         )
         ok = _add_marker_any_frame(
             timeline,
-            _candidate_marker_frames(start, timeline_start),
+            [start] if marker.get("frame_space") == "relative" else _candidate_marker_frames(start, timeline_start),
             "Blue",
             shot,
             sequence_note,
@@ -1115,8 +1131,8 @@ def _add_reference_markers(
             custom_data,
         )
         count += 1 if ok else 0
-    if count == 0:
-        raise RuntimeError("No reference markers were created.")
+    if count != len(markers):
+        raise RuntimeError(f"Only {count}/{len(markers)} reference markers were created. Check overlapping edit points and offline duration.")
     return count
 
 
@@ -1236,23 +1252,28 @@ def _parse_aaf_markers_external(
     return markers
 
 
-def _parse_edl_markers(path: Path) -> list[dict[str, Any]]:
+def _parse_edl_markers(path: Path, fps: int = 24) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     markers = []
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    if re.search(r"FCM:\s*DROP FRAME", text, re.IGNORECASE) or re.search(r"\d{2}:\d{2}:\d{2};\d{2}", text):
+        raise RuntimeError("Drop-frame EDL marker fallback is not supported. Export a non-drop-frame EDL or import it manually.")
+    for line in text.splitlines():
         parts = line.split()
-        if len(parts) < 8 or not parts[0].isdigit():
+        if len(parts) < 8 or not parts[0].isdigit() or "V" not in parts[2].upper():
             continue
-        record_in = _timecode_to_frames(parts[-2])
-        record_out = _timecode_to_frames(parts[-1])
-        if record_in is None or record_out is None:
+        record_in = _timecode_to_frames(parts[-2], fps)
+        record_out = _timecode_to_frames(parts[-1], fps)
+        if record_in is None or record_out is None or record_out <= record_in:
             continue
-        markers.append({"start": record_in, "duration": max(1, record_out - record_in), "clip": parts[1]})
+        markers.append({"start": record_in, "duration": record_out - record_in, "clip": parts[1],
+                        "source_in": _timecode_to_frames(parts[-4], fps) or 0,
+                        "source_out": (_timecode_to_frames(parts[-3], fps) or 0) - 1})
     return markers
 
 
-def _parse_xml_markers(path: Path) -> list[dict[str, Any]]:
+def _parse_xml_markers(path: Path, fps: int | None = None) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
@@ -1260,16 +1281,26 @@ def _parse_xml_markers(path: Path) -> list[dict[str, Any]]:
     except ET.ParseError:
         return []
     markers = []
-    for clip in root.findall(".//clipitem"):
+    sequence = root if root.tag == "sequence" else root.find(".//sequence")
+    if sequence is None:
+        return []
+    rate = _xml_int(sequence.findtext("rate/timebase"))
+    if fps is not None and rate is not None and (rate != fps or sequence.findtext("rate/ntsc", "FALSE").upper() == "TRUE"):
+        raise RuntimeError("XML frame rate does not match the project. Confirm the frame rate before marker fallback.")
+    for clip in sequence.findall("./media/video/track/clipitem"):
         start = _xml_int(clip.findtext("start"))
         end = _xml_int(clip.findtext("end"))
+        if start is not None and end is not None and (start < 0 or end < 0):
+            raise RuntimeError("XML contains transition-relative edit points. Resolve transitions before marker fallback.")
         if start is None or end is None or end <= start:
             continue
         source_in = _xml_int(clip.findtext("in")) or 0
-        source_out = _xml_int(clip.findtext("out")) or max(0, source_in + (end - start) - 1)
+        source_out = _xml_int(clip.findtext("out"))
+        source_out = source_in + (end - start) - 1 if source_out is None else source_out - 1
         markers.append(
             {
                 "start": start,
+                "frame_space": "relative",
                 "duration": end - start,
                 "clip": clip.findtext("name") or "",
                 "source_in": source_in,

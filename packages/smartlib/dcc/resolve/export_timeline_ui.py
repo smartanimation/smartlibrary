@@ -85,7 +85,7 @@ class ResolveTimelineExportWindow:
         form.pack(fill=tk.X)
         self._labeled_combo(form, "episode", self.episode_var, 0, "episode_combo", self._episode_changed)
         ttk.Label(form, textvariable=self.episode_ingest_var, foreground="#16803a").grid(row=0, column=2, padx=(8, 0))
-        self._labeled_combo(form, "sequence", self.sequence_var, 1, "sequence_combo", self._sequence_changed)
+        self._labeled_combo(form, "Editorial Unit", self.sequence_var, 1, "sequence_combo", self._sequence_changed)
         ttk.Label(form, textvariable=self.sequence_ingest_var, foreground="#16803a").grid(row=1, column=2, padx=(8, 0))
         self._labeled_version(form, 2)
         ttk.Label(
@@ -153,7 +153,7 @@ class ResolveTimelineExportWindow:
         menu_bar = tk.Menu(self.root)
         file_menu = tk.Menu(menu_bar, tearoff=False)
         file_menu.add_command(label="New Episode", command=self.new_episode)
-        file_menu.add_command(label="New Sequence", command=self.new_sequence)
+        file_menu.add_command(label="New Editorial Unit", command=self.new_sequence)
         file_menu.add_separator()
         file_menu.add_command(label="Stage MOV", command=self.stage_mov)
         file_menu.add_command(label="Stage AAF", command=lambda: self.stage_reference("aaf"))
@@ -220,7 +220,7 @@ class ResolveTimelineExportWindow:
         episode = self.episode_var.get().strip()
         sequence = self.sequence_var.get().strip()
         if not episode or not sequence:
-            messagebox.showwarning("Export Timeline CSV", "episode and sequence are required.")
+            messagebox.showwarning("Export Timeline CSV", "Episode and Editorial Unit are required.")
             return None
         try:
             manifest_data = self._manifest_data()
@@ -249,7 +249,7 @@ class ResolveTimelineExportWindow:
         episode = self.episode_var.get().strip()
         sequence = self.sequence_var.get().strip()
         if not episode or not sequence:
-            messagebox.showwarning("Export & Intake", "episode and sequence are required.")
+            messagebox.showwarning("Export & Intake", "Episode and Editorial Unit are required.")
             return
 
         movie = self._resolved_offline_movie(episode, sequence)
@@ -267,6 +267,23 @@ class ResolveTimelineExportWindow:
             return
         try:
             service = SmartEditorialIntakeService(self.project_config)
+            from smartlib.core.metadata import read_json, write_json
+            from smartlib.dcc.resolve.cut_assignment_ui import CutAssignmentDialog
+            manifest_path = csv_path.parent / "manifest.json"
+            manifest = read_json(manifest_path, {}) or {}
+            events = service.intake_service.read_events_csv(csv_path)
+            assignment = CutAssignmentDialog(
+                self.root, events, service.intake_service.shots,
+                saved=manifest.get("cut_assignment"),
+                offline_origin=int(manifest.get("timeline_start_frame") or 0),
+                dry_run=self.dry_run_var.get(),
+                editorial_unit=sequence,
+            ).show()
+            if assignment is None:
+                self.status_var.set("Export cancelled (work markers saved)")
+                return
+            manifest["cut_assignment"] = assignment
+            write_json(manifest_path, manifest)
             result = service.run(
                 episode,
                 sequence,
@@ -277,6 +294,7 @@ class ResolveTimelineExportWindow:
                 create_folder_structure=self.create_folders_var.get(),
                 generate_storyreel=self.storyreel_var.get(),
                 dry_run=self.dry_run_var.get(),
+                cut_assignment=assignment,
             )
         except Exception as exc:
             messagebox.showerror("Export & Intake Preflight Failed", str(exc))
@@ -380,7 +398,7 @@ class ResolveTimelineExportWindow:
     def new_cutting_marker(self) -> None:
         sequence_name = simpledialog.askstring(
             "New Cutting Marker",
-            "Marker Name / sequence name",
+            "Marker label / Editorial Unit",
             initialvalue=self.sequence_var.get().strip(),
             parent=self.root,
         )
@@ -411,7 +429,7 @@ class ResolveTimelineExportWindow:
         episode = self.episode_var.get().strip()
         sequence = self.sequence_var.get().strip()
         if not episode or not sequence:
-            messagebox.showwarning("Stage Editorial", "episode and sequence are required.")
+            messagebox.showwarning("Stage Editorial", "Episode and Editorial Unit are required.")
             return
         try:
             self.current_work_dir = stage_editorial_source(
@@ -439,13 +457,16 @@ class ResolveTimelineExportWindow:
                 suffix = f" | Timeline: {imported_type}"
                 if requested_type and imported_type != requested_type:
                     suffix += f" (fallback from {requested_type})"
+            if str(manifest.get("timeline_import_mode") or "").endswith("_markers_on_offline"):
+                suffix += " | Offline + edit markers (fallback): confirm alignment before Export"
             shot_media_links = manifest.get("shot_media_links")
             if isinstance(shot_media_links, list) and shot_media_links:
                 suffix += f" | shot_media: {len(shot_media_links)} linked"
-            self.status_var.set(f"Staged: {self.current_work_dir}{suffix}")
+            stage_status = f"Staged: {self.current_work_dir}{suffix}"
             self.version_var.set(self.current_work_dir.name)
             self._refresh_versions(keep_current=True)
             self.refresh()
+            self.status_var.set(stage_status)
         except Exception as exc:
             messagebox.showerror("Stage Editorial Failed", str(exc))
 
@@ -489,7 +510,7 @@ class ResolveTimelineExportWindow:
         episode = self.episode_var.get().strip()
         sequence = self.sequence_var.get().strip()
         if not episode or not sequence:
-            messagebox.showwarning("New Version", "episode and sequence are required.")
+            messagebox.showwarning("New Version", "Episode and Editorial Unit are required.")
             return
         self.current_work_dir = next_editorial_work_version_dir(self.project_config, episode, sequence)
         self.current_work_dir.mkdir(parents=True, exist_ok=True)
@@ -563,7 +584,7 @@ class ResolveTimelineExportWindow:
         values.update(sequence for ingest_episode, sequence in self._ingested_identities() if ingest_episode == episode)
         if values:
             return sorted(values)
-        return ["sq010"]
+        return ["edit01"]
 
     def _ingested_identities(self) -> set[tuple[str, str]]:
         try:
@@ -698,7 +719,7 @@ class ResolveTimelineExportWindow:
         if not value:
             return
         episode = value.strip()
-        sequence = self.sequence_var.get().strip() or "sq010"
+        sequence = self.sequence_var.get().strip() or "edit01"
         editorial_work_sequence_dir(self.project_config, episode, sequence).mkdir(parents=True, exist_ok=True)
         self.episode_var.set(episode)
         self.sequence_var.set(sequence)
@@ -709,9 +730,9 @@ class ResolveTimelineExportWindow:
     def new_sequence(self) -> None:
         episode = self.episode_var.get().strip() or "ep001"
         value = simpledialog.askstring(
-            "New Sequence",
-            "Sequence",
-            initialvalue=self.sequence_var.get().strip() or "sq010",
+            "New Editorial Unit",
+            "Editorial Unit (e.g. full_edit / op_edit / s027)",
+            initialvalue=self.sequence_var.get().strip() or "edit01",
             parent=self.root,
         )
         if not value:
@@ -721,7 +742,7 @@ class ResolveTimelineExportWindow:
         self.sequence_var.set(sequence)
         self._refresh_episode_sequence(keep_current=True)
         self._refresh_versions()
-        self.status_var.set(f"Sequence added: {episode}/{sequence}")
+        self.status_var.set(f"Editorial Unit added: {episode}/{sequence}")
 
 def show(config_dir: str | os.PathLike[str] | None = None, resolve_app=None):
     global _WINDOW

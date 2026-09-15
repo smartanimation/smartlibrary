@@ -282,6 +282,9 @@ def apply_to_animation_rig(
     start, end = profile["frame_range"]
     keyed_plugs = 0
     skipped = []
+    locked = []
+    missing = []
+    failed = []
     applied_settings = {}
     for plug_name, setting in profile.get("rig_settings", {}).items():
         if isinstance(setting, dict):
@@ -304,8 +307,13 @@ def apply_to_animation_rig(
         node = unique_by_leaf(name)
         for attr, values in values_by_attr.items():
             plug = f"{node}.{attr}"
-            if not cmds.objExists(plug) or cmds.getAttr(plug, lock=True):
+            if not cmds.objExists(plug):
                 skipped.append(plug)
+                missing.append(plug)
+                continue
+            if cmds.getAttr(plug, lock=True):
+                skipped.append(plug)
+                locked.append(plug)
                 continue
             try:
                 cmds.cutKey(plug, clear=True, time=(start, end))
@@ -314,6 +322,7 @@ def apply_to_animation_rig(
                 keyed_plugs += 1
             except RuntimeError:
                 skipped.append(plug)
+                failed.append(plug)
     for item in solver_samples["poles"].values():
         control = unique_by_leaf(item["definition"]["control"])
         for offset, matrix in enumerate(item["matrices"]):
@@ -346,6 +355,9 @@ def apply_to_animation_rig(
     return {
         "keyed_plugs": keyed_plugs,
         "skipped_plugs": skipped,
+        "locked_plugs": locked,
+        "missing_plugs": missing,
+        "failed_plugs": failed,
         "rig_settings": applied_settings,
         "dual_arm_match": dual_match,
         "output": str(output_path),

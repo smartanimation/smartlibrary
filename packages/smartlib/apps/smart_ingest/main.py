@@ -16,7 +16,7 @@ from smartlib.core.icons import tool_ico_path
 
 TARGET_FILTERS = [
     ("storyreel", "storyreel"),
-    ("editorial", ".mov .edl .xml .otio"),
+    ("editorial", ".mov .edl .xml .otio .pdf"),
     ("audio", ".wav"),
     ("design", ".pdf .jpeg .png"),
     ("asset", ".ma .fbx .abc .usd"),
@@ -259,6 +259,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
         self.format_edit = QtWidgets.QLineEdit()
         self.episode_edit = QtWidgets.QLineEdit("ep001")
         self.sequence_edit = QtWidgets.QLineEdit("sq010")
+        self.editorial_unit_edit = QtWidgets.QLineEdit()
+        self.editorial_unit_edit.setPlaceholderText("例: s027 / full_edit / op_edit")
         self.shot_edit = QtWidgets.QLineEdit()
         self.vendor_edit = QtWidgets.QLineEdit()
         self.delivery_date_edit = QtWidgets.QLineEdit()
@@ -280,6 +282,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             ("Format", self.format_edit, "format"),
             ("Episode", self.episode_edit, "episode"),
             ("Sequence", self.sequence_edit, "sequence"),
+            ("Editorial Unit", self.editorial_unit_edit, "editorial_unit"),
             ("Shot", self.shot_edit, "shot"),
             ("Source", self.vendor_edit, "vendor"),
             ("Delivery Date", self.delivery_date_edit, "delivery_date"),
@@ -334,6 +337,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             "format": self.format_edit,
             "episode": self.episode_edit,
             "sequence": self.sequence_edit,
+            "editorial_unit": self.editorial_unit_edit,
             "shot": self.shot_edit,
             "vendor": self.vendor_edit,
             "delivery_date": self.delivery_date_edit,
@@ -882,6 +886,9 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
     def _target_type_changed(self) -> None:
         self._update_metadata_visibility()
         self._mark_metadata_dirty("target_type")
+        if self.target_type_combo.currentText() == "Editorial":
+            self._mark_metadata_dirty("editorial_unit")
+            self._mark_metadata_dirty("sequence")
 
     def _sequence_data_type_changed(self) -> None:
         self._update_metadata_visibility()
@@ -917,6 +924,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             self.format_edit.setText(metadata.format)
             self.episode_edit.setText(metadata.episode)
             self.sequence_edit.setText(metadata.sequence)
+            self.editorial_unit_edit.setText(metadata.received_editorial_unit if metadata.target_type == "Editorial" else "")
             self.shot_edit.setText(metadata.shot)
             self.vendor_edit.setText(metadata.vendor)
             self.delivery_date_edit.setText(metadata.delivery_date)
@@ -963,7 +971,7 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             "Editorial": {
                 "project",
                 "episode",
-                "sequence",
+                "editorial_unit",
                 "shot",
                 "editorial_data_role",
                 "format",
@@ -1018,7 +1026,8 @@ class SmartIngestWindow(QtWidgets.QMainWindow):
             subset=subset,
             format=self.format_edit.text().strip(),
             episode=self.episode_edit.text().strip() or "ep001",
-            sequence=self.sequence_edit.text().strip() or "sq010",
+            sequence="" if target_type == "Editorial" else self.sequence_edit.text().strip() or "sq010",
+            editorial_unit=self.editorial_unit_edit.text().strip() if target_type == "Editorial" else "",
             shot=shot,
             vendor=self.vendor_edit.text().strip(),
             delivery_date=self.delivery_date_edit.text().strip(),

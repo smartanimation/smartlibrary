@@ -338,7 +338,7 @@ def test_publish_ae_slots_snapshots_output_to_publish(tmp_path, monkeypatch):
     assert script.exists()
     script_text = script.read_text(encoding="utf-8")
     assert "shot010_layout_build_v001_t001.json" in script_text
-    assert "addSlateToStage(stage, data.slate, folders.layers);" in script_text
+    assert "addSlateToStage(stage, data.slate, folders.layers);" not in script_text
     assert "addShotAudioToStage(stage, data.audio, folders.audio);" in script_text
     assert 'ensureProjectFolder("30_footage", null)' in script_text
     assert 'ensureProjectFolder("20_precomp", null)' in script_text
@@ -685,7 +685,7 @@ def test_playblast_uses_camera_panel_from_apply_state(tmp_path, monkeypatch):
     assert ("Encoding review movie...", 90) in progress_events
 
 
-def test_slate_playblast_isolates_smart_gate_guide(tmp_path):
+def test_playblast_never_renders_smart_gate_guide_or_slate(tmp_path):
     cmds = _SlateIsolationCmds()
 
     _playblast(
@@ -701,12 +701,10 @@ def test_slate_playblast_isolates_smart_gate_guide(tmp_path):
         "",
     )
 
-    assert len(cmds.playblast_calls) == 2
+    assert len(cmds.playblast_calls) == 1
     assert cmds.playblast_calls[0]["visibility"]["|hero.visibility"] is True
     assert cmds.playblast_calls[0]["visibility"]["|SmartGateGuide.visibility"] is False
-    assert cmds.playblast_calls[1]["visibility"]["|hero.visibility"] is False
-    assert cmds.playblast_calls[1]["visibility"]["|SmartGateGuide.visibility"] is True
-    assert cmds.select_calls == [{"clear": True}, {"clear": True}]
+    assert cmds.select_calls == [{"clear": True}]
     assert cmds.values["|hero.visibility"] is True
     assert cmds.values["|SmartGateGuide.visibility"] is True
 

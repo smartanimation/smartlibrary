@@ -55,7 +55,9 @@ function panel(saved) {
       applyLaunchContext: applyLaunchContext,
       current: selectCurrentShotContext, persistState: persistState,
       latestKey: latestRenderOutputKey, rowsFromFootage: rowsFromCurrentFootage,
-      versionNumberLabel: versionNumberLabel, takeNumberLabel: takeNumberLabel
+      versionNumberLabel: versionNumberLabel, takeNumberLabel: takeNumberLabel,
+      pathKey: normalizedPathKey, applyPublished: applyPublishedAepInfo,
+      aepStatus: aepRowStatus
     };
   `;
   const marker = 'document.addEventListener("DOMContentLoaded", init);';
@@ -76,6 +78,48 @@ test("AE naming keeps three-digit versions and two-digit takes", () => {
   assert.equal(p.versionNumberLabel("v1"), "001");
   assert.equal(p.takeNumberLabel("t1"), "01");
   assert.equal(p.takeNumberLabel("t002"), "02");
+});
+
+test("AEP Files marks only the workfile recorded by PreComp Publish", () => {
+  const p = panel();
+  const published = "D:/Projects/ELCD/workspace/cg/shots/ep02/s027/c001/work/anim/ae/preComp/main/ELCD_ep02_s027_c001_compTemp_v012_t02.aep";
+  const records = {};
+  records[p.pathKey(published)] = {
+    versions: ["v002", "v001"], latestVersion: "v002", latest: true
+  };
+  const marked = p.applyPublished({
+    path: published.replace(/\//g, "\\"), exists: true
+  }, records);
+  const newerTake = p.applyPublished({
+    path: published.replace("t02.aep", "t03.aep"), exists: true
+  }, records);
+
+  assert.deepEqual(plain(marked.publishVersions), ["v002", "v001"]);
+  assert.equal(marked.publishedVersion, "v002");
+  assert.equal(marked.latestPublished, true);
+  assert.deepEqual(plain(p.aepStatus(marked)), {
+    status: "published", label: "Published v002"
+  });
+  assert.equal(newerTake.publishedVersion, "");
+  assert.equal(newerTake.latestPublished, false);
+  assert.deepEqual(plain(p.aepStatus(newerTake)), {
+    status: "ready", label: "Ready"
+  });
+});
+
+test("older published AEP keeps status without the latest icon", () => {
+  const p = panel();
+  const source = "D:/work/ELCD_ep02_s027_c001_compTemp_v011_t05.aep";
+  const records = {};
+  records[p.pathKey(source)] = {
+    versions: ["v001"], latestVersion: "v001", latest: false
+  };
+  const row = p.applyPublished({ path: source, exists: true }, records);
+
+  assert.equal(row.latestPublished, false);
+  assert.deepEqual(plain(p.aepStatus(row)), {
+    status: "published", label: "Published v001"
+  });
 });
 
 test("Replace Queue compares active footage with the latest receipt take", () => {

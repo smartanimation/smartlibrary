@@ -640,6 +640,24 @@ class AssetManager:
             break
         return metadata
 
+    def save_custom_metadata(self, asset: Asset, custom: dict, thumbnail: str = "") -> Path:
+        asset = self.get_asset(asset.category, asset.group, asset.name)
+        if not self.is_asset_initialized(asset):
+            raise ValueError("Initialize the asset before editing metadata.")
+        metadata = self.load_asset_metadata(asset)
+        metadata["metadata"] = dict(custom)
+        if thumbnail:
+            source = Path(thumbnail)
+            if not source.is_file() or source.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                raise ValueError("Select an existing JPG or PNG image.")
+            target = self.thumbnail_path_for_asset(asset).with_suffix(source.suffix.lower())
+            if source.resolve() != target.resolve():
+                shutil.copy2(source, target)
+            metadata["thumbnail"] = target.name
+        path = self.asset_metadata_paths(asset)[0]
+        _write_json(path, metadata)
+        return path
+
     def thumbnail_path_for_asset(self, asset: Asset) -> Path:
         return asset.root / "thumbnail.jpg"
 
@@ -757,6 +775,17 @@ class AssetManager:
         variant: str,
     ) -> str:
         source = _norm(path)
+        parsed = self.parse_work_file(source) or {}
+        dcc = str(parsed.get("dcc") or "maya")
+        work_root = self.paths.asset_work_dir(self._asset_identity(asset, variant), department, dcc)
+        try:
+            relative = source.parent.relative_to(work_root)
+        except ValueError:
+            relative = None
+        if relative is not None and relative.parts:
+            parts = relative.parts[1:] if relative.parts[0].lower() == dcc.lower() else relative.parts
+            if parts:
+                return self.paths.pipeline_token(parts[0])
         if asset.uses_variant_structure(variant):
             roots = (
                 asset.variant_root(variant) / "work" / department,
@@ -1191,6 +1220,9 @@ class AssetManager:
             clean = str(item).lower().lstrip(".")
             if clean and clean not in normalized:
                 normalized.append(clean)
+        if source_ext in {"ma", "mb"} and parsed["department"] == "model" and resolved_subset == "proxy":
+            if "usd" not in normalized:
+                normalized.append("usd")
         return normalized
 
     def register_publish_files_for_work_file(

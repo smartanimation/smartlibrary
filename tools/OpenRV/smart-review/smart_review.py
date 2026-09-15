@@ -704,6 +704,10 @@ class SmartReviewWidget(QtWidgets.QWidget):
     def _build_shot_tab(self):
         layout = QtWidgets.QVBoxLayout(self.shot_tab)
         layout.setSpacing(5)
+        self.shot_browser_btn = QtWidgets.QPushButton("Open Shot Browser")
+        self.shot_browser_btn.setStyleSheet("font-weight: 700; padding: 8px; background: #126a98;")
+        self.shot_browser_btn.clicked.connect(lambda: self.mode.show_shot_browser())
+        layout.addWidget(self.shot_browser_btn)
         self.shot_current_btn = QtWidgets.QPushButton("Current Shot/Sequence")
         layout.addWidget(self.shot_current_btn)
         top = QtWidgets.QGridLayout()
@@ -1261,6 +1265,7 @@ class SmartReviewMode(rvtypes.MinorMode):
                     "Smart Review",
                     [
                         ("Show Panel", self.show_panel, "", None),
+                        ("Shot Browser", self.show_shot_browser, "", None),
                         ("Hide Panel", self.hide_panel, "", None),
                         ("Toggle Panel", self.toggle_panel, "", None),
                         ("Refresh", self.refresh_panel, "", None),
@@ -1274,7 +1279,32 @@ class SmartReviewMode(rvtypes.MinorMode):
         self.dock.setWidget(self.panel)
         self.window.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock)
         self.dock.hide()
+        self.shot_browser = None
         QtCore.QTimer.singleShot(0, self.apply_launch_context)
+
+    def show_shot_browser(self, event=None):
+        packages = _repo_root() / "packages"
+        if str(packages) not in sys.path:
+            sys.path.insert(0, str(packages))
+        from smartlib.review.shot_browser import ShotBrowser
+
+        if self.shot_browser is None:
+            self.shot_browser = ShotBrowser(
+                _project_names(_repo_root()), self.panel.project_combo.currentText(),
+                lambda project: _project_paths(_project_root(_repo_root(), project)),
+                self._load_browser_media, SHOT_DEPTS, _repo_root(), self.window,
+            )
+        elif not self.shot_browser.isVisible():
+            self.shot_browser.refresh()
+        self.shot_browser.show()
+        self.shot_browser.raise_()
+        self.shot_browser.activateWindow()
+
+    def _load_browser_media(self, media, new_session=False):
+        if new_session:
+            commands.newSession()
+        commands.addSources(media, "explicit", False, False)
+        self.panel.status.setText("Loaded %d source(s) from Shot Browser" % len(media))
 
     def toggle_panel(self, event=None):
         if self.dock.isVisible():

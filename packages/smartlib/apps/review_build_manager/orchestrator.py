@@ -163,25 +163,6 @@ class SceneBuildOrchestrator:
                     "sequence_input.json is required by the Use Existing policy.",
                 )
             )
-        if (
-            (overrides or {}).get("use_placements") is not False
-            and (not current or input_policy != "USE EXISTING")
-        ):
-            placements_root = (
-                self.shots.sequence_workspace_root(identity.episode, identity.sequence)
-                / "publish"
-                / "layout"
-                / "placements"
-            )
-            placement_latest = placements_root / "latest.json"
-            if not placement_latest.is_file():
-                validations.append(
-                    BuildValidation(
-                        "ERROR",
-                        "MISSING_SEQUENCE_PLACEMENTS",
-                        f"Sequence placements were not found: {placements_root}",
-                    )
-                )
         if not current and input_policy != "USE EXISTING" and not any(
             row.severity == "ERROR" for row in validations
         ):
@@ -278,23 +259,22 @@ class SceneBuildOrchestrator:
                     "ASSET_OMITTED",
                     f"{component.get('name') or asset}: asset status is omit.",
                 )
-        if mode in {"WORK STAGE", "REND STAGE", "UPDATE"} and department == "anim" and not anim_input:
-            if input_policy == "USE EXISTING":
+        if mode in {"WORK STAGE", "REND STAGE", "UPDATE"} and department == "anim":
+            if input_policy == "USE EXISTING" and not anim_input:
                 yield BuildValidation(
                     "ERROR",
                     "MISSING_ANIM_INPUT",
                     "Animation input package is required by the Use Existing policy.",
                 )
-            else:
+            elif input_policy != "USE EXISTING":
                 blocking = [
                     row
                     for row in self.shots.shot_anim_input_status(identity)
-                    if row.state == "MISSING" and row.name != "layout_overlay"
+                    if row.state == "MISSING"
+                    and row.name not in {"layout_overlay", "placements"}
                 ]
                 if str(overrides.get("camera") or "").strip():
                     blocking = [row for row in blocking if row.name != "camera"]
-                if overrides.get("use_placements") is False:
-                    blocking = [row for row in blocking if row.name != "placements"]
                 if blocking:
                     for row in blocking:
                         yield BuildValidation(
@@ -306,7 +286,7 @@ class SceneBuildOrchestrator:
                     yield BuildValidation(
                         "INFO",
                         "WILL_GENERATE_ANIM_INPUT",
-                        "A new Animation Input Package will be generated before Stage.",
+                        "A Planned Snapshot Animation Input Package will be generated before Stage.",
                     )
         if mode == "UPDATE" and latest_work is None:
             yield BuildValidation(
@@ -314,7 +294,11 @@ class SceneBuildOrchestrator:
                 "NO_WORK_SCENE",
                 "No existing work scene was found; the worker will perform an initial Stage.",
             )
-        if mode in {"WORK STAGE", "REND STAGE", "UPDATE"} and anim_input:
+        if (
+            mode in {"WORK STAGE", "REND STAGE", "UPDATE"}
+            and anim_input
+            and input_policy == "USE EXISTING"
+        ):
             preview = self.shots.build_preview_from_anim_input(identity)
             missing = [
                 row

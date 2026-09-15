@@ -5,6 +5,8 @@ from smartlib.dcc.maya.review_playblast import (
     ALL_DISPLAY_LAYERS,
     display_layer_members,
     display_layers,
+    _hidden_smart_gate_guides,
+    _playblast_camera,
     export_display_layer_sequences,
     is_display_layer_excluded,
     load_display_layer_row_settings,
@@ -14,6 +16,131 @@ from smartlib.dcc.maya.review_playblast import (
     save_display_layer_row_settings,
     set_display_layer_excluded,
 )
+
+
+class HeldCameraCmds:
+    def __init__(self):
+        self.time = 20
+        self.nodes = {"cam", "camShape"}
+        self.values = {"camShape.focalLength": 35.0}
+        self.panel_camera = "cam"
+        self.sampled_at = None
+        self.deleted = []
+
+    def objExists(self, name):
+        return name in self.nodes or name in self.values
+
+    def nodeType(self, node):
+        return "camera" if node.endswith("Shape") else "transform"
+
+    def listRelatives(self, node, parent=False, shapes=False, **_kwargs):
+        if shapes and node == "cam":
+            return ["camShape"]
+        if parent and node == "camShape":
+            return ["cam"]
+        return []
+
+    def currentTime(self, value=None, query=False, edit=False):
+        if query:
+            return self.time
+        self.time = value
+
+    def xform(self, node, query=False, matrix=None, **_kwargs):
+        if query:
+            self.sampled_at = self.time
+            return list(range(16))
+
+    def camera(self, name):
+        self.nodes.update({"smartPlayblastHeldCamera1", "smartPlayblastHeldCamera1Shape"})
+        self.values["smartPlayblastHeldCamera1Shape.focalLength"] = 0.0
+        return "smartPlayblastHeldCamera1", "smartPlayblastHeldCamera1Shape"
+
+    def getAttr(self, plug):
+        return self.values[plug]
+
+    def setAttr(self, plug, *value):
+        self.values[plug] = value[0] if len(value) == 1 else value
+
+    def ls(self, selection=False, **_kwargs):
+        return ["hero"] if selection else []
+
+    def getPanel(self, type=None):
+        return ["modelPanel1"] if type == "modelPanel" else []
+
+    def modelPanel(self, _panel, query=False, edit=False, camera=None):
+        if query:
+            return self.panel_camera
+        if edit:
+            self.panel_camera = camera
+
+    def delete(self, node):
+        self.deleted.append(node)
+        self.nodes.discard(node)
+
+    def select(self, *_args, **_kwargs):
+        pass
+
+
+def test_playblast_camera_holds_evaluation_without_freezing_scene_time():
+    cmds = HeldCameraCmds()
+
+    with _playblast_camera(cmds, "cam", 12) as camera:
+        assert camera == "smartPlayblastHeldCamera1"
+        assert cmds.sampled_at == 12
+        assert cmds.time == 20
+        assert cmds.values["smartPlayblastHeldCamera1Shape.focalLength"] == 35.0
+
+    assert cmds.time == 20
+    assert cmds.panel_camera == "cam"
+    assert cmds.deleted == ["smartPlayblastHeldCamera1"]
+
+
+class GateGuideCmds:
+    def __init__(self):
+        self.values = {
+            "|SmartGateGuide.visibility": True,
+            "|SmartGateGuide|guideShape.visibility": True,
+        }
+        self.during = {}
+
+    def ls(self, pattern=None, type=None, long=False):
+        if pattern in {"|SmartGateGuide", "|SmartGateGuide|guideShape"}:
+            return [pattern]
+        if type in {"SmartViewportGateGuide", "SmartGateGuide", "SmartGateGuid"}:
+            return ["|SmartGateGuide"] if type == "SmartViewportGateGuide" else []
+        if pattern and "SmartGateGuide" in str(pattern):
+            return ["|SmartGateGuide"]
+        return []
+
+    def listRelatives(self, node, parent=False, shapes=False, fullPath=False):
+        if shapes and node == "|SmartGateGuide":
+            return ["|SmartGateGuide|guideShape"]
+        if parent and node == "|SmartGateGuide|guideShape":
+            return ["|SmartGateGuide"]
+        return []
+
+    def objExists(self, plug):
+        return plug in self.values or plug in {"|SmartGateGuide", "|SmartGateGuide|guideShape"}
+
+    def getAttr(self, plug):
+        return self.values[plug]
+
+    def setAttr(self, plug, value):
+        self.values[plug] = value
+
+    def refresh(self, **_kwargs):
+        self.during = dict(self.values)
+
+
+def test_smart_gate_guide_is_hidden_only_during_playblast_context():
+    cmds = GateGuideCmds()
+
+    with _hidden_smart_gate_guides(cmds):
+        assert cmds.values["|SmartGateGuide.visibility"] is False
+        assert cmds.values["|SmartGateGuide|guideShape.visibility"] is False
+
+    assert cmds.values["|SmartGateGuide.visibility"] is True
+    assert cmds.values["|SmartGateGuide|guideShape.visibility"] is True
 
 
 class FakeCmds:

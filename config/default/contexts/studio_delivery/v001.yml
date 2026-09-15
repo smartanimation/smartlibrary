@@ -1,0 +1,25 @@
+name: studio_delivery
+version: 1
+enabled: false
+label: Studio Delivery / スタジオ提供用
+# Override enabled in the project contexts/studio_delivery/v001.yml.
+# Source versions are explicitly selected from packed Maya assets.
+categories:
+  character:
+    source_context: MCP
+    geometry_set: cache_geo_set
+    skeleton_set: skel_export_set
+    skins: true
+  environment:
+    source_context: REND
+    geometry_set: cache_geo_set
+    skeleton_set: ""
+    skins: false
+fbx:
+  file_version: FBX202000
+  units: cm
+  up_axis: y
+  smoothing_groups: true
+  blend_shapes: false
+  embed_textures: false
+  animation: false

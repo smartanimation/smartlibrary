@@ -428,6 +428,7 @@ def publish_selected_cameras(
     project_config: ProjectConfig,
     shot_nodes: list[str],
     camera_variant: str = "main",
+    on_published=None,
 ) -> Path:
     cmds = _maya_cmds()
     project_root = project_config.project_root
@@ -440,19 +441,18 @@ def publish_selected_cameras(
         raise RuntimeError("Select one or more sequencer shots.")
 
     written = []
+    from smartlib.dcc.maya import primary_camera
     for shot in sorted(shots, key=lambda item: item.start):
         if not shot.camera or not cmds.objExists(shot.camera):
             raise RuntimeError(f"Camera was not found for shot: {shot.shot}")
         version_dir = _next_sequence_camera_version(project_root, episode, sequence, shot.shot, camera_variant)
         version_label = version_dir.name
         version_dir.mkdir(parents=True, exist_ok=True)
-        ma_path = version_dir / "camera.ma"
-        usd_path = version_dir / "camera.usd"
         camera_json_path = version_dir / "camera.json"
-
-        _export_camera_ma(cmds, shot.camera, ma_path)
-        usd_error = _export_camera_usd(cmds, shot.camera, usd_path)
-        camera_data = {
+        camera_data = primary_camera.collect(
+            shot.camera, [shot.start, shot.end], cmds
+        )
+        camera_data.update({
             "publish_type": "camera",
             "subset": camera_variant,
             "version": version_label,
@@ -467,18 +467,14 @@ def publish_selected_cameras(
             "duration": shot.duration,
             "source_scene": str(Path(cmds.file(query=True, sceneName=True) or "")),
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "animation": _camera_animation_samples(cmds, shot.camera, shot.camera_shape, shot.start, shot.end),
-        }
-        if usd_error:
-            camera_data["usd_export_error"] = usd_error
+        })
+        camera_data["files"] = primary_camera.export_native(camera_data, version_dir, cmds)
         write_json(camera_json_path, camera_data)
 
         files = {
-            "ma": "camera.ma",
+            "ma": "primary_cam.ma",
             "json": "camera.json",
         }
-        if usd_path.exists():
-            files["usd"] = "camera.usd"
         publish_data = {
             "publish_type": "camera",
             "subset": camera_variant,
@@ -489,10 +485,13 @@ def publish_selected_cameras(
             "files": files,
             "source_scene": camera_data["source_scene"],
             "status": "latest",
+            "portable_export": camera_data["portable_export"],
         }
         write_json(version_dir / "publish.json", publish_data)
         _update_latest_and_versions(version_dir.parent, version_label, filename="camera.json")
         _lock_preview_for_camera(project_root, episode, sequence, shot, camera_variant, version_label, version_dir)
+        if on_published:
+            on_published(camera_json_path)
         written.append(version_dir)
     return written[-1]
 

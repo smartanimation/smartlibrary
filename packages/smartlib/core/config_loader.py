@@ -260,6 +260,12 @@ class ProjectConfig:
         return merged
 
     @property
+    def pipeline_profile(self):
+        """Project publish contract; None preserves unconfigured legacy projects."""
+        from smartlib.core.pipeline_profile import profile_from_settings
+        return profile_from_settings(self.load("project_settings.yml"))
+
+    @property
     def usd_skel_contract(self) -> dict[str, str]:
         """Return the merged Maya-to-USD skeleton export contract."""
 

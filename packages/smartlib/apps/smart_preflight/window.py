@@ -7,6 +7,8 @@ try:
 except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
 
+from smartlib.core.icons import tool_ico_path
+
 from smartlib.preflight import (
     PreflightContext,
     PreflightEngine,
@@ -28,6 +30,9 @@ COLORS = {
 class SmartPreflightWindow(QtWidgets.QMainWindow):
     def __init__(self, *, adapter, context: PreflightContext, publisher=None, parent=None):
         super().__init__(parent)
+        icon_path = tool_ico_path("smart_preflight")
+        if icon_path:
+            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
         self.adapter = adapter
         self.context = context
         self.publisher = publisher

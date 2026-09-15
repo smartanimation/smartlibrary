@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from smartlib.apps.smart_playblast.ui import (
@@ -13,7 +12,6 @@ from .layer_list import LayerListView
 WINDOW_OBJECT_NAME = "SmartCameraPlayblastWindow"
 SETTINGS_NODE = ":smartCameraPlayblastInfo"
 _WINDOW = None
-_PORTABLE_CAMERA_PROCESSES = []
 
 
 class SmartCameraPlayblastWindow(SmartPlayblastWindow):
@@ -188,24 +186,12 @@ class SmartCameraPlayblastWindow(SmartPlayblastWindow):
         note.setWordWrap(True)
         generation_layout.addWidget(note)
         right_layout.addWidget(generation_box)
-        self.publish_camera_button = QtWidgets.QPushButton("Publish Camera Package…")
-        self.publish_camera_button.setObjectName("publishCameraPackage")
-        self.publish_camera_button.setMinimumHeight(46)
-        self.publish_camera_button.setToolTip("Publish native Primary dependencies and checked layer rules. No Bake or frame scan.")
-        self.publish_camera_button.clicked.connect(self.publish_camera_package)
         right_layout.addStretch()
         scroll = QtWidgets.QScrollArea()
         scroll.setMinimumWidth(340)
         scroll.setWidgetResizable(True)
         scroll.setWidget(right)
-        # Publishing is the durable pipeline action, so keep it visible and
-        # visually primary outside the scrolling editor.
-        right_container = QtWidgets.QWidget()
-        container_layout = QtWidgets.QVBoxLayout(right_container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.addWidget(scroll, 1)
-        container_layout.addWidget(self.publish_camera_button)
-        splitter.addWidget(right_container)
+        splitter.addWidget(scroll)
         splitter.setSizes([580, 540])
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
@@ -318,7 +304,10 @@ class SmartCameraPlayblastWindow(SmartPlayblastWindow):
                 self._append_row(**{key: row[key] for key in (
                     "enabled", "camera", "layer", "start", "end", "width", "height", "version", "take", "mode")},
                     preset=row.get("preset", ""), display_layer=row.get("display_layer", row["layer"]),
-                    source_type=row.get("source_type", "review_layers"))
+                    source_type=row.get("source_type", "review_layers"),
+                    output_override=row.get("output_override", ""),
+                    camera_timing=row.get("camera_timing", "follow"),
+                    camera_frame=row.get("camera_frame", row["start"]))
         finally:
             self.table.blockSignals(False)
             self._loading = False
@@ -499,145 +488,12 @@ class SmartCameraPlayblastWindow(SmartPlayblastWindow):
         super().playblast()
 
     def publish_camera_package(self):
-        import maya.cmds as cmds
-        from smartlib.dcc.maya import camera_native
-        if not self.identity:
-            QtWidgets.QMessageBox.warning(self, "Publish Camera Package", "Select a shot first.")
-            return
-        dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Publish Camera Package")
-        form = QtWidgets.QFormLayout(dialog)
-        note = QtWidgets.QLabel(
-            "Publish native Primary + upstream dependencies + layer rules.\n"
-            "Maya Build stays live; primary_cam FBX/USD is baked in background.\n"
-            "External caches / dynamic script dependencies must be resolved first.\n"
-            f"Shot: {self.identity.episode} / {self.identity.sequence} / {self.identity.shot}")
-        note.setWordWrap(True)
-        form.addRow(note)
-        target = QtWidgets.QLineEdit("main")
-        subset = QtWidgets.QLineEdit("main")
-        comment = QtWidgets.QLineEdit()
-        form.addRow("Target", target)
-        form.addRow("Subset", subset)
-        form.addRow("Comment", comment)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Validate / Publish")
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
-            return
-        progress = QtWidgets.QProgressDialog("Exporting Primary dependencies — no Bake…", "", 0, 100, self)
-        progress.setCancelButton(None)
-        progress.setWindowModality(QtCore.Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        try:
-            import re
-            if any(not re.fullmatch(r"[A-Za-z0-9_]+", value.text().strip()) for value in (target, subset)):
-                raise ValueError("Target / Subset: use letters, digits and underscores.")
-            self._camera_controls_changed()
-            rows = [self._row(i) for i in range(self.table.rowCount()) if self._row(i)['enabled']]
-            self.publish_camera_button.setEnabled(False)
-            def update(done, total):
-                progress.setValue(int(done * 100 / total))
-                QtWidgets.QApplication.processEvents()
-                return not progress.wasCanceled()
-            payload = camera_native.collect(
-                self.primary_combo.currentData(), rows,
-                [self.reference_width.value(), self.reference_height.value()], cmds)
-            progress.close()
-            payload["department"] = self.department.currentText()
-            payload["portable_export"] = {
-                "status": "pending",
-                "camera_name": "primary_cam",
-                "formats": ["usd", "fbx"],
-            }
-            from smartlib.core.maya_runtime import resolve_mayapy, validate_worker_version
-            validate_worker_version(
-                resolve_mayapy(self.project_config), cmds.about(version=True)
-            )
-            published = self.service.publish_shot_scene_snapshot(
-                self.identity, payload, data_type="camera", target=target.text().strip(),
-                subset=subset.text().strip(), source_workfile=cmds.file(query=True, sceneName=True) or "",
-                comment=comment.text().strip(),
-                native_exporter=lambda directory: camera_native.export_native(payload, directory, cmds))
-            self._start_portable_camera_export(published, cmds)
-            self.status.setText(f"Camera Package published; FBX/USD bake running: {published}")
-            QtWidgets.QMessageBox.information(self, "Camera Package Published",
-                f"{published}\n\nSelect this Camera Publish in Build.\n"
-                "Primary, output cameras and layer settings will be restored.\n"
-                "World-baked primary_cam FBX/USD export is running in the background.")
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Camera Publish Failed", str(exc))
-            self.status.setText(str(exc))
-        finally:
-            progress.close()
-            self.publish_camera_button.setEnabled(True)
-
-    def _start_portable_camera_export(self, published, cmds):
-        from smartlib.dcc.maya import camera_portable
-        from smartlib.core.maya_runtime import (
-            process_environment, resolve_mayapy, validate_worker_version,
+        QtWidgets.QMessageBox.information(
+            self,
+            "Publish Review Camera Rules",
+            "Publish from Shot Manager > Data > Review Layers.\n\n"
+            "The checkboxes here only control the current Playblast render.",
         )
-
-        mayapy = resolve_mayapy(self.project_config)
-        validate_worker_version(mayapy, cmds.about(version=True))
-        worker = Path(__file__).resolve().parents[4] / "tools" / "maya" / "camera_portable_worker.py"
-        if not mayapy.is_file() or not worker.is_file():
-            message = f"Camera exchange worker was not found: {mayapy} / {worker}"
-            camera_portable.update_publish(published, status="failed", error=message)
-            raise FileNotFoundError(message)
-        process = QtCore.QProcess(QtWidgets.QApplication.instance())
-        environment = QtCore.QProcessEnvironment.systemEnvironment()
-        env_vars, path_vars = process_environment(self.project_config)
-        for key, value in env_vars.items():
-            environment.insert(key, str(value))
-        for key, values in path_vars.items():
-            current = environment.value(key)
-            combined = list(values) + ([current] if current else [])
-            environment.insert(key, os.pathsep.join(combined))
-        package_root = str(Path(__file__).resolve().parents[3])
-        current_pythonpath = environment.value("PYTHONPATH")
-        environment.insert(
-            "PYTHONPATH",
-            package_root + (os.pathsep + current_pythonpath if current_pythonpath else ""),
-        )
-        process.setProcessEnvironment(environment)
-        process.setProgram(str(mayapy))
-        process.setArguments([str(worker), str(published)])
-        process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
-        process.finished.connect(
-            lambda exit_code, _status, process=process, published=Path(published):
-            self._portable_camera_export_finished(process, published, exit_code)
-        )
-        _PORTABLE_CAMERA_PROCESSES.append(process)
-        process.start()
-        if not process.waitForStarted(5000):
-            message = process.errorString() or "Camera exchange worker failed to start."
-            camera_portable.update_publish(published, status="failed", error=message)
-            _PORTABLE_CAMERA_PROCESSES.remove(process)
-            process.deleteLater()
-            raise RuntimeError(message)
-
-    def _portable_camera_export_finished(self, process, published, exit_code):
-        from smartlib.dcc.maya import camera_portable
-
-        output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace").strip()
-        if process in _PORTABLE_CAMERA_PROCESSES:
-            _PORTABLE_CAMERA_PROCESSES.remove(process)
-        process.deleteLater()
-        try:
-            if exit_code == 0:
-                self.status.setText(f"Camera Package ready — primary_cam FBX/USD complete: {published}")
-            else:
-                message = output or f"Camera exchange worker exited with code {exit_code}."
-                camera_portable.update_publish(published, status="failed", error=message)
-                self.status.setText(f"Camera Package FBX/USD failed: {message}")
-        except RuntimeError:
-            # The tool window may have been closed while the application-level
-            # background process continued. Metadata has still been finalized.
-            pass
-
 
 def show(config_dir=None, parent=None):
     global _WINDOW

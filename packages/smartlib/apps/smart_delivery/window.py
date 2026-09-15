@@ -63,7 +63,10 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         self.output_override_check.toggled.connect(self._output_override_changed)
         self.asset_scene_edit = QtWidgets.QLineEdit()
         self.asset_texture_edit = QtWidgets.QLineEdit()
-        self.asset_identity_edit = QtWidgets.QLineEdit("character/main/YOU/default")
+        self.asset_category_edit = QtWidgets.QLineEdit("character")
+        self.asset_group_edit = QtWidgets.QLineEdit("main")
+        self.asset_name_edit = QtWidgets.QLineEdit("YOU")
+        self.asset_variant_edit = QtWidgets.QLineEdit("default")
         browse_scene = QtWidgets.QPushButton("Browse Scene…"); browse_scene.clicked.connect(self._browse_asset_scene)
         browse_texture = QtWidgets.QPushButton("Browse Texture…"); browse_texture.clicked.connect(self._browse_asset_texture)
         self.add_shot_files_button = QtWidgets.QPushButton("Add Shot Files…")
@@ -85,14 +88,23 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         form.addWidget(self.editorial_mapping_label, 3, 0); form.addWidget(self.editorial_mapping_combo, 3, 1, 1, 6); form.addWidget(self.refresh_editorial_button, 3, 7)
         self.asset_scene_label = QtWidgets.QLabel("Asset Scene")
         self.asset_texture_label = QtWidgets.QLabel("Texture Root (optional)")
-        self.asset_identity_label = QtWidgets.QLabel("Asset Target")
+        self.asset_category_label = QtWidgets.QLabel("Category")
+        self.asset_group_label = QtWidgets.QLabel("Group")
+        self.asset_name_label = QtWidgets.QLabel("Asset")
+        self.asset_variant_label = QtWidgets.QLabel("Variant")
         form.addWidget(self.asset_scene_label, 4, 0); form.addWidget(self.asset_scene_edit, 4, 1, 1, 6); form.addWidget(browse_scene, 4, 7)
         form.addWidget(self.asset_texture_label, 5, 0); form.addWidget(self.asset_texture_edit, 5, 1, 1, 6); form.addWidget(browse_texture, 5, 7)
-        form.addWidget(self.asset_identity_label, 6, 0); form.addWidget(self.asset_identity_edit, 6, 1, 1, 4)
+        form.addWidget(self.asset_category_label, 6, 0); form.addWidget(self.asset_category_edit, 6, 1)
+        form.addWidget(self.asset_group_label, 6, 2); form.addWidget(self.asset_group_edit, 6, 3)
+        form.addWidget(self.asset_name_label, 6, 4); form.addWidget(self.asset_name_edit, 6, 5)
+        form.addWidget(self.asset_variant_label, 6, 6); form.addWidget(self.asset_variant_edit, 6, 7)
         form.addWidget(self.add_shot_files_button, 6, 7)
         self.asset_widgets = (self.asset_scene_label, self.asset_scene_edit, browse_scene,
                               self.asset_texture_label, self.asset_texture_edit, browse_texture,
-                              self.asset_identity_label, self.asset_identity_edit)
+                              self.asset_category_label, self.asset_category_edit,
+                              self.asset_group_label, self.asset_group_edit,
+                              self.asset_name_label, self.asset_name_edit,
+                              self.asset_variant_label, self.asset_variant_edit)
         layout.addLayout(form)
         self.shot_list_label = QtWidgets.QLabel("Shots (Internal Review version / state)")
         layout.addWidget(self.shot_list_label)
@@ -181,7 +193,10 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
             elif defaults["delivery_type"] == "Asset":
                 workflow = preferences.get("asset_workflow") or "Package ZIP"
                 if self.workflow_combo.findText(workflow) >= 0: self.workflow_combo.setCurrentText(workflow)
-                self.asset_identity_edit.setText("/".join(defaults[key] for key in ("category", "group", "asset", "variant")))
+                self.asset_category_edit.setText(defaults["category"])
+                self.asset_group_edit.setText(defaults["group"])
+                self.asset_name_edit.setText(defaults["asset"])
+                self.asset_variant_edit.setText(defaults["variant"])
                 self.asset_scene_edit.setText(defaults.get("scene") or "")
                 scene = Path(defaults.get("scene") or "")
                 candidate = Path(str(scene).replace("/rig/ANM/", "/texture/ANM/").replace("\\rig\\ANM\\", "\\texture\\ANM\\"))
@@ -327,7 +342,7 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
         self.report.setPlainText(
             f"{title} for Smart Ingest\n"
             f"Profile: {self.package_profile_combo.currentText()}\n"
-            f"Target: {self.asset_identity_edit.text().strip()} / assembly\n"
+            f"Target: {'/'.join(self._asset_target())} / assembly\n"
             "Texture Root is optional. Dry Run validates the package inputs.\n"
             + ("References remain in the .ma; placements are recorded in manifest metadata."
                if self._mode() == "Asset Assembly ZIP" else "")
@@ -709,10 +724,15 @@ class SmartDeliveryWindow(QtWidgets.QMainWindow):
             department=self.task_edit.text().strip(), comment="Created by Smart Delivery GUI")
 
     def _asset_target(self):
-        parts = [value.strip() for value in self.asset_identity_edit.text().replace("\\", "/").split("/") if value.strip()]
-        if len(parts) != 4: raise ValueError("Asset Target must be category/group/asset/variant.")
-        parts[0] = canonical_asset_category(parts[0], strict=True)
-        return tuple(parts)
+        values = tuple(edit.text().strip() for edit in (
+            self.asset_category_edit, self.asset_group_edit,
+            self.asset_name_edit, self.asset_variant_edit,
+        ))
+        labels = ("Category", "Group", "Asset", "Variant")
+        missing = [label for label, value in zip(labels, values) if not value]
+        if missing:
+            raise ValueError(f"Asset Target is missing: {', '.join(missing)}")
+        return (canonical_asset_category(values[0], strict=True), *values[1:])
 
     def _shot_package_sources(self):
         return [Path(self.inputs.item(row, 2).text().strip()) for row in range(self.inputs.rowCount())

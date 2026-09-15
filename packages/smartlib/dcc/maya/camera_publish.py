@@ -13,7 +13,12 @@ import re
 from . import camera_output as co
 
 SCHEMA = "smartpipeline.camera_package.v1"
-SUPPORTED_SCHEMAS = (SCHEMA, 'smartpipeline.camera_package.v2')
+SUPPORTED_SCHEMAS = (
+    SCHEMA,
+    'smartpipeline.camera_package.v2',
+    'smartpipeline.primary_camera.v1',
+    'smartpipeline.review_camera_rules.v1',
+)
 SETTINGS_NODE = ":smartCameraPlayblastInfo"
 ROLE_ATTR = "smartCameraRole"
 KEY_ATTR = "smartCameraKey"
@@ -158,6 +163,12 @@ def restore_package(data, *, cmds=None, frame_offset=0., provenance=''):
     """Create a self-contained baked package; fail on collisions, never overwrite."""
     if cmds is None:
         import maya.cmds as cmds
+    if data.get('schema') == 'smartpipeline.primary_camera.v1':
+        from .primary_camera import restore
+        return restore(data, cmds=cmds, provenance=provenance, frame_offset=frame_offset)
+    if data.get('schema') == 'smartpipeline.review_camera_rules.v1':
+        from .review_camera_rules import restore
+        return restore(data, cmds=cmds, provenance=provenance, frame_offset=frame_offset)
     if data.get('schema') == 'smartpipeline.camera_package.v2':
         from .camera_native import restore
         return restore(data, cmds=cmds, provenance=provenance, frame_offset=frame_offset)

@@ -594,11 +594,14 @@ def test_editorial_export_publishes_versioned_shot_timing(tmp_path: Path) -> Non
     assert timing_v1["source"]["editorial_version"] == "v001"
     assert timing_v1["source"]["event_id"] == "E0001"
 
-    # Re-exporting an unchanged event reuses the timing version even when the
-    # sequence Editorial Publish itself advances.
+    # An explicit Editorial Export advances the shot timing publish even when
+    # the cut range is unchanged. Editorial source metadata may have changed.
     service.register_shots([first])
     service.write_shot_editorial_snapshots([first], publish_v2)
-    assert not (timing_root / "v002").exists()
+    unchanged_v2 = json.loads(
+        (timing_root / "v002" / "editorial_timing.json").read_text(encoding="utf-8")
+    )
+    assert unchanged_v2["source"]["editorial_version"] == "v002"
 
     changed = EditorialEvent(
         "ep02", "s027", "c001", 278, 419,
@@ -610,15 +613,15 @@ def test_editorial_export_publishes_versioned_shot_timing(tmp_path: Path) -> Non
         clip="c001.mov",
     )
     service.write_shot_editorial_snapshots([changed], publish_v2)
-    timing_v2 = json.loads(
-        (timing_root / "v002" / "editorial_timing.json").read_text(encoding="utf-8")
+    timing_v3 = json.loads(
+        (timing_root / "v003" / "editorial_timing.json").read_text(encoding="utf-8")
     )
     shot_json = json.loads(
         (service.shots.shot_root(first.identity) / "shot.json").read_text(encoding="utf-8")
     )
-    assert timing_v2["cut_out"] == 419
-    assert timing_v2["work_range"] == [1001, 1166]
-    assert shot_json["editorial_timing"]["version"] == "v002"
+    assert timing_v3["cut_out"] == 419
+    assert timing_v3["work_range"] == [1001, 1166]
+    assert shot_json["editorial_timing"]["version"] == "v003"
 
 
 def test_existing_shot_gets_timing_when_folder_creation_is_disabled(tmp_path: Path) -> None:

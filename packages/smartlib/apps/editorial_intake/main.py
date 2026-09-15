@@ -45,7 +45,7 @@ class EditorialIntakeWindow(tk.Tk):
         self.episode_combo = ttk.Combobox(self, textvariable=self.episode_var, state="readonly")
         self.episode_combo.grid(row=0, column=1, sticky="ew", **pad)
 
-        ttk.Label(self, text="Sequence").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Label(self, text="Editorial Unit").grid(row=1, column=0, sticky="w", **pad)
         self.sequence_combo = ttk.Combobox(self, textvariable=self.sequence_var, state="readonly")
         self.sequence_combo.grid(row=1, column=1, sticky="ew", **pad)
 
@@ -145,6 +145,20 @@ class EditorialIntakeWindow(tk.Tk):
 
     def run_intake(self) -> None:
         try:
+            from smartlib.core.metadata import read_json, write_json
+            from smartlib.dcc.resolve.cut_assignment_ui import CutAssignmentDialog
+            source = self.service.resolve_source(self.episode_var.get(), self.sequence_var.get(),
+                self.version_var.get(), csv_path=self.csv_var.get() or None, mov_path=self.mov_var.get() or None)
+            manifest_path = source.csv_path.parent / "manifest.json"
+            manifest = read_json(manifest_path, {}) or {}
+            plan = CutAssignmentDialog(self, self.service.intake_service.read_events_csv(source.csv_path),
+                self.service.intake_service.shots, saved=manifest.get("cut_assignment"),
+                offline_origin=int(manifest.get("timeline_start_frame") or 0),
+                editorial_unit=self.sequence_var.get(), dry_run=self.dry_run_var.get()).show()
+            if plan is None:
+                return
+            manifest.update(editorial_unit=self.sequence_var.get(), cut_assignment=plan)
+            write_json(manifest_path, manifest)
             result = self.service.run(
                 self.episode_var.get(),
                 self.sequence_var.get(),
@@ -155,6 +169,7 @@ class EditorialIntakeWindow(tk.Tk):
                 create_folder_structure=self.create_folders_var.get(),
                 generate_storyreel=self.storyreel_var.get(),
                 dry_run=self.dry_run_var.get(),
+                cut_assignment=plan,
             )
         except Exception as exc:
             messagebox.showerror("Smart Editorial Intake", str(exc))

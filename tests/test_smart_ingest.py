@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pytest
 from dataclasses import replace
 from pathlib import Path
 
@@ -222,11 +223,14 @@ def test_auto_plan_editorial_copy_uses_data_root(tmp_path: Path) -> None:
     service = SmartIngestService(ProjectConfig(tmp_path / "config"))
     item = service.plan_file(source)
 
+    assert item.status == "Needs Metadata"
+    assert "Editorial Unit" in item.reason
+    item = service.plan_file(source, replace(item.metadata, editorial_unit="full_edit"))
     assert item.status == "Ready"
     assert item.action == "copy"
     assert item.target_type == "Editorial"
     assert item.target_path is not None
-    assert "production/editorial/data/ep001/sq010/offline/v001/ep001_sq010.mov" in item.target_path.as_posix()
+    assert "production/editorial/data/ep001/full_edit/offline/v001/ep001_full_edit.mov" in item.target_path.as_posix()
 
 
 def test_client_editorial_delivery_is_split_by_role_and_indexed(tmp_path: Path) -> None:
@@ -245,7 +249,8 @@ def test_client_editorial_delivery_is_split_by_role_and_indexed(tmp_path: Path) 
 
     assert all(item.target_type == "Editorial" for item in items)
     assert all(item.metadata.episode == "ep02" for item in items)
-    assert all(item.metadata.sequence == "s027" for item in items)
+    assert all(item.metadata.editorial_unit == "s027" for item in items)
+    assert all(item.metadata.sequence == "" for item in items)
     assert [item.metadata.subset for item in items] == [
         "edit_source",
         "edit_source",
@@ -266,11 +271,16 @@ def test_client_editorial_delivery_is_split_by_role_and_indexed(tmp_path: Path) 
     edit_manifest = read_json(edit_root / "v001" / "manifest.json")
 
     assert len(result.copied) == 4
+    assert edit_manifest["editorial_unit"] == "s027"
+    assert "sequence" not in edit_manifest
     assert [item["format"] for item in edit_manifest["files"]] == ["aaf", "edl", "xml"]
     assert read_json(edit_root / "latest.json")["version"] == "v001"
     assert read_json(offline_root / "latest.json")["version"] == "v001"
     assert read_json(edit_root / "versions.json") == [{"version": "v001", "status": "latest"}]
     delivery_manifest = read_json(editorial_root / "deliveries" / "20260722_01" / "manifest.json")
+    assert delivery_manifest["editorial_unit"] == "s027"
+    assert "sequence" not in delivery_manifest
+    assert not service.paths.sequence_workspace_root("ep02", "s027").exists()
     assert {entry["role"] for entry in delivery_manifest["entries"]} == {
         "edit_source",
         "offline",
@@ -638,7 +648,37 @@ def test_editorial_data_roles_are_loaded_from_naming_config(tmp_path: Path) -> N
 
     service = SmartIngestService(ProjectConfig(tmp_path / "config"))
 
-    assert service.editorial_data_roles() == ["edit_source", "offline", "shot_media"]
+    assert service.editorial_data_roles() == ["edit_source", "offline", "shot_media", "storyboard"]
+
+
+@pytest.mark.parametrize("folder", ["editorial", "client"])
+def test_editorial_storyboard_pdf_ingest(tmp_path: Path, folder: str) -> None:
+    project_root = tmp_path / "project"
+    write_config(tmp_path / "config", project_root)
+    source = project_root / "incoming" / folder / "20260914_01" / "ep02_s027_storyboard.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"%PDF-1.4 storyboard")
+    service = SmartIngestService(ProjectConfig(tmp_path / "config"))
+    # Older project naming configurations must also expose the new role.
+    service.editorial_naming["roles"] = {"offline": {"extensions": ["mov"]}}
+    assert "storyboard" in service.editorial_data_roles()
+    if folder == "editorial":
+        item = service.auto_plan()[0]
+        assert item.metadata.subset == "storyboard"
+    else:
+        assert service.auto_plan()[0].target_type != "Editorial"
+        item = service.plan_file(source, IngestMetadata(
+            target_type="Editorial", project="TEST", episode="ep02",
+            sequence="s027", subset="storyboard", format="pdf",
+        ))
+    assert item.status == "Ready"
+    target = project_root / "production" / "editorial" / "data" / "ep02" / "s027" / "storyboard" / "v001" / source.name
+    assert item.target_path == target
+    result = service.ingest_selected([item])
+    assert result.copied == [target]
+    assert target.read_bytes() == source.read_bytes()
+    assert read_json(target.parent / "manifest.json")["subset"] == "storyboard"
+    assert read_json(target.parent.parent / "latest.json")["version"] == "v001"
 
 
 def test_manual_editorial_shot_media_requires_shot(tmp_path: Path) -> None:

@@ -461,7 +461,14 @@ class SmartCastingService:
     def load_sequence_cast(self, episode: str, sequence: str) -> dict[str, Any]:
         return self.shot_service.load_sequence_cast(episode, sequence)
 
-    def save_sequence_cast(self, episode: str, sequence: str, rows: list[dict[str, Any]]) -> Path:
+    def save_sequence_cast(
+        self,
+        episode: str,
+        sequence: str,
+        rows: list[dict[str, Any]],
+        *,
+        asset_rows: list[CastingAsset] | None = None,
+    ) -> Path:
         existing = self.load_sequence_cast(episode, sequence)
         cast_data = self.shot_service.build_cast_data(rows, existing=existing)
         path = self.shot_service.write_sequence_cast(
@@ -469,7 +476,7 @@ class SmartCastingService:
             sequence,
             cast_data,
         )
-        self.sync_sequence_cast_to_shots(episode, sequence, cast_data)
+        self.sync_sequence_cast_to_shots(episode, sequence, cast_data, asset_rows=asset_rows)
         return path
 
     def sync_sequence_cast_to_shots(
@@ -477,9 +484,14 @@ class SmartCastingService:
         episode: str,
         sequence: str,
         cast_data: dict[str, Any] | None = None,
+        *,
+        asset_rows: list[CastingAsset] | None = None,
     ) -> dict[str, list[str]]:
         sequence_cast = dict((cast_data or self.load_sequence_cast(episode, sequence)).get("cast") or {})
         added_by_shot: dict[str, list[str]] = {}
+        available_assets = None
+        if not sequence_cast:
+            return added_by_shot
         for identity in self.shots_for_sequence(episode, sequence):
             shot_data = self.load_shot_cast(identity)
             shot_cast = dict(shot_data.get("cast") or {})
@@ -493,10 +505,14 @@ class SmartCastingService:
                 key = str(cast_key or "").strip()
                 if not key or key in shot_cast or not isinstance(entry, dict):
                     continue
-                if not self._asset_for_cast_entry(entry):
-                    continue
                 namespace = str(entry.get("namespace") or key).strip()
                 if namespace and namespace in namespaces:
+                    continue
+                # Resolve the catalog once per save, only when a shot needs an addition.
+                if available_assets is None:
+                    rows = asset_rows if asset_rows is not None else self.list_assets()
+                    available_assets = {(row.asset, row.variant) for row in rows}
+                if (str(entry.get("asset") or ""), str(entry.get("variant") or "default")) not in available_assets:
                     continue
                 shot_cast[key] = dict(entry)
                 namespaces[namespace or key] = key

@@ -397,6 +397,10 @@ h2 {
   background: var(--green);
 }
 
+.dot.published {
+  background: #4f94df;
+}
+
 .dot.replace {
   background: #e4c146;
 }
@@ -648,6 +652,36 @@ td:last-child {
   text-overflow: ellipsis;
 }
 
+.aep-publish-mark {
+  position: relative;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #367fc8;
+  box-shadow: 0 0 0 1px rgba(128, 188, 244, 0.35);
+}
+
+.aep-publish-mark::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 3px;
+  width: 4px;
+  height: 7px;
+  border-right: 2px solid #eef7ff;
+  border-bottom: 2px solid #eef7ff;
+  transform: rotate(45deg);
+}
+
+.aep-publish-mark.is-hidden {
+  display: none;
+}
+
+.aep-table tr.is-latest-published td:first-child {
+  box-shadow: inset 3px 0 #4f94df;
+}
+
 .aep-table tr.is-selected td {
   background: rgba(48, 103, 164, 0.26);
 }
@@ -695,6 +729,10 @@ td:last-child {
 
 .status.updated {
   color: #72c86d;
+}
+
+.status.published {
+  color: #78afe8;
 }
 
 .status.replace {

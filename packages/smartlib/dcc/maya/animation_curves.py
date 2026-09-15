@@ -65,7 +65,9 @@ def export_animation_atom_for_cast(
     # Clean-rig reconstruction proves this production rig authors required
     # animation directly on internal A_* transforms as well as controls.
     animated_nodes = _namespace_animated_nodes(cmds, namespace)
-    transfer_nodes = sorted(set(controls) | set(animated_nodes))
+    from smartlib.dcc.maya.animation_data_bake import external_constraint_nodes
+    constrained_nodes = external_constraint_nodes(cmds, namespace)
+    transfer_nodes = sorted(set(controls) | set(animated_nodes) | set(constrained_nodes))
     if not transfer_nodes:
         raise RuntimeError(f"No animation transfer nodes were found in namespace: {namespace}")
 
@@ -77,6 +79,13 @@ def export_animation_atom_for_cast(
     if end < start:
         raise ValueError(f"Invalid Animation ATOM frame range: {start}-{end}")
 
+    from smartlib.dcc.maya.animation_data_bake import constraint_plugs, rig_dependencies, sample_plugs, scene_timing
+    baked_plugs = constraint_plugs(cmds, sorted(set(controls) | set(constrained_nodes)), _transfer_candidate_plugs)
+    if baked_plugs and not cmds.undoInfo(query=True, state=True):
+        raise RuntimeError("Enable Maya Undo before exporting constrained Animation Data")
+    dependencies = rig_dependencies(cmds, transfer_nodes)
+    constraint_samples = sample_plugs(cmds, baked_plugs, start, end)
+
     authored_destinations = {
         plug
         for node in transfer_nodes
@@ -86,7 +95,7 @@ def export_animation_atom_for_cast(
     static_values = _collect_static_values(
         cmds,
         controls,
-        animated_destinations=authored_destinations,
+        animated_destinations=authored_destinations | set(baked_plugs),
     )
 
     atom_path = Path(path)
@@ -97,6 +106,18 @@ def export_animation_atom_for_cast(
     keyed_static: list[str] = []
     cmds.undoInfo(openChunk=True, chunkName="smartpipelineAnimationAtomExport")
     try:
+        if baked_plugs:
+            # Conservative full-range sampling includes animated constraint
+            # weights and switching boundaries. Only transfer controls are baked,
+            # never arbitrary upstream rig evaluation joints.
+            cmds.bakeResults(baked_plugs, time=(start, end), simulation=True,
+                             sampleBy=1.0, preserveOutsideKeys=True,
+                             sparseAnimCurveBake=False, disableImplicitControl=True)
+            baked_samples = sample_plugs(cmds, baked_plugs, start, end)
+            for plug, expected in constraint_samples.items():
+                if any(not math.isclose(a, b, rel_tol=1e-7, abs_tol=1e-5)
+                       for a, b in zip(expected, baked_samples[plug])):
+                    raise RuntimeError(f"Constraint bake changed evaluated motion: {plug}")
         # ATOM does not reliably restore static custom attributes on referenced
         # nodes. Temporary constant keys make those values part of its native
         # curve payload; the undo below leaves the source scene unchanged.
@@ -153,6 +174,10 @@ def export_animation_atom_for_cast(
         "static_values": static_values,
         "static_value_count": len(static_values),
         "frame_range": [start, end],
+        "constraint_bake": {"plugs": baked_plugs, "frame_range": [start, end],
+                            "sample_by": 1.0, "samples": constraint_samples},
+        "rig_dependencies": dependencies,
+        "scene_timing": scene_timing(cmds),
         "source_workfile": str(source_workfile).replace("\\", "/") if source_workfile else "",
     }
 
@@ -1220,11 +1245,18 @@ def _resolve_scene_plug(cmds: Any, plug: str) -> str:
         matches = cmds.ls(leaf, long=True, objectsOnly=True) or []
     except (RuntimeError, TypeError, ValueError):
         return plug
+    # A Shot wrapper is outside the referenced Rig namespace. Discard only
+    # that prefix, retaining the complete Rig-relative hierarchy and namespace.
+    # Never use an unqualified leaf-name fallback: duplicate Rig branches must
+    # remain distinguishable and ambiguous matches must fail closed.
+    parts = node.split("|")
+    rig_start = next((i for i, part in enumerate(parts) if ":" in part), None)
+    suffix = "|" + "|".join(parts[rig_start:]) if rig_start is not None else node
     suffix_matches = []
     for match in matches:
         candidate_node = str(match)
         candidate_plug = f"{candidate_node}.{attribute}"
-        if candidate_node.endswith(node) and cmds.objExists(candidate_plug):
+        if candidate_node.endswith(suffix) and cmds.objExists(candidate_plug):
             suffix_matches.append(candidate_plug)
     unique = sorted(set(suffix_matches))
     return unique[0] if len(unique) == 1 else plug
@@ -1438,6 +1470,8 @@ def export_animation_geometry_cache(
     frame_range: tuple[int, int],
     skeleton_set: str = "skel_export_set",
     formats: tuple[str, ...] = ("usd",),
+    final_deform: bool = False,
+    resolved_files: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Export independently versioned USD Skel animation or Alembic geometry."""
 
@@ -1463,8 +1497,8 @@ def export_animation_geometry_cache(
     previous_selection = cmds.ls(selection=True, long=True) or []
     try:
         cmds.select(roots, replace=True)
-        configured_skeletons = _skeleton_export_members(cmds, namespace, skeleton_set)
-        bound_skeletons = _skin_skeleton_roots(cmds, roots, namespace)
+        configured_skeletons = [] if final_deform else _skeleton_export_members(cmds, namespace, skeleton_set)
+        bound_skeletons = [] if final_deform else _skin_skeleton_roots(cmds, roots, namespace)
         # The explicit export set is the skeleton contract. Skin history may
         # also expose an unbound driver hierarchy (for example J_C_all), but
         # that hierarchy is only a motion source and must not become a second
@@ -1479,33 +1513,39 @@ def export_animation_geometry_cache(
         skeleton_bindings: list[dict[str, str]] = []
         if "usd" in requested:
             _load_cache_plugin(cmds, "mayaUsdPlugin")
-            usd_path = output / "animation.usd"
-            if not skeleton_members:
-                raise RuntimeError(
-                    f"No skeleton roots were found in {namespace}:{skeleton_set}. "
-                    "Animation USD publish requires a USD Skel skeleton contract."
+            usd_path = Path(resolved_files["usd"]) if resolved_files else output / "animation.usd"
+            if final_deform:
+                _export_cache_usd(cmds, usd_path, (start, end))
+                files["usd"] = usd_path.name
+                usd_kind = "point_cache"
+                driver_motion_joints = []
+            else:
+                if not skeleton_members:
+                    raise RuntimeError(
+                        f"No skeleton roots were found in {namespace}:{skeleton_set}. "
+                        "Animation USD publish requires a USD Skel skeleton contract."
+                    )
+                _export_skel_animation_usd(cmds, usd_path, skeleton_members, (start, end))
+                driver_motion_joints = _merge_driver_skeleton_motion(
+                    cmds,
+                    usd_path,
+                    skeleton_members,
+                    configured_skeletons,
+                    (start, end),
                 )
-            _export_skel_animation_usd(cmds, usd_path, skeleton_members, (start, end))
-            driver_motion_joints = _merge_driver_skeleton_motion(
-                cmds,
-                usd_path,
-                skeleton_members,
-                configured_skeletons,
-                (start, end),
-            )
-            skeleton_bindings = _usd_skel_animation_bindings(usd_path)
-            skeleton_bindings = _normalize_skel_animation_layer(
-                usd_path,
-                skeleton_bindings,
-            )
-            files["usd"] = usd_path.name
-            usd_kind = "usd_skel_animation"
-            source_skeleton_set = f"{namespace}:{skeleton_set}"
+                skeleton_bindings = _usd_skel_animation_bindings(usd_path)
+                skeleton_bindings = _normalize_skel_animation_layer(
+                    usd_path,
+                    skeleton_bindings,
+                )
+                files["usd"] = usd_path.name
+                usd_kind = "usd_skel_animation"
+                source_skeleton_set = f"{namespace}:{skeleton_set}"
         else:
             driver_motion_joints = []
         if "abc" in requested:
             _load_cache_plugin(cmds, "AbcExport")
-            abc_path = output / "animation.abc"
+            abc_path = Path(resolved_files["abc"]) if resolved_files else output / "animation.abc"
             _export_cache_alembic(cmds, abc_path, roots, (start, end))
             files["abc"] = abc_path.name
         geometry = _cache_geometry_metadata(cmds, roots)
@@ -1536,15 +1576,27 @@ def _load_cache_plugin(cmds: Any, name: str) -> None:
 
 
 def _cache_export_roots(cmds: Any, namespace: str) -> list[str]:
-    set_name = f"{str(namespace or '').strip()}:cache_geo_set"
-    if not cmds.objExists(set_name):
+    namespace = str(namespace or '').strip().rstrip(':')
+    set_name = f"{namespace}:cache_geo_set" if namespace else 'cache_geo_set'
+    if not cmds.objExists(set_name) or cmds.nodeType(set_name) != 'objectSet':
         return []
     roots: list[str] = []
-    for member in cmds.sets(set_name, query=True) or []:
+    pending = [set_name]
+    visited_sets: set[str] = set()
+    while pending:
+        member = pending.pop()
         if not cmds.objExists(member):
             continue
         node_type = cmds.nodeType(member)
-        if node_type == "mesh":
+        if node_type == 'objectSet':
+            # Packed rigs may wrap their geometry sets inside cache_geo_set.
+            # Track canonical names to handle shared children and cycles once.
+            canonical = (cmds.ls(member, long=True) or [member])[0]
+            if canonical in visited_sets:
+                continue
+            visited_sets.add(canonical)
+            pending.extend(cmds.sets(member, query=True) or [])
+        elif node_type == "mesh":
             roots.extend(cmds.listRelatives(member, parent=True, fullPath=True) or [])
         elif node_type == "transform" and _cache_mesh_shapes(cmds, member):
             roots.extend(cmds.ls(member, long=True) or [member])
@@ -2277,9 +2329,17 @@ def _cache_mesh_shapes(cmds: Any, root: str) -> list[str]:
 
 
 def _export_cache_usd(cmds: Any, path: Path, frame_range: tuple[int, int]) -> None:
+    # Bypass ancestor joints pruned by exportSkels='none', retaining their
+    # evaluated motion without reparenting or modifying the source rig.
+    roots = cmds.ls(selection=True, long=True) or []
+    if not roots:
+        raise ValueError('Select final-deform geometry roots before USD export')
     cmds.mayaUSDExport(
         file=str(path),
         selection=True,
+        exportRoots=roots,
+        worldspace=True,
+        parentScope='Geometry',
         frameRange=frame_range,
         frameStride=1.0,
         mergeTransformAndShape=True,
@@ -2291,6 +2351,14 @@ def _export_cache_usd(cmds: Any, path: Path, frame_range: tuple[int, int]) -> No
     )
     if not path.exists():
         raise RuntimeError(f"Maya USD export did not create a file: {path}")
+    # A reference must include every selected geometry group, not only one.
+    from pxr import Usd
+    stage = Usd.Stage.Open(str(path))
+    root = stage.GetPrimAtPath('/Geometry') if stage else None
+    if not root:
+        raise RuntimeError('Final-deform USD has no Geometry scope')
+    stage.SetDefaultPrim(root)
+    stage.GetRootLayer().Save()
 
 
 def _export_cache_alembic(

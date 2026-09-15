@@ -31,6 +31,11 @@ DEFAULT_MENU_CONFIG = {
         "categories": {
             "File": [
                 {
+                    "label": "Smart Reference Editor",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_reference_editor",
+                    "enabled": True,
+                },
+                {
                     "label": "Asset Manager",
                     "command": "smartlib.dcc.maya.smart_menu.show_asset_manager",
                     "enabled": True,
@@ -127,6 +132,7 @@ DEFAULT_MENU_CONFIG = {
                 },
             ],
             "Animation": [
+                {"label": "Motion Clip Publish", "command": "smartlib.dcc.maya.smart_menu.show_motion_clip_publish", "enabled": True},
                 {
                     "label": "Smart CarSystem",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_car_system",
@@ -184,7 +190,9 @@ def _filter_allowed_items(items, allowed):
             if not child_items:
                 continue
             candidate["items"] = child_items
-        elif not _is_feature_allowed(candidate.get("command"), allowed):
+        elif not _is_feature_allowed(
+            "custom" if candidate.get("type") else candidate.get("command"), allowed
+        ):
             continue
         filtered.append(candidate)
     return filtered
@@ -280,10 +288,28 @@ def _load_menu_config() -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("maya_menu"), dict):
         return DEFAULT_MENU_CONFIG
     _ensure_sequence_manager_entry(data)
+    _ensure_reference_editor_entry(data)
     _ensure_sequence_cast_publisher_entry(data)
     _ensure_camera_playblast_entry(data)
+    _ensure_motion_clip_entry(data)
     _organize_tool_categories(data)
     return data
+
+
+def _ensure_motion_clip_entry(data):
+    categories = data["maya_menu"].setdefault("categories", {})
+    items = _menu_items_from_config(categories.get("Animation", []))
+    command = "smartlib.dcc.maya.smart_menu.show_motion_clip_publish"
+    if not any(item.get("command") == command for item in items):
+        items.append(dict(label="Motion Clip Publish", command=command, enabled=True))
+    categories["Animation"] = items
+
+
+def show_motion_clip_publish():
+    ensure_runtime_paths()
+    _reload("smartlib.apps.motion_library.service", "smartlib.dcc.maya.motion_clip", "smartlib.apps.motion_library.window")
+    from smartlib.apps.motion_library.window import show
+    return show(_config_dir())
 
 
 def _organize_tool_categories(data: dict) -> None:
@@ -372,6 +398,28 @@ def _ensure_sequence_cast_publisher_entry(data: dict) -> None:
         items[entry["label"]] = {"command": command, "enabled": True}
 
 
+def _ensure_reference_editor_entry(data: dict) -> None:
+    categories = (data.get("maya_menu") or {}).get("categories")
+    if not isinstance(categories, dict):
+        return
+    command = "smartlib.dcc.maya.smart_menu.show_smart_reference_editor"
+    if any(item.get("command") == command for entries in categories.values()
+           for item in _menu_items_from_config(entries)):
+        return
+    entries = categories.setdefault("File", [])
+    entry = {"label": "Smart Reference Editor", "command": command, "enabled": True}
+    if isinstance(entries, list):
+        entries.append(entry)
+    elif isinstance(entries, dict):
+        entries[entry["label"]] = {"command": command, "enabled": True}
+
+
+def show_smart_reference_editor() -> None:
+    ensure_runtime_paths()
+    from smartlib.apps.smart_reference_editor import show
+    show(config_dir=str(_config_dir()))
+
+
 def _resolve_command(path: str):
     if not path:
         return None
@@ -402,6 +450,19 @@ def _run_command(path: str) -> None:
     command()
 
 
+def _run_custom_command(command: str, command_type: str) -> None:
+    if not _is_feature_allowed("custom"):
+        return
+    if command_type == "python":
+        namespace = {"__name__": "__main__"}
+        exec(compile(command, "<SmartMenu Custom>", "exec"), namespace, namespace)
+    elif command_type == "mel":
+        import maya.mel as mel
+        mel.eval(command)
+    else:
+        raise ValueError(f"Unsupported SmartMenu command type: {command_type}")
+
+
 def _is_visible(item: dict) -> bool:
     return str(item.get("visible", True)).strip().lower() not in {"0", "false", "no", "off"}
 
@@ -416,7 +477,7 @@ def _add_menu_item(cmds, parent: str, item: dict) -> None:
     if item.get("divider"):
         cmds.menuItem(divider=True, parent=parent)
         return
-    label = str(item.get("label") or "").strip()
+    label = str(item.get("label") or item.get("name") or "").strip()
     if not label:
         return
     children = item.get("items")
@@ -425,8 +486,10 @@ def _add_menu_item(cmds, parent: str, item: dict) -> None:
         for child in children:
             _add_menu_item(cmds, submenu, child)
         return
-    command_path = str(item.get("command") or "").strip()
-    enabled = _is_enabled(item) and bool(command_path)
+    command_path = str(item.get("command") or "")
+    command_type = str(item.get("type") or "").strip().lower()
+    enabled = (_is_enabled(item) and bool(command_path.strip())
+               and command_type in {"", "python", "mel"})
     icon_id = str(item.get("icon") or MENU_TOOL_ICONS.get(label) or "").strip()
     icon_path = tool_icon_path(icon_id, 16) if icon_id else None
     kwargs = {
@@ -435,6 +498,8 @@ def _add_menu_item(cmds, parent: str, item: dict) -> None:
         "enable": enabled,
         "command": (lambda *_args, path=command_path: _run_command(path)) if enabled else "",
     }
+    if enabled and command_type:
+        kwargs["command"] = lambda *_args: _run_custom_command(command_path, command_type)
     if icon_path:
         kwargs["image"] = str(icon_path)
     cmds.menuItem(**kwargs)

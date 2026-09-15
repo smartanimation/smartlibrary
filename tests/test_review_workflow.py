@@ -170,6 +170,7 @@ def test_render_manifest_export_requires_completed_material_outputs(tmp_path: Pa
             "layer": "CHA", "display_layer": "CHA", "camera": "cam_CHA",
             "width": 1280, "height": 720, "start": 1001, "end": 1001,
             "version": 2, "take": 3, "enabled": True,
+            "camera_timing": "hold", "camera_frame": 1010,
         }]
     }
     with pytest.raises(RuntimeError, match="not complete"):
@@ -181,6 +182,8 @@ def test_render_manifest_export_requires_completed_material_outputs(tmp_path: Pa
     plan = service.plan_preview_render_publish(identity, payload, department="anim")
     group = plan["groups"][0]
     assert group["take"] == "t03"
+    assert group["camera_timing"] == "hold"
+    assert group["camera_frame"] == 1010
     assert group["output_dir"].endswith(
         "/workspace/cg/shots/ep01/sq01/sh0010/render/anim/layers/CHA/v002/t03"
     )
@@ -325,28 +328,95 @@ def test_shot_wide_precomp_publish_has_no_department_axis(tmp_path: Path) -> Non
     )
     assert published == tmp_path / "shot" / "publish" / "precomp" / "v001"
     assert workflow.latest_precomp() == published / "aftereffects" / "precomp.aep"
+    assert workflow.list_precomp_publishes() == [{
+        "version": "v001",
+        "status": "published",
+        "latest": True,
+        "source": str(source),
+        "project": (published / "aftereffects" / "precomp.aep").as_posix(),
+        "metadata": (published / "metadata" / "publish.json").as_posix(),
+        "created_at": read_json(published / "metadata" / "publish.json")["created_at"],
+    }]
 
 
 def test_formal_review_contains_only_final_artifacts(tmp_path: Path) -> None:
     workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
     movie = tmp_path / "job" / "review.mov"
-    thumbnail = tmp_path / "job" / "thumbnail.jpg"
+    report = tmp_path / "job" / "review_report.pdf"
     movie.parent.mkdir()
     movie.write_bytes(b"movie")
-    thumbnail.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+    report.write_bytes(b"%PDF-1.4\n%%EOF")
     destination = workflow.submit_review(
         department="anim",
         delivery_profile="internal",
         movie=movie,
-        thumbnail=thumbnail,
+        report=report,
         review_data={"shot": "c001"},
         source_manifest={"inputs": {"Character": {"version": "v019"}}},
     )
     assert destination == tmp_path / "workspace" / "output" / "review" / "internal" / "v001"
     assert {path.name for path in destination.iterdir()} == {
-        "review.mov", "thumbnail.jpg", "review.json", "source_manifest.json"
+        "review.mov", "review_report.pdf", "review.json", "source_manifest.json"
     }
     assert read_json(destination / "review.json")["state"] == "SUBMITTED"
+    assert read_json(destination / "review.json")["report"] == "review_report.pdf"
+
+
+def test_formal_review_rejects_non_pdf_report(tmp_path: Path) -> None:
+    workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
+    movie = tmp_path / "review.mov"
+    report = tmp_path / "review_report.pdf"
+    movie.write_bytes(b"movie")
+    report.write_bytes(b"not a pdf")
+
+    with pytest.raises(ValueError, match="not valid PDF"):
+        workflow.submit_review(
+            department="anim",
+            delivery_profile="internal",
+            movie=movie,
+            report=report,
+            review_data={},
+            source_manifest={},
+        )
+
+
+def test_review_build_preserves_clean_master_outside_job_retention(tmp_path: Path) -> None:
+    workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
+    job_output = tmp_path / "workspace" / "jobs" / "review" / "job1" / "output"
+    job_output.mkdir(parents=True)
+    clean = job_output / "review_clean.mov"
+    overlay_json = job_output / "review_overlay.json"
+    overlay_ass = job_output / "review_overlay.ass"
+    clean.write_bytes(b"clean")
+    overlay_json.write_text('{"schema":"smartpipeline.review_overlay.v1"}', encoding="utf-8")
+    overlay_ass.write_text("[Script Info]", encoding="utf-8")
+
+    destination = workflow.preserve_review_build(
+        department="anim", version="v005", take="t001",
+        clean_movie=clean, overlay_json=overlay_json, overlay_ass=overlay_ass,
+        manifest={"shot": "c003"},
+    )
+
+    assert destination == tmp_path / "workspace" / "review" / "review_build" / "v005" / "t001"
+    assert (destination / "review_clean.mov").read_bytes() == b"clean"
+    assert (destination / "review_overlay.json").is_file()
+    assert (destination / "review_overlay.ass").is_file()
+    manifest = read_json(destination / "review_build_manifest.json")
+    assert manifest["schema"] == "smartpipeline.review_build.v1"
+    assert manifest["clean_movie"] == "review_clean.mov"
+    latest = read_json(destination.parent.parent / "latest.json")
+    assert latest["path"] == "v005/t001/review_build_manifest.json"
+
+
+def test_review_build_is_immutable(tmp_path: Path) -> None:
+    workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
+    clean = tmp_path / "clean.mov"
+    clean.write_bytes(b"clean")
+    kwargs = dict(department="anim", version="v001", take="t001",
+                  clean_movie=clean, overlay_json=None, overlay_ass=None, manifest={})
+    workflow.preserve_review_build(**kwargs)
+    with pytest.raises(FileExistsError, match="already exists"):
+        workflow.preserve_review_build(**kwargs)
 
 
 def test_delivery_profile_controls_shot_destination(tmp_path: Path) -> None:

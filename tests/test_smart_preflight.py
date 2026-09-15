@@ -67,6 +67,9 @@ class FakeAdapter:
     def invalid_node_names(self, _forbidden):
         return []
 
+    def duplicate_dag_names(self):
+        return []
+
     def asset_namespaces(self):
         return []
 
@@ -228,6 +231,7 @@ def test_asset_required_sets_and_shot_camera_policy_are_profile_checks():
     asset_keys = {row.key for row in create_asset_profile().checks}
     shot_keys = {row.key for row in create_shot_profile().checks}
     assert {"all_rig_set", "cache_geo_set", "skel_export_set"} <= asset_keys
+    assert "unique_asset_node_names" in asset_keys
     assert {
         "cast_assets_exist",
         "cast_versions",
@@ -236,6 +240,37 @@ def test_asset_required_sets_and_shot_camera_policy_are_profile_checks():
         "resolution",
         "camera_film_fit",
     } <= shot_keys
+
+
+def test_duplicate_asset_node_names_are_errors():
+    adapter = FakeAdapter()
+    adapter.duplicate_dag_names = lambda: ["|Root|body|geo", "|Root|target|geo"]
+    report = PreflightEngine(adapter, create_asset_profile()).run(
+        PreflightContext(kind="asset", entity="Hero")
+    )
+    result = next(row for row in report.results if row.key == "unique_asset_node_names")
+    assert result.severity == Severity.ERROR
+    assert result.nodes == ("|Root|body|geo", "|Root|target|geo")
+    assert report.blocked
+
+
+class DuplicateNameCmds:
+    def ls(self, **kwargs):
+        if kwargs.get("dag") and kwargs.get("long"):
+            return [
+                "|Root",
+                "|Root|body|geo",
+                "|Root|blendShapeTargets|geo",
+                "|Root|body|uniqueShape",
+            ]
+        return []
+
+
+def test_maya_duplicate_name_adapter_returns_full_selectable_paths():
+    assert MayaPreflightAdapter(DuplicateNameCmds()).duplicate_dag_names() == [
+        "|Root|blendShapeTargets|geo",
+        "|Root|body|geo",
+    ]
 
 
 def test_unloaded_cast_is_warning_for_partial_shot_work():

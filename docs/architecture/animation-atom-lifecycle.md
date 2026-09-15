@@ -29,8 +29,13 @@ export 時の transfer node は次の和集合を実行時に解決する。
 - 同じ namespace 内で直接 animCurve が接続された transform / joint
 
 このRigでは肩、手首、Finger等の内部 `A_*` transformにもauthored animationが存在する。
-これらはクリーンRig再構築に必要なため含める。直接animCurveを持たないconstraint、camera、
-他namespaceのノードは含めない。
+これらはクリーンRig再構築に必要なため含める。2026-09-14のUSD先行受け渡し対応で、
+Shot側で追加したConstraintの対象も含め、評価結果をPublish範囲全体で1フレーム毎にBakeする。
+Controller上のConstraintチャンネルもBakeするが、Rig内部の参照済みConstraintを辿って
+全Jointを転送対象へ拡張しない。Constraintノードそのもの、camera、他namespaceは転送しない。
+元シーンはUndoで復元し、Bake前後の値を照合する。Rigファイルの固定パスとSHA-256、
+Constraintの評価サンプルをManifestへ記録し、USD生成時の再構築で検証する。
+詳細は[USD先行受け渡し](usd-handoff.md)を参照。
 静的な controller の keyable / channel-box 属性は manifest の `static_values` にも明示保存し、
 ATOM import 後に厳密復元する。export 中に作る ATOM 用の一時定数キーは export 後に undo
 するため、source scene は保存・変更しない。

@@ -443,14 +443,19 @@ class ShotManagerService:
     def load_sequence(self, identity: SequenceIdentity) -> dict[str, Any]:
         sequence_path = self.sequence_workspace_root(identity.episode, identity.sequence) / "sequence.json"
         data = read_json(sequence_path, None)
-        if isinstance(data, dict):
-            return data
-        legacy_path = self.paths.sequence_root(identity.episode, identity.sequence) / "sequence.json"
-        data = read_json(legacy_path, None)
-        if isinstance(data, dict):
-            return data
-        shots = [shot for shot in self.list_shots() if shot.episode == identity.episode and shot.sequence == identity.sequence]
-        return {"episode": identity.episode, "sequence": identity.sequence, "shots": [{"shot": shot.shot} for shot in shots]}
+        if not isinstance(data, dict):
+            legacy_path = self.paths.sequence_root(identity.episode, identity.sequence) / "sequence.json"
+            data = read_json(legacy_path, None)
+        if not isinstance(data, dict):
+            data = {"episode": identity.episode, "sequence": identity.sequence}
+        if "shots" not in data:
+            # Shot creation writes identity-only sequence metadata. Discover its
+            # members instead of treating that metadata as an empty shot list.
+            shots = [shot for shot in self.list_shots()
+                     if shot.episode == identity.episode and shot.sequence == identity.sequence
+                     and shot.shot.lower() != "all"]
+            data["shots"] = [{"shot": shot.shot} for shot in shots]
+        return data
 
     def load_shot(self, identity: ShotIdentity) -> dict[str, Any]:
         data = read_json(self.shot_root(identity) / "shot.json", {}) or {}
@@ -520,6 +525,12 @@ class ShotManagerService:
         cut_range = self._anim_cut_range_in_work(
             work_range, cut_in, cut_out, [handles["head"], handles["tail"]]
         )
+        if editorial.get("maya_range") is not None:
+            maya_in, maya_out = map(int, editorial["maya_range"])
+            if maya_out < maya_in:
+                raise ValueError("Maya range end precedes start")
+            cut_range = [maya_in, maya_out]
+            work_range = [maya_in - handles["head"], maya_out + handles["tail"]]
         comparable = {
             "fps": int(fps_value) if fps_value.is_integer() else fps_value,
             "cut_in": cut_in,
@@ -1578,6 +1589,8 @@ class ShotManagerService:
                     "output_record": output_record_name,
                     "pattern": pattern,
                     "camera": str(row.get("camera") or ""),
+                    "camera_timing": str(row.get("camera_timing") or "follow"),
+                    "camera_frame": int(row.get("camera_frame", row.get("start", 1))),
                     "frame_range": [int(row.get("start", 1)), int(row.get("end", 1))],
                     "resolution": [int(row.get("width", 1280)), int(row.get("height", 720))],
                     "playblast_preset": str(row.get("preset") or ""),
@@ -2330,11 +2343,8 @@ class ShotManagerService:
             placements_root = sequence_root / "publish" / "layout" / "placements"
             latest = read_json(placements_root / "latest.json", {}) or {}
             placements_path = placements_root / str(latest.get("path") or "")
-            if not placements_path.is_file():
-                raise RuntimeError(
-                    f"Sequence placements were not found: {placements_root}"
-                )
-            placements = self._relative_to_project(placements_path)
+            if placements_path.is_file():
+                placements = self._relative_to_project(placements_path)
         cast_publish = self.publish_sequence_cast(
             identity.episode,
             identity.sequence,
@@ -2705,7 +2715,7 @@ class ShotManagerService:
             package_info = camera_package_info(camera_path)
             camera_source = {"kind": "published_camera"}
             if package_info:
-                camera_name = f"Camera Package / {package_info['target']} / {package_info['subset']}"
+                camera_name = f"{package_info['kind']} / {package_info['target']} / {package_info['subset']}"
                 camera_source.update(camera_package=True, target=package_info['target'], subset=package_info['subset'])
             add_published_component(
                 "camera",
@@ -2979,6 +2989,12 @@ class ShotManagerService:
                 for field in ("path", "version"):
                     if field in saved:
                         merged[field] = saved[field]
+            if (generated_source.get("kind") == "cast_entry"
+                    and (saved.get("source") or {}).get("asset_version_locked")
+                    and saved.get("path") and component.get("path")
+                    and Path(saved["path"]).parent.parent == Path(component["path"]).parent.parent):
+                merged["path"] = saved["path"]
+                merged["version"] = saved.get("version", "")
             is_optional_background = (
                 str(component.get("component_type") or "").lower() == "usd"
                 and canonical_asset_category(
@@ -3971,6 +3987,21 @@ class ShotManagerService:
         return [row for row in self.list_shot_scene_publish_versions(identity, "camera")
                 if camera_package_info(row.path)]
 
+    def latest_primary_camera_publish(self, identity: ShotIdentity) -> Path | None:
+        """Resolve the newest authoritative Primary Camera across shot/sequence scopes."""
+        candidates = [
+            Path(row.path) for row in self.list_shot_scene_publish_versions(identity, "camera")
+            if row.latest
+        ]
+        sequence = self._latest_shot_camera_publish(identity)
+        if sequence:
+            candidates.append(Path(sequence))
+        for path in candidates:
+            data = read_json(path, {}) or {}
+            if data.get("schema") == "smartpipeline.primary_camera.v1":
+                return path
+        return None
+
     def list_set_dress_data(
         self,
         identity: ShotIdentity,
@@ -4288,6 +4319,9 @@ class ShotManagerService:
             "version": version_label,
             "comment": comment,
         })
+        if data.get("schema") == "smartpipeline.review_camera_rules.v1":
+            from smartlib.dcc.maya.review_camera_rules import make_reference_relative
+            data = make_reference_relative(data, version_dir / output_name)
         if source_workfile:
             data["source_workfile"] = self._relative_to_project(Path(source_workfile))
         output_path = write_json(version_dir / output_name, data)
@@ -4398,8 +4432,10 @@ class ShotManagerService:
         native_exporter=None,
     ) -> Path:
         """Publish a camera or render-layer snapshot directly from a DCC scene."""
-        if payload.get('schema') == 'smartpipeline.camera_package.v2' and native_exporter is None:
-            raise ValueError('Native Camera Package requires its Primary dependency export.')
+        if payload.get('schema') in {
+            'smartpipeline.camera_package.v2', 'smartpipeline.primary_camera.v1'
+        } and native_exporter is None:
+            raise ValueError('Native Primary Camera publish requires its dependency export.')
         clean_type = _clean_publish_token(data_type)
         if clean_type not in {"camera", "light"}:
             raise ValueError(f"Unsupported shot scene publish type: {data_type}")
@@ -4414,7 +4450,9 @@ class ShotManagerService:
         published_data = dict(payload)
         if native_exporter is not None:
             published_data['files'] = dict(native_exporter(version_dir))
-            if payload.get('schema') == 'smartpipeline.camera_package.v2':
+            if payload.get('schema') in {
+                'smartpipeline.camera_package.v2', 'smartpipeline.primary_camera.v1'
+            }:
                 native_name = published_data['files'].get('ma', '')
                 if not native_name or Path(native_name).name != native_name or not (version_dir / native_name).is_file():
                     raise ValueError('Primary dependency export did not produce a native Maya file.')
@@ -4431,6 +4469,11 @@ class ShotManagerService:
                 "published_at": datetime.now().isoformat(timespec="seconds"),
             }
         )
+        if published_data.get("schema") == "smartpipeline.review_camera_rules.v1":
+            from smartlib.dcc.maya.review_camera_rules import make_reference_relative
+            published_data = make_reference_relative(
+                published_data, version_dir / output_name
+            )
         if source_workfile:
             published_data["source_workfile"] = self._relative_to_project(Path(source_workfile))
         output_path = write_json(version_dir / output_name, published_data)
@@ -4607,10 +4650,10 @@ class ShotManagerService:
             ),
             LayoutPublishStatusItem(
                 name="placements",
-                state="READY" if placements_publish else "MISSING",
+                state="READY" if placements_publish else "OPTIONAL",
                 version=placements_publish.parent.name if placements_publish else "",
                 path=str(placements_publish or self.shot_data_root(identity) / "placements"),
-                message="" if placements_publish else "Shot Placement Publish/Data was not found.",
+                message="" if placements_publish else "Optional Shot Placement Publish/Data was not found.",
             ),
             LayoutPublishStatusItem(
                 name="camera",
@@ -4631,7 +4674,10 @@ class ShotManagerService:
 
     def build_anim_input_package(self, identity: SequenceIdentity, comment: str = "") -> list[AnimInputBuildResult]:
         statuses = self.layout_publish_status(identity)
-        blocking = [item for item in statuses if item.state != "READY"]
+        blocking = [
+            item for item in statuses
+            if item.state != "READY" and item.name != "placements"
+        ]
         if blocking:
             names = ", ".join(item.name for item in blocking)
             raise RuntimeError(f"Anim input package is blocked by missing layout publish data: {names}")
@@ -4653,12 +4699,14 @@ class ShotManagerService:
         overrides: dict[str, Any] | None = None,
     ) -> AnimInputBuildResult:
         statuses = self.shot_anim_input_status(identity)
-        blocking = [item for item in statuses if item.state == "MISSING" and item.name != "layout_overlay"]
+        blocking = [
+            item for item in statuses
+            if item.state == "MISSING"
+            and item.name not in {"layout_overlay", "placements"}
+        ]
         if str((overrides or {}).get("camera") or "").strip():
             blocking = [item for item in blocking if item.name != "camera"]
         use_placements = (overrides or {}).get("use_placements") is not False
-        if not use_placements:
-            blocking = [item for item in blocking if item.name != "placements"]
         if blocking:
             names = ", ".join(item.name for item in blocking)
             raise RuntimeError(f"WORK STAGE inputs are blocked by missing shot data: {names}")
@@ -5065,7 +5113,7 @@ class ShotManagerService:
         cut_in = editorial.get("cut_in")
         cut_out = editorial.get("cut_out")
         handles = self._editorial_handles(editorial)
-        work_range = self._anim_work_range(cut_in, cut_out, handles)
+        work_range = editorial.get("work_range") or self._anim_work_range(cut_in, cut_out, handles)
         anim_input = {
             "package_type": "anim_input",
             "episode": identity.episode,
@@ -5075,7 +5123,7 @@ class ShotManagerService:
             "fps": editorial.get("fps") or sequence_editorial.get("fps") or self.project_fps,
             "source_cut_range": [cut_in, cut_out],
             "work_range": work_range,
-            "cut_range": self._anim_cut_range_in_work(work_range, cut_in, cut_out, handles),
+            "cut_range": editorial.get("cut_range") or self._anim_cut_range_in_work(work_range, cut_in, cut_out, handles),
             "handles": handles,
             "cast": self._relative_to_project(cast_publish),
             "placements": self._relative_to_project(placements_publish) if placements_publish else "",

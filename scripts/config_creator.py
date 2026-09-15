@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import yaml
@@ -9,6 +10,9 @@ from PySide6 import QtWidgets, QtCore, QtGui
 # パス設定
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PIPELINE_ROOT = os.path.normpath(os.path.join(CURRENT_DIR, ".."))
+PACKAGE_ROOT = os.path.join(PIPELINE_ROOT, "packages")
+if PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, PACKAGE_ROOT)
 SMARTPROJECTS_ROOT = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG_DIR") or os.path.normpath(os.path.join(PIPELINE_ROOT, "..", "smartprojects"))
 STUDIO_CONFIG_PATH = os.environ.get("SMARTPIPELINE_STUDIO_CONFIG") or os.path.join(SMARTPROJECTS_ROOT, "studio.yml")
 PROJECTS_ROOT = os.environ.get("SMARTPIPELINE_PROJECT_CONFIG_ROOT") or os.path.join(SMARTPROJECTS_ROOT, "config")
@@ -297,9 +301,12 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self.context_tab = self.setup_context_tab()
         self.resolvers_tab = self.setup_resolvers_tab()
         self.review_tab = self.setup_review_tab()
+        self.pipeline_profile_tab = self.setup_pipeline_profile_tab()
 
         self.tabs.addTab(self.studio_tab, "Studio")
+        self.tabs.addTab(self.pipeline_profile_tab, "Project Profile")
         self.tabs.addTab(self.soft_tab, "Softwares")
+        self.tabs.addTab(self.setup_maya_custom_tab(), "Maya Custom")
         self.tabs.addTab(self.anchors_table["widget"], "Anchors")
         self.tabs.addTab(self.shot_depts_list["widget"], "Shot Depts")
         self.tabs.addTab(self.asset_depts_list["widget"], "Asset Depts")
@@ -341,6 +348,99 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         command_layout.addWidget(self.revert_btn)
         command_layout.addWidget(self.save_btn)
         main_layout.addLayout(command_layout)
+
+    def setup_maya_custom_tab(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.addWidget(QtWidgets.QLabel(
+            "SmartMenu > Custom: Save, then use Reload SmartMenu in Maya."
+        ))
+        self.maya_custom_table = QtWidgets.QTableWidget(0, 3)
+        self.maya_custom_table.setHorizontalHeaderLabels(["Name", "Type", "Command"])
+        self.maya_custom_table.horizontalHeader().setSectionResizeMode(
+            2, QtWidgets.QHeaderView.Stretch
+        )
+        layout.addWidget(self.maya_custom_table)
+        buttons = QtWidgets.QHBoxLayout()
+        add = QtWidgets.QPushButton("Add")
+        add.clicked.connect(lambda: self._add_maya_custom_row())
+        remove = QtWidgets.QPushButton("Remove Selected")
+        remove.clicked.connect(self._remove_maya_custom_row)
+        buttons.addWidget(add)
+        buttons.addWidget(remove)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        return page
+
+    def _add_maya_custom_row(self, entry=None):
+        entry = dict(entry or {})
+        table = self.maya_custom_table
+        row = table.rowCount()
+        table.insertRow(row)
+        name = QtWidgets.QTableWidgetItem(str(entry.get("name") or entry.get("label") or ""))
+        name.setData(QtCore.Qt.UserRole, entry)
+        table.setItem(row, 0, name)
+        kind = QtWidgets.QComboBox()
+        kind.addItems(["python", "mel", "callable"])
+        current = str(entry.get("type") or ("callable" if entry else "python"))
+        if kind.findText(current) < 0:
+            kind.addItem(current)
+        kind.setCurrentText(current)
+        table.setCellWidget(row, 1, kind)
+        command = QtWidgets.QPlainTextEdit()
+        command.setPlaceholderText("import studiolibrary\nstudiolibrary.main()")
+        command.setPlainText(str(entry.get("command") or ""))
+        table.setCellWidget(row, 2, command)
+        table.setRowHeight(row, 100)
+        table.setCurrentCell(row, 0)
+
+    def _remove_maya_custom_row(self):
+        row = self.maya_custom_table.currentRow()
+        if row >= 0:
+            self.maya_custom_table.removeRow(row)
+
+    def _load_maya_custom_editor(self, project_name=None):
+        from smartlib.dcc.maya.smart_menu import DEFAULT_MENU_CONFIG, _menu_items_from_config
+        data = merge_dicts(
+            copy.deepcopy(DEFAULT_MENU_CONFIG),
+            load_yml(os.path.join(DEFAULT_DIR, "maya_menu.yml")),
+        )
+        if project_name:
+            data = merge_dicts(data, load_yml(os.path.join(PROJECTS_ROOT, project_name, "maya_menu.yml")))
+        self.maya_menu_config = data
+        self.maya_custom_table.setRowCount(0)
+        categories = data.get("maya_menu", {}).get("categories", {})
+        for entry in _menu_items_from_config(categories.get("Custom", [])):
+            self._add_maya_custom_row(entry)
+
+    def _maya_custom_config_from_ui(self):
+        data = copy.deepcopy(self.maya_menu_config)
+        entries = []
+        table = self.maya_custom_table
+        for row in range(table.rowCount()):
+            name_item = table.item(row, 0)
+            name = name_item.text().strip()
+            kind = table.cellWidget(row, 1).currentText()
+            command = table.cellWidget(row, 2).toPlainText()
+            if not name or not command.strip():
+                raise ValueError(f"Maya Custom row {row + 1}: Name and Command are required.")
+            if kind not in {"python", "mel", "callable"}:
+                raise ValueError(f"Maya Custom row {row + 1}: Unsupported type: {kind}")
+            if kind == "python":
+                try:
+                    compile(command, "<SmartMenu Custom>", "exec")
+                except SyntaxError as exc:
+                    raise ValueError(f"Maya Custom '{name}': {exc}") from exc
+            entry = dict(name_item.data(QtCore.Qt.UserRole) or {})
+            entry.pop("label", None)
+            entry.update(name=name, command=command)
+            if kind == "callable":
+                entry.pop("type", None)
+            else:
+                entry["type"] = kind
+            entries.append(entry)
+        data.setdefault("maya_menu", {}).setdefault("categories", {})["Custom"] = entries
+        return data
 
     def setup_studio_tab(self):
         page = QtWidgets.QWidget()
@@ -1383,9 +1483,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         stage_help.setWordWrap(True)
         stage_layout.addWidget(stage_help)
-        self.context_stage_table = QtWidgets.QTableWidget(0, 7)
+        self.context_stage_table = QtWidgets.QTableWidget(0, 8)
         self.context_stage_table.setHorizontalHeaderLabels(
-            ["Stage", "Character", "Environment", "Prop", "USD Purpose", "Payloads", "Crowds"]
+            ["Stage", "Character", "Background", "Prop", "Vehicle", "USD Purpose", "Payloads", "Crowds"]
         )
         self._configure_context_table(self.context_stage_table)
         stage_layout.addWidget(self.context_stage_table)
@@ -1593,7 +1693,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         left_layout.addLayout(sel_btns)
 
         # 右側
-        right_layout = QtWidgets.QVBoxLayout()
+        self.software_editor_tabs = QtWidgets.QTabWidget()
         self.software_settings_table = QtWidgets.QTableWidget(0, 3)
         self.software_settings_table.setHorizontalHeaderLabels(["Setting", "Type", "Value"])
         self.software_settings_table.horizontalHeader().setSectionResizeMode(
@@ -1647,17 +1747,26 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         )
         plugin_note.setWordWrap(True)
 
-        right_layout.addWidget(QtWidgets.QLabel("Software Settings:"))
-        right_layout.addWidget(self.software_settings_table, 1)
-        right_layout.addLayout(settings_btns)
-        right_layout.addWidget(QtWidgets.QLabel("Path Settings:"))
-        right_layout.addWidget(self.env_tree)
-        right_layout.addLayout(tree_btns)
-        right_layout.addWidget(QtWidgets.QLabel("Build Plugin Profiles:"))
-        right_layout.addWidget(self.plugin_profile_table)
-        right_layout.addWidget(plugin_note)
+        settings_page = QtWidgets.QWidget()
+        settings_layout = QtWidgets.QVBoxLayout(settings_page)
+        settings_layout.addWidget(self.software_settings_table, 1)
+        settings_layout.addLayout(settings_btns)
+        self.software_editor_tabs.addTab(settings_page, "Software Settings")
 
-        layout.addLayout(left_layout, 1); layout.addLayout(right_layout, 2)
+        paths_page = QtWidgets.QWidget()
+        paths_layout = QtWidgets.QVBoxLayout(paths_page)
+        paths_layout.addWidget(self.env_tree, 1)
+        paths_layout.addLayout(tree_btns)
+        self.software_editor_tabs.addTab(paths_page, "Path Settings")
+
+        plugins_page = QtWidgets.QWidget()
+        plugins_layout = QtWidgets.QVBoxLayout(plugins_page)
+        plugins_layout.addWidget(self.plugin_profile_table, 1)
+        plugins_layout.addWidget(plugin_note)
+        self.software_editor_tabs.addTab(plugins_page, "Build Plugin Profiles")
+
+        layout.addLayout(left_layout, 1)
+        layout.addWidget(self.software_editor_tabs, 2)
         return page
 
     def _add_item_with_icon(self, list_widget, sid, icon_name, exe_path=""):
@@ -1947,6 +2056,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             "character": "CHAR",
             "environment": "ENV",
             "prop": "PROP",
+            "vehicle": "VEH",
         }
         for asset_class, recipe in recipes.items():
             if not isinstance(recipe, dict):
@@ -1993,7 +2103,12 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
         # The editor owns independent definitions per Asset Type. Clone legacy
         # shared definitions non-destructively and update only the assignments.
-        scoped_prefixes = {"character": "CHAR", "environment": "BG", "prop": "PROP"}
+        scoped_prefixes = {
+            "character": "CHAR",
+            "environment": "BG",
+            "prop": "PROP",
+            "vehicle": "VEH",
+        }
         for asset_class, recipe in recipes.items():
             if not isinstance(recipe, dict):
                 continue
@@ -2026,6 +2141,29 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 if scoped_id in common:
                     scoped_names.append(scoped_id)
             recipe["profile_names"] = list(dict.fromkeys(scoped_names))
+
+        # Legacy configs used Shot stage names as shared profile IDs. Once the
+        # definitions have been cloned into their Asset Type scopes, those
+        # shared entries are no longer visible in the editor and must not be
+        # left behind to fail validation. Keep any entry that is still
+        # referenced so migration never discards an active definition.
+        referenced_profiles = {
+            str(profile_id)
+            for recipe in recipes.values()
+            if isinstance(recipe, dict)
+            for profile_id in (recipe.get("profile_names") or [])
+        }
+        for policy in stage_profiles.values():
+            if not isinstance(policy, dict):
+                continue
+            referenced_profiles.update(
+                str(policy.get(asset_class) or "")
+                for asset_class in recipes
+            )
+        for legacy_stage_name in ("FAST", "WORK", "FINAL"):
+            if legacy_stage_name not in referenced_profiles:
+                common.pop(legacy_stage_name, None)
+                labels.pop(legacy_stage_name, None)
 
     def _on_context_changed(self, current, _previous):
         if self._context_loading:
@@ -2141,9 +2279,9 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
     def _populate_stage_profiles(self, data):
         self.context_stage_table.setRowCount(0)
         defaults = {
-            "FAST": {"character": "CHAR_LO", "environment": "BG_PROXY", "prop": "PROP_LO", "purpose": "proxy", "load_payloads": False, "load_crowds": False},
-            "WORK": {"character": "CHAR_ANIM", "environment": "BG_PROXY", "prop": "PROP_LO", "purpose": "proxy", "load_payloads": True, "load_crowds": True},
-            "REND": {"character": "CHAR_REND", "environment": "BG_REND", "prop": "PROP_REND", "purpose": "render", "load_payloads": True, "load_crowds": True},
+            "FAST": {"character": "CHAR_LO", "environment": "BG_PROXY", "prop": "PROP_LO", "vehicle": "VEH_LO", "purpose": "proxy", "load_payloads": False, "load_crowds": False},
+            "WORK": {"character": "CHAR_ANIM", "environment": "BG_PROXY", "prop": "PROP_ANIM", "vehicle": "VEH_ANIM", "purpose": "proxy", "load_payloads": True, "load_crowds": True},
+            "REND": {"character": "CHAR_REND", "environment": "BG_REND", "prop": "PROP_REND", "vehicle": "VEH_REND", "purpose": "render", "load_payloads": True, "load_crowds": True},
         }
         policies = data.get("stage_profiles") or defaults
         recipes = data.get("asset_context_recipes") or {}
@@ -2154,7 +2292,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             row = self.context_stage_table.rowCount()
             self.context_stage_table.insertRow(row)
             self.context_stage_table.setItem(row, 0, QtWidgets.QTableWidgetItem(stage))
-            for column, key in enumerate(("character", "environment", "prop"), 1):
+            for column, key in enumerate(("character", "environment", "prop", "vehicle"), 1):
                 recipe = recipes.get(key) or {}
                 available = list(recipe.get("profile_names") or [])
                 selected = str(policy[key]).upper()
@@ -2172,8 +2310,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             purpose = QtWidgets.QComboBox()
             purpose.addItems(["proxy", "render", "bbox"])
             purpose.setCurrentText(str(policy.get("purpose") or "proxy").lower())
-            self.context_stage_table.setCellWidget(row, 4, purpose)
-            for column, key in ((5, "load_payloads"), (6, "load_crowds")):
+            self.context_stage_table.setCellWidget(row, 5, purpose)
+            for column, key in ((6, "load_payloads"), (7, "load_crowds")):
                 item = QtWidgets.QTableWidgetItem()
                 item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(
@@ -2190,17 +2328,18 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             if not stage:
                 continue
             values = []
-            for column in (1, 2, 3):
+            for column in (1, 2, 3, 4):
                 combo = self.context_stage_table.cellWidget(row, column)
                 values.append(str(combo.currentData() or "").strip() if combo else "")
-            purpose = self.context_stage_table.cellWidget(row, 4)
+            purpose = self.context_stage_table.cellWidget(row, 5)
             result[stage] = {
                 "character": values[0],
                 "environment": values[1],
                 "prop": values[2],
+                "vehicle": values[3],
                 "purpose": purpose.currentText().strip().lower() if purpose else "proxy",
-                "load_payloads": self.context_stage_table.item(row, 5).checkState() == QtCore.Qt.CheckState.Checked,
-                "load_crowds": self.context_stage_table.item(row, 6).checkState() == QtCore.Qt.CheckState.Checked,
+                "load_payloads": self.context_stage_table.item(row, 6).checkState() == QtCore.Qt.CheckState.Checked,
+                "load_crowds": self.context_stage_table.item(row, 7).checkState() == QtCore.Qt.CheckState.Checked,
             }
         return result
 
@@ -2258,7 +2397,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
 
     @staticmethod
     def _profile_definition_id(asset_class, profile_name, existing):
-        prefix = {"character": "CHAR", "environment": "BG", "prop": "PROP"}.get(
+        prefix = {"character": "CHAR", "environment": "BG", "prop": "PROP", "vehicle": "VEH"}.get(
             str(asset_class), re.sub(r"[^A-Z0-9]+", "_", str(asset_class).upper())
         )
         suffix = re.sub(r"[^A-Z0-9]+", "_", str(profile_name).upper()).strip("_") or "PROFILE"
@@ -2644,7 +2783,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                         if not isinstance(policy, dict):
                             errors.append(f"{context_name}/{version}/{stage_name}: policy must be a mapping")
                             continue
-                        for asset_class in ("character", "environment", "prop"):
+                        for asset_class in ("character", "environment", "prop", "vehicle"):
                             selected = str(policy.get(asset_class) or "").upper()
                             recipe = recipes.get(asset_class) or {}
                             available = {
@@ -2658,13 +2797,154 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                                 )
         return errors
 
+    def setup_pipeline_profile_tab(self):
+        from smartlib.core.pipeline_profile import PROFILES
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(page)
+        self.pipeline_profile_combo = QtWidgets.QComboBox()
+        self.pipeline_profile_combo.addItem("Unconfigured (existing workflow)", "")
+        for name in PROFILES:
+            self.pipeline_profile_combo.addItem(name, name)
+        self.pipeline_profile_description = QtWidgets.QLabel()
+        self.pipeline_profile_description.setWordWrap(True)
+        self.pipeline_profile_combo.currentIndexChanged.connect(self._update_pipeline_profile_description)
+        layout.addRow("Pipeline Profile", self.pipeline_profile_combo)
+        layout.addRow("Contract Version", QtWidgets.QLabel("1"))
+        layout.addRow("Publish Contract", self.pipeline_profile_description)
+        note = QtWidgets.QLabel(
+            "Publish Animation promotes the files listed in a Workspace Build Manifest. "
+            "USD/ABC profiles publish final deformation, including shot sculpt. "
+            "Composition Snapshots pin versions; Effects and Lighting adopt a fixed snapshot. "
+            "Profile changes apply to future publishes only."
+        )
+        note.setWordWrap(True)
+        layout.addRow(note)
+        usd_group = QtWidgets.QGroupBox("USD Stage Settings")
+        usd_form = QtWidgets.QFormLayout(usd_group)
+        self.usd_meters_per_unit_edit = QtWidgets.QLineEdit("0.01")
+        self.usd_meters_per_unit_edit.setToolTip(
+            "Meters per scene unit: cm = 0.01, m = 1, mm = 0.001."
+        )
+        self.usd_up_axis_combo = QtWidgets.QComboBox()
+        self.usd_up_axis_combo.addItems(["Y", "Z"])
+        usd_form.addRow("Meters per Unit", self.usd_meters_per_unit_edit)
+        usd_form.addRow("Up Axis", self.usd_up_axis_combo)
+        usd_note = QtWidgets.QLabel(
+            "Project-wide USD settings (cm = 0.01, m = 1, mm = 0.001). "
+            "Saving these settings does not convert existing scenes or USD files."
+        )
+        usd_note.setWordWrap(True)
+        usd_form.addRow(usd_note)
+        layout.addRow(usd_group)
+        color_group = QtWidgets.QGroupBox("Color Validation / OCIO")
+        color_form = QtWidgets.QFormLayout(color_group)
+        self.color_enabled = QtWidgets.QCheckBox("Use project OCIO in Maya / Nuke / RV")
+        color_form.addRow(self.color_enabled)
+        self.color_hosts = {}
+        for host in ("Maya", "Nuke", "RV"):
+            check = QtWidgets.QCheckBox(host)
+            check.setChecked(True)
+            self.color_hosts[host] = check
+            color_form.addRow("Validation host", check)
+        self.color_fields = {}
+        from smartlib.core.color_settings import DEFAULTS
+        for key in ("config", "working_space", "display", "view"):
+            field = QtWidgets.QLineEdit(DEFAULTS[key])
+            self.color_fields[key] = field
+            color_form.addRow(key.replace("_", " ").title(), field)
+        self.color_fields["working_space"].setReadOnly(True)
+        self.color_fields["config"].setPlaceholderText("color/ocio/<version>/config.ocio")
+        browse = QtWidgets.QPushButton("Select OCIO config...")
+        browse.clicked.connect(self._browse_color_config)
+        color_form.addRow(browse)
+        color_form.addRow(QtWidgets.QLabel("Config paths are relative to the project config directory or absolute.\nAn OCIO 2.4 config cannot be loaded by an OCIO 2.2 host."))
+        layout.addRow(color_group)
+        self._update_pipeline_profile_description()
+        return page
+
+    def _browse_color_config(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "OCIO config", "", "OCIO (*.ocio)")
+        if path:
+            self.color_fields["config"].setText(path)
+
+    def _color_config_from_ui(self):
+        from smartlib.core.color_settings import color_settings
+        return color_settings({"color": dict(enabled=self.color_enabled.isChecked(),
+                              validation_hosts=[host for host, check in self.color_hosts.items() if check.isChecked()],
+                              **{key: field.text().strip() for key, field in self.color_fields.items()})})
+
+    def _update_pipeline_profile_description(self, *_args):
+        from smartlib.core.pipeline_profile import PROFILES
+        profile = PROFILES.get(self.pipeline_profile_combo.currentData())
+        self.pipeline_profile_description.setText(
+            f"{profile.description}\nShot entrypoint: {profile.entrypoint}" if profile
+            else "Select a profile to enable Composition Snapshot publishing."
+        )
+
+    def _load_pipeline_profile_editor(self, project_name=None):
+        from smartlib.core.config_loader import ProjectConfig
+        directory = os.path.join(PROJECTS_ROOT, project_name) if project_name else DEFAULT_DIR
+        settings = ProjectConfig(directory).load("project_settings.yml")
+        from smartlib.core.color_settings import color_settings
+        color = color_settings(settings)
+        self.color_enabled.setChecked(color["enabled"])
+        for host, check in self.color_hosts.items():
+            check.setChecked(host in color["validation_hosts"])
+        for key, field in self.color_fields.items():
+            field.setText(str(color[key]))
+        name = str(settings.get("pipeline_profile") or "")
+        index = self.pipeline_profile_combo.findData(name)
+        if index < 0:
+            self.pipeline_profile_combo.addItem(f"Unsupported: {name}", name)
+            index = self.pipeline_profile_combo.findData(name)
+        self.pipeline_profile_combo.setCurrentIndex(index)
+        self._loaded_pipeline_profile_version = settings.get("pipeline_profile_version", 1)
+        usd = settings.get("usd", {})
+        if not isinstance(usd, dict):
+            raise ValueError("USD settings must be a mapping.")
+        self.usd_meters_per_unit_edit.setText(str(usd.get("meters_per_unit", 0.01)))
+        axis = str(usd.get("up_axis", "Y")).upper()
+        self.usd_up_axis_combo.clear()
+        self.usd_up_axis_combo.addItems(["Y", "Z"])
+        if self.usd_up_axis_combo.findText(axis) < 0:
+            self.usd_up_axis_combo.addItem(axis)
+        self.usd_up_axis_combo.setCurrentText(axis)
+
+    def _usd_config_from_ui(self):
+        try:
+            unit = float(self.usd_meters_per_unit_edit.text().strip())
+        except ValueError as exc:
+            raise ValueError("USD Meters per Unit must be a positive finite number.") from exc
+        if not math.isfinite(unit) or unit <= 0:
+            raise ValueError("USD Meters per Unit must be a positive finite number.")
+        axis = self.usd_up_axis_combo.currentText()
+        if axis not in {"Y", "Z"}:
+            raise ValueError("USD Up Axis must be Y or Z.")
+        return {"meters_per_unit": unit, "up_axis": axis}
+
+    def _pipeline_profile_config_from_ui(self):
+        from smartlib.core.pipeline_profile import profile_from_settings
+        settings = {
+            "pipeline_profile": self.pipeline_profile_combo.currentData() or "",
+            "pipeline_profile_version": getattr(self, "_loaded_pipeline_profile_version", 1),
+        }
+        profile_from_settings(settings)
+        return settings
+
     def _save_context_configs(self, proj_dir):
+        usd_config = self._usd_config_from_ui()
+        color_config = self._color_config_from_ui()
         for context_name, versions in self.context_configs.items():
             for version, data in versions.items():
                 save_yml(os.path.join(proj_dir, "contexts", context_name, f"{version}.yml"), data)
         settings_path = os.path.join(proj_dir, "project_settings.yml")
         settings = load_yml(settings_path)
         settings["active_contexts"] = dict(self.context_active_versions)
+        settings.update(self._pipeline_profile_config_from_ui())
+        usd = dict(settings.get("usd") or {})
+        usd.update(usd_config)
+        settings["usd"] = usd
+        settings["color"] = dict(settings.get("color") or {}, **color_config)
         save_yml(settings_path, settings)
         asset_config_path = os.path.join(proj_dir, "templates_assets.yml")
         asset_config = load_yml(asset_config_path)
@@ -2715,10 +2995,14 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         if not name or not base: return
 
         try:
+            maya_menu_config = self._maya_custom_config_from_ui()
             review_config = self._review_config_from_ui()
+            self._pipeline_profile_config_from_ui()
+            self._usd_config_from_ui()
+            self._color_config_from_ui()
         except (ValueError, yaml.YAMLError) as exc:
             QtWidgets.QMessageBox.warning(
-                self, "Review Configuration Failed", str(exc)
+                self, "Configuration Failed", str(exc)
             )
             return
         config_errors = (
@@ -2851,6 +3135,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._save_resolver_rules(proj_dir)
         self._save_sequence_builder_config(proj_dir)
         save_yml(os.path.join(proj_dir, "review.yml"), review_config)
+        save_yml(os.path.join(proj_dir, "maya_menu.yml"), maya_menu_config)
         self.config_saved.emit()
         QtWidgets.QMessageBox.information(self, "Saved", "Success")
         self.close()
@@ -2892,6 +3177,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._load_resolver_editor(project_name)
         self._load_review_editor(project_name)
         self._load_sequence_builder_editor(project_name)
+        self._load_pipeline_profile_editor(project_name)
+        self._load_maya_custom_editor(project_name)
 
     def init_ui_from_default(self):
         master = load_yml(GLOBAL_SOFT_PATH).get('softwares', {})
@@ -2908,6 +3195,8 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         self._load_resolver_editor()
         self._load_review_editor()
         self._load_sequence_builder_editor()
+        self._load_pipeline_profile_editor()
+        self._load_maya_custom_editor()
 
     def remove_from_selected(self):
         row = self.selected_list.currentRow()

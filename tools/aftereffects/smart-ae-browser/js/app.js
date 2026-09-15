@@ -48,6 +48,9 @@
     aepFiles: [],
     aepFilesCacheKey: "",
     aepFilesCacheAt: 0,
+    publishedAepFiles: {},
+    publishedAepCacheKey: "",
+    publishedAepCacheAt: 0,
     selectedAepPath: "",
     nextSaveVersions: {},
     resolvedWorkRoots: {},
@@ -1670,11 +1673,14 @@
       state.filters.shot
     ].join("|");
     var rows = {};
+    var publishedByPath;
     var now = Date.now();
 
     if (state.aepFilesCacheKey === key && now - state.aepFilesCacheAt < 15000) {
       return state.aepFiles;
     }
+
+    publishedByPath = collectPublishedAepFiles();
 
     collectWorkAepRoots().forEach(function (root) {
       scanAepFiles(root, "Work").forEach(function (row) {
@@ -1683,7 +1689,7 @@
     });
 
     state.aepFiles = Object.keys(rows).map(function (path) {
-      return rows[path];
+      return applyPublishedAepInfo(rows[path], publishedByPath);
     }).sort(function (a, b) {
       return (b.modifiedTime || 0) - (a.modifiedTime || 0) || naturalCompare(a.path, b.path);
     });
@@ -1696,6 +1702,108 @@
     state.aepFiles = [];
     state.aepFilesCacheKey = "";
     state.aepFilesCacheAt = 0;
+    state.publishedAepFiles = {};
+    state.publishedAepCacheKey = "";
+    state.publishedAepCacheAt = 0;
+  }
+
+  function normalizedPathKey(path) {
+    return String(path || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/\/{2,}/g, "/")
+      .replace(/\/$/, "")
+      .toLowerCase();
+  }
+
+  function applyPublishedAepInfo(row, publishedByPath) {
+    var next = Object.assign({}, row || {});
+    var info = (publishedByPath || {})[normalizedPathKey(next.path)];
+    next.publishVersions = info ? asArray(info.versions).slice() : [];
+    next.publishedVersion = info ? String(info.latestVersion || next.publishVersions[0] || "") : "";
+    next.latestPublished = Boolean(info && info.latest);
+    return next;
+  }
+
+  function aepRowStatus(row) {
+    if (row && row.exists === false) {
+      return { status: "missing", label: "Missing" };
+    }
+    if (row && row.publishedVersion) {
+      return { status: "published", label: "Published " + row.publishedVersion };
+    }
+    return { status: "ready", label: "Ready" };
+  }
+
+  function collectPublishedAepFiles() {
+    var fs = nodeRequire("fs");
+    var pathModule = nodeRequire("path");
+    var childProcess = nodeRequire("child_process");
+    var project = selectedProject();
+    var key;
+    var scriptPath;
+    var python;
+    var now = Date.now();
+    var rows = {};
+    if (!fs || !pathModule || !childProcess || !project || !project.configDir) {
+      return rows;
+    }
+    key = [
+      project.configDir,
+      state.filters.episode,
+      state.filters.sequence,
+      state.filters.shot
+    ].join("|");
+    if (state.publishedAepCacheKey === key && now - state.publishedAepCacheAt < 15000) {
+      return state.publishedAepFiles;
+    }
+    scriptPath = pathModule.join(PIPELINE_ROOT, "scripts", "list_ae_precomp_publishes.py");
+    if (!fs.existsSync(scriptPath)) {
+      return rows;
+    }
+    python = findPythonExecutable(fs, pathModule, PIPELINE_ROOT);
+    selectedShotContexts().forEach(function (context) {
+      var result;
+      var payload;
+      try {
+        result = childProcess.spawnSync(python, [
+          scriptPath,
+          "--config-dir", project.configDir,
+          "--episode", context.episode,
+          "--sequence", context.sequence,
+          "--shot", context.shot
+        ], { encoding: "utf8", timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
+      } catch (error) {
+        return;
+      }
+      if (!result || result.status !== 0) {
+        return;
+      }
+      payload = parseLastJsonLine(result.stdout);
+      asArray(payload.publishes || []).forEach(function (publish) {
+        var source = normalizedPathKey(publish.source);
+        var version = String(publish.version || "");
+        if (!source) {
+          return;
+        }
+        if (!rows[source]) {
+          rows[source] = { versions: [], latestVersion: "", latest: false, publishes: [] };
+        }
+        if (version && rows[source].versions.indexOf(version) === -1) {
+          rows[source].versions.push(version);
+        }
+        rows[source].latest = rows[source].latest || publish.latest === true;
+        rows[source].publishes.push(publish);
+      });
+    });
+    Object.keys(rows).forEach(function (source) {
+      rows[source].versions.sort(function (a, b) { return naturalCompare(b, a); });
+      rows[source].latestVersion = rows[source].versions[0] || "";
+    });
+    state.publishedAepFiles = rows;
+    state.publishedAepCacheKey = key;
+    state.publishedAepCacheAt = now;
+    return rows;
   }
 
   function collectWorkAepRoots() {
@@ -2118,19 +2226,28 @@
   function renderAepRow(row) {
     var tr = document.createElement("tr");
     var filename = basename(row.path);
+    var status = aepRowStatus(row);
+    var publishVersions = asArray(row.publishVersions);
+    var publishTitle = publishVersions.length
+      ? "Published PreComp: " + publishVersions.join(", ")
+      : "";
     tr.innerHTML = [
-      '<td><div class="path-cell aep-name"><span></span></div></td>',
+      '<td><div class="path-cell aep-name"><span class="aep-publish-mark"></span><span class="aep-filename"></span></div></td>',
       "<td></td>",
       "<td></td>",
       '<td><span class="status"><span class="dot"></span><span></span></span></td>',
       '<td><button class="row-action" title="Open AEP"></button></td>'
     ].join("");
-    tr.className = row.path === state.selectedAepPath ? "is-selected" : "";
+    tr.className = (row.path === state.selectedAepPath ? "is-selected" : "")
+      + (row.latestPublished ? " is-latest-published" : "");
     tr.title = row.path;
-    tr.querySelector(".path-cell span").textContent = filename || row.path;
+    tr.querySelector(".aep-filename").textContent = filename || row.path;
+    tr.querySelector(".aep-publish-mark").classList.toggle("is-hidden", !row.latestPublished);
+    tr.querySelector(".aep-publish-mark").title = publishTitle;
     tr.children[1].textContent = row.versionLabel || "-";
     tr.children[2].textContent = row.modified || "-";
-    setStatusCell(tr.children[3].querySelector(".status"), row.exists === false ? "missing" : "ready");
+    setStatusCell(tr.children[3].querySelector(".status"), status.status, status.label);
+    tr.children[3].title = publishTitle;
     tr.addEventListener("click", function () {
       selectAepFile(row.path);
     });
@@ -2413,16 +2530,16 @@
     return normalized.slice(0, index + 1) + filename;
   }
 
-  function setStatusCell(element, status) {
+  function setStatusCell(element, status, label) {
     var normalized = normalizeStatus(status);
     element.className = "status " + normalized;
     element.querySelector(".dot").className = "dot " + normalized;
-    element.querySelector("span:last-child").textContent = titleCase(normalized);
+    element.querySelector("span:last-child").textContent = label || titleCase(normalized);
   }
 
   function normalizeStatus(status) {
     status = String(status || "ready").toLowerCase();
-    if (["replace", "updated", "missing", "changed", "error"].indexOf(status) !== -1) {
+    if (["replace", "updated", "missing", "changed", "error", "published"].indexOf(status) !== -1) {
       return status;
     }
     return "ready";

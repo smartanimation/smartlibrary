@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -36,44 +37,28 @@ def _clean_name(value: str) -> str:
 
 
 def _internal_review_slate_lines(
-    *,
-    project: str,
-    episode: str,
-    sequence: str,
-    shot: str,
-    department: str,
-    review_version: str,
-    planned_snapshot: dict,
-    frame_range: list[int],
-    handles: list[int],
-    fps: int | float,
-    created_at: datetime,
+    *, project: str, episode: str, sequence: str, shot: str, department: str,
+    review_version: str, planned_snapshot: dict, frame_range: list[int],
+    handles: list[int], fps: int | float, created_at: datetime,
 ) -> list[str]:
+    """Legacy formatter retained for callers; Formal Review no longer emits a slate."""
     lines = [
-        f"PROJECT {project}",
-        "",
-        f"{episode} / {sequence} / {shot}",
-        "",
+        f"PROJECT {project}", "", f"{episode} / {sequence} / {shot}", "",
         f"{ {'anim': 'ANIMATION'}.get(str(department).lower(), str(department or 'review').upper()) } REVIEW",
-        f"Review {review_version}",
-        "",
+        f"Review {review_version}", "",
     ]
     for row in planned_snapshot.get("inputs") or []:
         if not row.get("enabled", True):
             continue
-        data_type = str(row.get("type") or "data")
-        name = str(row.get("name") or "main")
-        context = str(row.get("context") or "")
-        version = str(row.get("version") or "-")
-        detail = " ".join(value for value in (name, context, version) if value)
-        lines.append(f"{data_type:<18} {detail}")
+        detail = " ".join(str(value) for value in (
+            row.get("name") or "main", row.get("context") or "",
+            row.get("version") or "-",
+        ) if value)
+        lines.append(f"{str(row.get('type') or 'data'):<18} {detail}")
     lines.extend([
-        "",
-        f"Frames     {int(frame_range[0])}-{int(frame_range[1])}",
+        "", f"Frames     {int(frame_range[0])}-{int(frame_range[1])}",
         f"Handles    {int(handles[0])} / {int(handles[1])}",
-        f"FPS        {float(fps):g}",
-        "",
-        created_at.strftime("%Y-%m-%d"),
+        f"FPS        {float(fps):g}", "", created_at.strftime("%Y-%m-%d"),
     ])
     return lines
 
@@ -174,6 +159,91 @@ def _preferred_camera(cameras: list[str]) -> str:
         (camera for camera in cameras if "cam_cha" in camera.lower()),
         cameras[0] if cameras else "",
     )
+
+
+def _restored_primary_camera(cmds, cameras: list[str]) -> str:
+    """Resolve the Camera Package Primary by UUID/path, then scene ownership."""
+    plug = ":smartCameraPlayblastInfo.settingsJson"
+    if cmds.objExists(plug):
+        try:
+            prefs = json.loads(cmds.getAttr(plug) or "{}")
+        except Exception:
+            prefs = {}
+        primary_uuid = str(prefs.get("primary_uuid") or "")
+        matches = cmds.ls(primary_uuid, long=True) or [] if primary_uuid else []
+        if len(matches) == 1:
+            return str(matches[0])
+        primary = str(prefs.get("primary") or "")
+        matches = cmds.ls(primary, long=True) or [] if primary else []
+        if len(matches) == 1:
+            return str(matches[0])
+    try:
+        from smartlib.dcc.maya.camera_output import primary_camera
+        roots = [item for item in cameras if primary_camera(item, cmds) == item]
+        if len(roots) == 1:
+            return roots[0]
+    except Exception:
+        pass
+    return _preferred_camera(cameras)
+
+
+def _collect_primary_review_overlay(
+    cmds, *, camera: str, start: int, end: int, width: int, height: int,
+    fps: float, project: str, shot: str, department: str, task: str,
+    source_file: str, created_at: str,
+) -> dict:
+    """Sample Primary camera metadata only; no camera or viewport bake."""
+    from smartlib.review.overlay import SCHEMA
+    shapes = cmds.listRelatives(camera, shapes=True, fullPath=True, type="camera") or []
+    if len(shapes) != 1:
+        raise RuntimeError(f"Primary camera shape was not resolved: {camera}")
+    shape = shapes[0]
+    original_time = cmds.currentTime(query=True)
+    samples = []
+    try:
+        for frame in range(start, end + 1):
+            cmds.currentTime(frame, edit=True)
+            try:
+                from smartlib.dcc.maya.camera_output import _camera_fn
+                near = float(cmds.getAttr(f"{shape}.nearClipPlane"))
+                left, right, bottom, top = _camera_fn(shape).getRenderingFrustum(
+                    width / max(1.0, float(height))
+                )
+                horizontal_fov = math.degrees(
+                    math.atan2(float(right), near) - math.atan2(float(left), near)
+                )
+                vertical_fov = math.degrees(
+                    math.atan2(float(top), near) - math.atan2(float(bottom), near)
+                )
+                frustum = [float(left), float(right), float(bottom), float(top)]
+            except (ImportError, AttributeError):
+                horizontal_fov = float(
+                    cmds.camera(shape, query=True, horizontalFieldOfView=True)
+                )
+                vertical_fov = float(
+                    cmds.camera(shape, query=True, verticalFieldOfView=True)
+                )
+                frustum = []
+            samples.append({
+                "frame": frame,
+                "camera": camera.rsplit("|", 1)[-1].rsplit(":", 1)[-1],
+                "focal_length_mm": float(cmds.getAttr(f"{shape}.focalLength")),
+                "horizontal_aperture_in": float(cmds.getAttr(f"{shape}.horizontalFilmAperture")),
+                "vertical_aperture_in": float(cmds.getAttr(f"{shape}.verticalFilmAperture")),
+                "film_fit": str(cmds.getAttr(f"{shape}.filmFit", asString=True)),
+                "horizontal_fov_deg": horizontal_fov,
+                "vertical_fov_deg": vertical_fov,
+                "rendering_frustum": frustum,
+            })
+    finally:
+        cmds.currentTime(original_time, edit=True)
+    return {
+        "schema": SCHEMA, "created_at": created_at,
+        "project": project, "shot": shot, "department": department, "task": task,
+        "source_file": Path(source_file).name, "camera": samples[0]["camera"],
+        "frame_range": [start, end], "fps": fps, "resolution": [width, height],
+        "samples": samples,
+    }
 
 
 def _current_maya_scene_format(cmds) -> tuple[str, str]:
@@ -1178,6 +1248,22 @@ def _run_scene_construction(
             project_root=manager.project_config.project_root,
             construct_data=construct_data,
         )
+    composition_snapshot = str(getattr(args, "composition_snapshot", "") or "")
+    composition_data, composition_rows = None, []
+    source_construct_data = construct_data
+    if composition_snapshot:
+        from .composition_review import apply_snapshot
+        composition_data, composition_rows = apply_snapshot(cmds, manager, identity, composition_snapshot)
+        canonical_reused = False
+        args.canonical_fingerprint = ""  # Do not reuse source-ANIM render caches.
+        referenced = list(cmds.file(query=True, reference=True) or [])
+        construct_data = dict(construct_data)
+        construct_data["composition_snapshot"] = {
+            "path": composition_snapshot, "version": composition_data["version"],
+        }
+        construct_data["components"] = [c for c in construct_data.get("components", [])
+            if c.get("component_type") not in {"rig", "animation_curve", "usd"}] + [
+                {"component_type":row["type"], **row} for row in composition_rows]
     review_requested = str(args.generate_review).strip().lower() not in {
         "", "0", "false", "no", "off"
     }
@@ -1193,6 +1279,10 @@ def _run_scene_construction(
         planned_snapshot = json.loads(getattr(args, "planned_snapshot_json", "{}") or "{}")
     except (TypeError, ValueError):
         planned_snapshot = {}
+    if composition_snapshot:
+        planned_snapshot = dict(planned_snapshot)
+        planned_snapshot["inputs"] = [r for r in planned_snapshot.get("inputs", [])
+            if r.get("type") not in {"rig", "animation_curve", "usd"}] + composition_rows
     layer_definition, layer_definition_path = manager.planned_layer_definition(
         identity, plan.department, planned_snapshot)
     assembly_definition = manager.assembly_definition(identity)
@@ -1222,6 +1312,15 @@ def _run_scene_construction(
         assembly_by_uid=assembly_by_uid,
     )
     review_contract = shot_service.load_cast(identity)
+    if composition_data:
+        from copy import deepcopy
+        review_contract["cast"] = deepcopy(composition_data["cast"])
+        active_targets = {m["instance_id"] for m in composition_data["members"]}
+        for target, entry in review_contract["cast"].items():
+            if target in active_targets:
+                entry["namespace"] = target
+        review_contract["cast"] = {k:v for k,v in review_contract["cast"].items()
+            if k in active_targets or not v.get("animation_required", True)}
     review_contract["review_layers"] = (
         dynamic_layers
         if dynamic_layers
@@ -1364,7 +1463,7 @@ def _run_scene_construction(
                 str(configured.get("name") or "")
                 if isinstance(configured, dict) else str(configured)
             )
-            layer_camera = _camera_for_layer(cameras, layer_name, configured_name)
+            layer_camera = ((composition_data or {}).get("review_cameras", {}).get(layer_name) or {}).get("work") or _camera_for_layer(cameras, layer_name, configured_name)
             if not layer_camera:
                 missing_review_cameras.append(
                     f"{layer_name}={configured_name or '(not configured)'}"
@@ -1596,7 +1695,11 @@ def _run_scene_construction(
                 "layer_cache": layer_cache_states,
                 "planned_snapshot": planned_snapshot,
             })
-            review_movie = review_output_dir / "output" / "review.mov"
+            internal_review = str(args.delivery_profile).lower() == "internal"
+            clean_review_movie = review_output_dir / "output" / (
+                "review_clean.mov" if internal_review else "review.mov"
+            )
+            review_movie = clean_review_movie
             published_review_project = _latest_review_project(
                 shot_service, identity, plan.department
             )
@@ -1637,16 +1740,57 @@ def _run_scene_construction(
                 task="Render AE MOV",
             )
             _render_review_project(
-                review_project, review_movie, manager.project_config
+                review_project, clean_review_movie, manager.project_config
             )
+            overlay_path = ""
+            overlay_data = {}
+            if internal_review:
+                _write_status(status_path, state="BUILDING", progress=94,
+                              task="Generate Review Layer Overlay")
+                primary_camera = specs[0]["camera"]
+                if not primary_camera:
+                    raise RuntimeError("Review Layer camera was not found for Internal Review.")
+                overlay_data = _collect_primary_review_overlay(
+                    cmds, camera=primary_camera, start=start, end=end,
+                    width=width, height=height,
+                    fps=float(shot_data.get("fps") or shot_service.project_fps),
+                    project=manager.project_name,
+                    shot=f"{identity.episode}/{identity.sequence}/{identity.shot}",
+                    department=plan.department, task=plan.task,
+                    source_file=str(scene_path),
+                    created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                )
+                from smartlib.core.metadata import write_json
+                overlay_path = review_output_dir / "output" / "review_overlay.json"
+                write_json(overlay_path, overlay_data)
+                from smartlib.review.overlay import overlay_review_movie
+                from smartlib.review.playblast_package import find_ffmpeg
+                review_movie = review_output_dir / "output" / "review.mov"
+                overlay_ok, overlay_message = overlay_review_movie(
+                    clean_movie=clean_review_movie, overlay=overlay_data,
+                    overlay_json=overlay_path, mov_path=review_movie,
+                    ffmpeg=find_ffmpeg(manager.project_config),
+                )
+                if not overlay_ok:
+                    raise RuntimeError(
+                        "Review Overlay could not be composited for Internal Review: "
+                        + overlay_message
+                    )
+            comparison_files, comparison_data = {}, None
+            if composition_data:
+                from smartlib.review.comparison import create_comparison
+                from smartlib.review.playblast_package import find_ffmpeg
+                _write_status(status_path, state="BUILDING", progress=95, task="Create Original / Applied / 50% Comparison")
+                comparison_files, comparison_data = create_comparison(
+                    shot_service.paths, composition_data, clean_review_movie, clean_review_movie.parent,
+                    find_ffmpeg(manager.project_config), [start, end], float(shot_data.get("fps") or shot_service.project_fps))
             thumbnail_target = review_output_dir / "output" / "thumbnail.jpg"
             from smartlib.review.playblast_package import (
                 extract_thumbnail_from_mov,
                 find_ffmpeg,
-                render_internal_review_slate_png,
             )
             thumbnail_ok, thumbnail_message = extract_thumbnail_from_mov(
-                mov_path=review_movie,
+                mov_path=clean_review_movie,
                 thumbnail_path=thumbnail_target,
                 ffmpeg=find_ffmpeg(manager.project_config),
             )
@@ -1672,53 +1816,71 @@ def _run_scene_construction(
             review_version = workflow.next_review_version(
                 plan.department, args.delivery_profile, delivery_profile
             )
+            review_build_take = "t001"
+            review_build_dir = workflow.review_build_dir(
+                plan.department, review_version, review_build_take
+            )
             fps = float(shot_data.get("fps") or shot_service.project_fps)
             handle_data = editorial.get("handles") or {}
             handles = [
                 int(handle_data.get("head") or 0),
                 int(handle_data.get("tail") or 0),
             ]
-            slate_data = {
-                "enabled": str(args.delivery_profile).lower() == "internal",
-                "source": "planned_snapshot",
-                "included_in_movie": False,
+            _write_status(status_path, state="BUILDING", progress=97,
+                          task="Render Review Report PDF")
+            first_camera_sample = (overlay_data.get("samples") or [{}])[0]
+            from smartlib.review.report import report_inputs
+            report_data = {
+                "project": manager.project_name,
+                "shot": f"{identity.episode}/{identity.sequence}/{identity.shot}",
+                "department": plan.department,
+                "task": plan.task,
+                "review_version": review_version,
+                "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "frame_range": f"{start}-{end}",
+                "fps": f"{fps:g}",
+                "resolution": f"{width} x {height}",
+                "source_file": scene_path.name,
+                "aep_file": published_review_project.name,
+                "render_aep_file": review_project.name,
+                "camera": {
+                    "name": overlay_data.get("camera") or _camera_leaf_name(
+                        _restored_primary_camera(cmds, cameras)
+                    ),
+                    "focal_length": f"{float(first_camera_sample.get('focal_length_mm') or 0):.2f} mm",
+                    "field_of_view": (
+                        f"{float(first_camera_sample.get('horizontal_fov_deg') or 0):.2f} x "
+                        f"{float(first_camera_sample.get('vertical_fov_deg') or 0):.2f} deg"
+                    ),
+                    "film_fit": first_camera_sample.get("film_fit") or "",
+                },
+                "inputs": report_inputs(construct_data, planned_snapshot, composition_data, source_construct_data),
             }
-            slate_path = None
-            if slate_data["enabled"]:
-                _write_status(
-                    status_path, state="BUILDING", progress=97,
-                    task="Render Internal Review Slate PNG",
-                )
-                slate_lines = _internal_review_slate_lines(
-                    project=manager.project_name,
-                    episode=identity.episode,
-                    sequence=identity.sequence,
-                    shot=identity.shot,
-                    department=plan.department,
-                    review_version=review_version,
-                    planned_snapshot=planned_snapshot,
-                    frame_range=[start, end],
-                    handles=handles,
-                    fps=fps,
-                    created_at=datetime.now(),
-                )
-                slate_path = review_output_dir / "output" / "slate.png"
-                slate_ok, slate_message = render_internal_review_slate_png(
-                    slate_path=slate_path,
-                    lines=slate_lines,
-                    width=width,
-                    height=height,
-                    ffmpeg=find_ffmpeg(manager.project_config),
-                )
-                if not slate_ok:
-                    raise RuntimeError(
-                        "Internal Review Slate could not be generated: "
-                        + slate_message
-                    )
-                slate_data["artifact"] = "slate.png"
-                slate_data["lines"] = slate_lines
+            report_data["inputs"].extend(
+                {"type":"layer_camera", "name":spec["name"] + " / " + spec["camera"].rsplit("|", 1)[-1],
+                 "state":"BAKED" if composition_data else "RECORDED", "enabled":True,
+                 "version":"-"} for spec in specs)
+            report_data["inputs"].extend([
+                {"type":"review_layers", "name":"Review layer definition", "path":str(layer_definition_path or ""), "version":layer_definition.get("version", "-"), "state":"RECORDED"},
+                {"type":"render_manifest", "name":"Render settings", "path":str(render_manifest_path or ""), "version":render_manifest.get("version", "-"), "state":"RECORDED"},
+                {"type":"precomp", "name":"PreComp project", "path":str(published_review_project), "state":"RECORDED"},
+            ])
+            from smartlib.review.report import render_review_report_pdf
+            report_path = render_review_report_pdf(
+                report_path=review_output_dir / "output" / "review_report.pdf",
+                thumbnail_path=thumbnail,
+                data=report_data,
+            )
+            from smartlib.apps.shot_manager.animation_publish import file_hash
             source_manifest = {
                 "schema": "smartpipeline.review_source_manifest.v1",
+                "report_inputs": report_data["inputs"],
+                "comparison": comparison_data,
+                "review_cameras": (composition_data or {}).get("review_cameras", {}),
+                "composition_snapshot": ({"path": composition_snapshot,
+                    "sha256": file_hash(Path(composition_snapshot)), "version": composition_data["version"]}
+                    if composition_data else None),
+                "construct_sha256": file_hash(scene_path),
                 "construct": str(scene_path),
                 "construct_version": args.output_version,
                 "assembly": assembly_definition,
@@ -1733,14 +1895,41 @@ def _run_scene_construction(
                 "review_profile": review_profile,
                 "delivery_profile": delivery_profile,
                 "planned_snapshot": planned_snapshot,
-                "slate": slate_data,
+                "report": {
+                    "artifact": "review_report.pdf",
+                    "thumbnail_source": "review_clean.mov",
+                },
+                "review_build": str(review_build_dir / "review_build_manifest.json"),
                 "job_id": job_id,
             }
+            review_build_manifest = {
+                "episode": identity.episode,
+                "sequence": identity.sequence,
+                "shot": identity.shot,
+                "department": plan.department,
+                "frame_range": [start, end],
+                "resolution": [width, height],
+                "fps": fps,
+                "source_construct": str(scene_path),
+                "construct_version": args.output_version,
+                "published_review_project": str(published_review_project),
+                "render_manifest": str(render_manifest_path or ""),
+                "review_layers": review_layers,
+            }
+            overlay_ass = Path(overlay_path).with_suffix(".ass") if overlay_path else None
+            review_build_dir = workflow.preserve_review_build(
+                department=plan.department,
+                version=review_version,
+                take=review_build_take,
+                clean_movie=clean_review_movie,
+                overlay_json=overlay_path or None,
+                overlay_ass=overlay_ass,
+                manifest=review_build_manifest,
+            )
             submitted_dir = workflow.submit_review(
                 department=plan.department,
                 delivery_profile=args.delivery_profile,
                 movie=review_movie,
-                thumbnail=thumbnail,
                 review_data={
                     "episode": identity.episode,
                     "sequence": identity.sequence,
@@ -1750,14 +1939,15 @@ def _run_scene_construction(
                     "content_frame_range": [start, end],
                     "movie_frame_count": max(1, end - start + 1),
                     "handles": {"head": handles[0], "tail": handles[1]},
-                    "slate": slate_data,
+                    "report": "review_report.pdf",
                     "resolution": [width, height],
                     "fps": fps,
                 },
                 source_manifest=source_manifest,
                 delivery_settings=delivery_profile,
                 version=review_version,
-                slate=slate_path,
+                report=report_path,
+                artifacts=comparison_files,
             )
             job_data = json.loads(
                 (review_output_dir / "job.json").read_text(encoding="utf-8-sig")
@@ -1793,6 +1983,9 @@ def _run_scene_construction(
                     "review_layers": review_layers,
                     "published_review_project": str(published_review_project),
                     "review_project": str(review_project),
+                    "durable_review_build": str(review_build_dir),
+                    "clean_movie": str(review_build_dir / "review_clean.mov"),
+                    "review_overlay": str(review_build_dir / "review_overlay.json") if overlay_path else "",
                     "movie": str(review_movie),
                     "frame_range": [start, end],
                     "resolution": [width, height],
@@ -1844,8 +2037,8 @@ def _run_scene_construction(
         status_path,
         state="COMPLETE",
         progress=100,
-        task="Construct Validated",
-        message=str(scene_path),
+        task="Snapshot Internal Review Complete" if composition_snapshot else "Construct Validated",
+        message=str(review_movie) if composition_snapshot and review_movie else str(scene_path),
     )
     print(
         json.dumps(
@@ -2317,6 +2510,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--construct-diff-json", default="[]")
     parser.add_argument("--canonical-fingerprint", default="")
     parser.add_argument("--reuse-construct", default="")
+    parser.add_argument("--composition-snapshot", default="")
     parser.add_argument("--overrides-json", default="{}")
     parser.add_argument("--generate-review", default="1")
     parser.add_argument("--review-profile", default="work_default")

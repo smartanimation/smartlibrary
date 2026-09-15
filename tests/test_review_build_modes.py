@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from smartlib.apps.review_build_manager.orchestrator import BUILD_MODES
+from smartlib.apps.review_build_manager.orchestrator import SceneBuildOrchestrator
 from smartlib.apps.review_build_manager.service import ReviewBuildManagerService
 
 
@@ -67,3 +68,45 @@ def test_construct_diff_reports_updates_additions_and_omit(tmp_path: Path) -> No
     assert by_name["Hero_main"]["selected"] is False
     assert by_name["cam_main"]["change"] == "ADDED"
     assert by_name["cam_main"]["selected"] is True
+
+
+def test_generate_policy_does_not_validate_stale_anim_input(tmp_path: Path) -> None:
+    tmp_path.joinpath("shot.json").write_text("{}", encoding="utf-8")
+    tmp_path.joinpath("cast.json").write_text("{}", encoding="utf-8")
+
+    class _Shots:
+        def shot_root(self, _identity):
+            return tmp_path
+
+        def construct_from_stage_inputs(self, *_args, **_kwargs):
+            return {"components": []}
+
+        def shot_anim_input_status(self, _identity):
+            return [
+                SimpleNamespace(
+                    name="placements",
+                    state="MISSING",
+                    message="not published",
+                )
+            ]
+
+        def build_preview_from_anim_input(self, _identity):
+            raise AssertionError("stale Animation Input must not be validated")
+
+    identity = SimpleNamespace(code="ep01/sq01/sh010")
+    orchestrator = SceneBuildOrchestrator(_Shots())
+
+    validations = list(
+        orchestrator._validate(
+            identity,
+            "WORK STAGE",
+            department="anim",
+            latest_work=None,
+            anim_input=tmp_path / "old" / "anim_input.json",
+            animation_package=None,
+            input_policy="GENERATE MISSING",
+            overrides={"use_placements": True},
+        )
+    )
+
+    assert [row.code for row in validations] == ["WILL_GENERATE_ANIM_INPUT"]

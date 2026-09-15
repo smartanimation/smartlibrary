@@ -1,4 +1,9 @@
 templates:
+  motion_work: '{workspace_root}/{workspace_partition}/motion/{category}/{group}/{asset_name}/{variant}/work/anim/maya/{clip}'
+  motion_reference: '{production_root}/motion/{category}/{group}/{asset_name}/{variant}/reference/motion/{receipt}'
+  motion_publish: '{production_root}/motion/{category}/{group}/{asset_name}/{variant}/publish/clip/{clip}'
+  motion_work_filename: '{project_name}_{asset_name}_{variant}_anim_{clip}_{version}_{take}.{ext}'
+  motion_publish_filename: '{asset_name}_{variant}_{clip}.{ext}'
   asset_root: "{assets_root}/{category}/{group}/{asset_name}"
   asset_data_root: "{asset_root}/{variant}/data"
   asset_publish_root: "{asset_root}/{variant}/publish"

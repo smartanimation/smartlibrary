@@ -212,6 +212,23 @@ class MayaPreflightAdapter:
                 invalid.append(str(node))
         return sorted(set(invalid), key=str.casefold)
 
+    def duplicate_dag_names(self) -> list[str]:
+        """Return full DAG paths whose namespace-free leaf names collide."""
+        grouped: dict[str, list[str]] = {}
+        for node in self.cmds.ls(dag=True, long=True) or []:
+            path = str(node)
+            leaf = path.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+            if not leaf:
+                continue
+            grouped.setdefault(leaf, []).append(path)
+        duplicates = {
+            path
+            for paths in grouped.values()
+            if len(set(paths)) > 1
+            for path in paths
+        }
+        return sorted(duplicates, key=str.casefold)
+
     def asset_namespaces(self) -> list[str]:
         namespaces = self.cmds.namespaceInfo(listOnlyNamespaces=True, recurse=True) or []
         return sorted({

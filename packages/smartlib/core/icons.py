@@ -17,6 +17,8 @@ _TOOL_ICON_NAMES = {
     "editorial_intake": "smart_editorial",
     "smart_ingest": "smart_ingest",
     "smart_launcher": "smart_launcher",
+    "smart_preflight": "smart_preflight",
+    "preflight": "smart_preflight",
     "smart_review": "smart_review",
 }
 

@@ -60,3 +60,32 @@ If your RV uses a different user support path, pass it explicitly:
 The first implementation resolves existing SmartLibrary `latest.json` /
 `review.json` packages and loads their media through RV's `commands.addSources`.
 Advanced RV graph construction for grid/contact-sheet layouts is the next layer.
+
+## Shot Browser
+
+Open `Smart Review > Shot Browser` in RV, or `Open Shot Browser` on the Shot tab.
+The browser is a separate, non-modal window and uses the existing project configuration
+and shared Path Resolver. The `packages` directory from SMARTLIBRARY_ROOT must be available,
+as it is for the existing resolver integration. PySide2 or PySide6 is required.
+
+- Sequence supports Ctrl multi-selection and Shift range selection; All sequences resets
+  the scope. Selected sequences are combined in episode/sequence/shot order for RV.
+- Episode and Sequence lists, Task buttons, search, Latest / All versions / exact
+  version, and availability filters narrow the thumbnail grid.
+- Task corresponds to Smart Review's Department (layout, anim, fx, light, comp).
+- Source `working` reads the resolver's working review movie directory; `internal`
+  and `client` read formal review manifests; `publish` reads published review packages.
+  Raw render layers are not treated as review movies. Missing movies remain visible.
+- Drag from the empty space around cards for rectangle selection; Ctrl adds or removes
+  individual cards; Shift selects a range. Select all applies to the visible results.
+- Push to RV appends the exact selected movies and versions in shot order.
+  Open New Session uses RV's existing new-session operation. Missing files are skipped.
+- NEW VERSION compares against the highest version successfully loaded from this browser
+  on this device, per project/shot/task/source. It does not indicate review approval.
+  First-time entries say Not loaded on this device. History is stored in QSettings.
+- Refresh rescans uploads. Disk scanning runs in a worker; only visible thumbnails are
+  requested from FFmpeg, with an in-memory cache and a 12-second decode timeout.
+  FFmpeg is found using the existing pipeline helper, then PATH. Without FFmpeg,
+  version information and movie loading remain available.
+
+Validation: `python -m pytest tests/test_shot_browser.py tests/test_rv.py`.

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
 CAMERA_NAME = "primary_cam"
+_BACKGROUND_PROCESSES = []
 SHAPE_ATTRIBUTES = (
     "focalLength",
     "horizontalFilmAperture",
@@ -134,6 +136,56 @@ def update_publish(snapshot, *, status, files=None, error=""):
         publish_files.update(files)
         publish["files"] = publish_files
     _atomic_json(publish_path, publish)
+
+
+def start_background_export(snapshot, project_config, cmds, QtCore, *, parent=None, finished=None):
+    """Launch the common World Bake worker without blocking the authoring DCC."""
+    from smartlib.core.maya_runtime import (
+        process_environment, resolve_mayapy, validate_worker_version,
+    )
+
+    snapshot = Path(snapshot)
+    mayapy = resolve_mayapy(project_config)
+    validate_worker_version(mayapy, cmds.about(version=True))
+    worker = Path(__file__).resolve().parents[4] / "tools" / "maya" / "camera_portable_worker.py"
+    if not mayapy.is_file() or not worker.is_file():
+        raise FileNotFoundError(f"Primary Camera exchange worker was not found: {mayapy} / {worker}")
+    process = QtCore.QProcess(parent)
+    environment = QtCore.QProcessEnvironment.systemEnvironment()
+    env_vars, path_vars = process_environment(project_config)
+    for key, value in env_vars.items():
+        environment.insert(key, str(value))
+    for key, values in path_vars.items():
+        current = environment.value(key)
+        environment.insert(key, os.pathsep.join(list(values) + ([current] if current else [])))
+    package_root = str(Path(__file__).resolve().parents[3])
+    current_pythonpath = environment.value("PYTHONPATH")
+    environment.insert("PYTHONPATH", package_root + (os.pathsep + current_pythonpath if current_pythonpath else ""))
+    process.setProcessEnvironment(environment)
+    process.setProgram(str(mayapy))
+    process.setArguments([str(worker), str(snapshot)])
+    process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
+
+    def complete(exit_code, _status):
+        output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace").strip()
+        if process in _BACKGROUND_PROCESSES:
+            _BACKGROUND_PROCESSES.remove(process)
+        if exit_code != 0:
+            update_publish(snapshot, status="failed", error=output or f"Worker exited with code {exit_code}.")
+        if finished:
+            finished(exit_code, output)
+        process.deleteLater()
+
+    process.finished.connect(complete)
+    _BACKGROUND_PROCESSES.append(process)
+    process.start()
+    if not process.waitForStarted(5000):
+        _BACKGROUND_PROCESSES.remove(process)
+        message = process.errorString() or "Primary Camera exchange worker failed to start."
+        update_publish(snapshot, status="failed", error=message)
+        process.deleteLater()
+        raise RuntimeError(message)
+    return process
 
 
 def _atomic_json(path, data):

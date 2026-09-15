@@ -30,6 +30,7 @@ class SmartIntakeResult:
     storyreel_publish_dir: Path | None
     storyreel_shots: int
     report: list[str]
+    sequence_results: tuple[SmartIntakeResult, ...] = ()
 
 
 class SmartEditorialIntakeService:
@@ -58,9 +59,10 @@ class SmartEditorialIntakeService:
         return names or ["ep001"]
 
     def list_sequences(self, episode: str) -> list[str]:
+        """Legacy API name: lists received Editorial Units, not production sequences."""
         root = self.editorial_work_root / episode
         names = sorted(path.name for path in root.iterdir() if path.is_dir()) if root.exists() else []
-        return names or ["sq010"]
+        return names or ["edit01"]
 
     def list_versions(self, episode: str, sequence: str) -> list[str]:
         root = self.editorial_work_root / episode / sequence
@@ -79,7 +81,10 @@ class SmartEditorialIntakeService:
         explicit_csv = Path(csv_path) if csv_path else None
         explicit_mov = Path(mov_path) if mov_path else None
         if explicit_csv:
-            return IntakeSource(csv_path=explicit_csv, mov_path=explicit_mov)
+            manifest = explicit_csv.parent / "manifest.json"
+            return IntakeSource(csv_path=explicit_csv, mov_path=explicit_mov,
+                work_dir=explicit_csv.parent if manifest.is_file() else None,
+                manifest_path=manifest if manifest.is_file() else None)
 
         version_dir = self._resolve_work_version_dir(episode, sequence, version)
         manifest_path = version_dir / "manifest.json"
@@ -198,6 +203,7 @@ class SmartEditorialIntakeService:
         create_folder_structure: bool = True,
         generate_storyreel: bool = True,
         dry_run: bool = False,
+        cut_assignment: dict | None = None,
     ) -> SmartIntakeResult:
         preview = self.inspect(episode, sequence, version, csv_path=csv_path, mov_path=mov_path)
         if preview.source is None:
@@ -207,11 +213,39 @@ class SmartEditorialIntakeService:
             return SmartIntakeResult(None, None, 0, preview.report)
 
         report = list(preview.report)
+        partitions = []
+        received = read_json(source.manifest_path, {}) if source.manifest_path else {}
+        if received.get("editorial_unit") and cut_assignment is None:
+            raise ValueError("Editorial Unit requires explicit Production Sequence mapping before Publish")
+        if cut_assignment is not None:
+            from smartlib.editorial.cut_assignment import compile_assignments, production_sequence
+            original_events = self.intake_service.read_events_csv(source.csv_path)
+            selected, production = compile_assignments(
+                original_events, cut_assignment,
+            )
+            for target in sorted({event.sequence for event in selected}):
+                rows = [{**row, "production_sequence": production_sequence(row, event, cut_assignment),
+                         "enabled": bool(row.get("enabled")) and production_sequence(row, event, cut_assignment) == target}
+                        for event, row in zip(original_events, cut_assignment["rows"])]
+                partitions.append((target, {**cut_assignment, "rows": rows}))
+            report.append("sequence targets - " + ", ".join(target for target, _ in partitions))
+            report.append(f"cut assignment - {len(selected)} cuts / {len(production)} work shots")
+            report.append(f"offline alignment - CONFIRMED (frame zero at {cut_assignment['offline_origin']})")
+            if source.mov_path:
+                from smartlib.editorial.assigned_media import validate_offline_ranges
+                validate_offline_ranges(self.intake_service, source.mov_path, selected, cut_assignment)
+            else:
+                raise ValueError("Offline movie is required for cut reference export")
+            if not create_folder_structure:
+                missing = [e.shot for e in production if not (self.intake_service.shots.shot_root(e.identity) / "shot.json").is_file()]
+                if missing:
+                    raise ValueError("Enable Create Folder Structure for new work shots: " + ", ".join(missing))
         errors = self._preflight_errors(
             preview,
             episode=episode,
             sequence=sequence,
             require_movie=generate_storyreel,
+            allow_assigned_sequences=cut_assignment is not None,
         )
         if errors:
             report.extend(f"preflight - ERROR: {message}" for message in errors)
@@ -227,6 +261,29 @@ class SmartEditorialIntakeService:
                     report.append("storyreel - WARNING: movie missing")
             return SmartIntakeResult(None, None, 0, report)
 
+        if partitions:
+            completed = []
+            for target, plan in partitions:
+                try:
+                    completed.append(self._publish_source(
+                        source, episode, target, comment, create_folder_structure,
+                        generate_storyreel, plan, [f"sequence - {episode}/{target}"],
+                    ))
+                except Exception as exc:
+                    done = ", ".join(str(item.intake.publish_dir) for item in completed)
+                    raise RuntimeError(f"Sequence {episode}/{target} failed: {exc}\nCompleted publishes: {done or 'none'}") from exc
+            for item in completed:
+                report.extend(item.report)
+            return SmartIntakeResult(
+                completed[0].intake if len(completed) == 1 else None,
+                completed[0].storyreel_publish_dir if len(completed) == 1 else None,
+                sum(item.storyreel_shots for item in completed), report, tuple(completed),
+            )
+        return self._publish_source(source, episode, sequence, comment,
+            create_folder_structure, generate_storyreel, None, report)
+
+    def _publish_source(self, source, episode, sequence, comment,
+                        create_folder_structure, generate_storyreel, cut_assignment, report):
         result = self.intake_service.intake(
             EditorialIntakeRequest(
                 csv_path=source.csv_path,
@@ -237,6 +294,7 @@ class SmartEditorialIntakeService:
                 publish_sequence=sequence,
                 publish=True,
                 register_shots=create_folder_structure,
+                cut_assignment=cut_assignment,
             )
         )
         report.append(f"publish - OK: {result.publish_dir}")
@@ -277,6 +335,7 @@ class SmartEditorialIntakeService:
         episode: str,
         sequence: str,
         require_movie: bool,
+        allow_assigned_sequences: bool = False,
     ) -> list[str]:
         """Validate inputs before Intake creates sequence or shot folders.
 
@@ -294,7 +353,7 @@ class SmartEditorialIntakeService:
         for event in events:
             if event.duration <= 0:
                 errors.append(f"{event.shot}: marker duration must be greater than zero")
-            if event.episode != episode or event.sequence != sequence:
+            if event.episode != episode or (not allow_assigned_sequences and event.sequence != sequence):
                 errors.append(
                     f"{event.shot}: marker identity {event.episode}/{event.sequence} "
                     f"does not match {episode}/{sequence}"
@@ -307,7 +366,7 @@ class SmartEditorialIntakeService:
         return errors
 
     def _resolve_work_version_dir(self, episode: str, sequence: str, version: str) -> Path:
-        root = self.editorial_work_root / episode / sequence
+        root = self.paths.editorial_unit_work_dir(episode, sequence)
         if version and version != "Latest":
             return root / version
         versions = sorted((path for path in root.iterdir() if path.is_dir() and path.name.startswith("v")), reverse=True) if root.exists() else []

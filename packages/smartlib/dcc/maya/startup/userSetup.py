@@ -22,6 +22,13 @@ def _install_smart_menu() -> None:
         if path not in sys.path:
             sys.path.insert(0, path)
 
+    from smartlib.dcc.maya import color_validation
+    try:
+        color_validation.install()
+    except Exception as exc:
+        import maya.cmds as cmds
+        cmds.warning("SmartPipeline color validation failed: " + str(exc))
+
     from smartlib.dcc.maya import smart_menu
 
     importlib.reload(smart_menu)

@@ -77,6 +77,23 @@ def test_context_override_and_stage_default_win_over_old_construct_choices():
     assert ReviewBuildManagerWindow._snapshot_contexts({}, reset, "WORK")["JIN"] == "WORK"
 
 
+def test_re_resolved_rows_keep_each_saved_context_override_marker():
+    rows = [
+        {"type": "rig", "context": "ANIM", "component": {"source": {}}},
+        {"type": "rig", "context": "PROXY", "component": {"source": {}}},
+    ]
+    saved = [
+        {"context": "ANIM", "context_override": True},
+        {"context": "PROXY", "context_override": True},
+    ]
+
+    for row, entry in zip(rows, saved):
+        ReviewBuildManagerWindow._restore_snapshot_context_marker(row, entry)
+
+    assert [row["context_override"] for row in rows] == [True, True]
+    assert [row["component"]["source"]["context_override"] for row in rows] == [True, True]
+
+
 def test_snapshot_cannot_restore_path_from_different_context():
     resolved = {"components": [{"component_type": "rig", "name": "JIN",
         "source": {"context": "ANIM"}, "path": "anim.ma", "version": "v002"}]}

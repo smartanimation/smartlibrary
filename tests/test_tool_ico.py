@@ -13,6 +13,7 @@ def test_all_tool_ico_files_resolve():
         "smart_ae_browser",
         "smart_editorial",
         "smart_delivery",
+        "smart_preflight",
         "smart_review",
     ):
         path = tool_ico_path(tool_id)

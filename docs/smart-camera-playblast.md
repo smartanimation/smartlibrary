@@ -15,8 +15,29 @@ v0.8では日常PlayblastとCamera Package PublishからBakeを除去した。
 - Playblast前にも設定の差分確認だけを行う。設定が同じ既存ライブCameraは再作成しない。
 - 拡張Camera名は`smartCam_CHA`などを維持し、Burn-inのCamera/Lens情報はPrimaryを参照する。
 
-Camera Package v2 (`smartpipeline.camera_package.v2`) は`primary_cam.ma`とLayerの差分ルールを保存する。
-Primaryの親階層・上流アニメーション・Constraint等の接続をネイティブ出力し、無関係な兄弟ノードは含めない。
+## Camera Timing
+
+各Review Layerは素材の`Frame Range`とは独立してCamera Timingを持つ。
+
+- `Follow Scene`（既定値）: シーン時間と同じフレームでCameraを評価する。
+- `Hold Frame`: 指定した`Camera Frame`のWorld TransformとCamera Shape属性を固定し、
+  シーン内のCharacter・Background等は通常のFrame Rangeで進めたまま連番出力する。
+
+Hold FrameではPlayblast開始時に一時Cameraへ評価値をコピーし、元CameraやAnimation Curveを変更しない。
+Playblast終了時またはError時に一時Cameraを削除し、Current Time・Selection・Model Panel Cameraを復元する。
+設定はLayer RowおよびReview Camera Rulesへ保存され、素材のStart/EndやPrimary Camera Publishは変更しない。
+
+Primary Camera Publish (`smartpipeline.primary_camera.v1`) はReviewより上流のShot共通データである。
+Shot Managerまたは、Sequence作業ではSmart Shotの`Publish Primary Camera`から公開する。
+`primary_cam.ma`はPrimaryの親階層・上流アニメーション・Constraint等の接続を保持し、
+World Bake済みの`primary_cam.usd`と`primary_cam.fbx`は共通Workerがバックグラウンド生成する。
+Houdiniなどの下流DCCはReview Cameraの確定を待たず、このPrimary Publishを使用できる。
+
+Review Camera Rules (`smartpipeline.review_camera_rules.v1`) はLayer差分ルールだけを保存する。
+作成時に使用したPrimary PublishのVersion・相対パス・SHA-256を固定参照し、Primary実体を重複保存しない。
+Buildは参照されたPrimaryを復元してからLayerごとのLive Cameraを再構築する。
+既定Targetは`review`とし、Primary Camera Publishの`main`等とはVersion列を共有しない。
+Primaryの親階層・上流アニメーション・Constraint等の接続はPrimary Publishだけが所有する。
 参照リグは必要なノードを埋め込んで公開する。元の参照ファイルへのライブ依存は残さない。
 ネイティブ出力成功後にのみcamera.json / publish.json / latestを登録する。
 BuildとDataタブのApplyはPrimaryを`smartPrimary`名前空間へ読み込み、Layerごとのライブ設定を再構築する。
@@ -26,7 +47,7 @@ Dataタブでの確認とBuild ManagerのSelected Version固定は引き続き�
 外部キャッシュ、Plugin依存、動的getAttr/eval等のExpressionは公開を拒否する。
 元の時間依存を維持するため、非ゼロのBuild Frame Offsetは未対応として停止する。
 ネイティブ出力自体は現在のMayaで同期実行する（バックグラウンドジョブ化は未実装）。
-Publish後、別mayapyプロセスがPrimaryを親なしの`primary_cam`へWorld Bakeし、
+Primary Publish後、別mayapyプロセスがPrimaryを親なしの`primary_cam`へWorld Bakeし、
 `primary_cam.usd`と`primary_cam.fbx`を同じPublish Versionへ追加する。
 Bake WorkerはReview Buildと同じMaya Software設定およびProcess Environmentを使用する。
 Authoring Mayaより古いWorkerしか解決できない場合は、Version作成前にPublishを停止する。
@@ -120,7 +141,11 @@ Update managed cameras before Playblastは初期状態でON。Primaryの変更�
 
 ## Camera Package Publish / Build
 
-`Publish Camera Package...` は既存のShot Camera Publishサービスと共通Path Resolverを使用する。
+`Publish Review Camera Rules` はShot Managerの`Data > Review Layers`から実行する。
+公開対象はPublished Review Layersで有効な全Layerとし、Smart Camera Playblastの
+チェック状態には依存しない。Smart Camera Playblast側のチェックは、その場で実行する
+Playblastの描画対象だけを制御する。公開処理は既存のShot Camera Publishサービスと
+共通Path Resolverを使用する。
 このツール独自のPublishディレクトリやPath Resolverは持たない。
 
 ### DataタブからBuildへ
@@ -139,14 +164,13 @@ DataタブはPublish済みファイルを閲覧するだけで、Data領域へ�
 既存の旧Camera DataとCamera Packageの競合・移行はこの導線の対象外。
 コード更新後はShot ManagerとBuild Managerを再起動してから確認する。
 
-- Publish前に`Generate / Update Cameras`を実行する。
-- Publish対象はPrimary、Reference Resolution、Layerごとの
+- Publish前にShot ManagerまたはSmart ShotからPrimary CameraをPublishする。
+- Review RulesのPublish対象はPrimary Publish参照、Reference Resolution、Layerごとの
   Resolution / Frame Range / Fit Policy / Version / Take。
-- Schemaは`smartpipeline.camera_package.v2`。Primaryは論理キー`primary`で常に1つとする。
+- Schemaは`smartpipeline.review_camera_rules.v1`。Primary実体は含めず、参照先は必ず1つとする。
   Maya UUIDとfull DAG pathはBuild間の識別子として保存しない。
 - Camera名は`smartCam_CHA`のような表示名を維持する。識別用IDを名前へ追加しない。
-- Maya Build用には非Bakeの`primary_cam.ma`とLayer差分ルールを保存する。
-  DCC交換用にはWorld Bake済みの`primary_cam.usd`と`primary_cam.fbx`を保存する。
+- `primary_cam.ma / .usd / .fbx`はPrimary Camera Publishだけに保存する。
 - source rig、Constraint、Render Layer素材、AEのScale / Position / Anchor / 構図は含めない。
 - 検証の不一致、古い生成設定、同名Node、単位不一致、別Primary由来のCameraは停止する。
   同名Nodeを削除、上書き、自動採番しない。

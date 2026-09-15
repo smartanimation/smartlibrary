@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+color = ["numpy>=1.24,<3", "OpenImageIO>=3,<4", "opencolorio>=2.4,<3"]
+sheets = ["gspread>=6,<7"]
+usd = ["usd-core>=25"]
 dev = [
     "PySide6>=6.8,<7",
     "pytest>=9,<10",

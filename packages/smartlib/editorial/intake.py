@@ -54,6 +54,7 @@ class EditorialEvent:
     hold: bool = False
     note: str = ""
     editorial_segments: list[dict[str, Any]] = field(default_factory=list)
+    maya_range: tuple[int, int] | None = None
 
     @property
     def identity(self) -> ShotIdentity:
@@ -75,6 +76,7 @@ class EditorialIntakeRequest:
     copy_to_work: bool = True
     publish: bool = True
     register_shots: bool = True
+    cut_assignment: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,21 @@ class EditorialIntakeService:
 
     def intake(self, request: EditorialIntakeRequest) -> EditorialIntakeResult:
         events = self.read_events_csv(request.csv_path)
+        production_events = events
+        if request.cut_assignment is not None:
+            from smartlib.editorial.cut_assignment import compile_assignments
+            events, production_events = compile_assignments(events, request.cut_assignment)
+            targets = {(event.episode, event.sequence) for event in events}
+            if len(targets) != 1:
+                raise ValueError("Publish each assigned sequence separately using SmartEditorialIntakeService.run")
+            target_episode, target_sequence = next(iter(targets))
+            if ((request.publish_episode and request.publish_episode != target_episode)
+                    or (request.publish_sequence and request.publish_sequence != target_sequence)):
+                raise ValueError("Publish identity does not match the assigned sequence")
+            if request.offline_mov is None:
+                raise ValueError("Offline movie is required for cut reference export")
+            from smartlib.editorial.assigned_media import validate_offline_ranges
+            validate_offline_ranges(self, request.offline_mov, events, request.cut_assignment)
         # Validate external inputs before creating any production directories.
         if any(event.duration <= 0 for event in events):
             invalid = ", ".join(event.shot for event in events if event.duration <= 0)
@@ -148,6 +165,10 @@ class EditorialIntakeService:
         if request.offline_mov and not request.offline_mov.is_file():
             raise FileNotFoundError(f"Offline movie was not found: {request.offline_mov}")
         work_dir = request.work_dir or self._detect_editorial_work_dir(request.csv_path) or self._next_work_dir()
+        received_manifest = (read_json(request.csv_path.parent / "manifest.json", {})
+                             or read_json(work_dir / "manifest.json", {}) or {})
+        if received_manifest.get("editorial_unit") and request.cut_assignment is None:
+            raise ValueError("Editorial Unit requires Production Sequence mapping")
         work_dir.mkdir(parents=True, exist_ok=True)
 
         work_csv = work_dir / "events.csv"
@@ -162,7 +183,17 @@ class EditorialIntakeService:
                 work_mov = request.offline_mov
 
         sequence_roots = self.ensure_sequence_structures(events)
-        registered = self.register_shots(events) if request.register_shots else []
+        if request.cut_assignment is not None:
+            assignments = {r["cut"]: r for r in request.cut_assignment["rows"] if r["enabled"]}
+            for sequence_path in sequence_roots:
+                metadata = read_json(sequence_path, {})
+                for row in metadata.get("shots", []):
+                    assignment = assignments[row["shot"]]
+                    row["edit_cut"] = row["shot"]
+                    row["shot"] = assignment["work_shot"]
+                    row["maya_range"] = [assignment["maya_in"], assignment["maya_out"]]
+                write_json(sequence_path, metadata)
+        registered = self.register_shots(production_events) if request.register_shots else []
         publish_dir = None
         editorial_json = None
         cut_otio = None
@@ -172,6 +203,9 @@ class EditorialIntakeService:
         sequence_audio = None
         if request.publish:
             work_manifest = read_json(work_dir / "manifest.json", {}) or {}
+            if request.cut_assignment is not None:
+                work_manifest["timeline_start_frame"] = int(request.cut_assignment["offline_origin"])
+                work_manifest["cut_assignment"] = request.cut_assignment
             publish_dir = self.publish_cut(
                 events,
                 work_mov or request.offline_mov,
@@ -187,9 +221,16 @@ class EditorialIntakeService:
             # creation. Existing shots must receive it even when the user
             # disables "Create Folder Structure".
             if publish_mov:
-                shot_audio = self.write_shot_audio(events, publish_mov, publish_dir)
+                if request.cut_assignment is not None:
+                    from smartlib.editorial.assigned_media import write_assigned_media
+                    shot_audio = write_assigned_media(
+                        self, events, production_events, request.offline_mov, publish_dir,
+                        request.cut_assignment,
+                    )
+                else:
+                    shot_audio = self.write_shot_audio(events, publish_mov, publish_dir)
                 sequence_audio = self.write_sequence_audio(events, publish_mov, publish_dir)
-            editorial_timings = self.write_shot_editorial_snapshots(events, publish_dir)
+            editorial_timings = self.write_shot_editorial_snapshots(production_events, publish_dir)
 
         return EditorialIntakeResult(
             work_dir=work_dir,
@@ -296,6 +337,8 @@ class EditorialIntakeService:
             self.write_marker_range_offline_mov(events, offline_mov, version_dir / "offline.mov", manifest_data or {})
         write_json(version_dir / "cut.otio", _placeholder_otio(events, self.fps))
         editorial_json = self._editorial_json(events, version_label, comment, publish_episode, publish_sequence)
+        if (manifest_data or {}).get("cut_assignment"):
+            editorial_json["cut_assignment"] = manifest_data["cut_assignment"]
         write_json(metadata_dir / "editorial.json", editorial_json)
         write_json(base_dir / "latest.json", {"version": version_label, "path": f"{version_label}/metadata/editorial.json"})
         self._update_versions(base_dir / "versions.json", version_label)
@@ -544,6 +587,8 @@ class EditorialIntakeService:
 
     def write_shot_editorial_snapshots(self, events: list[EditorialEvent], publish_dir: Path) -> list[Path]:
         written = []
+        published = read_json(publish_dir / "metadata" / "editorial.json", {}) or {}
+        editorial_unit = (published.get("cut_assignment") or {}).get("editorial_unit")
         for event in events:
             shot_root = self.shots.shot_root(event.identity)
             # With folder creation disabled, only already registered shots are
@@ -555,6 +600,7 @@ class EditorialIntakeService:
             timing_path = self.shots.publish_editorial_timing(
                 event.identity,
                 {
+                    **({"maya_range": list(event.maya_range)} if event.maya_range else {}),
                     "fps": self.fps,
                     "cut_in": event.cut_in,
                     "cut_out": event.cut_out,
@@ -565,6 +611,7 @@ class EditorialIntakeService:
                 },
                 source={
                     "kind": "smart_editorial_export",
+                    **({"editorial_unit": editorial_unit, "production_sequence": event.sequence} if editorial_unit else {}),
                     "editorial_publish": _relative_to_project(publish_dir, self.project_root),
                     "editorial_version": publish_dir.name,
                     "cut_otio": _relative_to_project(publish_dir / "cut.otio", self.project_root),
@@ -577,6 +624,10 @@ class EditorialIntakeService:
                     "segments": _event_segments(event),
                 },
                 comment=event.note,
+                # An Editorial Export is an explicit publish operation. Do not
+                # reuse the previous shot timing merely because its cut range is
+                # unchanged: source metadata can still differ between works.
+                reuse_unchanged=False,
             )
             shot_json = read_json(shot_root / "shot.json", {}) or {}
             # Keep the legacy summary for older tools while making the
@@ -595,6 +646,9 @@ class EditorialIntakeService:
                 "path": _relative_to_project(timing_path, self.project_root),
             }
             audio_manifest = read_json(shot_root / "data" / "audio" / "latest.json", {}) or {}
+            if event.maya_range and audio_manifest.get("version") != publish_dir.name:
+                audio_manifest = {}
+                shot_json.pop("audio", None)
             audio_path = str(audio_manifest.get("path") or "").strip()
             if audio_path:
                 shot_json["audio"] = {
@@ -620,7 +674,7 @@ class EditorialIntakeService:
 
     def _detect_editorial_work_dir(self, csv_path: Path) -> Path | None:
         path = csv_path.resolve()
-        work_root = (self.editorial_root / "work").resolve()
+        work_root = configured_project_paths(self.project_root, self.project_config).editorial_work_root().resolve()
         try:
             relative = path.relative_to(work_root)
         except ValueError:
@@ -823,6 +877,11 @@ def _events_by_sequence(events: list[EditorialEvent]) -> dict[tuple[str, str], l
 
 
 def _marker_range_trim(events: list[EditorialEvent], fps: int, manifest_data: dict[str, Any]) -> dict[str, int]:
+    if manifest_data.get("cut_assignment"):
+        origin = int(manifest_data["cut_assignment"]["offline_origin"])
+        start = min(event.cut_in for event in events)
+        end = max(event.cut_out for event in events)
+        return {"start_offset_frames": start - origin, "duration_frames": end - start + 1}
     segment_ranges = []
     for event in events:
         for segment in event.editorial_segments or []:

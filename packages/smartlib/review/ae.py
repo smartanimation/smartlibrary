@@ -615,7 +615,7 @@ def _review_build_jsx(manifest_path: Path) -> str:
             stageLayer.name = row.layer;
             stageLayer.startTime = 0;
         }}
-        addSlateToStage(stage, data.slate, folders.layers);
+        // SmartGateGuide is an Internal Review overlay. Keep PreComp clean.
         addShotAudioToStage(stage, data.audio, folders.audio);
         var cameraLayer = camera.layers.add(stage);
         cameraLayer.name = "stage";

@@ -1568,8 +1568,7 @@ def _playblast(
     end = int(settings.get("end_frame") or start)
     width_height = [int(settings.get("width") or 1920), int(settings.get("height") or 1080)]
     compression = str(settings.get("compression") or "png")
-    slate_prefix = str(settings.get("slate_prefix") or "").strip()
-    slate_roots = _smart_gate_guide_roots(cmds) if slate_prefix else []
+    gate_guide_roots = _smart_gate_guide_roots(cmds)
     preset = str(settings.get("quality_preset") or "")
     playblast_kwargs = {
         "startTime": start,
@@ -1590,33 +1589,18 @@ def _playblast(
     suffix = f".{compression.lstrip('.')}"
     _remove_existing_playblast_frames(path, start, end, suffix)
     _emit_progress(progress_callback, "Running playblast image sequence...", 45)
-    beauty_visibility = _hide_slate_objects(cmds, slate_roots)
+    guide_visibility = _hide_smart_gate_guides(cmds, gate_guide_roots)
     try:
         with _playblast_preset_context(project_config, preset):
             _clear_selection(cmds)
             cmds.playblast(**playblast_kwargs)
     finally:
-        _restore_visibility_values(cmds, beauty_visibility)
+        _restore_visibility_values(cmds, guide_visibility)
     _emit_progress(progress_callback, "Normalizing image sequence...", 62)
     _normalize_playblast_sequence(path, start, end, suffix)
+    # SmartGateGuide is viewport-only. Burn-in/report artifacts are generated
+    # downstream from metadata, so no separate guide/slate Playblast is emitted.
     slate_written = False
-    if slate_prefix and slate_roots:
-        slate_path = Path(slate_prefix.replace("\\", "/"))
-        slate_path.parent.mkdir(parents=True, exist_ok=True)
-        slate_kwargs = dict(playblast_kwargs)
-        slate_kwargs.update({"format": "image", "filename": str(slate_path)})
-        _remove_existing_playblast_frames(slate_path, start, end, suffix)
-        slate_visibility = _isolate_slate_objects(cmds, slate_roots)
-        try:
-            _emit_progress(progress_callback, "Running slate playblast...", 68)
-            with _playblast_preset_context(project_config, preset):
-                _clear_selection(cmds)
-                cmds.playblast(**slate_kwargs)
-        finally:
-            _restore_visibility_values(cmds, slate_visibility)
-        _emit_progress(progress_callback, "Normalizing slate sequence...", 76)
-        _normalize_playblast_sequence(slate_path, start, end, suffix)
-        slate_written = True
     _emit_progress(progress_callback, "Writing package metadata...", 82)
     _write_playblast_package_metadata(cmds, settings, camera, start, end, slate_written)
     _emit_progress(progress_callback, "Encoding review movie...", 90)
@@ -1690,10 +1674,6 @@ def _remove_existing_playblast_frames(prefix: Path, start_frame: int, end_frame:
                 pass
 
 
-def _has_smart_gate_guide(cmds: Any) -> bool:
-    return bool(_smart_gate_guide_nodes(cmds))
-
-
 def _smart_gate_guide_nodes(cmds: Any) -> list[str]:
     nodes = []
     for node_type in ("SmartViewportGateGuide", "SmartGateGuide", "SmartGateGuid"):
@@ -1728,28 +1708,9 @@ def _smart_gate_guide_roots(cmds: Any) -> list[str]:
     return _dedupe(roots)
 
 
-def _isolate_slate_objects(cmds: Any, slate_roots: list[str]) -> dict[str, Any]:
-    slate_set = set(_expand_to_transforms(cmds, slate_roots))
-    candidates = _dedupe([*_isolation_candidates(cmds), *slate_set])
+def _hide_smart_gate_guides(cmds: Any, guide_roots: list[str]) -> dict[str, Any]:
     values = {}
-    for obj in candidates:
-        attr = f"{obj}.visibility"
-        if not cmds.objExists(attr):
-            continue
-        try:
-            values[attr] = cmds.getAttr(attr)
-        except Exception:
-            pass
-        try:
-            cmds.setAttr(attr, obj in slate_set)
-        except Exception:
-            pass
-    return values
-
-
-def _hide_slate_objects(cmds: Any, slate_roots: list[str]) -> dict[str, Any]:
-    values = {}
-    for obj in _expand_to_transforms(cmds, slate_roots):
+    for obj in _expand_to_transforms(cmds, guide_roots):
         attr = f"{obj}.visibility"
         if not cmds.objExists(attr):
             continue

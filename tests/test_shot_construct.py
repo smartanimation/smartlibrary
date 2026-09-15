@@ -1124,3 +1124,24 @@ def test_native_camera_publish_commits_only_after_dependency_export(tmp_path: Pa
         service.publish_shot_scene_snapshot(identity, payload, data_type='camera', native_exporter=fail)
     assert service._latest_shot_camera_publish(identity) == published
     assert len(service.list_camera_package_versions(identity)) == 1
+
+
+def test_build_asset_version_is_persisted_and_context_scoped(tmp_path, monkeypatch):
+    config=tmp_path/'config';write_config(config,tmp_path/'project')
+    manager=ReviewBuildManagerService(ProjectConfig(config))
+    identity=ShotIdentity('e','s','t')
+    root=tmp_path/'releases'/'proxy'
+    old=root/'v003'/'room.mb';new=root/'v004'/'room.mb'
+    for path in (old,new):path.parent.mkdir(parents=True);path.write_bytes(b'maya')
+    component=dict(component_type='rig',name='room',enabled=True,required=True,
+                   path=str(old),version='v003',source={'kind':'cast_entry','category':'environment'})
+    rows=[{'component':component,'asset_versions':[{'path':str(new),'version':'v004'}]}]
+    manager.select_build_asset_version(identity,rows,0,str(new))
+    generated=dict(component,path=str(old),version='v003',source={'kind':'cast_entry','category':'environment'})
+    monkeypatch.setattr(manager.shots,'construct_from_stage_inputs',lambda *args,**kwargs:{'components':[generated]})
+    resolved=manager.shots.resolved_construct(identity)['components'][0]
+    assert resolved['path']==str(new) and resolved['version']=='v004'
+    generated['path']=str(tmp_path/'releases'/'render'/'v001'/'room.mb')
+    generated['version']='v001'
+    resolved=manager.shots.resolved_construct(identity)['components'][0]
+    assert resolved['path']==generated['path']  # Context change must not retain the proxy lock.

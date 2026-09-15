@@ -33,6 +33,27 @@ AE_CONTEXT_PATH = os.path.join(USER_DATA_DIR, "smart_ae_browser_context.json")
 MAYA_BOOTSTRAP_STARTUP_DIR = os.path.join(USER_DATA_DIR, "maya_startup")
 DEFAULT_MAYA_USER_SETUP = os.path.join(CURRENT_DIR, "packages", "smartlib", "dcc", "maya", "startup", "userSetup.py")
 
+def apply_project_color_env(env, config_dir, software):
+    from smartlib.core.config_loader import ProjectConfig
+    from smartlib.core.color_settings import apply_color_environment
+    name = str(software).lower()
+    if not any(token in name for token in ("maya", "nuke", "rv")):
+        return
+    apply_color_environment(env, ProjectConfig(config_dir))
+    if "SMARTPIPELINE_COLOR_CONTRACT" not in env:
+        return
+    if "maya" in name:
+        env.pop("MAYA_COLOR_MANAGEMENT_SYNCOLOR", None)
+    if "nuke" in name:
+        prepend_env_path(env, "NUKE_PATH", [os.path.join(CURRENT_DIR, "packages", "smartlib", "dcc", "nuke", "startup")])
+
+
+def rv_color_launch_args(env):
+    if "SMARTPIPELINE_COLOR_CONTRACT" not in env:
+        return []
+    return ["-pyeval", "from smartlib.dcc.rv.color_validation import install; install()"]
+
+
 def load_yml(path):
     if os.path.exists(path):
         try:
@@ -804,6 +825,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
             apply_maya_startup_path(full_env, spec_data, self.projectroot)
 
         try:
+            apply_project_color_env(full_env, cfg_dir, soft_id)
             if is_batch:
                 # BATファイル：環境変数を一切渡さず、OS標準の環境で実行
                 print(f"[LAUNCH] Batch Mode (Clean Env): {exe_p}")
@@ -848,6 +870,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
                     apply_maya_common_pythonpath(full_env, self.projectroot)
                     apply_maya_startup_path(full_env, spec_data, self.projectroot)
 
+                apply_project_color_env(full_env, cfg_dir, soft_id)
                 launch_args = [exe_p]
                 if maya_safe:
                     launch_args.extend(["-command", maya_bootstrap_command()])
@@ -883,6 +906,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
         )
         if show_smart_review:
             env["SMART_REVIEW_SHOW_PANEL"] = "1"
+        apply_pipeline_pythonpath(env, maya_safe=False)
+        apply_project_color_env(env, cfg_dir, "openrv")
         env["OPENRV_PATH"] = rv_path
         env["RV_PATH"] = rv_path
         rv_support_roots = [
@@ -914,7 +939,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
         try:
             subprocess.Popen(
-                [rv_path, "-flags", "ModeManagerVerbose=true"],
+                [rv_path, "-flags", "ModeManagerVerbose=true"] + rv_color_launch_args(env),
                 cwd=project_root if project_root and os.path.exists(project_root) else os.path.dirname(rv_path),
                 env=env,
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -1026,6 +1051,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
 
         tool_commands = {
             "asset_manager": [python, os.path.join(SCRIPTS_DIR, "asset_manager_ui.py")],
+            "retarget_setup": [python, "-m", "smartlib.apps.retarget_setup", "--config-dir", cfg_dir],
             "assembly_manager": [python, "-m", "smartlib.apps.assembly_manager", "--config-dir", cfg_dir],
             "sequence_manager": [python, "-m", "smartlib.apps.sequence_manager", "--config-dir", cfg_dir],
             "editorial_intake": [python, "-m", "smartlib.apps.editorial_intake"],
@@ -1261,6 +1287,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
         tools_menu = menubar.addMenu("SmartTools")
         tool_specs = (
             ("asset_manager", "Asset Manager", QtWidgets.QStyle.StandardPixmap.SP_DirIcon),
+            ("retarget_setup", "Retarget Setup", QtWidgets.QStyle.StandardPixmap.SP_MediaPlay),
             ("assembly_manager", "Assembly Manager", QtWidgets.QStyle.StandardPixmap.SP_FileDialogListView),
             ("sequence_manager", "Sequence Manager", QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView),
             ("smart_ingest", "Smart Ingest", QtWidgets.QStyle.StandardPixmap.SP_DriveHDIcon),

@@ -267,6 +267,13 @@ def valid_node_names(adapter, context: PreflightContext) -> CheckResult:
     return _result(Severity.PASS, "Node names use allowed characters.")
 
 
+def unique_asset_node_names(adapter, _context: PreflightContext) -> CheckResult:
+    nodes = tuple(adapter.duplicate_dag_names())
+    if nodes:
+        return _result(Severity.ERROR, "Duplicate DAG node names were found.", nodes)
+    return _result(Severity.PASS, "DAG node names are unique.")
+
+
 def no_asset_namespaces(adapter, _context: PreflightContext) -> CheckResult:
     namespaces = tuple(adapter.asset_namespaces())
     if namespaces:

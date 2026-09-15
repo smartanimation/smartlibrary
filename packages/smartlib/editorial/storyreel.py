@@ -95,7 +95,7 @@ class StoryreelBuilder:
         fps = int(data.get("fps") or self.fps)
         ffmpeg = self._ffmpeg_path()
         results = []
-        shots = [shot for shot in (data.get("shots") or []) if isinstance(shot, dict)]
+        shots = [shot for shot in (data.get("work_shots") or data.get("shots") or []) if isinstance(shot, dict)]
         timeline_start = min((int(shot.get("cut_in") or 0) for shot in shots), default=0)
         for shot in shots:
             shot_name = str(shot.get("shot") or "")
@@ -108,16 +108,18 @@ class StoryreelBuilder:
             output_dir = publish_dir / "storyreel" / shot_name
             if execute:
                 output_dir.mkdir(parents=True, exist_ok=True)
-            first_frame = int(shot.get("cut_in") or 1001)
+            first_frame = int(shot.get("cut_in", 1001))
+            source_movie = Path(shot["reference_movie"]) if shot.get("reference_movie") else offline_mov
+            source_start = first_frame if shot.get("reference_movie") else timeline_start
             first_file = output_dir / f"storyreel_{first_frame:04d}.{image_ext.lstrip('.')}"
             pattern = output_dir / f"storyreel_%04d.{image_ext.lstrip('.')}"
             command = [
                 str(ffmpeg),
                 "-y",
                 "-ss",
-                _seconds(max(0, first_frame - timeline_start), fps),
+                _seconds(max(0, first_frame - source_start), fps),
                 "-i",
-                str(offline_mov),
+                str(source_movie),
                 "-frames:v",
                 str(duration),
                 "-vf",

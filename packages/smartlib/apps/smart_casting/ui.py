@@ -191,7 +191,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         buttons = QtWidgets.QHBoxLayout()
         self.create_asset_btn = QtWidgets.QPushButton("Create Asset")
         self.create_variant_btn = QtWidgets.QPushButton("Create Variant")
-        self.set_thumbnail_btn = QtWidgets.QPushButton("Set Thumbnail")
         self.add_to_cast_btn = QtWidgets.QPushButton("Add Selected to Cast")
         self.save_asset_sequence_cast_btn = QtWidgets.QPushButton("Save Sequence Cast")
         self.publish_asset_sequence_cast_btn = QtWidgets.QPushButton("Publish Sequence Cast")
@@ -199,7 +198,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         for button in (
             self.create_asset_btn,
             self.create_variant_btn,
-            self.set_thumbnail_btn,
             self.add_to_cast_btn,
             self.remove_asset_sequence_cast_btn,
         ):
@@ -248,24 +246,10 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self._hide_vertical_header(self.asset_cast_info_table)
         self.asset_cast_info_table.horizontalHeader().setStretchLastSection(True)
         self.asset_cast_info_table.itemChanged.connect(self._on_asset_cast_detail_changed)
-        self.metadata_table = QtWidgets.QTableWidget(0, 2)
-        self.metadata_table.setHorizontalHeaderLabels(["Key", "Value"])
-        self._hide_vertical_header(self.metadata_table)
-        self.metadata_table.horizontalHeader().setStretchLastSection(True)
-        meta_buttons = QtWidgets.QHBoxLayout()
-        self.add_meta_btn = QtWidgets.QPushButton("+")
-        self.remove_meta_btn = QtWidgets.QPushButton("-")
-        self.save_meta_btn = QtWidgets.QPushButton("Save Metadata")
-        meta_buttons.addWidget(self.add_meta_btn)
-        meta_buttons.addWidget(self.remove_meta_btn)
-        meta_buttons.addWidget(self.save_meta_btn)
         right.addWidget(self.asset_thumb, 0, QtCore.Qt.AlignHCenter)
         right.addWidget(self.asset_info)
         right.addWidget(QtWidgets.QLabel("Cast Data"))
         right.addWidget(self.asset_cast_info_table, 1)
-        right.addWidget(QtWidgets.QLabel("Custom Metadata"))
-        right.addWidget(self.metadata_table, 1)
-        right.addLayout(meta_buttons)
 
         layout.addLayout(left, 1)
         layout.addLayout(center, 4)
@@ -273,14 +257,10 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
 
         self.create_asset_btn.clicked.connect(self.create_asset)
         self.create_variant_btn.clicked.connect(self.create_variant)
-        self.set_thumbnail_btn.clicked.connect(self.set_thumbnail)
         self.add_to_cast_btn.clicked.connect(self.add_selected_to_sequence_cast)
         self.save_asset_sequence_cast_btn.clicked.connect(self.save_sequence_cast)
         self.publish_asset_sequence_cast_btn.clicked.connect(self.publish_sequence_cast)
         self.remove_asset_sequence_cast_btn.clicked.connect(self.remove_sequence_cast)
-        self.add_meta_btn.clicked.connect(lambda: self.metadata_table.insertRow(self.metadata_table.rowCount()))
-        self.remove_meta_btn.clicked.connect(self.remove_metadata_row)
-        self.save_meta_btn.clicked.connect(self.save_metadata)
 
     def _build_shots_tab(self) -> None:
         layout = QtWidgets.QHBoxLayout(self.shots_tab)
@@ -666,7 +646,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.populate_plain_asset_detail(asset)
 
     def populate_plain_asset_detail(self, asset: CastingAsset | None) -> None:
-        self.metadata_table.setRowCount(0)
         self.asset_cast_info_table.setRowCount(0)
         if not asset:
             self.asset_thumb.clear()
@@ -677,11 +656,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             f"{asset.asset}\nCategory: {asset.category}\nGroup: {asset.group}\nVariant: {asset.variant}\nStatus: {asset.status}"
         )
         self._set_label_pixmap(self.asset_thumb, asset.thumbnail)
-        for key, value in sorted(self.service.custom_metadata(asset).items()):
-            row = self.metadata_table.rowCount()
-            self.metadata_table.insertRow(row)
-            self.metadata_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(key)))
-            self.metadata_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
 
     def current_asset_table_cast(self) -> dict[str, Any] | None:
         row = self.asset_table.currentRow()
@@ -691,9 +665,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         data = item.data(QtCore.Qt.UserRole) if item else None
         return dict(data) if isinstance(data, dict) and data.get("cast_key") else None
 
-    def populate_asset_cast_detail(self, data: dict[str, Any], *, refresh_metadata: bool = True) -> None:
+    def populate_asset_cast_detail(self, data: dict[str, Any]) -> None:
         asset = self.current_asset()
-        self.metadata_table.setRowCount(0)
         self.asset_info.setText(
             f"{data.get('asset', '')}\n"
             f"Category: {data.get('category') or ''}\n"
@@ -718,12 +691,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             self.asset_cast_info_table.setItem(row, 1, value_item)
         self.asset_cast_info_table.blockSignals(False)
         self._populating_asset_cast_detail = False
-        if asset and refresh_metadata:
-            for key, value in sorted(self.service.custom_metadata(asset).items()):
-                row = self.metadata_table.rowCount()
-                self.metadata_table.insertRow(row)
-                self.metadata_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(key)))
-                self.metadata_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
 
     def _on_asset_table_item_changed(self, item) -> None:
         if self._populating_asset_table:
@@ -740,7 +707,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self._mark_sequence_cast_dirty()
         self._update_asset_table_row_data(item.row(), updated)
         self._refresh_asset_table_row(item.row(), updated)
-        self.populate_asset_cast_detail(updated, refresh_metadata=False)
+        self.populate_asset_cast_detail(updated)
 
     def _on_asset_cast_detail_changed(self, table_item) -> None:
         if self._populating_asset_cast_detail or table_item.column() != 1:
@@ -851,41 +818,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             self.refresh()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Create Variant Failed", str(exc))
-
-    def set_thumbnail(self) -> None:
-        asset = self.current_asset()
-        if not asset:
-            return
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Set Thumbnail", "", "Images (*.jpg *.jpeg *.png);;All Files (*.*)")
-        if not path:
-            return
-        try:
-            self.service.set_thumbnail(asset, path)
-            self.refresh()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Set Thumbnail Failed", str(exc))
-
-    def save_metadata(self) -> None:
-        asset = self.current_asset()
-        if not asset:
-            return
-        data = {}
-        for row in range(self.metadata_table.rowCount()):
-            key_item = self.metadata_table.item(row, 0)
-            value_item = self.metadata_table.item(row, 1)
-            key = key_item.text().strip() if key_item else ""
-            if key:
-                data[key] = value_item.text().strip() if value_item else ""
-        try:
-            self.service.write_custom_metadata(asset, data)
-            self.populate_asset_detail()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Save Metadata Failed", str(exc))
-
-    def remove_metadata_row(self) -> None:
-        row = self.metadata_table.currentRow()
-        if row >= 0:
-            self.metadata_table.removeRow(row)
 
     def selected_sequence(self) -> tuple[str, str] | None:
         item = self.sequence_tree.currentItem()
@@ -1172,7 +1104,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
     def save_sequence_cast(self) -> None:
         try:
             path = self._save_sequence_cast()
-            self.populate_asset_table()
             self.populate_sequence_cast()
             QtWidgets.QMessageBox.information(self, "Save Sequence Cast", str(path))
         except Exception as exc:
@@ -1180,8 +1111,9 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
 
     def _save_sequence_cast(self) -> Path:
         episode, sequence = self._active_sequence_for_sequence_cast()
-        path = self.service.save_sequence_cast(episode, sequence, self._sequence_cast_rows())
-        self._sequence_cast_drafts.pop((episode, sequence), None)
+        path = self.service.save_sequence_cast(
+            episode, sequence, self._sequence_cast_rows(), asset_rows=self.asset_rows
+        )
         self._sequence_cast_dirty.discard((episode, sequence))
         self._update_sequence_cast_save_label((episode, sequence))
         return path

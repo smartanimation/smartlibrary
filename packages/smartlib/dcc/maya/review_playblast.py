@@ -202,20 +202,21 @@ def export_beauty_sequences(plan) -> dict[str, str]:
         final_pattern.parent.mkdir(parents=True, exist_ok=True)
         resolution = layer.get("resolution") or [960, 540]
         _set_review_layer_visibility(cmds, f"review_{layer_name}")
-        cmds.playblast(
-            startTime=start_frame,
-            endTime=end_frame,
-            format="image",
-            filename=str(output_stem),
-            forceOverwrite=True,
-            sequenceTime=False,
-            clearCache=True,
-            viewer=False,
-            showOrnaments=True,
-            percent=100,
-            compression="png",
-            widthHeight=[int(resolution[0]), int(resolution[1])],
-        )
+        with _hidden_smart_gate_guides(cmds):
+            cmds.playblast(
+                startTime=start_frame,
+                endTime=end_frame,
+                format="image",
+                filename=str(output_stem),
+                forceOverwrite=True,
+                sequenceTime=False,
+                clearCache=True,
+                viewer=False,
+                showOrnaments=True,
+                percent=100,
+                compression="png",
+                widthHeight=[int(resolution[0]), int(resolution[1])],
+            )
         _normalize_playblast_sequence(output_stem, start_frame, end_frame, ".png")
         files = _sequence_files(output_stem, start_frame, end_frame, ".png")
         results[layer_name] = {
@@ -384,12 +385,13 @@ def export_display_layer_sequences(
             if panel:
                 kwargs["editorPanelName"] = panel
             preset_name = str(layer.get("playblast_preset") or "")
-            if project_config is not None and preset_name:
-                from smartlib.dcc.maya.playblast_preset import applied_playblast_preset
-                with applied_playblast_preset(project_config, preset_name):
+            with _hidden_smart_gate_guides(cmds):
+                if project_config is not None and preset_name:
+                    from smartlib.dcc.maya.playblast_preset import applied_playblast_preset
+                    with applied_playblast_preset(project_config, preset_name):
+                        cmds.playblast(**kwargs)
+                else:
                     cmds.playblast(**kwargs)
-            else:
-                cmds.playblast(**kwargs)
             _normalize_playblast_sequence(output_stem, start_frame, end_frame, ".png")
             files = _sequence_files(output_stem, start_frame, end_frame, ".png")
             results[layer_name] = {
@@ -472,20 +474,24 @@ def export_preview_render_groups(
                 "widthHeight": [int(resolution[0]), int(resolution[1])],
             }
             camera = str(group.get("camera") or "").strip()
-            panel = _camera_panel(cmds, camera)
-            if panel:
-                kwargs["editorPanelName"] = panel
+            hold_frame = (
+                int(group.get("camera_frame", start_frame))
+                if str(group.get("camera_timing") or "follow") == "hold"
+                else None
+            )
             preset_name = str(group.get("playblast_preset") or "")
-            with _visible_smart_gate_guides(
-                cmds, panel, int(resolution[1])
-            ):
-                if project_config is not None and preset_name:
-                    from smartlib.dcc.maya.playblast_preset import applied_playblast_preset
+            with _playblast_camera(cmds, camera, hold_frame) as output_camera:
+                panel = _camera_panel(cmds, output_camera)
+                if panel:
+                    kwargs["editorPanelName"] = panel
+                with _hidden_smart_gate_guides(cmds):
+                    if project_config is not None and preset_name:
+                        from smartlib.dcc.maya.playblast_preset import applied_playblast_preset
 
-                    with applied_playblast_preset(project_config, preset_name):
+                        with applied_playblast_preset(project_config, preset_name):
+                            cmds.playblast(**kwargs)
+                    else:
                         cmds.playblast(**kwargs)
-                else:
-                    cmds.playblast(**kwargs)
             _normalize_playblast_sequence(output_stem, start_frame, end_frame, ".png")
             files = _sequence_files(output_stem, start_frame, end_frame, ".png")
             if not files:
@@ -505,74 +511,102 @@ def export_preview_render_groups(
     return results
 
 
+_HELD_CAMERA_ATTRS = (
+    "focalLength", "horizontalFilmAperture", "verticalFilmAperture",
+    "horizontalFilmOffset", "verticalFilmOffset", "filmFit", "filmFitOffset",
+    "nearClipPlane", "farClipPlane", "cameraScale", "lensSqueezeRatio",
+    "fStop", "focusDistance", "shutterAngle", "orthographic",
+    "orthographicWidth", "panZoomEnabled", "filmRollValue",
+    "filmTranslateH", "filmTranslateV", "preScale", "postScale",
+)
+
+
 @contextmanager
-def _visible_smart_gate_guides(cmds: Any, panel: str, output_height: int):
-    nodes = []
-    for node_type in ("SmartViewportGateGuide", "SmartGateGuide", "SmartGateGuid"):
+def _playblast_camera(cmds: Any, camera: str, hold_frame: int | None):
+    """Yield a temporary camera evaluated at one frame, or the source camera."""
+    if hold_frame is None:
+        yield camera
+        return
+    if not camera or not cmds.objExists(camera):
+        raise RuntimeError("Camera Hold Frame requires a valid camera.")
+    source = camera
+    if cmds.nodeType(source) == "camera":
+        parents = cmds.listRelatives(source, parent=True, fullPath=True) or []
+        if not parents:
+            raise RuntimeError("Camera Hold Frame could not resolve its transform.")
+        source = parents[0]
+    shapes = cmds.listRelatives(source, shapes=True, fullPath=True, type="camera") or []
+    if len(shapes) != 1:
+        raise RuntimeError("Camera Hold Frame requires exactly one camera shape.")
+    source_shape = shapes[0]
+    original_time = cmds.currentTime(query=True)
+    selection = cmds.ls(selection=True, long=True) or []
+    panels = cmds.getPanel(type="modelPanel") or []
+    panel_cameras = {}
+    for panel in panels:
         try:
-            nodes.extend(cmds.ls(type=node_type, long=True) or [])
+            panel_cameras[str(panel)] = cmds.modelPanel(panel, query=True, camera=True)
         except Exception:
             pass
-    for pattern in ("SmartGateGuide*", "*SmartGateGuide*"):
-        try:
-            nodes.extend(cmds.ls(pattern, long=True) or [])
-        except Exception:
-            pass
-    nodes = _canonical_maya_nodes(cmds, nodes)
-    expanded = list(nodes)
-    for node in nodes:
-        try:
-            expanded.extend(cmds.listRelatives(node, parent=True, fullPath=True) or [])
-            expanded.extend(cmds.listRelatives(node, shapes=True, fullPath=True) or [])
-        except Exception:
-            pass
-    expanded = _canonical_maya_nodes(cmds, expanded)
-    state = {}
-    for node in expanded:
-        for attr in ("visibility", "overrideEnabled", "overrideVisibility", "fontScale"):
-            plug = f"{node}.{attr}"
-            if not cmds.objExists(plug):
-                continue
-            try:
-                state[plug] = cmds.getAttr(plug)
-            except Exception:
-                continue
-            try:
-                if attr == "fontScale":
-                    # Use one review-readable size for every output. Scaling
-                    # from output height made mixed-resolution layers differ.
-                    cmds.setAttr(plug, 2.0)
-                elif attr == "overrideEnabled":
-                    cmds.setAttr(plug, True)
-                else:
-                    cmds.setAttr(plug, True)
-            except Exception:
-                pass
-    locator_state = None
-    if panel:
-        try:
-            locator_state = cmds.modelEditor(panel, query=True, locators=True)
-            cmds.modelEditor(panel, edit=True, locators=True)
-        except Exception:
-            locator_state = None
+    held = ""
     try:
-        yield
-    finally:
-        if panel and locator_state is not None:
+        cmds.currentTime(int(hold_frame), edit=True)
+        matrix = cmds.xform(source, query=True, worldSpace=True, matrix=True)
+        held, held_shape = cmds.camera(name=":smartPlayblastHeldCamera#")
+        cmds.xform(held, worldSpace=True, matrix=matrix)
+        for attr in _HELD_CAMERA_ATTRS:
+            source_plug = f"{source_shape}.{attr}"
+            target_plug = f"{held_shape}.{attr}"
+            if not cmds.objExists(source_plug) or not cmds.objExists(target_plug):
+                continue
             try:
-                cmds.modelEditor(panel, edit=True, locators=locator_state)
+                value = cmds.getAttr(source_plug)
+                if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+                    value = value[0]
+                if isinstance(value, (list, tuple)):
+                    cmds.setAttr(target_plug, *value)
+                else:
+                    cmds.setAttr(target_plug, value)
             except Exception:
                 pass
-        for plug, value in state.items():
-            if cmds.objExists(plug):
-                try:
-                    cmds.setAttr(plug, value)
-                except Exception:
-                    pass
+        cmds.currentTime(original_time, edit=True)
+        yield held
+    finally:
+        for panel, panel_camera in panel_cameras.items():
+            try:
+                if panel_camera and cmds.objExists(panel_camera):
+                    cmds.modelPanel(panel, edit=True, camera=panel_camera)
+            except Exception:
+                pass
+        if held and cmds.objExists(held):
+            try:
+                cmds.delete(held)
+            except Exception:
+                pass
+        cmds.currentTime(original_time, edit=True)
+        cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
+
+
+@contextmanager
+def _hidden_smart_gate_guides(cmds: Any):
+    """Exclude viewport-only SmartGateGuide nodes from a Playblast."""
+    state = _capture_smart_gate_guide_state(cmds)
+    for plug in state:
+        attr = plug.rsplit(".", 1)[-1]
+        if attr not in {"visibility", "overrideVisibility"}:
+            continue
+        try:
+            cmds.setAttr(plug, False)
+        except Exception:
+            pass
+    try:
         try:
             cmds.refresh(force=True)
         except Exception:
             pass
+        yield
+    finally:
+        _restore_smart_gate_guide_state(cmds, state)
 
 
 def _canonical_maya_nodes(cmds: Any, nodes) -> list[str]:
