@@ -124,19 +124,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         episode = str(episode or "").strip()
         sequence = str(sequence or "").strip()
         shot = str(shot or "").strip()
-        if shot:
-            self.tabs.setCurrentWidget(self.shots_tab)
-            if episode:
-                self.episode_combo.setCurrentText(episode)
-            if sequence:
-                self.sequence_combo.setCurrentText(sequence)
-            for row in range(self.shot_list.count()):
-                item = self.shot_list.item(row)
-                if item.text() == shot:
-                    self.shot_list.setCurrentRow(row)
-                    break
-        elif episode and sequence:
-            self.tabs.setCurrentWidget(self.assets_tab)
+        if episode and sequence:
             for ep_row in range(self.sequence_tree.topLevelItemCount()):
                 ep_item = self.sequence_tree.topLevelItem(ep_row)
                 for seq_row in range(ep_item.childCount()):
@@ -144,6 +132,15 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                     if item.data(0, QtCore.Qt.UserRole) == (episode, sequence):
                         self.sequence_tree.setCurrentItem(item)
                         break
+        if shot:
+            self.tabs.setCurrentWidget(self.shots_tab)
+            for row in range(self.shot_list.count()):
+                item = self.shot_list.item(row)
+                if item.text() == shot:
+                    self.shot_list.setCurrentRow(row)
+                    break
+        elif episode and sequence:
+            self.tabs.setCurrentWidget(self.assets_tab)
 
         names = {str(name).strip() for name in (asset_names or []) if str(name).strip()}
         if names and self.tabs.currentWidget() == self.assets_tab:
@@ -158,21 +155,22 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                     self.asset_table.selectRow(row)
 
     def _build(self) -> None:
+        central = QtWidgets.QWidget()
+        root = QtWidgets.QHBoxLayout(central)
+        self.setCentralWidget(central)
         self.tabs = QtWidgets.QTabWidget()
-        self.setCentralWidget(self.tabs)
         self.assets_tab = QtWidgets.QWidget()
         self.shots_tab = QtWidgets.QWidget()
         self.tabs.addTab(self.assets_tab, "Assets")
         self.tabs.addTab(self.shots_tab, "Shots")
-        self._build_assets_tab()
-        self._build_shots_tab()
-
-    def _build_assets_tab(self) -> None:
-        layout = QtWidgets.QHBoxLayout(self.assets_tab)
-        left = QtWidgets.QVBoxLayout()
+        self.sequence_sidebar = QtWidgets.QWidget()
+        self.sequence_sidebar.setMinimumWidth(160)
+        self.sequence_sidebar.setMaximumWidth(240)
+        left = QtWidgets.QVBoxLayout(self.sequence_sidebar)
+        left.setContentsMargins(0, 0, 0, 0)
         self.sequence_tree = QtWidgets.QTreeWidget()
         self.sequence_tree.setHeaderHidden(True)
-        self.sequence_tree.setMinimumWidth(210)
+        self.sequence_tree.setMinimumWidth(150)
         self.sequence_tree.setIndentation(12)
         self.sequence_tree.currentItemChanged.connect(lambda _current, _previous: self.on_sequence_tree_changed())
         self.category_filter = QtWidgets.QListWidget()
@@ -183,6 +181,13 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         left.addWidget(self.sequence_tree, 1)
         left.addWidget(QtWidgets.QLabel("Category Filter"))
         left.addWidget(self.category_filter)
+        root.addWidget(self.sequence_sidebar, 1)
+        root.addWidget(self.tabs, 5)
+        self._build_assets_tab()
+        self._build_shots_tab()
+
+    def _build_assets_tab(self) -> None:
+        layout = QtWidgets.QHBoxLayout(self.assets_tab)
 
         center = QtWidgets.QVBoxLayout()
         self.asset_search = QtWidgets.QLineEdit()
@@ -192,7 +197,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.create_asset_btn = QtWidgets.QPushButton("Create Asset")
         self.create_variant_btn = QtWidgets.QPushButton("Create Variant")
         self.add_to_cast_btn = QtWidgets.QPushButton("Add Selected to Cast")
-        self.save_asset_sequence_cast_btn = QtWidgets.QPushButton("Save Sequence Cast")
         self.publish_asset_sequence_cast_btn = QtWidgets.QPushButton("Publish Sequence Cast")
         self.remove_asset_sequence_cast_btn = QtWidgets.QPushButton("Remove Cast")
         for button in (
@@ -205,7 +209,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         buttons.addStretch(1)
         sequence_buttons = QtWidgets.QHBoxLayout()
         sequence_buttons.addStretch(1)
-        sequence_buttons.addWidget(self.save_asset_sequence_cast_btn)
         sequence_buttons.addWidget(self.publish_asset_sequence_cast_btn)
         self.asset_table = QtWidgets.QTableWidget(0, len(ASSET_HEADERS))
         self.asset_table.setHorizontalHeaderLabels(ASSET_HEADERS)
@@ -251,27 +254,19 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         right.addWidget(QtWidgets.QLabel("Cast Data"))
         right.addWidget(self.asset_cast_info_table, 1)
 
-        layout.addLayout(left, 1)
         layout.addLayout(center, 4)
         layout.addLayout(right, 2)
 
         self.create_asset_btn.clicked.connect(self.create_asset)
         self.create_variant_btn.clicked.connect(self.create_variant)
         self.add_to_cast_btn.clicked.connect(self.add_selected_to_sequence_cast)
-        self.save_asset_sequence_cast_btn.clicked.connect(self.save_sequence_cast)
         self.publish_asset_sequence_cast_btn.clicked.connect(self.publish_sequence_cast)
         self.remove_asset_sequence_cast_btn.clicked.connect(self.remove_sequence_cast)
 
     def _build_shots_tab(self) -> None:
         layout = QtWidgets.QHBoxLayout(self.shots_tab)
         left = QtWidgets.QVBoxLayout()
-        form = QtWidgets.QFormLayout()
-        self.episode_combo = QtWidgets.QComboBox()
-        self.sequence_combo = QtWidgets.QComboBox()
-        form.addRow("Episode", self.episode_combo)
-        form.addRow("Sequence", self.sequence_combo)
         self.shot_list = QtWidgets.QListWidget()
-        left.addLayout(form)
         left.addWidget(QtWidgets.QLabel("Shot list"))
         left.addWidget(self.shot_list, 1)
 
@@ -280,10 +275,8 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         configure_asset_card_list(self.sequence_cast_list, QtCore, QtWidgets)
         self.sequence_cast_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.sequence_cast_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.save_sequence_cast_btn = QtWidgets.QPushButton("Save Sequence Cast")
         self.publish_sequence_cast_btn = QtWidgets.QPushButton("Publish Sequence Cast")
         self.remove_sequence_cast_btn = QtWidgets.QPushButton("Remove Sequence Cast")
-        self.save_sequence_cast_btn.setVisible(False)
         self.publish_sequence_cast_btn.setVisible(False)
         self.remove_sequence_cast_btn.setVisible(False)
         shot_buttons = QtWidgets.QHBoxLayout()
@@ -327,14 +320,11 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         layout.addLayout(center, 3)
         layout.addLayout(right, 1)
 
-        self.episode_combo.currentTextChanged.connect(lambda _text: self.populate_sequence_combo())
-        self.sequence_combo.currentTextChanged.connect(lambda _text: self.populate_shots_tab())
         self.shot_list.currentRowChanged.connect(lambda _row: self.populate_shot_cast())
         self.sequence_cast_list.itemSelectionChanged.connect(self.populate_cast_detail)
         self.sequence_cast_list.customContextMenuRequested.connect(self.show_sequence_cast_menu)
         self.shot_cast_list.itemSelectionChanged.connect(self.populate_cast_detail)
         self.add_cast_btn.clicked.connect(self.add_sequence_cast_to_shot)
-        self.save_sequence_cast_btn.clicked.connect(self.save_sequence_cast)
         self.publish_sequence_cast_btn.clicked.connect(self.publish_sequence_cast)
         self.remove_sequence_cast_btn.clicked.connect(self.remove_sequence_cast)
         self.remove_cast_btn.clicked.connect(self.remove_shot_cast)
@@ -351,10 +341,11 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.populate_sequence_tree()
         self.populate_categories()
         self.populate_asset_table()
-        self.populate_episode_combo()
+        self.populate_shots_tab()
 
     def populate_sequence_tree(self) -> None:
         current = self.selected_sequence()
+        self.sequence_tree.blockSignals(True)
         self.sequence_tree.clear()
         episodes: dict[str, list[str]] = {}
         for seq in self.service.sequences():
@@ -375,10 +366,12 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         self.sequence_tree.expandAll()
         if selected_item or first_sequence_item:
             self.sequence_tree.setCurrentItem(selected_item or first_sequence_item)
+        self.sequence_tree.blockSignals(False)
 
     def on_sequence_tree_changed(self) -> None:
         self.populate_categories()
         self.populate_asset_table()
+        self.populate_shots_tab()
 
     def populate_categories(self) -> None:
         current = self.selected_categories()
@@ -420,7 +413,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
             return
         self._set_asset_table_headers(ASSET_HEADERS)
         self.asset_cast_info_table.setVisible(False)
-        self.save_asset_sequence_cast_btn.setVisible(False)
         self.publish_asset_sequence_cast_btn.setVisible(False)
         self.remove_asset_sequence_cast_btn.setVisible(False)
         self.available_asset_label.setVisible(False)
@@ -458,7 +450,6 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
     def populate_sequence_cast_table(self, episode: str, sequence: str) -> None:
         self._set_asset_table_headers(SEQUENCE_CAST_HEADERS)
         self.asset_cast_info_table.setVisible(True)
-        self.save_asset_sequence_cast_btn.setVisible(True)
         self.publish_asset_sequence_cast_btn.setVisible(True)
         self.remove_asset_sequence_cast_btn.setVisible(True)
         self.add_to_cast_btn.setVisible(True)
@@ -570,9 +561,9 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
 
     def _update_sequence_cast_save_label(self, sequence: tuple[str, str]) -> None:
         dirty = sequence in self._sequence_cast_dirty
-        label = "Save Sequence Cast"
-        self.save_asset_sequence_cast_btn.setText(f"{label} *" if dirty else label)
-        self.save_sequence_cast_btn.setText(f"{label} *" if dirty else label)
+        label = "Publish Sequence Cast"
+        self.publish_asset_sequence_cast_btn.setText(f"{label} *" if dirty else label)
+        self.publish_sequence_cast_btn.setText(f"{label} *" if dirty else label)
 
     def _set_asset_table_headers(self, headers: list[str]) -> None:
         if self.asset_table.columnCount() != len(headers):
@@ -909,32 +900,10 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
                 result.append(data)
         return result
 
-    def populate_episode_combo(self) -> None:
-        current = self.episode_combo.currentText()
-        episodes = sorted({seq.episode for seq in self.service.sequences()}) or ["ep001"]
-        self.episode_combo.blockSignals(True)
-        self.episode_combo.clear()
-        self.episode_combo.addItems(episodes)
-        self.episode_combo.setCurrentText(current if current in episodes else episodes[0])
-        self.episode_combo.blockSignals(False)
-        self.populate_sequence_combo()
-
-    def populate_sequence_combo(self) -> None:
-        episode = self.episode_combo.currentText()
-        current = self.sequence_combo.currentText()
-        sequences = sorted({seq.sequence for seq in self.service.sequences() if seq.episode == episode}) or ["sq010"]
-        self.sequence_combo.blockSignals(True)
-        self.sequence_combo.clear()
-        self.sequence_combo.addItems(sequences)
-        self.sequence_combo.setCurrentText(current if current in sequences else sequences[0])
-        self.sequence_combo.blockSignals(False)
-        self.populate_shots_tab()
-
     def populate_shots_tab(self) -> None:
-        episode = self.episode_combo.currentText()
-        sequence = self.sequence_combo.currentText()
+        sequence = self.selected_sequence()
         self.shot_list.clear()
-        for shot in self.service.shots_for_sequence(episode, sequence):
+        for shot in self.service.shots_for_sequence(*sequence) if sequence else []:
             item = QtWidgets.QListWidgetItem(shot.shot)
             item.setData(QtCore.Qt.UserRole, shot)
             self.shot_list.addItem(item)
@@ -946,7 +915,10 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
 
     def populate_sequence_cast(self) -> None:
         self.sequence_cast_list.clear()
-        data = self.service.load_sequence_cast(self.episode_combo.currentText(), self.sequence_combo.currentText())
+        sequence = self.selected_sequence()
+        if not sequence:
+            return
+        data = self.service.load_sequence_cast(*sequence)
         for key, entry in sorted((data.get("cast") or {}).items()):
             self.sequence_cast_list.addItem(self._cast_item(key, entry))
 
@@ -1101,31 +1073,19 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Remove Sequence Cast Failed", str(exc))
 
-    def save_sequence_cast(self) -> None:
-        try:
-            path = self._save_sequence_cast()
-            self.populate_sequence_cast()
-            QtWidgets.QMessageBox.information(self, "Save Sequence Cast", str(path))
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Save Sequence Cast Failed", str(exc))
-
-    def _save_sequence_cast(self) -> Path:
-        episode, sequence = self._active_sequence_for_sequence_cast()
-        path = self.service.save_sequence_cast(
-            episode, sequence, self._sequence_cast_rows(), asset_rows=self.asset_rows
-        )
-        self._sequence_cast_dirty.discard((episode, sequence))
-        self._update_sequence_cast_save_label((episode, sequence))
-        return path
-
     def publish_sequence_cast(self) -> None:
         episode, sequence = self._active_sequence_for_sequence_cast()
         comment, accepted = QtWidgets.QInputDialog.getText(self, "Publish Sequence Cast", "Comment")
         if not accepted:
             return
         try:
-            self._save_sequence_cast()
-            path = self.service.publish_sequence_cast(episode, sequence, comment=comment.strip())
+            path = self.service.publish_sequence_cast(
+                episode, sequence, comment=comment.strip(),
+                rows=self._sequence_cast_rows(), asset_rows=self.asset_rows,
+            )
+            self._sequence_cast_dirty.discard((episode, sequence))
+            self._update_sequence_cast_save_label((episode, sequence))
+            self.populate_sequence_cast()
             QtWidgets.QMessageBox.information(self, "Publish Sequence Cast", str(path))
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Publish Sequence Cast Failed", str(exc))
@@ -1181,11 +1141,7 @@ class SmartCastingWindow(QtWidgets.QMainWindow):
         return rows
 
     def _active_sequence_for_sequence_cast(self) -> tuple[str, str]:
-        if self.tabs.currentWidget() == self.assets_tab:
-            selected = self.selected_sequence()
-            if selected:
-                return selected
-        return self.episode_combo.currentText(), self.sequence_combo.currentText()
+        return self.selected_sequence() or ("", "")
 
     def _selected_sequence_cast_keys(self) -> list[str]:
         if self.tabs.currentWidget() == self.assets_tab and self.selected_sequence():

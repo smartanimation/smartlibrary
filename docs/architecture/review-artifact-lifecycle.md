@@ -1,7 +1,7 @@
 # Review Artifact Lifecycle
 
 - Status: Accepted
-- Decision date: 2026-09-01
+- Decision date: 2026-09-16
 - Scope: SmartPipelineのShot Review、Smart Playblast、Smart AE Browser、PreComp、Review Build
 
 この文書は、SmartPipelineにおけるReview関連成果物の名称、責務、保存領域、状態遷移に関する正本である。
@@ -71,6 +71,11 @@ Publish済みPreCompとRender Layer Materialを使用して生成する、再合
 
 Review Build内のMovieはBuild結果の技術確認用であり、それだけではInternalまたはClientへの提出物を意味しない。
 
+Review BuildのVersionは、共通Path Resolverで解決したReview Build保存先の履歴から採番し、
+提出先のVersionとは分離する。保存先を共有する部門はBuildの番号も共有する。
+提出に至らなかったBuildや不完全なVersionディレクトリも再利用せず、既存成果物を保持する。
+Submissionの`source_manifest.json`には使用したReview Build Manifestの参照とBuild Version／Takeを記録する。
+
 SmartGateGuideはMaya Viewport内の撮影範囲Previewとし、PreCompやReview Movieへ直接取り込まない。
 Review用の技術OverlayはPrimary Cameraの情報をheadlessで評価した`review_overlay.json`
 （`smartpipeline.review_overlay.v1`）を正本とし、ASSへコンパイルする。Review BuildのClean Movieを
@@ -85,11 +90,15 @@ Formal Reviewの同梱資料は`review_report.pdf`とする。PDFにはClean Mov
 
 ### Working Review Movie
 
-Smart AE BrowserのRenderから、現在の作業AEPを確認するために直接生成するMOV。
+Smart AE Browserの作業AEP仮組み、またはSmart CompositionのUSD合成を確認するために生成するMOV。
 
 - Review Buildを生成しない、日常的な作業確認用の成果物である。
 - `review/review_build`および`output`には保存しない。
-- Shot Workspaceの`review/{department}/mov`へ保存する。
+- Shot Workspaceの`review/{department}/{review_kind}/mov`へ保存する。
+- `review_kind`はAE仮組みの`compTemp`、USD合成の`usd`。入力素材のDCC名ではなく用途で分離する。
+- AE例: `ELCD_ep02_s027_c001_compTemp_v001_t01.mov`。
+- USD例: `ELCD_ep02_s027_c001_usd_v001_t01.mov`。同梱資料は同じstemの`_report.pdf`。
+- USDの資料はComposition、Section、Productバージョン、USD参照先、Camera、Frame Rangeを記録する。Formal Reviewの`review_report.pdf`とは別の作業確認資料。
 - VersionおよびTakeはディレクトリではなくファイル名で識別する。
 - 保存先は共通Path Resolverの`shot_review_movie_dir`から取得する。
 
@@ -101,6 +110,11 @@ InternalまたはClientへ実際に提出したチェック成果物。
 - Render Layer Materialを保存しない。
 - Review Buildの途中生成物を保存しない。
 - 提出元のReview BuildをSubmission Manifestから追跡可能にする。
+- 提出動画名は共通Path Resolverで
+  `{project}_{episode}_{sequence}_{shot}_{department}_{task}_{version}.mov`
+  とする（例: `ELCD_ep02_s027_c001_anim_preComp_v004.mov`）。Versionは提出物のVersion。
+  `review.json`の`movie`を参照の正本とし、旧`review.mov`も読み取り互換を維持する。
+  作業中の一時動画およびReview Build内のClean Movieとは区別する。
 
 ### Publish
 
@@ -189,8 +203,11 @@ Render Layer Materialの連番生成に成功しただけでは、Review素材�
 │
 ├─ review/
 │  ├─ {dept}/
-│  │  └─ mov/
-│  │     └─ {project}_{episode}_{sequence}_{shot}_{task}_v001_t01.mov
+│  │  ├─ compTemp/mov/
+│  │  │  └─ {project}_{episode}_{sequence}_{shot}_compTemp_v001_t01.mov
+│  │  └─ usd/mov/
+│  │     ├─ {project}_{episode}_{sequence}_{shot}_usd_v001_t01.mov
+│  │     └─ {project}_{episode}_{sequence}_{shot}_usd_v001_t01_report.pdf
 │  └─ review_build/
 │     └─ v001/
 │        └─ t001/
@@ -240,7 +257,8 @@ Path(project_root) / "production" / "shots"
 
 ```python
 paths.shot_render_layer_dir(identity, department, layer, version)
-paths.shot_review_movie_dir(identity, department)
+paths.shot_review_movie_dir(episode, sequence, shot, department, review_kind="compTemp")
+paths.shot_review_movie_dir(episode, sequence, shot, department, review_kind="usd")
 paths.shot_review_build_dir(identity, department, version, take)
 paths.shot_review_output_dir(identity, department, audience, version)
 paths.shot_precomp_publish_dir(identity, version)
@@ -254,3 +272,7 @@ API名は既存Resolverの実装を正とし、上記は責務を示す例であ
 - 規則を変更する場合は、この文書のStatus、Decision date、該当セクションおよび移行方針を同時に更新する。
 - 一時的な例外は暗黙に実装せず、理由、対象、終了条件を文書化する。
 - 既存Resolverの設定は完了済みとして扱い、具体的な不具合または明示的な変更要求がない限り再設計しない。
+
+## 2026-09-16 移行方針
+
+新規のWorking Review Movieは用途別ディレクトリへ出力する。既存の`review/{department}/mov`内のファイルは移動・改名しない。旧AE動画はResolverの`legacy=True`で読み取り互換を維持する。旧`shot_review_movie`テンプレートもResolver内で用途階層を補い、新規テンプレートは`{review_kind}`を明示する。Review Build／Formal Review／Publishの保存先は変更しない。

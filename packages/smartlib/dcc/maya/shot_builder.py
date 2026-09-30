@@ -70,6 +70,7 @@ def stage_sequence_layout_from_preview(
     *,
     project_root: str | Path | None = None,
     shot_names: Iterable[str] | None = None,
+    camera_inputs: dict[str, str] | None = None,
 ) -> list[str]:
     """Open a layout template, reference sequence cast, and build Maya Sequencer shots."""
 
@@ -90,6 +91,7 @@ def stage_sequence_layout_from_preview(
             sequence_data,
             project_root=project_root,
             shot_names=shot_names,
+            camera_inputs=camera_inputs,
         )
     )
     return referenced
@@ -496,6 +498,7 @@ def build_layout_sequence_all(
     *,
     project_root: str | Path | None = None,
     shot_names: Iterable[str] | None = None,
+    camera_inputs: dict[str, str] | None = None,
 ) -> list[str]:
     try:
         import maya.cmds as cmds
@@ -511,8 +514,8 @@ def build_layout_sequence_all(
     if not episode or not sequence:
         raise RuntimeError("all-shot layout staging requires episode and sequence in shot.json.")
 
-    camera_rig = _resolve_camera_rig(root)
-    if not camera_rig:
+    camera_rig = _resolve_camera_rig(root) if camera_inputs is None else None
+    if camera_inputs is None and not camera_rig:
         pipeline_fallback = (
             Path(__file__).resolve().parents[4]
             / "templates" / "maya" / "shot" / "camerarig.ma"
@@ -544,12 +547,26 @@ def build_layout_sequence_all(
         namespace = _clean_namespace(shot_name)
         before = set(cmds.ls(assemblies=True) or [])
         cameras_before = set(cmds.ls(type="camera", long=True) or [])
-        actual_namespace = _reference_file(cmds, camera_rig, namespace)
+        if camera_inputs is not None:
+            from .sequence_inputs import import_virtual_camera
+
+            camera_path = camera_inputs.get(shot_name, "")
+            if not camera_path:
+                raise RuntimeError(f"Virtual Camera assignment is missing: {shot_name}")
+            camera = import_virtual_camera(cmds, camera_path, shot_name)
+            referenced.append(str(camera_path))
+        else:
+            actual_namespace = _reference_file(cmds, camera_rig, namespace)
+            referenced.append(str(camera_rig))
+            camera = _first_new_camera(cmds, cameras_before)
+            if not camera:
+                camera = _first_camera_in_namespace(cmds, actual_namespace)
+        # Parenting changes the camera's full DAG path. Keep its stable identity
+        # so image-plane and shot commands receive the post-parenting path.
+        camera_uuid = (cmds.ls(camera, uuid=True) or [None])[0] if camera else None
         _parent_new_assemblies(cmds, before, shots_grp)
-        referenced.append(str(camera_rig))
-        camera = _first_new_camera(cmds, cameras_before)
-        if not camera:
-            camera = _first_camera_in_namespace(cmds, actual_namespace)
+        if camera_uuid:
+            camera = (cmds.ls(camera_uuid, long=True) or [""])[0]
         storyreel = _storyreel_first_frame(storyreel_root, shot_name, row["cut_in"])
         image_plane = ""
         if camera and storyreel:
@@ -861,9 +878,13 @@ def _namespace_nodes(cmds, namespace: str) -> list[str]:
 
 
 def _matching_namespaces(cmds, namespace: str) -> list[str]:
+    from .assembly_replacement import assembly_reference_namespaces
+    owned = assembly_reference_namespaces(cmds)
+    def is_assembly(candidate):
+        return any(candidate == item or candidate.startswith(item + ':') for item in owned)
     exact = namespace.strip(":")
     matches = []
-    if cmds.namespace(exists=exact):
+    if cmds.namespace(exists=exact) and not is_assembly(exact):
         matches.append(exact)
 
     try:
@@ -873,6 +894,8 @@ def _matching_namespaces(cmds, namespace: str) -> list[str]:
 
     for item in all_namespaces:
         candidate = str(item).strip(":")
+        if is_assembly(candidate):
+            continue
         leaf = candidate.rsplit(":", 1)[-1]
         if candidate == exact or leaf == exact or leaf.startswith(exact):
             if candidate not in matches:
@@ -905,6 +928,13 @@ def _unique_nodes(nodes: list[str]) -> list[str]:
 
 
 def _reference_file(cmds, path: Path, namespace: str) -> str:
+    from .assembly_replacement import assembly_reference_namespaces
+    requested = _clean_namespace(namespace)
+    if requested in assembly_reference_namespaces(cmds):
+        raise RuntimeError(
+            f"Cast namespace '{requested}' belongs to an Assembly prop. "
+            "Choose a different Cast namespace before building the shot."
+        )
     namespace = _unique_namespace(cmds, namespace)
     references_before = set(cmds.ls(type="reference") or [])
     referenced_file = cmds.file(
@@ -921,8 +951,16 @@ def _reference_file(cmds, path: Path, namespace: str) -> str:
     new_references = sorted(
         node for node in references_after - references_before if node != "sharedReferenceNode"
     )
-    if new_references:
-        reference_node = new_references[0]
+    # Referencing an assembled environment also creates its nested prop reference
+    # nodes. Alphabetical order does not identify the file we just referenced.
+    top_references = [node for node in new_references
+                      if cmds.referenceQuery(node, referenceNode=True, topReference=True) == node]
+    if len(top_references) != 1:
+        raise RuntimeError(
+            f"Expected one new top-level reference for '{path.name}', found {len(top_references)}."
+        )
+    if top_references:
+        reference_node = top_references[0]
         try:
             actual_namespace = str(cmds.referenceQuery(reference_node, namespace=True) or "").strip(":")
         except Exception:
@@ -947,7 +985,7 @@ def _reference_file(cmds, path: Path, namespace: str) -> str:
             actual_namespace = ""
         if actual_namespace and actual_namespace != namespace:
             raise RuntimeError(
-                f"Camera rig namespace mismatch. Expected '{namespace}', "
+                f"Reference namespace mismatch. Expected '{namespace}', "
                 f"but Maya assigned '{actual_namespace}'."
             )
     return namespace
@@ -1000,9 +1038,20 @@ def _import_file(cmds, path: Path, namespace: str) -> list[str]:
         "options": "v=0;",
     }
     if path.suffix.lower() == ".fbx":
+        import maya.mel as mel
+
         cmds.loadPlugin("fbxmaya", quiet=True)
         options["type"] = "FBX"
-    cmds.file(str(path), **options)
+        # The persisted merge mode can update an earlier take despite namespace.
+        # Each pipeline input must create its own nodes; restore the user's mode.
+        previous_mode = mel.eval('FBXImportMode -q;')
+        try:
+            mel.eval('FBXImportMode -v "add";')
+            cmds.file(str(path), **options)
+        finally:
+            mel.eval('FBXImportMode -v "' + previous_mode + '";')
+    else:
+        cmds.file(str(path), **options)
     after = set(cmds.ls(long=True) or [])
     return sorted(after - before)
 
@@ -1470,7 +1519,7 @@ def _apply_construct_set_dress(project_root: Path, construct_data: dict | None) 
     for component in _enabled_construct_components(construct_data, "set_dress"):
         package_path = _project_path(project_root, str(component.get("path") or ""))
         if not package_path or not package_path.is_file():
-            continue
+            raise RuntimeError('Enabled Set Dress input was not found: ' + str(component.get('path') or ''))
         packages.append(set_dress.load_package(package_path))
         package_paths.append(package_path)
     if not packages:
@@ -1484,6 +1533,8 @@ def _apply_construct_set_dress(project_root: Path, construct_data: dict | None) 
         if layers or base:
             warnings.extend(backend.apply_stack(layers, base=base))
 
+    if warnings:
+        raise RuntimeError('Set Dress was not fully applied:\n' + '\n'.join(dict.fromkeys(warnings)))
     set_dress.embed_package_in_scene(
         package,
         external_path=package_paths[0] if len(package_paths) == 1 else "",

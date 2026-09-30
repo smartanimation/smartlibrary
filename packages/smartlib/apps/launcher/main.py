@@ -823,6 +823,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
         if maya_safe:
             apply_maya_common_pythonpath(full_env, self.projectroot)
             apply_maya_startup_path(full_env, spec_data, self.projectroot)
+            full_env["SMART_SOFTWARE_ID"] = soft_id
 
         try:
             apply_project_color_env(full_env, cfg_dir, soft_id)
@@ -869,6 +870,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 if maya_safe:
                     apply_maya_common_pythonpath(full_env, self.projectroot)
                     apply_maya_startup_path(full_env, spec_data, self.projectroot)
+                    full_env["SMART_SOFTWARE_ID"] = soft_id
 
                 apply_project_color_env(full_env, cfg_dir, soft_id)
                 launch_args = [exe_p]
@@ -1058,6 +1060,13 @@ class SmartLauncher(QtWidgets.QMainWindow):
             "smart_ingest": [python, "-m", "smartlib.apps.smart_ingest"],
             "smart_casting": [python, "-m", "smartlib.apps.smart_casting", cfg_dir],
             "shot_manager": [python, os.path.join(SCRIPTS_DIR, "shot_manager_ui.py")],
+            "smart_composition": [
+                os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c",
+                subprocess.list2cmdline([
+                    os.path.join(CURRENT_DIR, "tools", "usd", "usdpython.bat"),
+                    "-m", "smartlib.apps.smart_composition.main", "--config", cfg_dir,
+                ]),
+            ],
             "review_build_manager": [
                 python,
                 "-m",
@@ -1073,6 +1082,9 @@ class SmartLauncher(QtWidgets.QMainWindow):
                 cfg_dir,
             ],
         }
+        if tool_name == "smart_composition":
+            env["SMARTPIPELINE_TOOLS"] = SMARTPIPELINE_TOOLS
+            env["PYTHONIOENCODING"] = "utf-8"
         command = tool_commands.get(tool_name)
         if not command:
             QtWidgets.QMessageBox.warning(self, "SmartTools", f"Unknown tool: {tool_name}")
@@ -1293,6 +1305,7 @@ class SmartLauncher(QtWidgets.QMainWindow):
             ("smart_ingest", "Smart Ingest", QtWidgets.QStyle.StandardPixmap.SP_DriveHDIcon),
             ("smart_casting", "Smart Casting", QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton),
             ("shot_manager", "Shot Manager", QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon),
+            ("smart_composition", "Smart Composition", QtWidgets.QStyle.StandardPixmap.SP_FileDialogContentsView),
             ("review_build_manager", "Review Build Manager", QtWidgets.QStyle.StandardPixmap.SP_MediaPlay),
             ("editorial_intake", "Smart Editorial", QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView),
             ("smart_delivery", "Smart Delivery", QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton),

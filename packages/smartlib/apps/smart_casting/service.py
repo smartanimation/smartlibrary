@@ -524,8 +524,22 @@ class SmartCastingService:
                 added_by_shot[identity.shot] = added
         return added_by_shot
 
-    def publish_sequence_cast(self, episode: str, sequence: str, comment: str = "") -> Path:
-        return self.shot_service.publish_sequence_cast(episode, sequence, comment=comment)
+    def publish_sequence_cast(
+        self, episode: str, sequence: str, comment: str = "",
+        *, rows: list[dict[str, Any]] | None = None,
+        asset_rows: list[CastingAsset] | None = None,
+    ) -> Path:
+        cast_data = (
+            self.load_sequence_cast(episode, sequence) if rows is None
+            else self.shot_service.build_cast_data(rows)
+        )
+        # Validate and publish before changing the current cast or any shots.
+        path = self.shot_service.publish_sequence_cast(
+            episode, sequence, comment=comment, cast_data=cast_data
+        )
+        self.shot_service.write_sequence_cast(episode, sequence, cast_data)
+        self.sync_sequence_cast_to_shots(episode, sequence, cast_data, asset_rows=asset_rows)
+        return path
 
     def load_shot_cast(self, identity: ShotIdentity) -> dict[str, Any]:
         return self.shot_service.load_cast(identity)

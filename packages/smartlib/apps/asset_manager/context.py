@@ -748,16 +748,16 @@ class AssetContextService:
 
     @staticmethod
     def is_environment_release_pack(assembly: AssetContextAssembly) -> bool:
-        return (assembly.context_name == "asset"
-                and str(assembly.manifest.get("context", {}).get("asset_class")) == "environment"
-                and assembly.quality_profile.lower() in {"proxy", "render"})
+        # Keep the public method for existing DCC callers; Props share this route.
+        from .environment_pack import release_quality
+        return release_quality(assembly) is not None
 
     def has_pack_changes(self, assembly: AssetContextAssembly) -> bool:
         if self.is_environment_release_pack(assembly):
-            from .environment_pack import digest
+            from .environment_pack import digest, release_quality
             if assembly.manifest.get("source_policy") == "asset_release":
                 from .environment_pack import current_members
-                member = current_members(self, assembly.identity).get(assembly.identity.variant, {}).get(assembly.quality_profile.lower(), {})
+                member = current_members(self, assembly.identity).get(assembly.identity.variant, {}).get(release_quality(assembly), {})
                 entry = assembly.entries[0]
                 return member.get("release_files") != {"maya": entry.files.get("mb"), "usd": entry.files.get("usd")}
             root = self.paths.asset_publish_dir(assembly.identity, "asset", assembly.quality_profile.lower())

@@ -22,6 +22,7 @@ MENU_TOOL_ICONS = {
     "Smart AE Browser": "smart_ae_browser",
     "Smart Editorial": "smart_editorial",
     "Smart Delivery": "smart_delivery",
+    "Smart Preflight": "smart_preflight",
 }
 
 
@@ -91,6 +92,11 @@ DEFAULT_MENU_CONFIG = {
                 },
             ],
             "Camera": [
+                {
+                    "label": "SmartMultiView",
+                    "command": "smartlib.dcc.maya.smart_menu.show_smart_multi_view",
+                    "enabled": True,
+                },
                 {
                     "label": "SmartGateGuide",
                     "command": "smartlib.dcc.maya.smart_menu.show_smart_gate_guide",
@@ -293,7 +299,23 @@ def _load_menu_config() -> dict:
     _ensure_camera_playblast_entry(data)
     _ensure_motion_clip_entry(data)
     _organize_tool_categories(data)
+    _ensure_multi_view_entry(data)
     return data
+
+
+def _ensure_multi_view_entry(data):
+    categories = data["maya_menu"].setdefault("categories", {})
+    items = _menu_items_from_config(categories.get("Camera", []))
+    command = "smartlib.dcc.maya.smart_menu.show_smart_multi_view"
+    if not any(item.get("command") == command for item in items):
+        items.append(dict(label="SmartMultiView", command=command, enabled=True))
+    categories["Camera"] = items
+
+
+def show_smart_multi_view():
+    ensure_runtime_paths()
+    from smartlib.dcc.maya.smart_multi_view import show
+    return show()
 
 
 def _ensure_motion_clip_entry(data):

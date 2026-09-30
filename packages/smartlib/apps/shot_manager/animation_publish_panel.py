@@ -27,6 +27,8 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self._pending_context = None
         self._rigs = {}
         self._drafts = {}
+        self._targets = ()
+        self._pending_targets = None
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         self.context_label = QtWidgets.QLabel('Select a cast member')
@@ -34,7 +36,7 @@ class AnimationPublishPanel(QtWidgets.QWidget):
 
         self.source_group = QtWidgets.QGroupBox('Source Versions')
         grid = QtWidgets.QGridLayout(self.source_group)
-        self.curve_source = QtWidgets.QLabel('Current Maya Scene → Data (new Version)')
+        self.curve_source = QtWidgets.QLabel('Saved Scene Snapshot → Worker → Data (new Version)')
         self.curve_source.setWordWrap(True)
         grid.addWidget(QtWidgets.QLabel('Animation Curves'), 0, 0)
         grid.addWidget(self.curve_source, 0, 1, 1, 2)
@@ -60,6 +62,11 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self.source_hint.setWordWrap(True)
         grid.addWidget(self.source_hint, 3, 0, 1, 3)
         layout.addWidget(self.source_group)
+        from .animation_batch_settings import AnimationBatchSettings
+        self.batch_settings = AnimationBatchSettings(self)
+        self.batch_settings.hide()
+        self.batch_settings.changed.connect(self._update_ready)
+        layout.addWidget(self.batch_settings)
 
         self.output_group = QtWidgets.QGroupBox('Output Settings')
         output = QtWidgets.QGridLayout(self.output_group)
@@ -106,8 +113,11 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         layout.addWidget(self.status)
         actions = QtWidgets.QHBoxLayout()
         self.refresh_btn = QtWidgets.QPushButton('Refresh Sources')
-        self.refresh_btn.clicked.connect(lambda: self.set_context(self.identity, self.target, force=True))
+        self.refresh_btn.clicked.connect(lambda: self.set_targets(self.identity, self._targets or (self.target,), force=True))
         actions.addWidget(self.refresh_btn)
+        queue_btn = QtWidgets.QPushButton('Job Queue')
+        queue_btn.clicked.connect(self.show_queue)
+        actions.addWidget(queue_btn)
         self.compose_btn = QtWidgets.QPushButton('Compose Existing…')
         self.compose_btn.clicked.connect(self.compose)
         actions.addWidget(self.compose_btn)
@@ -123,12 +133,44 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self._range_changed()
 
     def _running(self):
+        if getattr(self, '_queue_job', None):
+            return self._queue.jobs[self._queue_job]['state'] not in ('COMPLETE', 'FAILED')
         return self.process is not None and self.process.state() != QtCore.QProcess.NotRunning
 
     def _remember(self):
         if self._key:
             self._drafts[self._key] = (self.rig_context.currentText(), self.rig_version.currentData(),
                 self.sculpt_version.currentData(), self.range_mode.currentIndex(), self.start_frame.value(), self.end_frame.value())
+
+    def set_targets(self, identity, targets, *, force=False):
+        targets = tuple(dict.fromkeys(t for t in targets if t))
+        if self._running():
+            self._pending_targets = (identity, targets)
+            return
+        if self.identity == identity and self._targets == targets and not force:
+            return
+        if len(self._targets) > 1 and self.identity:
+            for row in self.batch_settings.selections():
+                key = (self.identity.episode, self.identity.sequence, self.identity.shot, row['target'])
+                self._drafts[key] = (row['rig_context'], row['rig'], row['sculpt'],
+                    self.range_mode.currentIndex(), self.start_frame.value(), self.end_frame.value())
+            self._key = None  # hidden single-target controls must not overwrite batch choices
+        else:
+            self._remember()
+        self._targets = targets
+        self.set_context(identity, targets[0] if targets else '', force=force)
+        multiple = len(targets) > 1
+        self.source_group.setVisible(not multiple)
+        self.batch_settings.setVisible(multiple)
+        if multiple:
+            try:
+                self.batch_settings.populate(self.service, identity, targets, self._drafts)
+                self.context_label.setText(' / '.join((identity.episode, identity.sequence, identity.shot))
+                                           + f' / {len(targets)} characters')
+            except Exception as exc:
+                self.batch_settings.rows = []
+                self.status.setPlainText(str(exc))
+        self._update_ready()
 
     def set_context(self, identity, target, *, force=False):
         key = (identity.episode, identity.sequence, identity.shot, target) if identity else None
@@ -174,7 +216,7 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         for row in self._rigs.get(self.rig_context.currentText(), []):
             self.rig_version.addItem(row['version'], row['path'])
             self.rig_version.setItemData(self.rig_version.count()-1, row['path'], QtCore.Qt.ToolTipRole)
-        self.source_hint.setText('Select the rebuild Rig context/version. Curve Data is captured from the open Maya scene.'
+        self.source_hint.setText('Select the rebuild Rig context/version. Worker captures Curve Data from a fixed saved-scene snapshot.'
             if self.is_maya_session else 'Publishing current-scene Animation Data is available inside Maya only.')
         self._update_ready()
 
@@ -207,8 +249,15 @@ class AnimationPublishPanel(QtWidgets.QWidget):
             self.end_frame.setValue(end)
 
     def _update_ready(self):
-        self.publish_btn.setEnabled(bool(self.is_maya_session and self.identity and self.target
-                                        and self.rig_version.currentData()) and not self._running())
+        if not hasattr(self, 'publish_btn'):
+            return
+        ready = bool(self.target and self.rig_version.currentData())
+        if len(self._targets) > 1:
+            rows = self.batch_settings.selections()
+            ready = len(rows) == len(self._targets) and all(row['rig'] for row in rows)
+        self.publish_btn.setEnabled(bool(self.is_maya_session and self.identity and ready) and not self._running())
+        self.publish_btn.setText(f'Publish Animation USD ({len(self._targets)})' if len(self._targets) > 1
+                                 else 'Publish Animation USD')
 
     def publish(self):
         if self._running() or not self.is_maya_session:
@@ -218,17 +267,32 @@ class AnimationPublishPanel(QtWidgets.QWidget):
             bounds = [self.start_frame.value(), self.end_frame.value()]
             if bounds[1] < bounds[0]:
                 raise ValueError('End frame must not precede Start frame')
-            rig = self.rig_version.currentData()
-            if not self.identity or not self.target or not rig:
-                raise ValueError('Select a shot, cast and published Rig version')
-            self.service.pin(rig)
+            selections = self.batch_settings.selections() if len(self._targets) > 1 else [
+                dict(target=self.target, rig=self.rig_version.currentData(),
+                     rig_context=self.rig_context.currentText(), sculpt=self.sculpt_version.currentData())]
+            if not self.identity or not selections or any(not r['target'] or not r['rig'] for r in selections):
+                raise ValueError('Select a shot, cast and published Rig version for every target')
+            cast_data = self.service.shots.load_cast(self.identity).get('cast') or {}
+            options = []
+            for row in selections:
+                cast = cast_data.get(row['target'])
+                if not cast:
+                    raise ValueError('Cast was not found: ' + row['target'])
+                options.append(dict(target=row['target'], rig=self.service.pin(row['rig']),
+                    rig_context=row['rig_context'], sculpt=self.service.pin(row['sculpt']) if row['sculpt'] else None,
+                    cast=cast))
             self.publish_btn.setEnabled(False)
-            source = self.export_current_data(bounds)
-            self.data_published.emit(str(source))
-            row = dict(kind='animation', target=self.target, source=str(source),
-                       rig=rig, rig_context=self.rig_context.currentText(), sculpt=self.sculpt_version.currentData())
-            plan = self.service.plan(self.identity, [row], frame_range=bounds)
-            self.start_worker(plan)
+            from smartlib.dcc.maya.publish_scene_input import capture_saved_scene
+            scene_input = capture_saved_scene(self.service, self.identity)
+            from smartlib.apps.review_build_manager.publish_queue import get_queue
+            if not hasattr(self, '_queue'):
+                self._queue = get_queue(self.service.shots)
+                self._queue.changed.connect(self._queue_changed)
+            self._queue_job = self._queue.submit(self.identity, kind='animation_usd',
+                scene_input=scene_input, scene_options=options[0] if len(options) == 1 else {'targets': options},
+                frame_range=bounds, merge_animation=True)
+            self.status.setPlainText('Starting independent runner. Wait for Accepted before closing Maya.')
+            self._sync_running_ui()
         except Exception as exc:
             self.status.setPlainText(str(exc))
         finally:
@@ -254,19 +318,44 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self._update_ready()
 
     def start_worker(self, plan):
-        UsdPublishDialog.start_worker(self, plan)
-        self.process.stateChanged.connect(lambda _state: self._sync_running_ui())
+        from smartlib.apps.review_build_manager.publish_queue import get_queue
+        if not hasattr(self, '_queue'):
+            self._queue = get_queue(self.service.shots)
+            self._queue.changed.connect(self._queue_changed)
+        self._queue_job = self._queue.submit(self.identity, kind='animation_usd', plan=plan, merge_animation=True)
+        self.status.setPlainText('Queued in Review Build Manager: ' + self._queue_job)
         self._sync_running_ui()
+
+    def show_queue(self):
+        from smartlib.apps.review_build_manager.publish_queue import show_queue
+        show_queue(self.service.shots)
+
+    @QtCore.Slot(str)
+    def _queue_changed(self, job_id):
+        if job_id != getattr(self, '_queue_job', None):
+            return
+        job = self._queue.jobs[job_id]
+        self.status.setPlainText(f"{job_id}: {job['state']} — {job['task']}\n{job['message']}\n{job['stderr'][-3000:]}")
+        self._sync_running_ui()
+        if job['state'] in ('COMPLETE', 'FAILED'):
+            if job['state'] == 'COMPLETE':
+                self.data_published.emit(job['message'])
+            if self._pending_context:
+                identity, target = self._pending_context
+                self._pending_context = None
+                self.set_context(identity, target, force=True)
+            if self._pending_targets:
+                identity, targets = self._pending_targets
+                self._pending_targets = None
+                self.set_targets(identity, targets, force=True)
 
     def _sync_running_ui(self):
         running = self._running()
         self.source_group.setEnabled(not running)
+        self.batch_settings.setEnabled(not running)
         self.output_group.setEnabled(not running)
         self.refresh_btn.setEnabled(not running)
         self._update_ready()
 
     def closeEvent(self, event):
-        if self._running():
-            event.ignore()
-            return
         super().closeEvent(event)

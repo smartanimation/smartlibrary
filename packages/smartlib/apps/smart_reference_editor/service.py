@@ -136,6 +136,21 @@ class ReferenceEditorService:
             return self.shots.build_sequence_preview(identity)
         return self.shots.build_preview(identity, department=department)
 
+    def cast_target_choices(self, item):
+        choices = {}
+        root = getattr(item, 'variant_root', '')
+        if root:
+            for context in self.resolver.list_published_contexts(root):
+                choices[context] = self.resolver.list_context_versions(root, context)
+        # Preserve the already-resolved default, including compatible legacy publishes.
+        target = str(item.publish_path or '')
+        if target and Path(target).is_file() and Path(target).suffix.lower() in {'.ma', '.mb'}:
+            context, version = self.resolver.context_version_from_publish_path(target)
+            rows = choices.setdefault(context or 'Resolved', [])
+            if not any(path_key(row['path']) == path_key(target) for row in rows):
+                rows.append({'version': version or 'Current', 'path': target})
+        return choices
+
     def targets(self, consumer='shot', department='anim'):
         targets = {}
         for asset in self.casting.list_assets():

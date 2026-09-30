@@ -498,13 +498,16 @@ class ReviewBuildManagerService:
         virtual_camera_take: str = "",
         enabled_inputs: dict[str, bool] | None = None,
     ):
-        return self.sequence_builder.plan(
+        plan = self.sequence_builder.plan(
             identity.episode,
             identity.sequence,
             recipe or self.default_sequence_recipe(),
             virtual_camera_take=virtual_camera_take,
             enabled=enabled_inputs,
         )
+
+        from smartlib.retarget.scene_build import attach_retarget_inputs
+        return attach_retarget_inputs(plan, self.shots, identity)
 
     def ensure_sequence_stage_input(
         self,
@@ -629,14 +632,19 @@ class ReviewBuildManagerService:
         construct = self.shots.resolved_construct(
             identity,
             cast_contexts=context_map,
-            exclude_cast=excluded_cast,
+            # Use OFF must not remove the candidate from either editor: Review
+            # has its own Use state and must be able to enable the same asset.
+            exclude_cast=[],
             representation=representation,
         )
         rows = []
         for component in construct.get("components") or []:
+            component = dict(component)
             source = dict(component.get("source") or {})
             name = str(component.get("name") or "")
             component_type = str(component.get("component_type") or "rig")
+            if component_type in {"rig", "usd"} and name in (excluded_cast or []):
+                component["enabled"] = False
             is_virtual_camera_dependency = (
                 component_type == "camera"
                 and str(source.get("kind") or "") == "shot_dependency"
@@ -739,18 +747,43 @@ class ReviewBuildManagerService:
                 "type": "review_layers", "asset": "", "category": "", "variant": "default",
                 "context": "", "context_options": [], "official": layer_version,
                 "camera_versions": [], "latest": layer_version,
-                "state": "READY" if layer_exists else "MISSING", "required": True,
-                "enabled": True, "allow_disable": False, "persist_construct": False,
+                "state": "READY" if layer_exists else "MISSING", "required": False,
+                "enabled": True, "allow_disable": True, "persist_construct": False,
                 "note": ("Review Layer Definition (Display Layer / Cast membership)"
                          if layer_exists else "Review Layer Definition is not published."),
                 "component": {
                     "component_type": "review_layers", "name": "main",
                     "path": str(layer_path or ""), "version": layer_version,
-                    "enabled": True, "required": True,
+                    "enabled": True, "required": False,
                     "source": {"kind": "shot_data", "data_type": "review_layers"},
                 },
             })
-        return rows
+        for row in rows:
+            row["input_versions"] = self.input_versions(identity, row)
+        from smartlib.review.input_dependencies import associate_inputs
+        cast = self.shots.load_cast(identity).get("cast", {})
+        for row in rows:
+            if row.get("type") in {"rig", "usd"}:
+                entry = cast.get(row.get("cast_key")) or {}
+                row["component"].setdefault("source", {})["namespace"] = entry.get("namespace", "")
+        return associate_inputs(rows, cast, reorder=True)
+
+    def input_versions(self, identity, row):
+        """Version candidates must remain in the current input's artifact family."""
+        options = list(row.get("asset_versions") or row.get("camera_versions") or [])
+        component = row.get("component") or {}
+        path = str(component.get("path") or "")
+        resolver = getattr(self.shots.paths, "artifact_version_files", None) if hasattr(self.shots, "paths") else None
+        if not options and path and resolver:
+            options = [dict(version=v, path=str(p)) for v, p in resolver(path)]
+        if row.get("type") == "set_dress" and hasattr(self.shots, "list_set_dress_data"):
+            name = row.get("cast_key")
+            options.extend(dict(version=v.version, path=str(v.path))
+                           for v in self.shots.list_set_dress_data(identity)
+                           if v.name == f"set_dress_data/{name}")
+        if path and Path(path).is_file() and not any(o["path"] == path for o in options):
+            options.append(dict(version=str(component.get("version") or "WORK"), path=path))
+        return list({o["path"]: o for o in options}.values())
 
     def save_build_contents(self, identity: ShotIdentity, rows: list[dict]) -> Path:
         return self.shots.write_construct(

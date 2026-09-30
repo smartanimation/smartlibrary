@@ -23,10 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         from PySide2 import QtWidgets
 
-    from smartlib.apps.review_build_manager.window import ReviewBuildManagerWindow
-
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    window = ReviewBuildManagerWindow(config_dir=args.config_dir)
-    window.show()
-    window.raise_()
+    from smartlib.apps.review_build_manager.startup import startup_splash
+    with startup_splash():
+        from smartlib.apps.review_build_manager.window import ReviewBuildManagerWindow
+        window = ReviewBuildManagerWindow(config_dir=args.config_dir)
+        window.show()
+        window.raise_()
     return app.exec()

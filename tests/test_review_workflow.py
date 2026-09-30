@@ -419,6 +419,49 @@ def test_review_build_is_immutable(tmp_path: Path) -> None:
         workflow.preserve_review_build(**kwargs)
 
 
+def test_review_build_versions_are_independent_of_department_submissions(tmp_path: Path) -> None:
+    workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
+    settings = {"target_template": "{shot_root}/review/{department}/{profile}/{version}"}
+    clean = tmp_path / "clean.mov"
+    clean.write_bytes(b"original anim build")
+    original = workflow.preserve_review_build(
+        department="anim", version="v001", take="t001", clean_movie=clean,
+        overlay_json=None, overlay_ass=None, manifest={"department": "anim"},
+    )
+    assert workflow.next_review_version("layout", "internal", settings) == "v001"
+    assert workflow.next_review_build_version("layout") == "v002"
+    second = workflow.preserve_review_build(
+        department="layout", version=workflow.next_review_build_version("layout"),
+        take="t001", clean_movie=clean, overlay_json=None, overlay_ass=None,
+        manifest={"department": "layout"},
+    )
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4\n")
+    source = {"review_build": str(second / "review_build_manifest.json"),
+              "review_build_version": "v002", "review_build_take": "t001"}
+    submitted = workflow.submit_review(
+        department="layout", delivery_profile="internal", delivery_settings=settings,
+        movie=clean, report=report, review_data={}, source_manifest=source,
+        version=workflow.next_review_version("layout", "internal", settings),
+    )
+    assert submitted.name == "v001"
+    assert read_json(submitted / "source_manifest.json")["review_build"] == source["review_build"]
+    assert (original / "review_clean.mov").read_bytes() == b"original anim build"
+    assert read_json(second / "review_build_manifest.json")["version"] == "v002"
+    # Build saved but not submitted: its number is still consumed.
+    assert workflow.next_review_build_version("anim") == "v003"
+    workflow.review_build_dir("layout", "v007", "t001").mkdir(parents=True)
+    assert workflow.next_review_build_version("layout") == "v008"
+
+
+def test_review_build_numbering_uses_resolved_directory(tmp_path: Path) -> None:
+    workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
+    workflow.review_build_dir = lambda dept, version, take: tmp_path / dept / version / take
+    (tmp_path / "layout" / "v012" / "t002").mkdir(parents=True)
+    assert workflow.next_review_build_version("layout") == "v013"
+    assert workflow.next_review_build_version("anim") == "v001"
+
+
 def test_delivery_profile_controls_shot_destination(tmp_path: Path) -> None:
     workflow = ReviewWorkflowService(tmp_path / "shot", tmp_path / "workspace")
     root = workflow.review_destination_root(

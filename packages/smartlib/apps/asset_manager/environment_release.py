@@ -17,6 +17,9 @@ def assembly_for_release(assembly, directory, record):
     manifest = dict(assembly.manifest)
     manifest.update(source_policy='asset_release', source_scene=record.get('source_scene', ''),
                     resolved_representations=[asdict(entry)], validation={'status': 'OK', 'errors': []})
+    manifest.pop('component_replacements', None)
+    if record.get('component_replacements'):
+        manifest['component_replacements'] = record['component_replacements']
     return replace(assembly, entries=[entry], errors=[], manifest=manifest)
 
 
@@ -36,7 +39,7 @@ def latest_release(service, assembly):
 def release_current_scene(service, assembly, source, export_usd, *, comment=''):
     """export_usd is a DCC callback; failed exports never advance release discovery."""
     if not service.is_environment_release_pack(assembly):
-        raise ValueError('Release & Pack currently supports environment PROXY and RENDER.')
+        raise ValueError('Release & Pack supports Environment PROXY/REND and Prop LO/REND.')
     source = Path(source).resolve()
     source.relative_to(service.paths.asset_work_root(assembly.identity).resolve())
     if source.suffix.lower() != '.mb' or not source.is_file():
@@ -69,6 +72,8 @@ def release_current_scene(service, assembly, source, export_usd, *, comment=''):
                       files={'mb': maya.name, 'usd': usd.name},
                       absolute_files={'mb': str(maya), 'usd': str(usd)},
                       release_hashes={'maya': digest(maya), 'usd': digest(usd)})
+        if validation.get('replacements'):
+            record['component_replacements'] = validation['replacements']
         released = assembly_for_release(assembly, directory, record)
         write_json(service.paths.artifact_file(directory, 'build_manifest.json'), released.manifest)
         write_json(service.paths.artifact_file(directory, 'publish.json'), record)

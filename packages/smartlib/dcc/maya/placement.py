@@ -7,7 +7,7 @@ from typing import Any
 from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.metadata import read_json, write_json
-from smartlib.core.path_resolver import configured_project_paths
+from smartlib.core.path_resolver import AssetIdentity, configured_project_paths
 
 
 PLACEMENT_ATTR = "smartPlacementLocator"
@@ -73,6 +73,42 @@ def list_cast_members(project_config: ProjectConfig) -> list[CastMember]:
                 namespace=str(entry.get("namespace") or cast_key),
             )
         )
+    rows.extend(_nested_reference_members(project_config, rows))
+    return rows
+
+
+def _nested_reference_members(project_config: ProjectConfig, members: list[CastMember]) -> list[CastMember]:
+    from smartlib.dcc.maya.reference_editor import scan
+
+    references = [ref for ref in scan(_maya_cmds()) if ref.nested and ref.loaded and not ref.error]
+    if not references:
+        return []
+    paths = configured_project_paths(_project_root(project_config), project_config)
+    assets = []
+    for metadata_path in paths.assets_root().glob("**/asset.json"):
+        data = read_json(metadata_path, {}) or {}
+        asset = str(data.get("asset") or metadata_path.parent.name)
+        category = str(data.get("category") or metadata_path.parent.parent.parent.name)
+        group = str(data.get("group") or metadata_path.parent.parent.name)
+        root = paths.asset_root(AssetIdentity(category, group, asset)).resolve()
+        assets.append((root, asset, category, group))
+    seen = {member.namespace for member in members}
+    rows = []
+    for ref in references:
+        if not ref.namespace or ref.namespace in seen:
+            continue
+        for root, asset, category, group in assets:
+            try:
+                relative = Path(ref.path).resolve().relative_to(root)
+            except ValueError:
+                continue
+            rows.append(CastMember(
+                name=ref.namespace, asset=asset, category=category, group=group,
+                variant=relative.parts[0] if len(relative.parts) > 1 else "default",
+                namespace=ref.namespace,
+            ))
+            seen.add(ref.namespace)
+            break
     return rows
 
 
@@ -476,21 +512,10 @@ def _context_cast_data(project_config: ProjectConfig) -> dict[str, Any]:
 
 
 def _cast_member_by_name(project_config: ProjectConfig, member_name: str) -> CastMember:
-    cast = (_context_cast_data(project_config).get("cast") or {})
-    entry = cast.get(member_name)
-    if not isinstance(entry, dict):
-        raise RuntimeError(f"Cast member was not found in cast.json: {member_name}")
-    asset_name = str(entry.get("asset") or "").strip()
-    asset_info = _asset_info(project_config, asset_name)
-    return CastMember(
-        name=member_name,
-        asset=asset_name,
-        category=str(asset_info.get("category") or entry.get("category") or ""),
-        group=str(asset_info.get("group") or entry.get("group") or ""),
-        variant=str(entry.get("variant") or "default") or "default",
-        role=str(entry.get("role") or ""),
-        namespace=str(entry.get("namespace") or member_name),
-    )
+    for member in list_cast_members(project_config):
+        if member.name == member_name:
+            return member
+    raise RuntimeError(f"Cast member was not found in cast or scene references: {member_name}")
 
 
 def _placement_metadata_for_member(project_config: ProjectConfig, member: CastMember) -> dict[str, Any]:
@@ -501,7 +526,7 @@ def _placement_metadata_for_member(project_config: ProjectConfig, member: CastMe
     variant_names = []
     cast = (_context_cast_data(project_config).get("cast") or {})
     entry = cast.get(member.name) if isinstance(cast.get(member.name), dict) else {}
-    variant_names.append(str(entry.get("variant") or "default"))
+    variant_names.append(str(entry.get("variant") or member.variant or "default"))
     if "default" not in variant_names:
         variant_names.append("default")
     for variant in variant_names:
@@ -669,7 +694,8 @@ def _find_namespaced_node(cmds: Any, namespace: str, node_name: str) -> str:
     candidates = []
     if namespace:
         candidates.extend([f"{namespace}:{node_name}", f"{namespace}:*:{node_name}", f"{namespace}:*{node_name}"])
-    candidates.append(node_name)
+    if not namespace:
+        candidates.append(node_name)
     for pattern in candidates:
         matches = cmds.ls(pattern, long=False) or []
         if matches:
@@ -682,7 +708,7 @@ def _resolve_fallback_target(cmds: Any, member: CastMember, fallback: str = "") 
     if fallback and fallback not in {"root_transform", "top_node"}:
         fallback_names.append(fallback)
     if member.category in {"prop", "env", "environment", "set"}:
-        fallback_names.extend([member.asset, "root", "root_grp", "ROOT", "asset_root"])
+        fallback_names.extend([member.asset, "Root", "root", "root_grp", "ROOT", "asset_root"])
     else:
         fallback_names.extend(["world_ctl", "global_ctl", "root_ctl", member.asset, "root_grp", "ROOT"])
     for name in fallback_names:

@@ -24,7 +24,7 @@ SHAPE_ATTRIBUTES = (
 )
 
 
-def bake_primary(payload, cmds):
+def bake_primary(payload, cmds, *, camera_name=CAMERA_NAME):
     """Create one parentless camera sampled in world space at integer frames."""
     source = str(payload["primary_path"])
     matches = cmds.ls(source, long=True) or []
@@ -34,24 +34,33 @@ def bake_primary(payload, cmds):
     source_shapes = cmds.listRelatives(source, shapes=True, fullPath=True, type="camera") or []
     if len(source_shapes) != 1:
         raise ValueError("Published Primary must have exactly one camera shape.")
-    if cmds.objExists(CAMERA_NAME):
-        cmds.delete(CAMERA_NAME)
+    if cmds.objExists(camera_name):
+        if source in (cmds.ls(camera_name, long=True) or []):
+            source = cmds.rename(source, 'source_primary#')
+            source_shapes = cmds.listRelatives(source, shapes=True, fullPath=True, type='camera') or []
+        else:
+            cmds.delete(camera_name)
     camera, _shape = cmds.camera()
-    camera = cmds.rename(camera, CAMERA_NAME)
+    camera = cmds.rename(camera, camera_name)
     shape = (cmds.listRelatives(camera, shapes=True, fullPath=True, type="camera") or [])[0]
     start, end = (int(value) for value in payload["frame_range"])
+    motion = payload.get('camera_motion') or {}
+    static = motion.get('mode') == 'static'
+    frames = [int(motion['sample_frame'])] if static else range(start, end + 1)
     original_time = cmds.currentTime(query=True)
     try:
-        for frame in range(start, end + 1):
+        for frame in frames:
             cmds.currentTime(frame, edit=True)
             matrix = cmds.xform(source, query=True, worldSpace=True, matrix=True)
             cmds.xform(camera, worldSpace=True, matrix=matrix)
-            for attribute in ("translate", "rotate", "scale"):
-                cmds.setKeyframe(camera, attribute=attribute, time=frame)
+            if not static:
+                for attribute in ("translate", "rotate", "scale"):
+                    cmds.setKeyframe(camera, attribute=attribute, time=frame)
             for attribute in SHAPE_ATTRIBUTES:
                 value = cmds.getAttr(source_shapes[0] + "." + attribute)
                 cmds.setAttr(shape + "." + attribute, value)
-                cmds.setKeyframe(shape, attribute=attribute, time=frame)
+                if not static:
+                    cmds.setKeyframe(shape, attribute=attribute, time=frame)
         # Exchange cameras must never inherit a Maya viewport overscan setting.
         cmds.setAttr(shape + ".overscan", 1.0)
         cmds.setAttr(shape + ".panZoomEnabled", False)
@@ -80,12 +89,25 @@ def export_portable(payload, directory, cmds):
             exportSelected=True,
         )
         cmds.loadPlugin("mayaUsdPlugin", quiet=True)
+        static = (payload.get('camera_motion') or {}).get('mode') == 'static'
+        timing = {} if static else dict(frameRange=(start, end), frameStride=1.0)
         cmds.mayaUSDExport(
             file=str(usd_path),
             selection=True,
-            frameRange=(start, end),
-            frameStride=1.0,
+            **timing,
         )
+        from pxr import Usd, UsdGeom
+        stage = Usd.Stage.Open(str(usd_path))
+        motion = payload.get('camera_motion') or dict(mode='animated', animation_required=True)
+        stage.GetRootLayer().customLayerData = dict(stage.GetRootLayer().customLayerData, camera_motion=motion)
+        stage.SetStartTimeCode(start)
+        stage.SetEndTimeCode(end)
+        for prim in stage.Traverse():
+            if prim.IsA(UsdGeom.Camera):
+                prim.SetCustomDataByKey('camera_motion', motion)
+            if static and any(attr.GetNumTimeSamples() for attr in prim.GetAttributes()):
+                raise RuntimeError('Static camera unexpectedly contains animation samples.')
+        stage.GetRootLayer().Save()
     finally:
         cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
     files = {"fbx": fbx_path.name, "usd": usd_path.name}
@@ -131,6 +153,8 @@ def update_publish(snapshot, *, status, files=None, error=""):
     publish_path = snapshot.with_name("publish.json")
     publish = json.loads(publish_path.read_text(encoding="utf-8-sig"))
     publish["portable_export"] = portable
+    if data.get('camera_motion'):
+        publish['camera_motion'] = data['camera_motion']
     if files:
         publish_files = dict(publish.get("files") or {})
         publish_files.update(files)
@@ -163,7 +187,7 @@ def start_background_export(snapshot, project_config, cmds, QtCore, *, parent=No
     environment.insert("PYTHONPATH", package_root + (os.pathsep + current_pythonpath if current_pythonpath else ""))
     process.setProcessEnvironment(environment)
     process.setProgram(str(mayapy))
-    process.setArguments([str(worker), str(snapshot)])
+    process.setArguments([str(worker), str(snapshot), str(project_config.config_dir)])
     process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
 
     def complete(exit_code, _status):

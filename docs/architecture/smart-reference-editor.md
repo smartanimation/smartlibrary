@@ -67,3 +67,14 @@ Shotは選択Department、Sequenceは既存のlayoutルールを使用する。
   ネスト参照の追加と子参照の置換拒否を検証。生成物は `.tmp/` に保存する。
 
 Maya fileコマンドの仕様: [Autodesk command reference](https://help.autodesk.com/cloudhelp/2026/ENU/Maya-Tech-Docs/CommandsPython/file.html)。
+
+
+## Context / Version selection
+
+Casting SyncのContext列とVersion列で、アセットごとの公開済みMayaファイルを選択できる。
+初期値はCastingの解決先。Contextを変更すると、そのContextの公開Versionを降順に表示し、
+最新Versionを選ぶ。Version列で過去の公開Versionも選択できる。
+選択すると状態と下段のTargetパスを更新し、変更対象の行にチェックを付ける。
+選択はRefreshおよび適用後の自動Refreshでも保持するが、Scope・Shotなどの変更でクリアする。
+この選択は現在のシーンへの適用に限り、Casting設定を書き換えない。
+適用直前に選択した公開ファイルの候補と存在を再確認する。

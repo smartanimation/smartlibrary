@@ -127,7 +127,9 @@ def test_bundled_template_is_available(setup):
     service, _, _ = setup
     profile = service.new_profile()
     assert profile["asset"] == "DLI"
-    assert profile["transfer_nodes"] and profile["mcr_scene"]
+    assert len(profile["mappings"]) == 66 and profile["mcr_scene"]
+    assert profile["input_mode"] == "mcr_to_anim"
+    assert all(not row["maintain_offset"] for row in profile["mappings"])
 
 
 def test_intentionally_locked_attributes_are_reported_separately(setup):
@@ -139,3 +141,62 @@ def test_intentionally_locked_attributes_are_reported_separately(setup):
         "missing_plugs": [], "failed_plugs": [],
     })
     assert service.complete_test(job, 0)["status"] == "passed"
+
+
+def test_motion_test_versions_are_sequential_and_preserve_previous_runs(setup):
+    service, profile, motion = setup
+    legacy = service.path('test', '0123456789abcdef0123456789abcdef', 'test.json')
+    write(legacy, {'run_id': legacy.parent.name, 'status': 'passed', 'reviewed': False})
+    first = service.prepare_test(profile, motion, 1, 10)
+    before = service.path('test', first['run_id'], 'test.json').read_bytes()
+    second = service.prepare_test(profile, motion, 1, 10)
+    assert (first['run_id'], second['run_id']) == ('v001', 'v002')
+    assert second['version'] == 'v002'
+    assert service.path('test', first['run_id'], 'test.json').read_bytes() == before
+    assert service.review_test({'run_id': legacy.parent.name}, True)['reviewed']
+
+
+def test_motion_test_parallel_runs_reserve_distinct_versions(setup):
+    from concurrent.futures import ThreadPoolExecutor
+    service, profile, motion = setup
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = list(pool.map(lambda _: service.prepare_test(profile, motion, 1, 10), range(4)))
+    assert sorted(job['run_id'] for job in jobs) == ['v001', 'v002', 'v003', 'v004']
+    assert all(service.path('test', job['run_id'], 'profile.json').is_file() for job in jobs)
+
+
+def test_named_test_uses_saved_data_and_restores_for_publish(setup):
+    service, profile, motion = setup
+    data = service.save_data(profile)
+    job = service.prepare_test(profile, motion, 1, 10, data_path=data)
+    assert job['result_file'].endswith('_DLI_retarget_test_data-v001.mb')
+    assert job['source_data']['path'] == str(data)
+    service.path('test', job['run_id'], job['result_file']).write_bytes(b'maya')
+    write(service.path('test', job['run_id'], 'report.json'), {'keyed_plugs': 6})
+    job = service.review_test(service.complete_test(job, 0), True)
+    restored, restored_job, restored_data = service.restore_test(job['run_id'])
+    assert restored == service.clean(profile)
+    assert restored_job['reviewed'] and restored_data == data
+    assert service.test_history()[0]['run_id'] == job['run_id']
+    assert service.publish(restored_data, restored_job).is_file()
+
+
+def test_named_test_rejects_stale_data_before_reserving_folder(setup):
+    service, profile, motion = setup
+    data = service.save_data(profile)
+    with pytest.raises(ValueError, match='current settings'):
+        service.prepare_test(dict(profile,time_unit='ntsc'), motion, 1, 10, data_path=data)
+    assert not service.path('test').exists()
+
+
+def test_common_motion_uses_manifest_range_and_rejects_escaping_path(setup):
+    service, _, _ = setup
+    root=service.paths.retarget_library('test_motion')
+    root.mkdir(parents=True,exist_ok=True)
+    (root/'common.fbx').write_bytes(b'fbx')
+    write(root/'manifest.json',{'file':'common.fbx','frame_range':[1,254],'time_unit':'film'})
+    assert service.common_test_motion()['frame_range']==[1,254]
+    assert service.common_test_motion()['path']==str(root/'common.fbx')
+    write(root/'manifest.json',{'file':'../outside.fbx','frame_range':[1,254]})
+    with pytest.raises(ValueError,match='one FBX'):
+        service.common_test_motion()

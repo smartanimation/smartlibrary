@@ -394,7 +394,18 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
         try:
             if self.identity:
                 self._update_package_context()
-                paths = self.publish_service.save_layers(self.package, self.identity)
+                from smartlib.setdress.service import LayerIdentityConflict
+                try:
+                    paths = self.publish_service.save_layers(self.package, self.identity)
+                except LayerIdentityConflict as exc:
+                    answer = QtWidgets.QMessageBox.question(self, 'Continue existing Set Dress layer?',
+                        str(exc) + '\n\nContinue all same-name saved layers as new Data Versions? '
+                        'Previous Versions are retained.\nChoose No to cancel and rename the layer.',
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+                    if answer != QtWidgets.QMessageBox.Yes:
+                        return
+                    paths = self.publish_service.save_layers(self.package, self.identity, adopt_existing=True)
+                    self.refresh_layers()
                 layer = self.current_layer()
                 self.path = paths.get(layer.id) if layer else None
                 set_dress.embed_package_in_scene(self.package, dirty=False)
@@ -403,7 +414,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
                         set_dress.create_history_revision(
                             set_dress.layer_package(self.package, item), paths[item.id]
                         )
-                self.status.setText(f"SAVED {len(paths)} LAYERS")
+                self.status.setText(f"SAVED NEW DATA VERSIONS: {len(paths)} LAYERS")
                 return
             path = self._canonical_path(allow_dialog=True)
             if not path:
@@ -585,7 +596,7 @@ class SmartSetDressWindow(QtWidgets.QMainWindow):
                 self.package, dirty=True
             )
             if self.identity:
-                paths = self.publish_service.save_layers(self.package, self.identity)
+                paths = self.publish_service.save_layers(self.package, self.identity, versioned=False)
                 layer = self.current_layer()
                 self.path = paths.get(layer.id) if layer else None
                 set_dress.embed_package_in_scene(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ class ResolvedInput:
     path: str = ""
     adapter: str = ""
     children: tuple["ResolvedInput", ...] = ()
+    retarget: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,7 @@ class SmartSequenceBuilderService:
             },
             "Mocap Only": {
                 "version": "v001",
-                "inputs": ["mocap"],
+                "inputs": ["editorial", "mocap", "cast", "storyreel", "audio"],
             },
             "Mocap + Virtual Camera": {
                 "version": "v001",
@@ -134,7 +135,7 @@ class SmartSequenceBuilderService:
         inputs = self._resolve_inputs(
             identity, sequence_data, virtual_camera_take, enabled_map
         )
-        selected_take = virtual_camera_take or self._active_take(inputs)
+        selected_take = ""  # Dependencies / Inputs owns per-shot camera selection.
         frame_start, frame_end = self._frame_range(sequence_data)
         fps = self._fps(sequence_data)
         output_scene = self._output_scene(identity)
@@ -173,11 +174,14 @@ class SmartSequenceBuilderService:
         identity = SequenceIdentity(plan.episode, plan.sequence)
         sequence_data = self.shots.load_sequence(identity)
         preview = self.shots.build_sequence_preview(identity)
+        from smartlib.dcc.maya.sequence_inputs import apply_sequence_inputs, camera_input_paths
         referenced = stage_sequence_layout_from_preview(
             preview,
             sequence_data,
             project_root=self.project_root,
+            camera_inputs=camera_input_paths(plan.inputs),
         )
+        referenced.extend(apply_sequence_inputs(plan.inputs, include_camera=False))
         save_current_scene(plan.output_scene, sequence_data)
         manifest_data = {
             "schema": "smart_sequence_build",
@@ -206,50 +210,131 @@ class SmartSequenceBuilderService:
     ) -> tuple[ResolvedInput, ...]:
         workspace = self.shots.sequence_workspace_root(identity.episode, identity.sequence)
         sequence_root = self.shots.paths.sequence_root(identity.episode, identity.sequence)
-        editorial_path = self._first_existing(
-            workspace / "sequence.json",
-            sequence_root / "sequence.json",
-        )
-        mocap_root = self._first_existing(workspace / "data" / "mocap", sequence_root / "data" / "mocap")
-        camera_root = self._first_existing(
-            workspace / "data" / "virtual_camera",
-            sequence_root / "data" / "virtual_camera",
-            workspace / "publish" / "camera",
-            sequence_root / "publish" / "camera",
-        )
-        takes = self._take_inputs(camera_root, selected_take)
+        editorial_path, editorial_version = self._resolve_editorial_publish(identity)
+        if not editorial_path:
+            editorial_path = self._first_existing(
+                workspace / "sequence.json",
+                sequence_root / "sequence.json",
+            )
+        mocap_children, takes = self._assigned_motion_inputs(identity)
         cast_path = self.shots.sequence_cast_path(identity.episode, identity.sequence)
         storyreel = self._resolve_storyreel(identity)
         audio = self._first_file(workspace / "data" / "audio", sequence_root / "data" / "audio")
-        light_root = self._first_existing(
-            workspace / "layout" / "data" / "light",
-            workspace / "data" / "light",
-            sequence_root / "data" / "light",
+        light_children = self._published_light_inputs(identity)
+        editorial = self._input(
+            "editorial", "Editorial", editorial_path, False, enabled, "Sequence JSON"
         )
-        mocap_children = self._directory_children(mocap_root, "Maya Mocap")
-        light_children = self._directory_children(light_root, "Maya Import")
-        rows = (
-            self._input("editorial", "Editorial", editorial_path, False, enabled, "Sequence JSON"),
+        if editorial_version:
+            editorial = ResolvedInput(
+                editorial.key, editorial.label, editorial.required, editorial.enabled,
+                editorial.state, editorial_version, editorial.path, editorial.adapter,
+                editorial.children,
+            )
+        rows = [
+            editorial,
             ResolvedInput(
                 "mocap", "Motion Capture", True, enabled.get("mocap", True),
-                "READY" if mocap_children else "MISSING", self._latest_version(mocap_root),
-                str(mocap_root or ""), "Maya Mocap", tuple(mocap_children),
+                "READY" if mocap_children and all(row.state == "READY" for row in mocap_children) else "MISSING", "",
+                "", "Maya Mocap", tuple(mocap_children),
             ),
             ResolvedInput(
-                "virtual_camera", "Virtual Camera", False, enabled.get("virtual_camera", True),
-                "READY" if takes else "MISSING", self._latest_version(camera_root),
-                str(camera_root or ""), "Camera Sequencer", tuple(takes),
+                "virtual_camera", "Virtual Camera", True, enabled.get("virtual_camera", True),
+                "READY" if takes and all(row.state == "READY" for row in takes) else "MISSING", "",
+                "", "Camera Sequencer", tuple(takes),
             ),
             self._input("cast", "Sequence Cast", cast_path, True, enabled, "Maya Reference"),
             self._input("storyreel", "Storyreel", storyreel, False, enabled, "Image Plane"),
             self._input("audio", "Audio", audio, False, enabled, "Maya Audio"),
-            ResolvedInput(
+        ]
+        if light_children:
+            versions = {child.version for child in light_children if child.version}
+            rows.append(ResolvedInput(
                 "light", "Light Data", False, enabled.get("light", True),
-                "READY" if light_children else "MISSING", self._latest_version(light_root),
-                str(light_root or ""), "Maya Import", tuple(light_children),
+                "READY", next(iter(versions)) if len(versions) == 1 else "multiple",
+                light_children[0].path, "Maya Import", tuple(light_children),
+            ))
+        return tuple(rows)
+
+    def _assigned_motion_inputs(self, identity):
+        sequence_entries = self.shots.load_dependencies(identity).get("dependencies") or []
+
+        def selected(entries, kind):
+            return [row for row in entries if row.get("type") == kind and row.get("status") == "selected"]
+
+        def resolve(row, key, label, adapter):
+            source = str(row.get("source") or "")
+            path = self.shots._project_path_from_text(source) if source and not source.startswith("package://") else None
+            ready = bool(path and path.is_file() and path.suffix.lower() == ".fbx")
+            return ResolvedInput(key, label, True, True, "READY" if ready else "MISSING",
+                                 str(row.get("version") or (path.parent.name if path else "")),
+                                 str(path) if path else source, adapter)
+
+        motion = selected(sequence_entries, "mocap")
+        targets = {str(row.get("target") or row.get("asset") or "") for row in motion}
+        cast = self.shots.load_sequence_cast(identity.episode, identity.sequence).get("cast") or {}
+        targets.update(str(row.get("asset") or key) for key, row in cast.items()
+                       if str(row.get("category") or "").lower() == "character")
+        mocap = []
+        for target in sorted(targets):
+            row = next((row for row in motion if str(row.get("target") or row.get("asset") or "").casefold() == target.casefold()), {})
+            mocap.append(resolve(row, target, target, "Maya Mocap FBX"))
+        cameras = []
+        defaults = selected(sequence_entries, "virtual_camera")
+        for shot in self.shots.sequence_shot_identities(identity):
+            rows = selected(self.shots.load_dependencies(shot).get("dependencies") or [], "virtual_camera")
+            row = (rows or defaults or [{}])[0]
+            label = shot.shot + (" / " + str(row.get("name")) if row.get("name") else "")
+            cameras.append(resolve(row, shot.shot, label, "Maya Camera FBX"))
+        return mocap, cameras
+
+    def _resolve_editorial_publish(
+        self, identity: SequenceIdentity
+    ) -> tuple[Path | None, str]:
+        roots = [
+            self.shots.paths.editorial_sequence_publish_root(
+                identity.episode, identity.sequence
             ),
-        )
-        return rows
+            *self.shots.paths.legacy_editorial_sequence_publish_roots(
+                identity.episode, identity.sequence
+            ),
+        ]
+        for root in roots:
+            latest = read_json(root / "latest.json", {}) or {}
+            version = str(latest.get("version") or "").strip()
+            path_text = str(latest.get("path") or "").strip()
+            candidates = []
+            if path_text:
+                incoming = Path(path_text)
+                candidates.extend((
+                    incoming if incoming.is_absolute() else root / incoming,
+                    self.project_root / incoming,
+                ))
+            if version:
+                candidates.append(root / version / "metadata" / "editorial.json")
+            path = next((candidate for candidate in candidates if candidate.is_file()), None)
+            if path:
+                return path, version
+        return None, ""
+
+    def _published_light_inputs(
+        self, identity: SequenceIdentity
+    ) -> list[ResolvedInput]:
+        rows = [
+            row
+            for row in self.shots.list_sequence_data_versions(
+                identity, department="layout"
+            )
+            if row.latest
+            and (str(row.name or "") == "light" or str(row.name or "").startswith("light/"))
+            and Path(str(row.path or "")).exists()
+        ]
+        return [
+            ResolvedInput(
+                str(row.name or "light"), str(row.name or "light"), False, True,
+                "READY", str(row.version or ""), str(row.path or ""), "Maya Import",
+            )
+            for row in rows
+        ]
 
     def _validate(
         self,
@@ -282,8 +367,8 @@ class SmartSequenceBuilderService:
             ),
             ValidationResult(
                 "takes", "Camera Takes",
-                "WARNING" if take_count > 1 and not selected_take else "READY",
-                f"{take_count} available" + (f", {selected_take} selected" if selected_take else ""),
+                "READY",
+                f"{take_count} shot assignments (Dependencies / Inputs)",
             ),
             ValidationResult(
                 "namespace", "Namespace Check", "ERROR" if duplicates else "READY",

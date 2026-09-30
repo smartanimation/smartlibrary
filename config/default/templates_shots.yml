@@ -7,7 +7,7 @@ templates:
   shot_output_root: "{shot_workspace_root}/output"
   shot_render_root: "{shot_workspace_root}/render"
   shot_review_root: "{shot_workspace_root}/review"
-  shot_review_movie: "{shot_review_root}/{department}/mov"
+  shot_review_movie: "{shot_review_root}/{department}/{review_kind}/mov"
   shot_render_layers_root: "{shot_render_root}/{department}/layers"
   shot_render_layer_root: "{shot_render_layers_root}/{layer}"
   shot_render_layer_version: "{shot_render_layer_root}/{version}"

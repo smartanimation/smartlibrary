@@ -568,7 +568,40 @@ def test_manual_mocap_sequence_metadata_becomes_ready(tmp_path: Path) -> None:
     assert item.status == "Ready"
     assert item.action == "copy"
     assert item.target_path is not None
-    assert "sequences/ep02/s027/data/mocap/fbx/DLI/v001/ELCD_ep02_s027_DLI.fbx" in item.target_path.as_posix()
+    assert item.target_path == (
+        project_root / "production/sequences/ep02/s027/data/mocap/fbx/DLI/v001" / source.name
+    )
+
+
+@pytest.mark.parametrize("data_type,subset", [("mocap", "DLI"), ("virtual_camera", "take06")])
+def test_sequence_ingest_uses_configured_resolver_root(tmp_path: Path, data_type: str, subset: str) -> None:
+    project_root = tmp_path / "project"
+    config_dir = tmp_path / "config"
+    write_config(config_dir, project_root)
+    config_path = config_dir / "templates_base.yml"
+    with config_path.open("a", encoding="utf-8") as stream:
+        stream.write("\n  sequences_root: '{project_root}/custom/sequence_library'\n")
+    source = project_root / "incoming/client/20260917_01/motion.fbx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"fbx")
+    service = SmartIngestService(ProjectConfig(config_dir))
+    package = project_root / "custom/sequence_library/ep02/s027/data" / data_type
+    package = package / subset if data_type == "virtual_camera" else package / "fbx" / subset
+    (package / "v001").mkdir(parents=True)
+    metadata = IngestMetadata(
+        target_type="Sequence", department=data_type, subset=subset,
+        format="fbx", episode="ep02", sequence="s027",
+    )
+
+    item = service.plan_file(source, metadata)
+    assert item.target_path == package / "v002" / source.name
+    result = service.ingest_selected([item])
+    assert result.copied == [item.target_path]
+    assert item.target_path.read_bytes() == b"fbx"
+    assert not (project_root / "sequences").exists()
+    if data_type == "virtual_camera":
+        assert read_json(package / "latest.json")["version"] == "v002"
+        assert read_json(package / "v002/manifest.json")["files"]["fbx"]["path"] == source.name
 
 
 def test_virtual_camera_fbx_and_mov_share_take_version_package(tmp_path: Path) -> None:
@@ -596,6 +629,7 @@ def test_virtual_camera_fbx_and_mov_share_take_version_package(tmp_path: Path) -
 
     expected_root = (
         project_root
+        / "production"
         / "sequences"
         / "ep02"
         / "s027"

@@ -25,4 +25,4 @@ AssetPublishResolver.resolve_usd_entry returns a fixed common entry path and exp
 
 ## Limits
 
-The current scene must be a complete static environment. Future prop assemblies should retain their component references in a complete Release. Viewport shader equivalence is not certified by geometry export validation.
+The current scene must be a complete static environment. Asset Assembly's [Place Asset](assembly-group-replacement.md) retains prop rig references in Maya while publishing evaluated meshes under the original background group path. Its fixed component versions are recorded in the Release metadata. Viewport shader equivalence is not certified by geometry export validation.

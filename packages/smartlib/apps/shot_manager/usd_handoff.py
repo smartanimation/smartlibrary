@@ -16,6 +16,7 @@ from smartlib.core.usd_settings import usd_settings
 PLAN = "smartpipeline.usd_handoff_plan.v1"
 PRODUCT = "smartpipeline.usd_handoff_product.v1"
 COMPOSITION = "smartpipeline.usd_handoff_composition.v1"
+SECTION = "smartpipeline.usd_handoff_section.v1"
 KINDS = {"animation", "assets", "camera", "layout"}
 
 
@@ -89,13 +90,17 @@ class UsdHandoffService(AnimationCompositionService):
             raise ValueError(f"Input changed after selection: {ref['path']}")
         return Path(actual["path"])
 
-    def plan(self, identity, rows, *, frame_range=None, fps=None):
-        if not rows:
+    def plan(self, identity, rows, *, frame_range=None, fps=None, replace_assets=False):
+        if not rows and not replace_assets:
             raise ValueError("Select at least one USD target")
         result = {"schema": PLAN, "shot": dict(zip(("episode", "sequence", "shot"), self._identity(identity))),
                   "frame_range": list(frame_range or self.shots.shot_frame_range(identity)),
                   "fps": float(self.shots.project_fps if fps is None else fps), "rows": [],
                   "usd": usd_settings(self.config.load("project_settings"))}
+        if replace_assets:
+            if any(row['kind'] != 'assets' for row in rows):
+                raise ValueError('Assets registration must contain only Assets rows')
+            result['replace_assets'] = True
         start, end = result["frame_range"]
         if not all(math.isfinite(float(v)) for v in (start, end, result["fps"])) or end < start or result["fps"] <= 0:
             raise ValueError("Invalid frame range or FPS")
@@ -105,10 +110,53 @@ class UsdHandoffService(AnimationCompositionService):
             kind, target = row["kind"], row["target"]
             if kind not in KINDS or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", target):
                 raise ValueError(f"Invalid USD target: {kind}/{target}")
-            if (kind, target) in seen or (kind == "camera" and any(k == "camera" for k, _ in seen)):
+            if (kind, target) in seen or (kind == 'camera' and row.get('camera_role', 'primary') == 'primary'
+                    and any(r['kind'] == 'camera' and r.get('camera_role', 'primary') == 'primary' for r in result['rows'])):
                 raise ValueError("Duplicate target or more than one Primary Camera")
             seen.add((kind, target))
-            row["source"] = self.pin(row["source"])
+            if kind == 'layout' and row.get('layout_type'):
+                category, name = row['layout_type'], row.get('layout_name', '')
+                if (category not in ('placement', 'setdress') or not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', name)
+                        or target != category + '_' + name):
+                    raise ValueError('Invalid Layout category/name/target')
+            if kind == 'camera':
+                if row.get('camera_role', 'primary') not in ('primary', 'derived'):
+                    raise ValueError('Invalid camera role')
+                for key in ('camera_snapshot', 'primary_source'):
+                    if row.get(key):
+                        self.check(row[key])
+                if row.get('camera_role') == 'derived' and not row.get('primary_source'):
+                    raise ValueError('Derived Camera requires a fixed Primary source')
+            if kind == 'assets':
+                provider = row.get('geometry_source', 'asset')
+                if provider not in ('asset', 'animation', 'none'):
+                    raise ValueError('Invalid Asset Geometry Source')
+                if provider == 'asset' and not row.get('source'):
+                    raise ValueError('Asset geometry requires a published USD')
+                if row.get('registration'):
+                    info = row['registration']
+                    if not all(isinstance(info.get(k), str) and info[k] for k in ('name', 'category', 'group', 'variant')):
+                        raise ValueError('Incomplete Cast Asset identity')
+                row['source'] = self.pin(row['source']) if row.get('source') else None
+                for ref in row.get('asset_dependencies', []):
+                    self.check(ref)
+                if row.get('placement'):
+                    from .placement_motion import validate_placement
+                    if provider != 'asset':
+                        raise ValueError('Placement is owned by Animation for deforming assets')
+                    validate_placement(row['placement'], result['frame_range'])
+            else:
+                row["source"] = self.pin(row["source"])
+            if kind == 'layout' and row.get('layout_type') == 'placement':
+                from .placement_motion import validate_placement
+                payload = read_json(row['source']['path'], {})
+                if payload.get('schema') != 'smartpipeline.placement_samples.v1':
+                    raise ValueError('Expected Placement sample Data')
+                validate_placement(payload['marker'], result['frame_range'])
+                for item in payload['usd_placements']:
+                    if not item['path'].startswith('/Shot/Assets/'):
+                        raise ValueError('Placement requires an Asset target')
+                    validate_placement(item['data'], result['frame_range'])
             if kind == "animation":
                 row["rig"] = self.pin(row["rig"])
                 row["sculpt"] = self.pin(row["sculpt"]) if row.get("sculpt") else None
@@ -154,13 +202,49 @@ class UsdHandoffService(AnimationCompositionService):
                     item[key] = str(self.check(item[key]))
             item.pop("payload", None)
             raw.append(item)
-        if self.plan(identity, raw, frame_range=plan["frame_range"], fps=plan["fps"]) != plan:
+        if self.plan(identity, raw, frame_range=plan["frame_range"], fps=plan["fps"],
+                     replace_assets=plan.get('replace_assets', False)) != plan:
             raise ValueError("USD plan no longer matches its fixed inputs/settings")
 
-    def publish(self, identity, plan, *, animation_exporter=None):
+    def composition_versions(self, identity):
+        root = self.paths.composition_dir(*self._identity(identity), 'usd')
+        rows = []
+        for directory in root.glob('v*'):
+            if not re.fullmatch(r'v[0-9]+', directory.name):
+                continue
+            manifest = self._file(directory, 'manifest.json')
+            data = read_json(manifest, {})
+            if data.get('schema') == COMPOSITION and data.get('status') == 'published':
+                rows.append({'version': directory.name, 'path': str(manifest)})
+        return sorted(rows, key=lambda row: int(row['version'][1:]), reverse=True)
+
+    def composition_inputs(self, identity, plan, base_composition):
+        if not base_composition:
+            return [], []
+        base = self.load_handoff(self.check(base_composition))
+        if base.get('schema') != COMPOSITION or base.get('shot') != plan['shot']:
+            raise ValueError('Base composition belongs to another shot')
+        if any(base[key] != plan[key] for key in ('frame_range', 'fps', 'usd')):
+            raise ValueError('Base composition range/FPS/units must match the new publish')
+        replaced = {(row['kind'], row['target']) for row in plan['rows']}
+        replace_camera = any(r['kind'] == 'camera' and r.get('camera_role', 'primary') == 'primary'
+                             for r in plan['rows'])
+        refs, products = [], []
+        for ref in base['products']:
+            product = self.load_handoff(self.check(ref))
+            key = (product['kind'], product['target'])
+            if (key in replaced or (replace_camera and product['kind'] == 'camera')
+                    or (plan.get('replace_assets') and product['kind'] == 'assets')):
+                continue
+            refs.append(ref)
+            products.append(product)
+        return refs, products
+
+    def publish(self, identity, plan, *, animation_exporter=None, base_composition=None):
         self.validate_plan(plan, identity)
+        retained_refs, retained_products = self.composition_inputs(identity, plan, base_composition)
         _, workspace = self._reserve(self.paths.usd_handoff_build_dir(*self._identity(identity)))
-        products, pending = [], []
+        products, pending = list(retained_products), []
         for row in plan["rows"]:
             kind, target = row["kind"], row["target"]
             version, directory = self._reserve(self.paths.usd_handoff_dir(*self._identity(identity), kind, target))
@@ -186,29 +270,42 @@ class UsdHandoffService(AnimationCompositionService):
             elif kind in {"assets", "camera"}:
                 data["entrypoint"] = row["source"]
             else:
-                from smartlib.dcc.maya.set_dress import SetDressPackage
-                package = SetDressPackage.from_dict(read_json(row["source"]["path"], {}))
-                data["changes"] = layout_changes(package, row.get("node_map", {}))
+                if row.get('layout_type') == 'placement':
+                    data['placement_data'] = read_json(row['source']['path'], {})
+                    data['changes'] = []
+                else:
+                    from smartlib.dcc.maya.set_dress import SetDressPackage
+                    package = SetDressPackage.from_dict(read_json(row["source"]["path"], {}))
+                    data["changes"] = layout_changes(package, row.get("node_map", {}))
             manifest = self._file(directory, "manifest.json")
             pending.append((manifest, data))
             products.append(data)
         version, directory = self._reserve(self.paths.composition_dir(*self._identity(identity), "usd"))
         paths = self._build_composition_layers(identity, directory, products, plan)
         dependencies = paths.pop('_dependencies')
+        sections = paths.pop('_sections')
+        pending_sections = paths.pop('_pending_sections')
         self.validate_plan(plan, identity)
+        self.composition_inputs(identity, plan, base_composition)
         for ref in dependencies:
             self.check(ref)
         # Products become visible only after the complete selection validates.
         for manifest, data in pending:
             data["dependencies"] = dependencies
             self._commit(manifest, data)
+        self._commit_sections(identity, pending_sections)
         snapshot = {"schema": COMPOSITION, "status": "published", "approval": "not_reviewed",
                     "shot": plan["shot"], "version": version, "frame_range": plan["frame_range"],
                     "fps": plan["fps"], "usd": plan["usd"], "partial": True,
                     "included_targets": [[p["kind"], p["target"]] for p in products],
-                    "products": [self.pin(p) for p, _ in pending], "dependencies": dependencies,
+                    "products": retained_refs + [self.pin(p) for p, _ in pending], "dependencies": dependencies,
+                    "base_composition": base_composition,
+                    "sections": {key: self.pin(path) for key, path in sections.items()},
                     "layers": {key: self.pin(path) for key, path in paths.items()},
                     "entrypoint": self.pin(paths["shot"])}
+        if plan.get('replace_assets') or (base_composition and
+                self.load_handoff(self.check(base_composition)).get('assets_registration_complete')):
+            snapshot['assets_registration_complete'] = True
         manifest = self._file(directory, "manifest.json")
         self._commit(manifest, snapshot)
         return manifest
@@ -218,23 +315,59 @@ class UsdHandoffService(AnimationCompositionService):
         write_json(pending, data)
         pending.replace(manifest)
 
+    def _commit_sections(self, identity, pending):
+        for manifest, data in pending:
+            data['products'] = [self.pin(self._file(self.paths.usd_handoff_dir(
+                *self._identity(identity), row['kind'], row['target'], row['version']), 'manifest.json'))
+                for row in data['definition']['members']]
+            self._commit(manifest, data)
+
+    def section_versions(self, identity):
+        result = {}
+        for kind in sorted(KINDS):
+            root = self.paths.usd_section_dir(*self._identity(identity), kind)
+            rows = []
+            for directory in root.glob('v*'):
+                if not re.fullmatch(r'v[0-9]+', directory.name):
+                    continue
+                manifest = self._file(directory, 'manifest.json')
+                data = read_json(manifest, {})
+                if (data.get('schema') == SECTION and data.get('status') == 'published'
+                        and data.get('kind') == kind
+                        and data.get('shot') == dict(zip(('episode', 'sequence', 'shot'), self._identity(identity)))):
+                    rows.append((directory.name, manifest.as_posix()))
+            if rows:
+                result[kind] = sorted(rows, key=lambda item: int(item[0][1:]), reverse=True)
+        return result
+
+    def section_products(self, identity, manifests):
+        """Expand fixed Section selections through pinned product receipts."""
+        from .usd_sections import section_definition
+        refs, products, kinds = [], [], set()
+        expected = dict(zip(('episode', 'sequence', 'shot'), self._identity(identity)))
+        for manifest in manifests:
+            ref = self.pin(manifest)
+            data = self.load_handoff(self.check(ref))
+            if data.get('schema') != SECTION or data.get('shot') != expected:
+                raise ValueError('Select published Sections for this shot')
+            if data['kind'] in kinds:
+                raise ValueError('Select one version per Section')
+            kinds.add(data['kind'])
+            members = [self.load_handoff(self.check(p)) for p in data['products']]
+            if section_definition(data['kind'], members, data) != data['definition']:
+                raise ValueError('Section product receipts no longer match its definition')
+            refs.append(ref)
+            products.extend(p['path'] for p in data['products'])
+        self.select_products(identity, products)
+        return refs, products
+
     def _build_composition_layers(self, identity, directory, products, plan):
-        _, workspace = self._reserve(self.paths.usd_handoff_build_dir(*self._identity(identity)))
-        build_paths = {k: self._file(workspace, k + '.usda') for k in ('shot', 'animation', 'camera', 'assets', 'layout')}
-        deps = compose_layers(build_paths, products, plan, self)
-        paths = {}
-        for key, source in build_paths.items():
-            target = self._file(directory, source.name)
-            shutil.copy2(source, target)
-            if file_hash(source) != file_hash(target):
-                raise ValueError('Composition copy checksum mismatch')
-            paths[key] = target
-        paths['_dependencies'] = deps
-        return paths
+        from smartlib.apps.shot_manager.usd_sections import build_sections
+        return build_sections(self, identity, directory, products, plan)
 
     def load_handoff(self, manifest):
         data = read_json(manifest, {})
-        if data.get("schema") not in {PRODUCT, COMPOSITION} or data.get("status") != "published":
+        if data.get("schema") not in {PRODUCT, COMPOSITION, SECTION} or data.get("status") != "published":
             raise ValueError("Not a completed USD handoff")
         for ref in data.get("dependencies", []) + data.get("products", []):
             self.check(ref)
@@ -242,10 +375,36 @@ class UsdHandoffService(AnimationCompositionService):
             self.check(ref)
         if data.get("entrypoint"):
             self.check(data["entrypoint"])
+        if data.get('schema') == COMPOSITION:
+            for kind, ref in data.get('sections', {}).items():
+                section = self.load_handoff(self.check(ref))
+                if section.get('schema') != SECTION or section.get('kind') != kind or section.get('shot') != data.get('shot'):
+                    raise ValueError('Invalid Composition section reference')
         return data
 
     def compose_products(self, identity, manifests):
         """Compose existing versions without re-exporting geometry."""
+        refs, products, plan, seen = self.select_products(identity, manifests)
+        expected_shot = dict(zip(('episode', 'sequence', 'shot'), self._identity(identity)))
+        version, directory = self._reserve(self.paths.composition_dir(*self._identity(identity), 'usd'))
+        paths = self._build_composition_layers(identity, directory, products, plan)
+        deps = paths.pop('_dependencies')
+        sections = paths.pop('_sections')
+        pending_sections = paths.pop('_pending_sections')
+        for ref in refs + deps:
+            self.check(ref)
+        self._commit_sections(identity, pending_sections)
+        result = dict(plan, schema=COMPOSITION, status='published', approval='not_reviewed',
+                      shot=expected_shot, version=version, partial=True,
+                      included_targets=sorted(seen), products=refs, dependencies=deps,
+                      sections={k: self.pin(v) for k, v in sections.items()},
+                      layers={k: self.pin(v) for k, v in paths.items()}, entrypoint=self.pin(paths['shot']))
+        manifest = self._file(directory, 'manifest.json')
+        self._commit(manifest, result)
+        return manifest
+
+    def select_products(self, identity, manifests):
+        """Shared validation for preview and publication."""
         refs = [self.pin(path) for path in manifests]
         products = [self.load_handoff(ref['path']) for ref in refs]
         if not products or any(p['schema'] != PRODUCT for p in products):
@@ -257,25 +416,38 @@ class UsdHandoffService(AnimationCompositionService):
             if p['shot'] != expected_shot or any(p[k] != plan[k] for k in plan):
                 raise ValueError('Products belong to different shots, timing or units')
             key = (p['kind'], p['target'])
-            if key in seen or (p['kind'] == 'camera' and any(k == 'camera' for k, _ in seen)):
+            if key in seen:
                 raise ValueError('Select one version per target and one Primary Camera')
             seen.add(key)
-        version, directory = self._reserve(self.paths.composition_dir(*self._identity(identity), 'usd'))
-        paths = self._build_composition_layers(identity, directory, products, plan)
-        deps = paths.pop('_dependencies')
-        for ref in refs + deps:
-            self.check(ref)
-        result = dict(plan, schema=COMPOSITION, status='published', approval='not_reviewed',
-                      shot=expected_shot, version=version, partial=True,
-                      included_targets=sorted(seen), products=refs, dependencies=deps,
-                      layers={k: self.pin(v) for k, v in paths.items()}, entrypoint=self.pin(paths['shot']))
-        manifest = self._file(directory, 'manifest.json')
-        self._commit(manifest, result)
-        return manifest
+        validate_cameras(products)
+        return refs, products, plan, seen
+
+
+
+def validate_cameras(products):
+    cameras = [p for p in products if p['kind'] == 'camera']
+    primary = [p for p in cameras if p.get('inputs', {}).get('camera_role', 'primary') == 'primary']
+    if cameras and len(primary) != 1:
+        raise ValueError('Select exactly one Primary Camera')
+    for camera in cameras:
+        inputs = camera.get('inputs', {})
+        if inputs.get('camera_role') == 'derived':
+            original = primary[0].get('inputs', {})
+            if (not inputs.get('primary_source') or inputs['primary_source'] != original.get('camera_snapshot')
+                    or inputs.get('primary_fingerprint') != original.get('primary_fingerprint')):
+                raise ValueError('Derived Camera does not match the selected Primary version')
 
 
 def layout_changes(package, node_map):
     from smartlib.dcc.maya.set_dress import composed_values, TRANSFORM_ATTRIBUTES
+    node_names = {}
+    for layer in package.layers:
+        if layer.muted:
+            continue
+        for change in layer.changes:
+            if change.node_id in node_names and node_names[change.node_id] != change.node:
+                raise ValueError('Duplicate legacy Set Dress node IDs; re-record layers for referenced instances')
+            node_names[change.node_id] = change.node
     result = []
     for change in composed_values(package.layers).values():
         path = node_map.get(change.node_id) or node_map.get(change.node)
@@ -311,11 +483,20 @@ def set_layout_value(prim, attribute, value):
         raise ValueError(f'Unsupported Asset transform stack: {prim.GetPath()}')
 
 
-def compose_layers(paths, products, plan, service):
+def compose_layers(paths, products, plan, service, *, in_memory=False):
     from pxr import Sdf, Usd, UsdGeom, UsdUtils
+    validate_cameras(products)
+    placement_targets = set()
+    placed_targets = set()
+    animation_targets = {p['target'] for p in products if p['kind'] == 'animation'}
+    for product in products:
+        if (product['kind'] == 'assets' and product['target'] in animation_targets
+                and product.get('inputs', {}).get('geometry_source', 'asset') == 'asset'):
+            raise ValueError('Duplicate geometry provider for ' + product['target'] +
+                             ': choose Animation USD / Metadata only for its Asset registration')
     stages = {}
     for key, path in paths.items():
-        stage = Usd.Stage.CreateNew(str(path))
+        stage = Usd.Stage.CreateInMemory(key + '.usda') if in_memory else Usd.Stage.CreateNew(str(path))
         stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Shot").GetPrim())
         stage.SetStartTimeCode(plan["frame_range"][0])
         stage.SetEndTimeCode(plan["frame_range"][1])
@@ -329,6 +510,26 @@ def compose_layers(paths, products, plan, service):
         kind = product["kind"]
         if kind == "layout":
             continue
+        options = product.get('inputs', {})
+        for key in ('camera_snapshot', 'primary_source'):
+            if options.get(key):
+                service.check(options[key])
+                dependencies[options[key]['path']] = options[key]
+        for ref in options.get('asset_dependencies', []):
+            service.check(ref)
+            dependencies[ref['path']] = ref
+        if kind == 'assets':
+            prim = stages['assets'].DefinePrim('/Shot/Assets/' + product['target'])
+            info = dict(options.get('registration', {}))
+            info.update(cast_key=product['target'], geometry_source=options.get('geometry_source', 'asset'))
+            if product.get('entrypoint'):
+                source = service.check(product['entrypoint'])
+                dependencies[product['entrypoint']['path']] = product['entrypoint']
+                info['usd_path'] = str(source)
+            prim.SetCustomDataByKey('smartpipeline', info)
+            if options.get('geometry_source', 'asset') != 'asset':
+                # Inventory only: no reference/payload, even with Stage.LoadAll.
+                continue
         source = service.check(product["entrypoint"])
         src_stage = Usd.Stage.Open(str(source))
         if not src_stage or composition_errors(src_stage):
@@ -339,6 +540,8 @@ def compose_layers(paths, products, plan, service):
         roots = [src_stage.GetDefaultPrim()] if src_stage.GetDefaultPrim() else list(src_stage.GetPseudoRoot().GetChildren())
         if not roots:
             raise ValueError(f"USD input has no roots: {source}")
+        if kind == 'assets' and len(roots) == 1:
+            placement_targets.add(product['target'])
         if kind == "camera" and len([p for p in src_stage.Traverse() if p.IsA(UsdGeom.Camera)]) != 1:
             raise ValueError("Select a USD containing exactly one Primary Camera")
         animated = any(attr.GetNumTimeSamples() for p in src_stage.Traverse() for attr in p.GetAttributes())
@@ -352,7 +555,8 @@ def compose_layers(paths, products, plan, service):
         for asset in assets:
             ref = service.pin(asset)
             dependencies[ref['path']] = ref
-        for layer in src_stage.GetUsedLayers():
+        # Include inactive quality/asset variants, not only the current working set.
+        for layer in set(layers) | set(src_stage.GetUsedLayers()):
             if not layer.anonymous:
                 ref = service.pin(layer.realPath)
                 dependencies[ref["path"]] = ref
@@ -361,15 +565,67 @@ def compose_layers(paths, products, plan, service):
         stage = stages[kind]
         for root in roots:
             dest = target if len(roots) == 1 else target + "/" + root.GetName()
-            stage.DefinePrim(dest).GetReferences().AddReference(str(source), root.GetPath())
+            prim = stage.DefinePrim(dest)
+            if kind == 'assets':
+                prim.GetPayloads().AddPayload(str(source), root.GetPath())
+                if options.get('registration', {}).get('variant'):
+                    prim.GetVariantSets().GetVariantSet('variant').SetVariantSelection(options['registration']['variant'])
+                if options.get('placement'):
+                    if len(roots) != 1:
+                        raise ValueError('Smart Maker placement requires a single Asset defaultPrim')
+                    from .placement_motion import author_placement
+                    author_placement(prim, options['placement'])
+            else:
+                prim.GetReferences().AddReference(str(source), root.GetPath())
+                if kind == 'camera':
+                    prim.SetCustomDataByKey('smartpipeline:camera_role', options.get('camera_role', 'primary'))
+                    if options.get('camera_settings'):
+                        import json
+                        prim.SetCustomDataByKey('smartpipeline:camera_settings', json.dumps(options['camera_settings']))
         if composition_errors(stage):
             raise ValueError(f"USD reference errors: {source}")
     shot = stages["shot"]
-    shot.GetRootLayer().subLayerPaths = [paths[k].name for k in ("animation", "layout", "camera", "assets")]
-    with Usd.EditContext(shot, stages["layout"].GetRootLayer()):
-        for product in reversed(products):
-            if product["kind"] != "layout":
-                continue
+    shot.GetRootLayer().subLayerPaths = [stages[k].GetRootLayer().identifier if in_memory else paths[k].name
+        for k in ("animation", "layout", "camera", "assets")]
+    layouts = [p for p in products if p['kind'] == 'layout']
+    layouts.sort(key=lambda p: (p.get('inputs', {}).get('layout_type') == 'placement',
+                               p.get('inputs', {}).get('layer_order', 0)))
+    for product in layouts:
+        if product.get('inputs', {}).get('layout_type'):
+            key = 'layout:' + product['target']
+            stages[key] = Usd.Stage.CreateInMemory(product['target'] + '.usda')
+    stages['layout'].GetRootLayer().subLayerPaths = [stages['layout:' + p['target']].GetRootLayer().identifier
+        for p in layouts if p.get('inputs', {}).get('layout_type')]
+    for product in reversed(layouts):
+        layer = stages.get('layout:' + product['target'], stages['layout']).GetRootLayer()
+        with Usd.EditContext(shot, layer):
+            placement = product.get('placement_data')
+            if placement:
+                from .placement_motion import author_placement
+                marker = UsdGeom.Xform.Define(shot, '/Shot/Placements/' + product['inputs']['layout_name']).GetPrim()
+                author_placement(marker, placement['marker'])
+                for item in placement['usd_placements']:
+                    target = item['path'].split('/')[3]
+                    if target in animation_targets:
+                        raise ValueError('Placement is owned by Animation for ' + target)
+                    if target not in placement_targets:
+                        raise ValueError('Missing single Asset geometry root for Placement: ' + target)
+                    path, placement_data = item['path'], item['data']
+                    if item.get('assembly'):
+                        if item['assembly']['cast'] != target:
+                            raise ValueError('Assembly Placement parent differs from Asset target')
+                        from .assembly_placement import resolve
+                        path, placement_data = resolve(shot, item['assembly'], placement_data)
+                    if any(path == previous or path.startswith(previous + '/') or previous.startswith(path + '/')
+                           for previous in placed_targets):
+                        raise ValueError('Multiple Placement products target the same Asset: ' + target)
+                    placed_targets.add(path)
+                    prim = shot.GetPrimAtPath(path)
+                    if not prim or not prim.IsDefined() or prim.IsInstanceProxy():
+                        raise ValueError('Missing or instanceable Placement target: ' + item['path'])
+                    if any(p['kind'] == 'assets' and p['target'] == target and p.get('inputs', {}).get('placement') for p in products):
+                        raise ValueError('Republish Assets without embedded placements before publishing Layout: ' + target)
+                    author_placement(prim, placement_data)
             for change in product["changes"]:
                 prim = shot.GetPrimAtPath(Sdf.Path(change["path"]))
                 if not prim or not prim.IsDefined():
@@ -380,5 +636,8 @@ def compose_layers(paths, products, plan, service):
     for stage in stages.values():
         if composition_errors(stage):
             raise ValueError("USD composition contains unresolved references")
-        stage.GetRootLayer().Save()
+        if not in_memory:
+            stage.GetRootLayer().Save()
+    if in_memory:
+        return shot, stages, list(dependencies.values())
     return list(dependencies.values())

@@ -64,6 +64,42 @@ def test_context_edit_clears_only_target_locks_and_preserves_use():
     assert snapshot["inputs"][0]["path"] == "old.ma"
 
 
+def test_sequential_context_edits_preserve_prior_explicit_selection():
+    Window = ReviewBuildManagerWindow
+    saved = {'inputs': [
+        dict(type='rig', name='MOT', context='ANIM', context_override=True, enabled=True),
+        dict(type='rig', name='YOU', context='LO', context_override=False, enabled=False),
+        dict(type='light', name='main', enabled=False, version='v002', path='light.json'),
+    ]}
+    # Re-resolved components do not carry the UI's manual-choice marker.
+    rows = [dict(type='rig', cast_key=name, context=context, enabled=True,
+                 component={'source': {}}, input_versions=[])
+            for name, context in [('MOT', 'ANIM'), ('YOU', 'LO')]]
+    window = SimpleNamespace(
+        current_build_content_rows=rows, _planned_snapshots={'shot': saved},
+        _planned_snapshot_key=lambda _: 'shot', _use_key=Window._use_key,
+        _local_content_state=lambda row, enabled: 'READY' if enabled else 'EXCLUDED',
+    )
+    review_rows = Window._review_use_rows(window, None)
+    payload = {'inputs': [dict(type=r['type'], name=r['cast_key'], context=r['context'],
+                              context_override=r['context_override'], enabled=r['enabled'])
+                          for r in review_rows] + [saved['inputs'][2]]}
+    updated = Window._set_snapshot_context(payload, 'rig', 'YOU', 'ANIM')
+    assert Window._snapshot_contexts({}, updated, 'WORK') == {'MOT': 'ANIM', 'YOU': 'ANIM'}
+    assert updated['inputs'][1]['enabled'] is False
+    assert updated['inputs'][2] == saved['inputs'][2]
+    assert 'context_override' not in rows[0]  # Planned copies do not alter Build Use.
+
+
+def test_old_context_version_cannot_restore_into_new_context(tmp_path):
+    old = tmp_path / 'old.ma'
+    old.write_text('old')
+    row = dict(context='ANIM', component=dict(path='new.ma', version='v001'),
+               input_versions=[dict(path=str(old), version='v009')])
+    ReviewBuildManagerWindow._restore_input_version(row, dict(context='LO', path=str(old)))
+    assert row['component'] == dict(path='new.ma', version='v001')
+
+
 def test_context_override_and_stage_default_win_over_old_construct_choices():
     snapshot = {"inputs": [
         {"type": "rig", "name": "JIN", "context": "ANIM", "context_override": True},

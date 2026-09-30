@@ -58,8 +58,10 @@ def scan_catalog(paths, tasks, profile, cancelled=lambda: False):
                     found = []
                     try:
                         if profile == "working":
-                            base = paths.shot_review_movie_dir(*identity[:4])
-                            for movie in sorted(base.glob("*")):
+                            roots = [paths.shot_review_movie_dir(*identity[:4]),
+                                     paths.shot_review_movie_dir(*identity[:4], legacy=True)]
+                            movies = dict.fromkeys(movie for base in roots for movie in sorted(base.glob("*")))
+                            for movie in movies:
                                 if movie.suffix.lower() in MOVIES and movie.is_file():
                                     found.append(ShotMovie(*identity, movie_version(movie), str(movie), movie.stat().st_mtime))
                         else:

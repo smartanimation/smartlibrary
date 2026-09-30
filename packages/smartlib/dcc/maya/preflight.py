@@ -83,6 +83,9 @@ class MayaPreflightAdapter:
         return sorted(set(issues), key=str.casefold)
 
     def _set_mesh_shapes(self, set_name: str) -> list[str]:
+        if set_name == 'cache_geo_set' and self.cmds.ls('*.smartAssemblyReplacement', recursive=True):
+            from .assembly_replacement import list_replacements, replacement_contract
+            return replacement_contract(self.cmds, list_replacements())['meshes']
         shapes = set()
         for member in self.cmds.sets(set_name, query=True) or []:
             node = str(member).split(".", 1)[0]

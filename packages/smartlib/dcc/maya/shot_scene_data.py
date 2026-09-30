@@ -46,10 +46,17 @@ def list_scene_component_roots(data_type: str) -> list[str]:
 
     cmds = _maya_cmds()
     clean_type = str(data_type or "").strip().lower()
+    scene_cameras = list_scene_cameras() if clean_type == 'camera' else []
+
+    def complete_roots(roots):
+        # Selection, tags and naming conventions may suggest rig roots, but
+        # must never hide other author-created cameras (e.g. VCCAM).
+        return sorted(set(roots) | set(scene_cameras), key=str.lower)
+
     selected = cmds.ls(selection=True, long=True, type="transform") or []
     selected = [node for node in selected if _root_contains_component(cmds, node, clean_type)]
     if selected:
-        return sorted(set(selected), key=str.lower)
+        return complete_roots(selected)
     candidates = []
     for transform in cmds.ls(type="transform", long=True) or []:
         if _root_contains_component(cmds, transform, clean_type):
@@ -60,7 +67,7 @@ def list_scene_component_roots(data_type: str) -> list[str]:
         and str(cmds.getAttr(f"{node}.smartpipelineDataType") or "").strip().lower() == clean_type
     ]
     if tagged:
-        return sorted(set(tagged), key=str.lower)
+        return complete_roots(tagged)
     preferred = []
     for node in candidates:
         leaf = node.rsplit("|", 1)[-1].split(":")[-1].lower()
@@ -84,11 +91,11 @@ def list_scene_component_roots(data_type: str) -> list[str]:
             if parent_leaf == "lights_grp":
                 preferred.append(node)
     if preferred:
-        return sorted(set(preferred), key=str.lower)
+        return complete_roots(preferred)
     # Prefer top-most matching roots so a rig appears once instead of once per child.
     candidate_set = set(candidates)
     roots = [node for node in candidates if not any(parent in candidate_set for parent in _dag_parents(node))]
-    return sorted(set(roots), key=str.lower)
+    return complete_roots(roots)
 
 
 def _root_contains_component(cmds, root: str, data_type: str) -> bool:

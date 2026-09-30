@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from copy import deepcopy
 import json
 import os
 import subprocess
@@ -20,6 +21,8 @@ from smartlib.apps.review_build_manager.job_request import write_job_request
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.icons import build_content_icon_path, sequence_input_icon_path, tool_ico_path
 from smartlib.core.tokens import TokenContext
+from smartlib.review.input_dependencies import associate_inputs, effective_components
+from .input_tree import InputTree
 
 
 STATE_COLORS = {
@@ -38,7 +41,16 @@ def build_content_state_color(state: str) -> str:
         "READY": "#80bd72",
         "UPDATE AVAILABLE": "#f2ae30",
         "EXCLUDED": "#999999",
+        "PARENT OFF": "#999999",
     }.get(str(state or "").upper(), "#ef665d")
+
+
+def latest_input_version(data: dict) -> str:
+    """Latest available version, independent of the user's selected version."""
+    versions = [str(option.get("version") or "")
+                for option in data.get("input_versions") or []]
+    numbered = [v for v in versions if v.startswith("v") and v[1:].isdigit()]
+    return max(numbered, key=lambda v: int(v[1:])) if numbered else str(data.get("latest") or "-")
 
 
 from .composition_ui import CompositionSnapshotMixin
@@ -65,6 +77,9 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self.sequence_input_settings: dict[tuple[str, str], dict] = {}
         self._review_submission_profiles: dict[tuple[str, str, str], dict] = {}
         self._planned_snapshots: dict[str, dict] = {}
+        self._build_use: dict[str, dict] = {}
+        self._build_versions: dict[str, dict] = {}
+        self._dismissed_queue_job_ids: set[str] = set()
         self.current_build_content_rows: list[dict] = []
         self._build_plan_cache: dict[tuple[str, str, str], object] = {}
         self._open_after_build_identity: tuple[str, str, str] | None = None
@@ -80,6 +95,32 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self._connect_signals()
         self._restore_settings()
         self.scan_updates()
+
+        from .publish_queue import get_queue
+        self._publish_queue = get_queue(self.service.shots)
+        self._publish_rows = {}
+        self._publish_queue.changed.connect(self._sync_publish_job)
+        self._publish_queue.available.connect(self._start_next_job)
+        for job_id in self._publish_queue.jobs:
+            self._sync_publish_job(job_id)
+
+    @QtCore.Slot(str)
+    def _sync_publish_job(self, job_id):
+        if str(job_id) in self._dismissed_queue_job_ids:
+            return
+        source = self._publish_queue.jobs[job_id]
+        if job_id not in self._publish_rows:
+            job = dict(source, row=len(self.queue_jobs), kind='publish_queue',
+                       publish_kind=source['kind'])
+            self._publish_rows[job_id] = job
+            self.queue_jobs.append(job)
+            self._append_queue_row(job)
+        job = self._publish_rows[job_id]
+        job.update({key: value for key, value in source.items() if key != 'kind'})
+        job['task'] = {'animation_usd': 'Animation USD', 'assets_usd': 'Assets USD',
+                       'camera_batch_usd': 'Camera Batch USD', 'layout_usd': 'Layout USD',
+                       'primary_camera_usd': 'Primary Camera USD'}[source['kind']] + ' / ' + source['task']
+        self._update_queue_row(job)
 
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -116,8 +157,10 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self._populate_tasks()
         self.dry_run_btn = QtWidgets.QPushButton("Dry Run")
         self.scan_btn = QtWidgets.QPushButton("Refresh")
+        self.scan_btn.setToolTip("Refresh the shot list and inspect only the selected sequence/shot.")
         self.build_selected_btn = QtWidgets.QPushButton("Build Selected")
         self.build_all_changes_btn = QtWidgets.QPushButton("Build All Changes")
+        self.build_all_changes_btn.setToolTip("Build changed shots within the currently inspected selection.")
         self.build_all_changes_btn.setProperty("primary", True)
         self.build_selected_btn.setEnabled(False)
         self.build_all_changes_btn.setEnabled(False)
@@ -381,16 +424,14 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         contents_tools.addStretch(1)
         contents_tools.addWidget(self.contents_summary_label)
         contents_layout.addLayout(contents_tools)
-        self.build_contents_table = QtWidgets.QTableWidget(0, 10)
+        self.build_contents_table = InputTree(10)
         self.build_contents_table.setHorizontalHeaderLabels(
             ["Use", "Type", "Name", "Category", "Variant", "Context", "Build Version", "Last Review Version", "State", "Note"]
         )
         self.build_contents_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.build_contents_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.build_contents_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.build_contents_table.setShowGrid(False)
         self.build_contents_table.setIconSize(QtCore.QSize(24, 24))
-        self.build_contents_table.verticalHeader().setVisible(False)
         contents_header = self.build_contents_table.horizontalHeader()
         for column in range(9):
             contents_header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeToContents)
@@ -416,13 +457,31 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
-        layout.addWidget(self._section_label("Job Queue"))
+        queue_tools = QtWidgets.QHBoxLayout()
+        queue_tools.addWidget(self._section_label("Job Queue"))
+        queue_tools.addStretch(1)
+        self.remove_queue_jobs_btn = QtWidgets.QPushButton("Remove Selected")
+        self.remove_queue_jobs_btn.setEnabled(False)
+        self.remove_queue_jobs_btn.setToolTip(
+            "Remove selected Queue records. Output files and logs are kept; "
+            "running Jobs cannot be removed."
+        )
+        self.recover_queue_btn = QtWidgets.QPushButton("Recover Queue")
+        self.recover_queue_btn.setEnabled(False)
+        self.recover_queue_btn.setToolTip(
+            "Release an orphaned execution lock held by this idle Review Build Manager. "
+            "Active workers are never unlocked."
+        )
+        queue_tools.addWidget(self.recover_queue_btn)
+        queue_tools.addWidget(self.remove_queue_jobs_btn)
+        layout.addLayout(queue_tools)
         self.queue_table = QtWidgets.QTableWidget(0, 7)
         self.queue_table.setHorizontalHeaderLabels(
             ["Job", "Shot", "Task", "Status", "Progress", "Elapsed", "File Name"]
         )
         self.queue_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.queue_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.queue_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.queue_table.setShowGrid(False)
         self.queue_table.verticalHeader().setVisible(False)
         queue_header = self.queue_table.horizontalHeader()
@@ -431,6 +490,10 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         queue_header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
         queue_header.setSectionResizeMode(6, QtWidgets.QHeaderView.Stretch)
         self.queue_table.itemSelectionChanged.connect(self._show_selected_job_details)
+        self.queue_table.itemSelectionChanged.connect(self._update_remove_queue_jobs_button)
+        self.queue_table.itemSelectionChanged.connect(self._update_recover_queue_button)
+        self.remove_queue_jobs_btn.clicked.connect(self._remove_selected_queue_jobs)
+        self.recover_queue_btn.clicked.connect(self._recover_selected_queue_job)
         self.job_queue_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.job_queue_splitter.setChildrenCollapsible(False)
         self.job_queue_splitter.addWidget(self.queue_table)
@@ -544,15 +607,13 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         inputs_page = QtWidgets.QWidget()
         inputs_layout = QtWidgets.QVBoxLayout(inputs_page)
         inputs_layout.setContentsMargins(4, 4, 4, 4)
-        self.planned_inputs_table = QtWidgets.QTableWidget(0, 7)
+        self.planned_inputs_table = InputTree(8)
         self.planned_inputs_table.setHorizontalHeaderLabels(
-            ["Use", "Type", "Name", "Category", "Context", "Version", "State"]
+            ["Use", "Type", "Name", "Category", "Context", "Version", "Latest", "State"]
         )
         self.planned_inputs_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.planned_inputs_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.planned_inputs_table.setShowGrid(False)
         self.planned_inputs_table.setIconSize(QtCore.QSize(24, 24))
-        self.planned_inputs_table.verticalHeader().setVisible(False)
         self.planned_inputs_table.horizontalHeader().setStretchLastSection(True)
         inputs_layout.addWidget(self.planned_inputs_table)
         self.planned_snapshot_tabs.addTab(inputs_page, "Resolved Inputs")
@@ -658,7 +719,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self.contents_select_all_btn.clicked.connect(lambda: self._set_content_checks("select"))
         self.contents_clear_btn.clicked.connect(lambda: self._set_content_checks("clear"))
         self.contents_invert_btn.clicked.connect(lambda: self._set_content_checks("invert"))
-        self.build_contents_table.itemChanged.connect(self._content_item_changed)
+        self.build_contents_table.cellChanged.connect(self._content_item_changed)
         self.sequence_recipe_combo.currentTextChanged.connect(
             self._sequence_recipe_changed
         )
@@ -682,7 +743,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self.precomp_combo.currentIndexChanged.connect(
             self._planned_controls_changed
         )
-        self.planned_inputs_table.itemChanged.connect(self._planned_input_changed)
+        self.planned_inputs_table.cellChanged.connect(self._planned_input_changed)
         self._update_stage_inputs_visibility()
 
     def scan_updates(self) -> None:
@@ -690,41 +751,48 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         selected_identity = selected_status.identity if selected_status else None
         selected_scope = self._tree_scope() if hasattr(self, "shot_tree") else None
         self.scan_btn.setEnabled(False)
-        self.footer_label.setText("Scanning shots...")
+        self._scanning = True
+        self.footer_label.setText("Loading shot list...")
         QtWidgets.QApplication.processEvents()
         try:
             self._build_plan_cache.clear()
-            self.rows = [
-                self.service.shot_status(
-                    identity,
-                    mode=self.mode_combo.currentText(),
-                    department=self.department_combo.currentText(),
-                    task=self.task_combo.currentText(),
-                    generate_review=self.generate_review_check.isChecked(),
-                    overrides=self._stage_input_overrides(identity),
-                )
-                for identity in self.service.shots.list_shots()
-            ]
-            self._populate_filters()
+            self._shot_identities = self.service.shots.list_shots()
+            self.rows = []
             self._populate_tree()
-            self._apply_filters()
             if self._startup_context_applied:
                 self._restore_shot_selection(selected_identity, selected_scope)
             else:
                 self._focus_working_shot()
-            self._update_build_buttons()
+            self._scan_selected_scope()
+            if selected_identity and selected_scope and selected_scope[0] != 'shot':
+                self._restore_shot_selection(selected_identity, selected_scope)
             if self.queue_table.currentRow() >= 0:
                 self._show_selected_job_details()
-            dirty = sum(row.state == "DIRTY" for row in self.rows)
-            missing = sum(row.state == "MISSING" for row in self.rows)
-            self.footer_label.setText(
-                f"{dirty} shots require rebuild  |  {missing} inputs missing  |  Worker: not connected"
-            )
         except Exception as exc:
             self.footer_label.setText(f"Scan failed: {exc}")
             QtWidgets.QMessageBox.critical(self, "Review Scan Failed", str(exc))
         finally:
+            self._scanning = False
             self.scan_btn.setEnabled(True)
+
+    def _scan_selected_scope(self):
+        scope = self._tree_scope()
+        identities = [i for i in getattr(self, '_shot_identities', [])
+                      if scope and self._identity_matches_scope(i, scope)]
+        self._build_plan_cache.clear()
+        self.rows = [self.service.shot_status(
+            identity, mode=self.mode_combo.currentText(),
+            department=self.department_combo.currentText(), task=self.task_combo.currentText(),
+            generate_review=self.generate_review_check.isChecked(),
+            overrides=self._stage_input_overrides(identity)) for identity in identities]
+        self._populate_filters()
+        self._apply_filters()
+        if scope and scope[0] == 'shot' and self.shot_table.rowCount():
+            self.shot_table.selectRow(0)
+        self._update_build_buttons()
+        self.footer_label.setText(
+            f"{len(self.rows)} selected shots scanned (counts apply to this selection)"
+            if scope else "Select a sequence or shot to inspect its State.")
 
     def _populate_filters(self) -> None:
         selected = self.current_filter
@@ -749,8 +817,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self.shot_tree.clear()
         episodes: dict[str, QtWidgets.QTreeWidgetItem] = {}
         sequences: dict[tuple[str, str], QtWidgets.QTreeWidgetItem] = {}
-        for row in self.rows:
-            identity = row.identity
+        for identity in getattr(self, '_shot_identities', [row.identity for row in self.rows]):
             episode_item = episodes.get(identity.episode)
             if episode_item is None:
                 episode_item = QtWidgets.QTreeWidgetItem([identity.episode])
@@ -839,7 +906,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             from smartlib.apps.shot_manager import ShotIdentity
 
             identity = ShotIdentity(tokens.episode, tokens.sequence, tokens.shot)
-            if any(row.identity == identity for row in self.rows):
+            if identity in getattr(self, '_shot_identities', [row.identity for row in self.rows]):
                 return identity
         return None
 
@@ -1098,8 +1165,9 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             self._planned_snapshot_key(identity)
         ) or {}
         saved_inputs = {
-            (str(entry.get("type") or ""), str(entry.get("name") or "")): dict(entry)
-            for entry in (saved_snapshot.get("inputs") or [])
+            (entry["type"], entry["name"]): entry
+            for entry in getattr(self, "_build_versions", {}).get(
+                self._planned_snapshot_key(identity), {}).values()
         }
         latest_review_snapshot = getattr(self.service, "latest_review_snapshot", None)
         review_department = (
@@ -1141,14 +1209,17 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 component["version"] = str(latest_camera.get("version") or "")
             if key not in saved_inputs:
                 continue
+            if (component or {}).get("source", {}).get("camera_batch"):
+                # Completed composition pins the camera snapshot. Old UI rows
+                # with the same name may point to a different Camera Data graph.
+                continue
             if str(data.get("type")) in {"rig", "usd"}:
                 self._restore_snapshot_context_marker(data, saved_inputs[key])
                 continue  # Review snapshot overrides do not own scene Build asset choices.
             saved_input = saved_inputs[key]
             if "context_override" in saved_input:
                 data["context_override"] = bool(saved_input["context_override"])
-            enabled = (bool(saved_input.get("enabled", True))
-                       if data.get("allow_disable", True) else True)
+            enabled = bool(data.get("enabled", True))
             data["enabled"] = enabled
             component = data.get("component")
             if isinstance(component, dict):
@@ -1183,7 +1254,26 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 settings["excluded"].discard(key[1])
             else:
                 settings["excluded"].add(key[1])
+        saved_use = getattr(self, '_build_use', {}).get(self._planned_snapshot_key(identity), {})
+        context_choices = {
+            self._use_key(entry): entry for entry in saved_snapshot.get('inputs') or []
+            if entry.get('type') in {'rig', 'usd'}
+        }
+        for data in rows:
+            use_key = self._use_key(data)
+            selection = getattr(self, '_build_versions', {}).get(self._planned_snapshot_key(identity), {}).get(use_key)
+            if selection:
+                self._restore_input_version(data, selection)
+            if use_key in context_choices:
+                self._restore_snapshot_context_marker(data, context_choices[use_key])
+            if use_key in saved_use:
+                data['enabled'] = bool(saved_use[use_key])
+                data['component']['enabled'] = data['enabled']
+            data['state'] = self._local_content_state(data, data['enabled'])
+        associate_inputs(rows)
         self.current_build_content_rows = rows
+        if isinstance(self.build_contents_table, InputTree):
+            self.build_contents_table.set_hierarchy(rows)
         self.build_contents_group.setTitle(f"Build Contents - {identity.shot}")
         for row_index, data in enumerate(rows):
             row = self.build_contents_table.rowCount()
@@ -1197,6 +1287,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             check.setCheckState(QtCore.Qt.Checked if data["enabled"] else QtCore.Qt.Unchecked)
             check.setData(QtCore.Qt.UserRole, row_index)
             check.setData(QtCore.Qt.UserRole + 1, data["cast_key"])
+            check.setToolTip(data.get('dependency_note') or 'Requested Use (preserved when parent is OFF)')
             self.build_contents_table.setItem(row, 0, check)
             type_item = QtWidgets.QTableWidgetItem(str(data["type"]))
             icon_path = build_content_icon_path(data["type"], size=24)
@@ -1204,7 +1295,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 type_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.build_contents_table.setItem(row, 1, type_item)
             values = [
-                data["cast_key"],
+                data.get("display_name", data["cast_key"]),
                 data.get("category") or "-",
                 data["variant"],
             ]
@@ -1264,6 +1355,11 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 version_combo.activated.connect(self._camera_package_version_changed)
                 self.build_contents_table.setCellWidget(row, 6, version_combo)
         enabled = sum(bool(row["enabled"]) for row in rows)
+        for index, data in enumerate(rows):
+            if data.get('input_versions'):
+                self._input_version_combo(self.build_contents_table, index, 6, index, data, False)
+            else:
+                self.build_contents_table.item(index, 6).setToolTip('No versioned input is available. Publish the input first.')
         self.contents_summary_label.setText(f"{enabled} of {len(rows)} items enabled")
         self.build_contents_table.blockSignals(False)
 
@@ -1301,6 +1397,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         else:
             excluded.add(name)
         self.service.save_build_contents(status.identity, self.current_build_content_rows)
+        self._save_build_use(status.identity)
         state = self._local_content_state(data, enabled)
         data["state"] = state
         state_item = self.build_contents_table.item(item.row(), 8)
@@ -1313,6 +1410,26 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self.contents_summary_label.setText(
             f"{enabled_count} of {len(self.current_build_content_rows)} items enabled"
         )
+        self._refresh_dependency_cells()
+
+    def _refresh_dependency_cells(self):
+        rows = self.current_build_content_rows
+        for data in rows:
+            data['state'] = self._local_content_state(data, data.get('enabled', True))
+        associate_inputs(rows)
+        table = self.build_contents_table
+        blocked = table.blockSignals(True)
+        try:
+            for index, data in enumerate(rows):
+                table.item(index, 2).setText(data['display_name'])
+                table.item(index, 8).setText(data['state'])
+                table.item(index, 8).setForeground(QtGui.QColor(build_content_state_color(data['state'])))
+                table.item(index, 0).setToolTip(data['dependency_note'] or 'Requested Use (preserved when parent is OFF)')
+                table.item(index, 9).setText(data['dependency_note'] or data.get('note', ''))
+        finally:
+            table.blockSignals(blocked)
+        count = sum(r['effective_enabled'] for r in rows)
+        self.contents_summary_label.setText(f'{count} of {len(rows)} items effectively enabled')
 
     def _camera_package_version_changed(self, *_args):
         status = self._selected_status()
@@ -1408,8 +1525,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self._populate_planned_snapshot(status)
 
     def _set_content_checks(self, operation: str) -> None:
-        rows = self.build_contents_table.selectionModel().selectedRows()
-        target_rows = [index.row() for index in rows] or list(range(self.build_contents_table.rowCount()))
+        target_rows = self.build_contents_table.selected_input_rows() or list(range(self.build_contents_table.rowCount()))
         self.build_contents_table.blockSignals(True)
         for row in target_rows:
             item = self.build_contents_table.item(row, 0)
@@ -1456,6 +1572,121 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             self.contents_summary_label.setText(
                 f"{enabled_count} of {len(self.current_build_content_rows)} items enabled"
             )
+            self._save_build_use(status.identity)
+            self._refresh_dependency_cells()
+
+    @staticmethod
+    def _use_key(row):
+        return json.dumps([str(row.get('type') or row.get('component_type') or ''),
+                           str(row.get('cast_key') or row.get('name') or '')])
+
+    def _save_build_use(self, identity):
+        self._build_use[self._planned_snapshot_key(identity)] = {
+            self._use_key(row): bool(row.get('enabled', True))
+            for row in self.current_build_content_rows
+        }
+        self._settings().setValue('build_use', json.dumps(self._build_use))
+        self._build_plan_cache.clear()
+
+    def _review_use_rows(self, identity):
+        saved = (self._planned_snapshots.get(self._planned_snapshot_key(identity)) or {}).get('inputs') or []
+        enabled = {self._use_key(row): bool(row.get('enabled', True)) for row in saved}
+        rows = deepcopy(self.current_build_content_rows)
+        for content_index, row in enumerate(rows):
+            row['_content_index'] = content_index
+            selection = next((entry for entry in saved if self._use_key(entry) == self._use_key(row)), None)
+            if selection:
+                ReviewBuildManagerWindow._restore_input_version(row, selection)
+                ReviewBuildManagerWindow._restore_snapshot_context_marker(row, selection)
+            row['enabled'] = enabled.get(self._use_key(row), True)
+            row['component']['enabled'] = row['enabled']
+            row['state'] = self._local_content_state(row, row['enabled'])
+        return associate_inputs(rows, reorder=True)
+
+    @staticmethod
+    def _restore_input_version(row, selection):
+        if selection.get('context') and selection['context'] != row.get('context'):
+            return  # A version selection is valid only within its original Context.
+        options = row.get('input_versions') or row.get('asset_versions') or []
+        chosen = next((v for v in options if v['path'] == selection.get('path')), None)
+        if chosen and Path(chosen['path']).is_file():
+            row['component'].update(path=chosen['path'], version=chosen['version'])
+            row['build_version'] = chosen['version']
+            row['version_selected'] = bool(selection.get('version_selected'))
+
+    def _input_version_combo(self, table, row_index, column, content_index, data, planned):
+        combo = QtWidgets.QComboBox()
+        for option in data['input_versions']:
+            combo.addItem(option['version'], option['path'])
+            combo.setItemData(combo.count() - 1, option['path'], QtCore.Qt.ToolTipRole)
+        path = str(data['component'].get('path') or '')
+        index = combo.findData(path)
+        if index < 0:
+            combo.addItem(str(data.get('build_version') or 'Current') + ' (unavailable)', path)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+        combo.setToolTip('Select the input version for ' + ('Planned Snapshot' if planned else 'Build'))
+        combo.setProperty('content_row', content_index)
+        combo.setProperty('planned_version', planned)
+        combo.activated.connect(self._input_version_changed)
+        table.setCellWidget(row_index, column, combo)
+
+    def _input_version_changed(self, *_args):
+        status, combo = self._selected_status(), self.sender()
+        if not status or combo is None:
+            return
+        row = self.current_build_content_rows[int(combo.property('content_row'))]
+        option = next((v for v in row.get('input_versions', []) if v['path'] == combo.currentData()), None)
+        if not option or not Path(option['path']).is_file():
+            QtWidgets.QMessageBox.warning(self, 'Input Version', 'Selected input is unavailable. Refresh the inputs.')
+            return
+        entry = dict(type=row['type'], name=row.get('cast_key') or row.get('name'),
+                     path=option['path'], version=option['version'], version_selected=True)
+        key = self._planned_snapshot_key(status.identity)
+        if combo.property('planned_version'):
+            payload = self._planned_snapshot_payload(status.identity)
+            for item in payload['inputs']:
+                if self._use_key(item) == self._use_key(entry):
+                    item.update(entry)
+                if (row.get('component', {}).get('source') or {}).get('camera_package') and item.get('type') == 'camera':
+                    # A package/rules input restores its Primary and derived
+                    # cameras together; do not also load individual cameras.
+                    item['enabled'] = self._use_key(item) == self._use_key(entry)
+            self._planned_snapshots[key] = payload
+        else:
+            self._build_versions.setdefault(key, {})[self._use_key(entry)] = entry
+            self._restore_input_version(row, entry)
+            if (row.get('component', {}).get('source') or {}).get('camera_package'):
+                for other in self.current_build_content_rows:
+                    if other.get('type') == 'camera':
+                        other['enabled'] = self._use_key(other) == self._use_key(entry)
+                self._save_build_use(status.identity)
+        self._build_plan_cache.clear()
+        # Version edits use cached candidates, without resolving the shot again.
+        planned = bool(combo.property('planned_version'))
+        table = getattr(self, 'planned_inputs_table' if planned else 'build_contents_table', None)
+        if table is not None:
+            index = int(combo.property('content_row'))
+            data = deepcopy(row)
+            self._restore_input_version(data, entry)
+            if planned:
+                selected = next((v for v in self._planned_snapshots[key]['inputs']
+                                 if self._use_key(v) == self._use_key(entry)), {})
+                data['enabled'] = selected.get('enabled', True)
+            state = self._local_content_state(data, data.get('enabled', True))
+            item = table.item(index, 7 if planned else 8)
+            if item:
+                item.setText(state)
+                item.setForeground(QtGui.QColor(build_content_state_color(state)))
+        if planned and hasattr(self, 'planned_snapshot_state_label'):
+            self.planned_snapshot_state_label.setText('Draft changes — saved on Submit for Review')
+        if hasattr(self, '_refresh_dependency_cells'):
+            if planned:
+                self._populate_planned_snapshot(status)
+            else:
+                self._refresh_dependency_cells()
+        if (row.get('component', {}).get('source') or {}).get('camera_package'):
+            self._populate_planned_snapshot(status)
 
     @staticmethod
     def _local_content_state(data: dict, enabled: bool) -> str:
@@ -1476,8 +1707,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         status = self._selected_status()
         if not status:
             return
-        rows = self.build_contents_table.selectionModel().selectedRows()
-        target_rows = [index.row() for index in rows] or list(range(self.build_contents_table.rowCount()))
+        target_rows = self.build_contents_table.selected_input_rows() or list(range(self.build_contents_table.rowCount()))
         context = self.contents_context_combo.currentText()
         changes = []
         for row in target_rows:
@@ -1619,6 +1849,9 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         settings_version = (
             settings_path.parent.name if settings_path else "missing"
         )
+        settings = readiness.get("render_manifest") or {}
+        settings_source = "/".join(str(settings.get(key) or "?") for key in ("department", "task"))
+        self.review_status_label.setToolTip(str(settings_path or ""))
         definitions_ready = bool(readiness.get("ready"))
         self.submit_review_btn.setEnabled(enabled and definitions_ready)
         if not definitions_ready:
@@ -1628,7 +1861,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         else:
             self.review_status_label.setText(
                 f"Shot Composition {assembly_path.parent.name} / "
-                f"{layer_count} layers / render_manifest {settings_version}"
+                f"{layer_count} layers / render_manifest {settings_version} ({settings_source})"
             )
         self._populate_planned_snapshot(row_data)
 
@@ -1656,7 +1889,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             ):
                 rebuild_layers.append(name.text())
         inputs = []
-        for row in self.current_build_content_rows:
+        for row in self._review_use_rows(identity):
             component = row.get("component") or {}
             inputs.append({
                 "enabled": bool(row.get("enabled")),
@@ -1671,7 +1904,10 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     row.get("build_version") or row.get("latest") or row.get("version") or ""
                 ),
                 "path": str(component.get("path") or ""),
+                "version_selected": bool(row.get("version_selected")),
                 "state": str(row.get("state") or ""),
+                "effective_enabled": bool(row.get("effective_enabled", row.get("enabled"))),
+                "dependency_error": str(row.get("dependency_error") or ""),
                 "required": bool(row.get("required", True)),
             })
         return {
@@ -1710,13 +1946,21 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 expected.setText("REBUILD" if forced else "AUTO (HIT/MISS at job start)")
         payload = self._planned_snapshot_payload(status.identity)
         self._planned_snapshots[self._planned_snapshot_key(status.identity)] = payload
-        self._settings().setValue(
-            "planned_snapshots",
-            json.dumps(self._planned_snapshots, ensure_ascii=False),
-        )
         self.planned_snapshot_state_label.setText(
-            "Saved planned override / exact cache result is resolved when the job starts"
+            "Draft settings — saved on Submit for Review / cache resolved when the job starts"
         )
+
+    def _commit_input_choices(self, identity, planned_snapshot=None):
+        key = self._planned_snapshot_key(identity)
+        setting = 'planned_snapshots' if planned_snapshot is not None else 'build_versions'
+        payload = planned_snapshot if planned_snapshot is not None else self._build_versions.get(key, {})
+        settings = self._settings()
+        try:
+            committed = json.loads(str(settings.value(setting, '{}') or '{}'))
+        except (TypeError, ValueError):
+            committed = {}
+        committed[key] = deepcopy(payload)
+        settings.setValue(setting, json.dumps(committed, ensure_ascii=False))
 
     def _planned_layer_changed(self, item) -> None:
         if item and item.column() == 0:
@@ -1735,17 +1979,13 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         data = self.current_build_content_rows[int(row_index)]
         if not data.get("allow_disable", True):
             return
-        data["enabled"] = enabled
-        if isinstance(data.get("component"), dict):
-            data["component"]["enabled"] = enabled
-        excluded = self._content_settings(status)["excluded"]
-        name = str(data.get("cast_key") or data.get("name") or "")
-        if enabled:
-            excluded.discard(name)
-        else:
-            excluded.add(name)
-        self.service.save_build_contents(status.identity, self.current_build_content_rows)
+        payload = self._planned_snapshot_payload(status.identity)
+        for row in payload['inputs']:
+            if self._use_key(row) == self._use_key(data):
+                row['enabled'] = enabled
+        self._planned_snapshots[self._planned_snapshot_key(status.identity)] = payload
         self._planned_controls_changed()
+        self._populate_planned_snapshot(status)
 
     @staticmethod
     def _apply_planned_snapshot_to_construct(
@@ -1769,14 +2009,19 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             )
             if key in overrides:
                 planned = overrides[key]
-                component["enabled"] = bool(planned.get("enabled", True))
+                component["enabled"] = bool(planned.get("enabled", component.get("enabled", True)))
                 resolved_context = str((component.get("source") or {}).get("context") or "")
                 same_context = not (planned.get("context") and resolved_context) or (
                     str(planned["context"]).upper() == resolved_context.upper()
                 )
-                if same_context and planned.get("version"):
+                pinned_camera = bool((component.get("source") or {}).get("camera_batch"))
+                if pinned_camera and planned.get('version_selected'):
+                    from smartlib.core.path_resolver import ProjectPaths
+                    allowed = {str(p) for _, p in ProjectPaths.artifact_version_files(component.get('path') or '')}
+                    pinned_camera = str(planned.get('path') or '') not in allowed
+                if same_context and planned.get("version") and not pinned_camera:
                     component["version"] = str(planned["version"])
-                if same_context and planned.get("path"):
+                if same_context and planned.get("path") and not pinned_camera:
                     component["path"] = str(planned["path"])
             components.append(component)
         result["components"] = components
@@ -1849,7 +2094,11 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     was_blocked = combo.blockSignals(True)
                     combo.setCurrentIndex(index)
                     combo.blockSignals(was_blocked)
-            for row_index, data in enumerate(self.current_build_content_rows):
+            input_rows = self._review_use_rows(identity)
+            if isinstance(self.planned_inputs_table, InputTree):
+                self.planned_inputs_table.set_hierarchy(input_rows)
+            for data in input_rows:
+                row_index = data['_content_index']
                 self._concrete_asset_version(data)
                 row = self.planned_inputs_table.rowCount()
                 self.planned_inputs_table.insertRow(row)
@@ -1862,6 +2111,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     QtCore.Qt.Checked if data.get("enabled") else QtCore.Qt.Unchecked
                 )
                 use.setData(QtCore.Qt.UserRole, row_index)
+                use.setToolTip(data.get('dependency_note') or 'Requested Use (preserved when parent is OFF)')
                 self.planned_inputs_table.setItem(row, 0, use)
                 type_value = str(data.get("type") or "-")
                 type_item = QtWidgets.QTableWidgetItem(type_value)
@@ -1870,15 +2120,16 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     type_item.setIcon(QtGui.QIcon(str(icon_path)))
                 self.planned_inputs_table.setItem(row, 1, type_item)
                 values = [
-                    data.get("cast_key") or data.get("name"),
+                    data.get("display_name") or data.get("cast_key") or data.get("name"),
                     data.get("category"),
                     data.get("context"),
                     data.get("build_version") or data.get("latest") or data.get("version"),
+                    latest_input_version(data),
                     data.get("state"),
                 ]
                 for column, value in enumerate(values, start=2):
                     item = QtWidgets.QTableWidgetItem(str(value or "-"))
-                    if column == 6:
+                    if column == 7:
                         item.setForeground(
                             QtGui.QColor(build_content_state_color(str(value or "")))
                         )
@@ -1914,6 +2165,10 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     versions.setProperty("content_row", row_index)
                     versions.activated.connect(self._planned_asset_version_changed)
                     self.planned_inputs_table.setCellWidget(row, 5, versions)
+                if data.get('input_versions'):
+                    self._input_version_combo(self.planned_inputs_table, row, 5, row_index, data, True)
+                else:
+                    self.planned_inputs_table.item(row, 5).setToolTip('No versioned input is available. Publish the input first.')
             selected = set(saved.get("rebuild_layers") or [])
             definition = self.service.layer_definition(
                 identity, self.department_combo.currentText()
@@ -2101,6 +2356,10 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             return
         identity = status.identity
         planned_snapshot = self._planned_snapshot_payload(identity)
+        dependency_errors = [row['name'] + ': ' + row['dependency_error']
+                             for row in planned_snapshot['inputs'] if row.get('dependency_error')]
+        if dependency_errors:
+            raise ValueError('\n'.join(dependency_errors))
         missing_required = [
             f"{row.get('type') or 'data'} / {row.get('name') or 'main'}"
             for row in planned_snapshot.get("inputs") or []
@@ -2118,7 +2377,8 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             return
         self.generate_review_check.setChecked(True)
         planned_snapshot["created_at"] = datetime.now().isoformat(timespec="seconds")
-        self._review_submission_profiles = {
+        self._commit_input_choices(identity, planned_snapshot)
+        submission_profiles = {
             (identity.episode, identity.sequence, identity.shot): {
                 "review_profile": planned_snapshot["review_profile"],
                 "delivery_profile": planned_snapshot["delivery_profile"],
@@ -2130,7 +2390,8 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         }
         submission_key = (identity.episode, identity.sequence, identity.shot)
         try:
-            self._enqueue_builds([submission_key])
+            self._enqueue_builds([submission_key], generate_review=True,
+                                 submission_profiles=submission_profiles)
         finally:
             self.generate_review_check.setChecked(False)
 
@@ -2168,7 +2429,17 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self._apply_filters()
 
     def _tree_selection_changed(self) -> None:
-        self._apply_filters()
+        if getattr(self, '_scanning', False):
+            return
+        self.scan_btn.setEnabled(False)
+        self._scanning = True
+        try:
+            self._scan_selected_scope()
+        except Exception as exc:
+            self.footer_label.setText(f"Scan failed: {exc}")
+        finally:
+            self._scanning = False
+            self.scan_btn.setEnabled(True)
 
     def _tree_scope(self):
         selected = self.shot_tree.selectedItems()
@@ -2311,8 +2582,14 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     identities.append(tuple(identity))
         return identities
 
-    def _enqueue_builds(self, identities: list[tuple[str, str, str]]) -> None:
+    def _enqueue_builds(self, identities: list[tuple[str, str, str]], *,
+                        generate_review: bool = False, submission_profiles=None) -> None:
+        # Execution intent belongs to this call, never to a transient UI checkbox
+        # or the previous Submit's settings. Copy drafts before queuing work.
+        submission_profiles = deepcopy(submission_profiles or {}) if generate_review else {}
         if self.dcc_combo.currentText() == "Houdini":
+            if generate_review:
+                raise ValueError('Submit for Review is not supported by the Houdini Build queue.')
             from .houdini_ui import enqueue
             enqueue(self, identities)
             return
@@ -2357,7 +2634,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     elif plan.department == "anim":
                         stage_input_policy = (
                             "REGENERATE SELECTED"
-                            if self.generate_review_check.isChecked()
+                            if generate_review
                             else self._input_policy()
                         )
                         self.service.ensure_stage_input(
@@ -2377,6 +2654,8 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     continue
             if not plan.buildable:
                 continue
+            if scope != "sequence" and not generate_review:
+                self._commit_input_choices(identity)
             self.job_counter += 1
             if scope == "sequence":
                 output_version = self.service.next_sequence_construct_version(
@@ -2388,7 +2667,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 )
                 label = identity.sequence
             else:
-                if self.generate_review_check.isChecked():
+                if generate_review:
                     workflow = self.service.review_workflow(identity)
                     output_version = workflow.next_construct_version(
                         plan.department, "maya", plan.task
@@ -2411,32 +2690,69 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             construct_changes = []
             canonical_fingerprint = ""
             reuse_construct = ""
-            review_options = self._review_submission_profiles.get(
+            review_options = submission_profiles.get(
                 tuple(raw_identity), {}
             )
             if scope != "sequence":
                 overrides = self._stage_input_overrides(identity)
+                review_snapshot = review_options.get('planned_snapshot') or {}
+                if review_snapshot:
+                    overrides['exclude_cast'] = [
+                        row['name'] for row in review_snapshot.get('inputs', [])
+                        if row.get('type') in {'rig', 'usd'} and not row.get('enabled', True)
+                    ]
                 previous_construct = self.service.shots.load_construct(identity)
                 construct_data = self.service.shots.resolved_construct(
                     identity,
                     cast_contexts=overrides.get("cast_contexts") or {},
-                    exclude_cast=overrides.get("exclude_cast") or [],
+                    exclude_cast=[],
                     representation=overrides.get("representation") or "project",
+                )
+                build_use = getattr(self, '_build_use', {}).get(self._planned_snapshot_key(identity), {})
+                for component in construct_data.get('components') or []:
+                    key = self._use_key(component)
+                    if component.get('component_type') in {'rig', 'usd'} and component.get('name') in (overrides.get('exclude_cast') or []):
+                        component['enabled'] = False
+                    if key in build_use:
+                        component['enabled'] = bool(build_use[key])
+                layer_key = self._use_key({'type': 'review_layers', 'name': 'main'})
+                construct_data['components'] = [c for c in construct_data.get('components', [])
+                                                if c.get('component_type') != 'review_layers']
+                use_review_layers = bool(build_use.get(layer_key, True))
+                for row in review_snapshot.get('inputs', []):
+                    if row.get('type') == 'review_layers':
+                        use_review_layers = bool(row.get('enabled', True))
+                construct_data = self._apply_planned_snapshot_to_construct(
+                    construct_data,
+                    {'inputs': list(getattr(self, '_build_versions', {}).get(self._planned_snapshot_key(identity), {}).values())},
                 )
                 construct_data = self._apply_planned_snapshot_to_construct(
                     construct_data,
                     review_options.get("planned_snapshot") or {},
                 )
-                self.service.shots.write_construct(identity, construct_data)
+                try:
+                    execution_components = effective_components(
+                        construct_data.get('components') or [],
+                        self.service.shots.load_cast(identity).get('cast', {}),
+                    )
+                except ValueError as exc:
+                    QtWidgets.QMessageBox.warning(self, 'Input dependencies', str(exc))
+                    continue
+                if not review_options.get('planned_snapshot'):
+                    self.service.shots.write_construct(identity, construct_data)
                 construct_snapshot = self.service.shots.construct_snapshot(
-                    identity, construct_data
+                    identity, dict(construct_data, components=execution_components)
                 )
+                construct_snapshot['use_review_layers'] = use_review_layers
+                build_layer = getattr(self, '_build_versions', {}).get(self._planned_snapshot_key(identity), {}).get(layer_key)
+                if build_layer:
+                    construct_snapshot['review_layers_input'] = dict(build_layer)
                 construct_changes = self.service.construct_diff(
                     identity,
                     current=previous_construct,
                     desired=construct_data,
                 )
-                if self.generate_review_check.isChecked():
+                if generate_review:
                     workflow = self.service.review_workflow(identity)
                     planned_snapshot = review_options.get("planned_snapshot") or {}
                     planned_layers, _planned_layers_path = self.service.planned_layer_definition(
@@ -2465,20 +2781,21 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                     self._sequence_options(identity) if scope == "sequence" else {}
                 ),
                 "construct": construct_snapshot,
-                "input_overrides": self._stage_input_overrides(identity),
+                "input_overrides": (overrides if scope != 'sequence' else self._stage_input_overrides(identity)),
                 "construct_changes": construct_changes,
                 "canonical_fingerprint": canonical_fingerprint,
                 "reuse_construct": reuse_construct,
                 "version": output_version,
                 "mode": plan.resolved_mode,
-                "generate_review": self.generate_review_check.isChecked(),
                 **review_options,
+                "generate_review": generate_review,
+                "execution_kind": "review_submit" if generate_review else "scene_build",
                 "department": plan.department,
                 "task_name": plan.task,
                 "status_file": str(status_file),
                 "state": "QUEUED",
                 "progress": 0,
-                "task": "Queued",
+                "task": "Review Submit / Queued" if generate_review else "Scene Build / Queued",
                 "elapsed": QtCore.QElapsedTimer(),
                 "row": self.queue_table.rowCount(),
                 "stderr": "",
@@ -2525,6 +2842,8 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
 
     def _start_next_job(self) -> None:
         if self.active_job or not self.pending_jobs:
+            return
+        if hasattr(self, '_publish_queue') and not self._publish_queue.acquire(self):
             return
         job = self.pending_jobs.pop(0)
         self.active_job = job
@@ -2733,7 +3052,10 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         if success:
             job["state"] = "COMPLETE"
             job["progress"] = 100
-            job["task"] = "Complete"
+            job["task"] = (
+                "Review Submit Complete" if job.get("generate_review") else
+                "Scene Build Complete" if job.get("execution_kind") == "scene_build" else "Complete"
+            )
         else:
             job["state"] = "FAILED"
             job["progress"] = 100
@@ -2767,6 +3089,8 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         if process is not None:
             process.deleteLater()
         self.job_timer.stop()
+        if hasattr(self, '_publish_queue'):
+            self._publish_queue.release(self)
         if self.pending_jobs:
             self._start_next_job()
         else:
@@ -2858,8 +3182,156 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self.job_detail_text.setPlainText("\n".join(sections))
         self._show_job_output(job)
 
+    def _selected_queue_rows(self) -> list[int]:
+        selection = self.queue_table.selectionModel()
+        if selection is None:
+            return []
+        return sorted({index.row() for index in selection.selectedRows()})
+
+    def _queue_job_is_removable(self, job: dict) -> bool:
+        if job is self.active_job:
+            return False
+        if job.get("kind") == "publish_queue" and str(job.get("state") or "").upper() not in {
+            "COMPLETE", "FAILED", "CANCELLED",
+        }:
+            return False
+        return True
+
+    def _update_remove_queue_jobs_button(self) -> None:
+        if not hasattr(self, "remove_queue_jobs_btn"):
+            return
+        removable = any(
+            0 <= row < len(self.queue_jobs)
+            and self._queue_job_is_removable(self.queue_jobs[row])
+            for row in self._selected_queue_rows()
+        )
+        self.remove_queue_jobs_btn.setEnabled(removable)
+
+    def _selected_recoverable_publish_job(self) -> dict | None:
+        rows = self._selected_queue_rows()
+        if len(rows) != 1 or not (0 <= rows[0] < len(self.queue_jobs)):
+            return None
+        job = self.queue_jobs[rows[0]]
+        if job.get("kind") != "publish_queue":
+            return None
+        state = str(job.get("state") or "").upper()
+        runner_unavailable = (
+            state == "FAILED"
+            and "RUNNER UNAVAILABLE" in str(job.get("task") or "").upper()
+        )
+        if state != "QUEUED" and not runner_unavailable:
+            return None
+        return job
+
+    def _update_recover_queue_button(self) -> None:
+        if not hasattr(self, "recover_queue_btn"):
+            return
+        self.recover_queue_btn.setEnabled(
+            self._selected_recoverable_publish_job() is not None
+        )
+
+    def _recover_selected_queue_job(self) -> None:
+        job = self._selected_recoverable_publish_job()
+        if job is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Recover Queue",
+                "Select one QUEUED Publish Job or a FAILED Runner unavailable Job.",
+            )
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Recover Queue",
+            "Recover the execution Queue for the selected Job?\n\n"
+            "Only an orphaned lock held by this idle Review Build Manager will be released. "
+            "A running worker will not be interrupted.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            recovery_kind, recovered_count = self._publish_queue.recover_execution_queue(
+                self, str(job.get("id") or "")
+            )
+        except RuntimeError as exc:
+            QtWidgets.QMessageBox.warning(self, "Recover Queue", str(exc))
+            return
+        detail = (
+            "local execution lock released"
+            if recovery_kind == "local"
+            else f"{recovered_count} queued runner(s) restarted in submission order"
+        )
+        self.footer_label.setText(f"Execution Queue recovered: {detail}.")
+        self._publish_queue.poll()
+
+    def _remove_selected_queue_jobs(self) -> None:
+        rows = self._selected_queue_rows()
+        removable_rows = [
+            row for row in rows
+            if 0 <= row < len(self.queue_jobs)
+            and self._queue_job_is_removable(self.queue_jobs[row])
+        ]
+        if not removable_rows:
+            QtWidgets.QMessageBox.information(
+                self, "Remove Jobs", "Running Jobs cannot be removed."
+            )
+            return
+        queued_count = sum(
+            str(self.queue_jobs[row].get("state") or "").upper() == "QUEUED"
+            for row in removable_rows
+        )
+        detail = f"Remove {len(removable_rows)} selected Job(s) from the Queue?"
+        if queued_count:
+            detail += f"\n\n{queued_count} queued Job(s) will be cancelled before starting."
+        detail += "\nOutput files, status files, and logs will not be deleted."
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Remove Jobs",
+            detail,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        for row in sorted(removable_rows, reverse=True):
+            job = self.queue_jobs.pop(row)
+            if job in self.pending_jobs:
+                self.pending_jobs.remove(job)
+            if job.get("kind") == "publish_queue":
+                for job_id, published_job in list(self._publish_rows.items()):
+                    if published_job is job:
+                        self._publish_rows.pop(job_id, None)
+                        self._dismissed_queue_job_ids.add(str(job_id))
+                        break
+            self.queue_table.removeRow(row)
+        for row, job in enumerate(self.queue_jobs):
+            job["row"] = row
+        queue_index = self.main_tabs.indexOf(self.job_queue_page)
+        self.main_tabs.setTabText(
+            queue_index,
+            "Job Queue" + (f" ({len(self.queue_jobs)})" if self.queue_jobs else ""),
+        )
+        if not self.queue_jobs:
+            self.job_detail_text.clear()
+        self._settings().setValue(
+            "dismissed_queue_job_ids",
+            json.dumps(sorted(self._dismissed_queue_job_ids)),
+        )
+        self._update_remove_queue_jobs_button()
+        self._update_build_buttons()
+
     def _show_job_output(self, job: dict) -> None:
         """Show Output History for the identity selected in Job Queue."""
+
+        if job.get('kind') == 'publish_queue':
+            self.output_table.setRowCount(0)
+            self.construct_list.clear()
+            self.open_output_btn.setEnabled(False)
+            self.submit_review_btn.setEnabled(False)
+            self.detail_title.setText('Publish Artifacts — not a Review submission')
+            self.detail_summary.setText(str(job.get('message') or 'Publish is queued or running.'))
+            return
 
         raw_identity = tuple(job.get("identity") or ())
         if len(raw_identity) < 2:
@@ -3109,17 +3581,6 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             planned_snapshot = self._planned_snapshots.get(
                 self._planned_snapshot_key(identity)
             ) or {}
-            for row in planned_snapshot.get("inputs") or []:
-                if bool(row.get("enabled", True)):
-                    continue
-                component_type = str(row.get("type") or "").lower()
-                name = str(row.get("name") or "")
-                if component_type == "placement":
-                    overrides["use_placements"] = False
-                elif component_type == "layout_overlay":
-                    overrides["layout_overlay"] = False
-                elif component_type in {"rig", "usd"} and name:
-                    excluded.add(name)
             construct = self.service.shots.load_construct(identity)
             for component in construct.get("components") or []:
                 name = str(component.get("name") or "")
@@ -3264,7 +3725,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 self.sequence_inputs_tree.addTopLevelItem(item)
                 for child in data.children:
                     child_item = QtWidgets.QTreeWidgetItem(
-                        ["", child.label, "Optional", child.state, child.version or "-", child.path or "-", child.adapter or "-"]
+                        ["", child.label, "Required" if child.required else "Optional", child.state, child.version or "-", child.path or "-", child.adapter or "-"]
                     )
                     child_item.setData(0, QtCore.Qt.UserRole, child.key)
                     child_item.setData(0, QtCore.Qt.UserRole + 1, data.key)
@@ -3317,20 +3778,8 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         self._refresh_plan_columns()
 
     def _sequence_take_selected(self) -> None:
-        selected = self.sequence_inputs_tree.selectedItems()
-        if not selected or not selected[0].parent():
-            return
-        item = selected[0]
-        if item.data(0, QtCore.Qt.UserRole + 1) != "virtual_camera":
-            return
-        identity = self._current_sequence_identity()
-        if not identity:
-            return
-        self._sequence_settings(identity)["virtual_camera_take"] = str(
-            item.data(0, QtCore.Qt.UserRole) or ""
-        )
-        self._populate_sequence_inputs(identity)
-        self._refresh_plan_columns()
+        # Camera assignments are edited in Shot Manager, independently per shot.
+        return
 
     def _selected_or_checked_identities(self):
         from smartlib.apps.shot_manager import SequenceIdentity, ShotIdentity
@@ -3533,6 +3982,14 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
 
     def _restore_settings(self) -> None:
         settings = self._settings()
+        try:
+            self._build_use = json.loads(str(settings.value('build_use', '{}') or '{}'))
+        except (TypeError, ValueError):
+            self._build_use = {}
+        try:
+            self._build_versions = json.loads(str(settings.value('build_versions', '{}') or '{}'))
+        except (TypeError, ValueError):
+            self._build_versions = {}
         geometry = settings.value("geometry")
         if geometry:
             self.restoreGeometry(geometry)
@@ -3584,6 +4041,15 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             )
         except (TypeError, ValueError):
             self._planned_snapshots = {}
+        try:
+            dismissed = json.loads(
+                str(settings.value("dismissed_queue_job_ids", "[]") or "[]")
+            )
+            self._dismissed_queue_job_ids = {
+                str(value) for value in dismissed if str(value)
+            }
+        except (TypeError, ValueError):
+            self._dismissed_queue_job_ids = set()
         self._update_stage_inputs_visibility()
 
     def closeEvent(self, event) -> None:
@@ -3609,8 +4075,8 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         )
         settings.setValue("exclude_cast", self.input_exclude_cast_edit.text())
         settings.setValue(
-            "planned_snapshots",
-            json.dumps(self._planned_snapshots, ensure_ascii=False),
+            "dismissed_queue_job_ids",
+            json.dumps(sorted(self._dismissed_queue_job_ids)),
         )
         super().closeEvent(event)
 
@@ -3653,14 +4119,25 @@ def show(
     global _WINDOW
     if _WINDOW is not None:
         try:
+            if Path(_WINDOW.service.project_config.config_dir).resolve() == Path(config_dir).resolve():
+                _WINDOW.show()
+                _WINDOW.raise_()
+                _WINDOW.activateWindow()
+                return _WINDOW
+            if _WINDOW.active_job or _WINDOW.pending_jobs:
+                raise RuntimeError('The current project still has Build jobs; finish them before switching projects.')
             _WINDOW.close()
             _WINDOW.deleteLater()
+        except RuntimeError:
+            raise
         except Exception:
             pass
-    _WINDOW = ReviewBuildManagerWindow(parent=parent, config_dir=config_dir)
-    if initial_scope:
-        _WINDOW.scope_combo.setCurrentText(initial_scope)
-    _WINDOW.show()
-    _WINDOW.raise_()
-    _WINDOW.activateWindow()
+    from .startup import startup_splash
+    with startup_splash():
+        _WINDOW = ReviewBuildManagerWindow(parent=parent, config_dir=config_dir)
+        if initial_scope:
+            _WINDOW.scope_combo.setCurrentText(initial_scope)
+        _WINDOW.show()
+        _WINDOW.raise_()
+        _WINDOW.activateWindow()
     return _WINDOW

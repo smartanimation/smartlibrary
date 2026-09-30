@@ -51,13 +51,14 @@ def main(argv: list[str] | None = None) -> int:
         args.sequence,
         args.shot,
         args.department,
+        review_kind="compTemp",
     )
     print(
         json.dumps(
             {
                 "ok": True,
                 "directory": directory.as_posix(),
-                "path": (directory / filename.name).as_posix(),
+                "path": paths.artifact_file(directory, filename.name).as_posix(),
             },
             ensure_ascii=False,
         )

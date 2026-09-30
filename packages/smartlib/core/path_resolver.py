@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 from smartlib.core.tokens import resolve_token_string
@@ -59,6 +60,22 @@ class ProjectPaths:
     def production_root(self) -> Path:
         template = self._template("production_root")
         return self._path_from_template(template) if template else self.project_root / "production"
+
+    def software_postopen_dir(self, software: str) -> Path:
+        """Project-local scripts for a DCC family (maya, not maya2026)."""
+        if not software or not software.isidentifier():
+            raise ValueError("Invalid software name")
+        return self.production_root() / "settings" / "tools" / software / "postopen"
+
+    def software_postopen_script(self, software: str, reference: str) -> Path:
+        root = self.software_postopen_dir(software).resolve()
+        path = Path(reference)
+        if not reference or path.is_absolute() or path.drive or ".." in path.parts:
+            raise ValueError("Postopen script must be relative to the postopen directory")
+        resolved = (root / path).resolve()
+        if not resolved.is_relative_to(root) or resolved.suffix.lower() != ".py":
+            raise ValueError("Postopen script must be a Python file inside the postopen directory")
+        return resolved
 
     def incoming_root(self) -> Path:
         template = self._template("incoming_root")
@@ -578,6 +595,27 @@ class ProjectPaths:
     def sequence_workspace_root(self, episode: str, sequence: str) -> Path:
         return self.sequences_root() / episode / sequence
 
+    def sequence_dependencies_path(self, episode: str, sequence: str) -> Path:
+        return self.sequence_workspace_root(episode, sequence) / "dependencies.json"
+
+    def sequence_data_root(self, episode: str, sequence: str) -> Path:
+        return self.sequence_workspace_root(episode, sequence) / "data"
+
+    def sequence_data_dir(
+        self, episode: str, sequence: str, data_type: str, representation: str, subset: str,
+    ) -> Path:
+        """Resolve an ingested sequence package under the configured sequence root."""
+        root = self.sequence_data_root(episode, sequence) / data_type
+        if data_type == "virtual_camera":
+            return root / subset
+        return root / representation / subset
+
+    def sequence_data_version_dir(
+        self, episode: str, sequence: str, data_type: str, representation: str,
+        subset: str, version: str,
+    ) -> Path:
+        return self.sequence_data_dir(episode, sequence, data_type, representation, subset) / version
+
     def context_root_from_scene_path(self, scene_path: str | Path, department: str = "") -> tuple[str, Path] | None:
         """Resolve a scene path to the canonical shot or sequence context root."""
 
@@ -838,24 +876,32 @@ class ProjectPaths:
         )
 
     def shot_review_movie_dir(
-        self, episode: str, sequence: str, shot: str, department: str
+        self, episode: str, sequence: str, shot: str, department: str,
+        review_kind: str = "compTemp", *, legacy: bool = False,
     ) -> Path:
-        """Resolve the working review movie directory for a department."""
+        """Resolve purpose-separated working movies; legacy is read-only discovery."""
+        if review_kind not in {"compTemp", "usd"}:
+            raise ValueError(f"Unsupported working review kind: {review_kind}")
         template = self._template("shot_review_movie")
         if template:
-            return self._path_from_template(
-                template,
+            directory = self._path_from_template(
+                template.replace("{review_kind}", "") if legacy else template,
                 episode=episode,
                 sequence=sequence,
                 seq=sequence,
                 shot=shot,
                 department=department,
                 dept=department,
+                review_kind=review_kind,
                 workspace_partition=self.workspace_partition(department),
             )
-        return self.shot_review_root(
-            episode, sequence, shot, department
-        ) / department / "mov"
+            if "{review_kind}" in template or legacy:
+                return directory
+            # Existing project templates resolve the old .../mov root. Adapt
+            # them centrally so projects do not need simultaneous config edits.
+            return directory.parent / review_kind / directory.name
+        root = self.shot_review_root(episode, sequence, shot, department) / department
+        return root / "mov" if legacy else root / review_kind / "mov"
 
     def shot_render_layers_root(
         self, episode: str, sequence: str, shot: str, department: str
@@ -960,6 +1006,21 @@ class ProjectPaths:
         return self.shot_output_root(
             episode, sequence, shot, department
         ) / "review" / audience
+
+    def shot_review_movie_filename(
+        self, episode: str, sequence: str, shot: str, department: str,
+        task: str, version: str, extension: str = ".mov",
+    ) -> str:
+        """Formal submission name; version belongs to the submission, not its scene."""
+        parts = [self.project_name or self.project_root.name,
+                 episode, sequence, shot, department, task, version]
+        for part in parts:
+            if not part or re.search(r'[<>:"/\\|?*\x00-\x1f]', part) or part in {'.', '..'}:
+                raise ValueError(f"Invalid Review movie name token: {part!r}")
+        extension = extension.lower()
+        if extension not in {'.mov', '.mp4'}:
+            raise ValueError(f"Unsupported Review movie extension: {extension}")
+        return '_'.join(parts) + extension
 
     def shot_review_read_roots(
         self, episode: str, sequence: str, shot: str, department: str,
@@ -1103,6 +1164,26 @@ class ProjectPaths:
         )
         return directory if version else directory.parent
 
+    @staticmethod
+    def artifact_version_files(path: str | Path) -> list[tuple[str, Path]]:
+        """List existing versions of an already resolved artifact in its family."""
+        path = Path(path)
+        version_dir = next((p for p in path.parents
+                            if re.fullmatch(r"v\d+", p.name)), None)
+        if version_dir is None:
+            return []
+        relative = path.relative_to(version_dir)
+        results = []
+        for directory in version_dir.parent.iterdir() if version_dir.parent.is_dir() else []:
+            if not directory.is_dir() or not re.fullmatch(r"v\d+", directory.name):
+                continue
+            candidate = directory / relative
+            if not candidate.is_file():
+                candidate = directory / str(relative).replace(version_dir.name, directory.name)
+            if candidate.is_file():
+                results.append((directory.name, candidate))
+        return sorted(results, key=lambda item: int(item[0][1:]), reverse=True)
+
     def artifact_file(self, directory: str | Path, name: str) -> Path:
         """Resolve a single artifact member; never allow a filename to escape its directory."""
         return Path(directory) / self.pipeline_token(name)
@@ -1115,6 +1196,21 @@ class ProjectPaths:
         root = self.shot_publish_dir(episode, sequence, shot, "usd", kind)
         root = self.artifact_file(root, target)
         return root / self.pipeline_version(version) if version else root
+
+    def usd_section_dir(self, episode: str, sequence: str, shot: str,
+                        kind: str, version: str = "") -> Path:
+        """Independent USD section layers; separate from per-target products."""
+        if kind not in {"animation", "assets", "camera", "layout"}:
+            raise ValueError(f"Unsupported USD section: {kind}")
+        for value in (episode, sequence, shot):
+            self.pipeline_token(value)
+        root = self.shot_publish_dir(episode, sequence, shot, "usd", "sections")
+        root = self.artifact_file(root, kind)
+        return root / self.pipeline_version(version) if version else root
+
+    def publish_job_registry_dir(self) -> Path:
+        """Durable project-wide Publish receipts and execution lease."""
+        return self.workspace_root() / "jobs" / "publish"
 
     def usd_handoff_build_dir(self, episode: str, sequence: str, shot: str,
                               version: str = "") -> Path:

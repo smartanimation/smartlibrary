@@ -4,7 +4,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
-from smartlib.editorial.cut_assignment import default_assignments, compile_assignments
+from smartlib.editorial.cut_assignment import default_assignments, compile_assignments, restore_assignment_rows
 
 
 class CutAssignmentDialog:
@@ -12,6 +12,9 @@ class CutAssignmentDialog:
         self.events = events
         self.editorial_unit = editorial_unit
         self.rows = default_assignments(events, shots)
+        policy = shots.project_config.base.get("maya_timeline") or {}
+        self.editorial_timeline = str(policy.get("mode") or "normalized").strip().lower() == "editorial"
+        self.rows, restored = restore_assignment_rows(self.rows, saved, editorial=self.editorial_timeline)
         self.result = None
         self.window = tk.Toplevel(parent)
         self.window.title("Editorial Cut Assignment")
@@ -19,10 +22,8 @@ class CutAssignmentDialog:
         self.window.transient(parent)
         self.origin = tk.StringVar(value=str(offline_origin))
         self.confirmed = tk.BooleanVar(value=False)
-        if saved and [r.get("signature") for r in saved.get("rows", [])] == [r["signature"] for r in self.rows]:
-            self.rows = [{**default, **r} for default, r in zip(self.rows, saved["rows"])]
+        if restored:
             self.origin.set(str(saved.get("offline_origin", offline_origin)))
-        restored = saved and [r.get("signature") for r in saved.get("rows", [])] == [r["signature"] for r in self.rows]
         for row in self.rows:
             row["production_sequence"] = row.pop("production_sequence", row.get("sequence", "") if restored or editorial_unit is None else "")
             row.pop("sequence", None)
@@ -31,6 +32,8 @@ class CutAssignmentDialog:
         if editorial_unit is not None:
             ttk.Label(frame, text=f"Editorial Unit: {editorial_unit} → Production Sequenceを各行に指定してください").pack(anchor="w")
         ttk.Label(frame, text="編集位置は現在のResolveマーカーを使用します。範囲は両端を含みます。").pack(anchor="w")
+        if self.editorial_timeline:
+            ttk.Label(frame, text="Maya Timeline: Editorial — Maya In/Outは編集In/Outに固定（保存済み範囲より優先）").pack(anchor="w")
         ttk.Label(frame, text="シーケンス・作業ショット・Maya欄はダブルクリックで編集できます。編集位置は受領動画内の位置を維持します。").pack(anchor="w", pady=(0, 8))
         origin_row = ttk.Frame(frame)
         origin_row.pack(fill="x")
@@ -43,7 +46,10 @@ class CutAssignmentDialog:
                               ("選択行を同じ作業ショットへ", self.assign_selected),
                               ("選択行を同じシーケンスへ", self.assign_sequence),
                               ("選択行をMaya上で連続配置", self.place_selected)):
-            ttk.Button(bar, text=label, command=action).pack(side="left", padx=(0, 8))
+            button = ttk.Button(bar, text=label, command=action)
+            if self.editorial_timeline and action == self.place_selected:
+                button.configure(state="disabled")
+            button.pack(side="left", padx=(0, 8))
         table = ttk.Frame(frame)
         table.pack(fill="both", expand=True)
         self.columns = ("enabled", "cut", "record_in", "record_out", "offline_in", "offline_out", "production_sequence", "work_shot", "maya_in", "maya_out")
@@ -117,6 +123,8 @@ class CutAssignmentDialog:
         if not item or column not in ("#7", "#8", "#9", "#10"):
             return
         key = self.columns[int(column[1:]) - 1]
+        if self.editorial_timeline and key in ("maya_in", "maya_out"):
+            return
         row = self.rows[int(item)]
         value = simpledialog.askstring("Edit " + key, key, initialvalue=str(row[key]), parent=self.window)
         if value is None:
@@ -140,6 +148,8 @@ class CutAssignmentDialog:
             self.refresh()
 
     def place_selected(self):
+        if self.editorial_timeline:
+            return
         selected = sorted(map(int, self.tree.selection()))
         if not selected:
             return

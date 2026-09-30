@@ -586,7 +586,7 @@ class ShotManagerService:
 
     def dependencies_path(self, identity: ShotIdentity | SequenceIdentity) -> Path:
         if isinstance(identity, SequenceIdentity):
-            return self.sequence_workspace_root(identity.episode, identity.sequence) / "dependencies.json"
+            return self.paths.sequence_dependencies_path(identity.episode, identity.sequence)
         return self.shot_root(identity) / "dependencies.json"
 
     def load_dependencies(self, identity: ShotIdentity | SequenceIdentity) -> dict[str, Any]:
@@ -690,7 +690,7 @@ class ShotManagerService:
         )
 
     def sequence_input_candidates(self, identity: SequenceIdentity) -> list[dict[str, Any]]:
-        data_root = self.sequence_workspace_root(identity.episode, identity.sequence) / "data"
+        data_root = self.paths.sequence_data_root(identity.episode, identity.sequence)
         supported = {".fbx", ".abc", ".usd", ".usda", ".usdc", ".wav", ".aif", ".aiff", ".mp3", ".mov", ".mp4"}
         candidates = []
         if not data_root.is_dir():
@@ -719,10 +719,12 @@ class ShotManagerService:
                 "audio": "editorial_mix",
                 "reference": "reference",
             }[dependency_type]
+            version = next((part for part in reversed(parts[:-1]) if re.fullmatch(r"v\d+", part)), "")
             candidates.append(
                 {
-                    "id": _dependency_id(dependency_type, target, name, representation),
+                    "id": _dependency_id(dependency_type, target, relative.as_posix(), representation),
                     "name": name,
+                    "version": version,
                     "type": dependency_type,
                     "target": target,
                     "role": role,
@@ -2687,10 +2689,7 @@ class ShotManagerService:
             and parts[1] != "lights_grp"
             for row in latest_scene_data_rows
         )
-        has_camera_data = any(
-            str(row.name or "").split("/")[0] == "camera"
-            for row in latest_scene_data_rows
-        )
+        published_camera_names: set[str] = set()
         for dependency in self.selected_virtual_camera_dependencies(identity):
             camera_path = Path(str(dependency["path"]))
             add_published_component(
@@ -2708,12 +2707,16 @@ class ShotManagerService:
                     "representation": "fbx",
                 },
             )
-        for camera_path_text in ([] if has_camera_data else self._latest_review_camera_paths(identity)):
+        for camera_path_text in self._latest_review_camera_paths(identity):
             camera_path = Path(camera_path_text)
             camera_name = camera_path.parents[2].name if len(camera_path.parents) > 2 else camera_path.stem
             from smartlib.core.camera_package import camera_package_info
             package_info = camera_package_info(camera_path)
             camera_source = {"kind": "published_camera"}
+            camera_data = read_json(camera_path, {}) or {}
+            if camera_data.get('schema') == 'smartpipeline.primary_camera.v1':
+                camera_source['camera_batch'] = True
+                camera_name = str(camera_data.get('camera') or camera_name)
             if package_info:
                 camera_name = f"{package_info['kind']} / {package_info['target']} / {package_info['subset']}"
                 camera_source.update(camera_package=True, target=package_info['target'], subset=package_info['subset'])
@@ -2727,6 +2730,19 @@ class ShotManagerService:
                 mode="import",
                 source=camera_source,
             )
+            # A Camera Data export must not hide unrelated published smartCams.
+            # Deduplicate by actual camera identity, not by the presence of any
+            # camera data. Completed batch/package references remain authoritative.
+            if any(c.get('enabled') and c.get('path') == str(camera_path) for c in components):
+                published_camera_names.add(camera_name)
+                if package_info:
+                    published_camera_names.update(
+                        str(name) for name in [
+                            package_info.get('primary'),
+                            *(row.get('camera') for row in camera_data.get('rows', [])),
+                            *(row.get('name') for row in camera_data.get('cameras', [])),
+                        ] if name
+                    )
 
         # Root-based Camera/Light/Placement Data Publishes are direct WORK
         # Construct inputs. Department publishes remain available and take
@@ -2737,6 +2753,8 @@ class ShotManagerService:
             if component_type not in {"camera", "light", "placement", "playblast_settings"}:
                 continue
             name = parts[1] if len(parts) > 1 else "placements" if component_type == "placement" else "main"
+            if component_type == "camera" and name in published_camera_names:
+                continue
             if component_type == "light" and name == "lights_grp" and has_per_light_data:
                 continue
             version_dir = Path(row.path)
@@ -3023,6 +3041,17 @@ class ShotManagerService:
             if not isinstance(component, dict):
                 continue
             source = component.get("source") or {}
+            if (component.get("component_type") == "camera"
+                    and source.get("kind") == "scene_data"
+                    and _construct_component_key(component) not in seen):
+                # Camera Data omitted by current resolution is superseded or
+                # removed. Do not resurrect it from saved UI choices.
+                continue
+            if (any((c.get('source') or {}).get('camera_batch') for c in components)
+                    and component.get('component_type') == 'camera'
+                    and source.get('kind') == 'published_camera'):
+                # Do not resurrect the superseded legacy package alongside a batch.
+                continue
             if (
                 str(source.get("kind") or "") == "cast_entry"
                 and str(component.get("name") or "") not in generated_cast_types
@@ -3942,6 +3971,23 @@ class ShotManagerService:
         return write_json(output_dir / "build_manifest.json", payload)
 
     def _latest_review_camera_paths(self, identity: ShotIdentity) -> list[str]:
+        # Camera Batch membership is pinned by the completed composition, not
+        # independently chosen latest.json files (which may be a partial batch).
+        from .usd_handoff import UsdHandoffService
+        handoff = UsdHandoffService(self)
+        versions = handoff.composition_versions(identity)
+        if versions:
+            composition = handoff.load_handoff(versions[0]['path'])
+            snapshots = []
+            for reference in composition.get('products', []):
+                product = handoff.load_handoff(handoff.check(reference))
+                if product.get('kind') != 'camera':
+                    continue
+                ref = product.get('inputs', {}).get('camera_snapshot')
+                if ref:
+                    snapshots.append(str(handoff.check(ref)))
+            if snapshots:
+                return snapshots
         package_paths = [str(row.path) for row in self.list_camera_package_versions(identity) if row.latest]
         if package_paths:
             return package_paths
@@ -3998,7 +4044,7 @@ class ShotManagerService:
             candidates.append(Path(sequence))
         for path in candidates:
             data = read_json(path, {}) or {}
-            if data.get("schema") == "smartpipeline.primary_camera.v1":
+            if data.get("schema") == "smartpipeline.primary_camera.v1" and data.get('role', 'primary') == 'primary':
                 return path
         return None
 
@@ -4022,7 +4068,25 @@ class ShotManagerService:
                     latest=True,
                 )
             )
-        return sorted(rows, key=lambda row: row.name.lower())
+        for version in self.list_shot_data_versions(identity):
+            if not version.name.startswith('setdress/'):
+                continue
+            metadata = read_json(self.paths.artifact_file(version.path, 'data.json'), {})
+            filename = metadata.get('files', {}).get('setdress')
+            if filename:
+                path = self.paths.artifact_file(version.path, filename)
+                rows.append(ShotDataVersion(name='set_dress_data/' + metadata['target'],
+                    version=version.version, path=str(path), updated=version.updated,
+                    comment=version.comment, latest=version.latest))
+        versioned_names = {row.name for row in rows if row.version != 'WORK'}
+        rows = [row for row in rows if row.version != 'WORK' or row.name not in versioned_names]
+        # A renamed layer retains its immutable history, but only its newest
+        # identity occurrence may feed Construct as latest.
+        from dataclasses import replace
+        latest_paths = set(visible_work_packages(Path(row.path) for row in rows if row.latest))
+        rows = [replace(row, latest=False) if row.latest and Path(row.path) not in latest_paths else row
+                for row in rows]
+        return sorted(rows, key=lambda row: (row.name.lower(), row.version), reverse=True)
 
     def list_set_dress_publish_versions(self, identity: ShotIdentity) -> list[ShotDataVersion]:
         from smartlib.setdress import SetDressIdentity, SetDressPublishService
@@ -4771,8 +4835,13 @@ class ShotManagerService:
         self._update_versions(base_dir / "versions.json", version_label)
         return cast_path
 
-    def publish_sequence_cast(self, episode: str, sequence: str, comment: str = "") -> Path:
-        cast_data = deepcopy(self.load_sequence_cast(episode, sequence))
+    def publish_sequence_cast(
+        self, episode: str, sequence: str, comment: str = "",
+        *, cast_data: dict[str, Any] | None = None,
+    ) -> Path:
+        cast_data = deepcopy(
+            self.load_sequence_cast(episode, sequence) if cast_data is None else cast_data
+        )
         cast_data["episode"] = episode
         cast_data["sequence"] = sequence
         issues = validate_cast_data(cast_data)

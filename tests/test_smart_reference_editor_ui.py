@@ -25,6 +25,7 @@ def window(tmp_path, monkeypatch):
     new.write_text('// new')
     seq, shot = SequenceIdentity('ep01', 'sq010'), ShotIdentity('ep01', 'sq010', 'sh020')
     service = SimpleNamespace(
+        cast_target_choices=lambda row: {'Resolved': [{'version': 'Current', 'path': row.publish_path}]},
         scene_identity=lambda path: shot,
         casting=SimpleNamespace(sequences=lambda: [seq], shots_for_sequence=lambda *args: [shot]),
         preview=lambda *args: [item(new), item(new, 'prop')],
@@ -182,3 +183,63 @@ def test_unreadable_reference_does_not_block_ui(window):
     row = next(i for i, ref in enumerate(window.references) if ref.node == 'sotaiMRN2')
     assert not window.relink_table.cellWidget(row, 3).isEnabled()
     assert window.relink_table.item(row, 4).text() == 'Unreadable — kept'
+
+
+@pytest.fixture
+def version_window(window, tmp_path):
+    from dataclasses import replace
+    paths = {}
+    for context, version in [('anim', 'v003'), ('anim', 'v001'), ('proxy', 'v002')]:
+        path = tmp_path / context / version / 'Hero.ma'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('// Maya scene')
+        paths[(context, version)] = str(path)
+    choices = {context: [{'version': ver, 'path': path} for (ctx, ver), path in paths.items() if ctx == context]
+               for context in ['anim', 'proxy']}
+    window.service.preview = lambda *args: [item(paths['anim', 'v003'], asset='Hero', variant='default')]
+    window.service.cast_target_choices = lambda row: choices
+    window.cmds.refs['heroRN'] = replace(window.cmds.refs['heroRN'], path=paths['anim', 'v003'])
+    window.refresh_cast()
+    return window, paths, choices
+
+
+def test_context_and_version_selection_apply_and_refresh(version_window, monkeypatch):
+    window, paths, _ = version_window
+    context = window.cast_table.cellWidget(0, 3)
+    version = window.cast_table.cellWidget(0, 4)
+    assert context.currentText() == 'anim' and version.currentText() == 'v003'
+    assert window.differences[0].status == 'In sync'
+    context.setCurrentText('proxy')
+    assert version.count() == 1 and version.currentText() == 'v002'
+    assert window.operations()[0].target == paths['proxy', 'v002']
+    context.setCurrentText('anim')
+    version.setCurrentText('v001')
+    assert window.operations()[0].target == paths['anim', 'v001']
+    window.preview()
+    assert paths['anim', 'v001'] in window.detail.toPlainText()
+    monkeypatch.setattr(QtWidgets.QMessageBox, 'exec_', lambda self: QtWidgets.QMessageBox.Apply)
+    window.apply_selected()
+    assert not window._test_errors
+    assert window.cmds.calls[0][0] == paths['anim', 'v001']
+    assert window.differences[0].status == 'In sync'
+    assert window.cast_table.cellWidget(0, 4).currentText() == 'v001'
+
+
+def test_removed_context_version_stops_apply(version_window, monkeypatch):
+    window, paths, choices = version_window
+    window.cast_table.cellWidget(0, 3).setCurrentText('proxy')
+    choices.pop('proxy')
+    monkeypatch.setattr(QtWidgets.QMessageBox, 'exec_', lambda self: QtWidgets.QMessageBox.Apply)
+    window.apply_selected()
+    assert window.cmds.calls == []
+    assert any('no longer available' in error for error in window._test_errors)
+
+
+def test_context_selection_cleared_on_scope_change(version_window):
+    window, paths, _ = version_window
+    window.cast_table.cellWidget(0, 3).setCurrentText('proxy')
+    assert window.cast_overrides
+    window.scope.setCurrentText('Sequence')
+    assert not window.cast_overrides
+    window.refresh_cast()
+    assert window.differences[0].target == paths['anim', 'v003']

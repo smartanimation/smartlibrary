@@ -9,9 +9,8 @@ pushes media into the current RV session.
 - `Project` is global and sits above the `Asset` / `Shot` tabs.
 - `Asset` has `Current Shot/Sequence`, asset selection, quick-check presets,
   and RV actions.
-- `Shot` has `Current Shot/Sequence`, sequence navigation, multi-shot
-  selection, selection operation buttons, review modes including `Contact
-  Sheet`, and RV actions.
+- `Shot` opens the independent Shot Browser for shot selection. The dock retains
+  review modes including `Contact Sheet`, review options, and RV actions.
 - The action buttons are arranged as:
   - `Load Into Current Session` | `Replace Current Sources`
   - `Open New Session` | `Build RV Session`

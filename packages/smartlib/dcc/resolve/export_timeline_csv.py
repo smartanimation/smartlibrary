@@ -1183,6 +1183,8 @@ def _parse_aaf_markers(path: Path) -> list[dict[str, Any]]:
                     markers.append(
                         {
                             "start": record_frame,
+                            # AAF component positions are sequence-relative, not timecodes.
+                            "frame_space": "relative",
                             "duration": duration,
                             "clip": str(getattr(selected, "name", "") or component_type),
                             "source_in": source_in,

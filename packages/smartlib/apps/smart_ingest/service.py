@@ -802,24 +802,19 @@ class SmartIngestService:
                 return None, "extension is not sequence data"
             if not metadata.episode or not metadata.sequence or not metadata.department:
                 return None, "episode, sequence, and department are required"
-            sequence_data_root = (
-                self.project_root
-                / "sequences"
-                / metadata.episode
-                / metadata.sequence
-                / "data"
-                / metadata.department
-            )
             if metadata.department == "virtual_camera":
                 if not metadata.subset or metadata.subset == "main":
                     return None, "take is required for virtual_camera data"
-                package_root = sequence_data_root / metadata.subset
-            else:
-                package_root = sequence_data_root / metadata.format / metadata.subset
+            package_root = self.paths.sequence_data_dir(
+                metadata.episode, metadata.sequence, metadata.department,
+                metadata.format, metadata.subset,
+            )
             version = self._next_version(package_root)
             return (
-                package_root
-                / version
+                self.paths.sequence_data_version_dir(
+                    metadata.episode, metadata.sequence, metadata.department,
+                    metadata.format, metadata.subset, version,
+                )
                 / source.name
             ), "sequence data copy"
         return None, "target type is unknown"

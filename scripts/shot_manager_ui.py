@@ -314,11 +314,6 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.restoreGeometry(geometry)
 
     def closeEvent(self, event) -> None:
-        panel = getattr(self, 'animation_publish_panel', None)
-        if panel is not None and panel._running():
-            panel.status.appendPlainText('USD generation is running; wait for completion before closing Shot Manager.')
-            event.ignore()
-            return
         self._window_settings().setValue(self.SETTINGS_GEOMETRY_KEY, self.saveGeometry())
         self._save_window_state()
         super().closeEvent(event)
@@ -993,12 +988,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.dependencies_target_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(self.dependencies_target_label)
         self.dependencies_help_label = QtWidgets.QLabel(
-            "Assign source material by shot and target. Loading behavior is managed in Construct."
+            "Assign source material to Sequence or individual Shots. Each scope is saved separately. Loading behavior is managed in Construct."
         )
         self.dependencies_help_label.setStyleSheet("color: #999;")
         layout.addWidget(self.dependencies_help_label)
         self.dependencies_tree.setColumnCount(6)
-        self.dependencies_tree.setHeaderLabels(["Shot / Target", "Type", "Role", "Assigned Input", "Rep.", "Status"])
+        self.dependencies_tree.setHeaderLabels(["Scope / Target", "Type", "Role", "Assigned Input", "Rep.", "Status"])
         self.dependencies_tree.setRootIsDecorated(True)
         self.dependencies_tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.dependencies_tree.setAlternatingRowColors(False)
@@ -1021,8 +1016,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.dependency_context_label = QtWidgets.QLabel("Available Inputs")
         self.dependency_context_label.setStyleSheet("font-weight: bold;")
         candidates_layout.addWidget(self.dependency_context_label)
-        self.dependency_candidates = QtWidgets.QTableWidget(0, 6)
-        self.dependency_candidates.setHorizontalHeaderLabels(["", "Name", "Target", "Type", "Representation", "Source"])
+        self.dependency_candidates = QtWidgets.QTableWidget(0, 7)
+        self.dependency_candidates.setHorizontalHeaderLabels(["", "Name", "Target", "Type", "Representation", "Source", "Version"])
         self.dependency_candidates.verticalHeader().setVisible(False)
         self.dependency_candidates.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.dependency_candidates.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
@@ -1171,6 +1166,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self._update_data_action_visibility()
 
     def _setup_publish_tab(self) -> None:
+        from smartlib.core.icons import shot_publish_type_icon_path
+
         insert_index = self.tabs.indexOf(self.build_preview_tab)
         if insert_index < 0:
             insert_index = self.tabs.count()
@@ -1185,15 +1182,20 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         type_layout.setContentsMargins(0, 0, 0, 0)
         type_layout.setSpacing(4)
         type_layout.addWidget(QtWidgets.QLabel("Publish Type :"))
+        self.publish_type_list.setIconSize(QtCore.QSize(28, 28))
         for label, key in (
             ("Camera", "camera"),
             ("Animation", "animation_cache"),
+            ("Cast", "assets"),
             ("Placements", "placements"),
             ("Set Dress", "set_dress"),
             ("Preview Render", "preview_render"),
         ):
             item = QtWidgets.QListWidgetItem(label)
             item.setData(QtCore.Qt.UserRole, key)
+            icon_path = shot_publish_type_icon_path(key, 28)
+            if icon_path:
+                item.setIcon(QtGui.QIcon(str(icon_path)))
             self.publish_type_list.addItem(item)
         self.publish_type_list.setMinimumWidth(150)
         self.publish_type_list.setStyleSheet("QListWidget::item { height: 34px; }")
@@ -1244,6 +1246,20 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             is_maya_session=self.is_maya_session)
         self.animation_publish_panel.data_published.connect(lambda _path: self.populate_data_tree())
         self.publish_details_stack.addWidget(self.animation_publish_panel)
+        from smartlib.apps.shot_manager.camera_publish_panel import CameraPublishPanel
+        self.camera_publish_panel = CameraPublishPanel(self.service, self.publish_details_stack,
+            is_maya_session=self.is_maya_session)
+        self.publish_details_stack.addWidget(self.camera_publish_panel)
+        from smartlib.apps.shot_manager.layout_publish_panel import LayoutPublishPanel
+        self.layout_publish_panel = LayoutPublishPanel(self.service, self.publish_details_stack,
+            is_maya_session=self.is_maya_session)
+        self.publish_details_stack.addWidget(self.layout_publish_panel)
+        for panel in (self.camera_publish_panel, self.layout_publish_panel):
+            panel.refresh_btn.clicked.connect(lambda: (self._populate_publish_targets(), self.populate_publish_tree()))
+        from smartlib.apps.shot_manager.assets_publish_panel import AssetsPublishPanel
+        self.assets_publish_panel = AssetsPublishPanel(self.service, self.publish_details_stack, is_maya_session=self.is_maya_session)
+        self.publish_details_stack.addWidget(self.assets_publish_panel)
+        self.publish_target_widget = target_widget
         splitter.addWidget(self.publish_details_stack)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 0)
@@ -1256,6 +1272,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.publish_target_list.currentRowChanged.connect(
             lambda _row: self.populate_publish_tree()
         )
+        self.publish_target_list.itemSelectionChanged.connect(self.populate_publish_tree)
         if self.publish_type_list.count():
             self.publish_type_list.setCurrentRow(0)
         self._update_publish_action_visibility()
@@ -2031,7 +2048,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 self.dependencies_target_label.setText(f"Shot Input Assignments — {identity.shot}")
             else:
                 sequence_identity = identity
-                shot_identities = self.service.sequence_shot_identities(identity)
+                shot_identities = [identity, *self.service.sequence_shot_identities(identity)]
                 self.dependencies_target_label.setText(f"Sequence Input Assignments — {identity.episode} / {identity.sequence}")
             cast_data = self.service.load_sequence_cast(sequence_identity.episode, sequence_identity.sequence)
             cast = cast_data.get("cast") or {}
@@ -2040,17 +2057,19 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 key=str.lower,
             )
             for shot_identity in shot_identities:
+                is_sequence = not hasattr(shot_identity, "shot")
+                scope_target = "Sequence" if is_sequence else "Shot"
                 data = self.service.load_dependencies(shot_identity)
                 entries = list(data.get("dependencies") or [])
                 slots = [(target, "mocap", "body_motion") for target in character_targets]
-                slots.extend((("Camera", "virtual_camera", "import_fbx"), ("Shot", "audio", "editorial_mix")))
+                slots.extend((("Camera", "virtual_camera", "import_fbx"), (scope_target, "audio", "editorial_mix")))
                 existing_slots = {
                     (str(item.get("target") or item.get("asset") or "Shot"), str(item.get("type") or ""), str(item.get("role") or ""))
                     for item in entries
                 }
                 slots.extend(sorted(existing_slots - set(slots)))
-                parent = QtWidgets.QTreeWidgetItem([shot_identity.shot])
-                parent.setData(0, QtCore.Qt.UserRole, {"kind": "shot", "identity": shot_identity})
+                parent = QtWidgets.QTreeWidgetItem([self._dependency_scope_label(shot_identity)])
+                parent.setData(0, QtCore.Qt.UserRole, {"kind": "sequence" if is_sequence else "shot", "identity": shot_identity})
                 font = parent.font(0)
                 font.setBold(True)
                 parent.setFont(0, font)
@@ -2074,7 +2093,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                         missing += 1
                     item = QtWidgets.QTreeWidgetItem([
                         target, dependency_type.replace("_", " ").title(), self._dependency_role_label(role),
-                        str((dependency or {}).get("name") or (dependency or {}).get("id") or "—"),
+                        " ".join(filter(None, [str((dependency or {}).get("name") or (dependency or {}).get("id") or "—"), str((dependency or {}).get("version") or "")])),
                         str((dependency or {}).get("representation") or ""),
                         str((dependency or {}).get("status") or "Missing"),
                     ])
@@ -2101,6 +2120,12 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         return dict(data) if isinstance(data, dict) and data.get("kind") == "assignment" else None
 
     @staticmethod
+    def _dependency_scope_label(identity) -> str:
+        if identity is None:
+            return ""
+        return getattr(identity, "shot", "") or f"Sequence {identity.episode} / {identity.sequence}"
+
+    @staticmethod
     def _dependency_role_label(role) -> str:
         clean_role = str(role or "").strip().lower()
         if clean_role in {"import_fbx", "camera_reference"}:
@@ -2114,7 +2139,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         data = current.data(0, QtCore.Qt.UserRole)
         parent = current.parent() if isinstance(data, dict) and data.get("kind") == "assignment" else current
         parent_data = parent.data(0, QtCore.Qt.UserRole) if parent else None
-        if not isinstance(parent_data, dict) or parent_data.get("kind") != "shot":
+        if not isinstance(parent_data, dict) or parent_data.get("kind") not in {"shot", "sequence"}:
             return
         identity = parent_data["identity"]
         cast = self.service.load_sequence_cast(identity.episode, identity.sequence).get("cast") or {}
@@ -2123,7 +2148,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             key=str.lower,
         )
         choices = [(target, "audio", "dialogue_iso", f"{target} / Audio / Dialogue ISO") for target in characters]
-        choices.append(("Shot", "reference", "reference", "Shot / Reference"))
+        scope_target = "Shot" if hasattr(identity, "shot") else "Sequence"
+        choices.append((scope_target, "reference", "reference", f"{scope_target} / Reference"))
         menu = QtWidgets.QMenu(self)
         for target, dependency_type, role, label in choices:
             action = menu.addAction(label)
@@ -2154,9 +2180,10 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         assignment = self._selected_dependency_assignment()
         if not assignment:
             self.dependency_context_label.setText("Available Inputs")
+            self._update_dependency_inspector()
             return
         self.dependency_context_label.setText(
-            f"Available Inputs — {assignment['identity'].shot} / {assignment['target']} / {assignment['role'].replace('_', ' ').title()}"
+            f"Available Inputs — {self._dependency_scope_label(assignment['identity'])} / {assignment['target']} / {assignment['role'].replace('_', ' ').title()}"
         )
         try:
             _ensure_smartlib_on_path()
@@ -2168,14 +2195,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     continue
                 if assignment.get("type") == "virtual_camera" and candidate.get("representation") != "fbx":
                     continue
-                if assignment.get("type") == "mocap" and candidate.get("target") != assignment.get("target"):
+                if assignment.get("type") == "mocap" and str(candidate.get("target") or "").casefold() != str(assignment.get("target") or "").casefold():
                     continue
                 row = self.dependency_candidates.rowCount()
                 self.dependency_candidates.insertRow(row)
                 selected = candidate.get("source") == (assignment.get("dependency") or {}).get("source")
                 source = str(candidate.get("source") or "")
                 source_name = Path(source).name or source
-                values = ["●" if selected else "○", candidate.get("name"), candidate.get("target"), candidate.get("type"), candidate.get("representation"), source_name]
+                values = ["●" if selected else "○", candidate.get("name"), candidate.get("target"), candidate.get("type"), candidate.get("representation"), source_name, candidate.get("version")]
                 for column, value in enumerate(values):
                     table_item = QtWidgets.QTableWidgetItem(str(value or ""))
                     table_item.setData(QtCore.Qt.UserRole, dict(candidate))
@@ -2202,7 +2229,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.dependency_type_value.setText(str(assignment.get("type") or "—"))
         self.dependency_role_value.setText(self._dependency_role_label(assignment.get("role")))
         self.dependency_source_value.setText(str(candidate.get("source") or "—"))
-        shot = getattr(assignment.get("identity"), "shot", "")
+        shot = self._dependency_scope_label(assignment.get("identity"))
         self.assign_candidate_btn.setText(f"Assign to {assignment.get('target')} ({shot})" if shot else "Assign")
 
     def assign_selected_candidate(self) -> None:
@@ -2235,7 +2262,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             else:
                 existing.update(dependency)
             path = self.service.write_dependencies(identity, {"dependencies": entries})
-            self.status_label.setText(f"Assigned {candidate.get('name')} to {identity.shot}/{assignment['target']}: {path}")
+            self.status_label.setText(f"Assigned {candidate.get('name')} to {self._dependency_scope_label(identity)}/{assignment['target']}: {path}")
             self.populate_dependencies()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Assign Input Failed", str(exc))
@@ -2245,7 +2272,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         dependency = (assignment or {}).get("dependency") or {}
         if not assignment or not dependency:
             return
-        answer = QtWidgets.QMessageBox.question(self, "Clear Input", f"Clear {assignment['identity'].shot} / {assignment['target']} / {assignment['role']}?")
+        answer = QtWidgets.QMessageBox.question(self, "Clear Input", f"Clear {self._dependency_scope_label(assignment['identity'])} / {assignment['target']} / {assignment['role']}?")
         if answer != QtWidgets.QMessageBox.Yes:
             return
         try:
@@ -2781,6 +2808,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         return item.text().strip()
 
     def _on_publish_type_changed(self) -> None:
+        self.publish_target_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.ExtendedSelection if self._current_publish_type() in {'animation_cache', 'camera', 'placements', 'set_dress'}
+            else QtWidgets.QAbstractItemView.SingleSelection)
         self._populate_publish_targets()
         self._update_publish_action_visibility()
         self.populate_publish_tree()
@@ -2821,6 +2851,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
         publish_type = self._current_publish_type()
         current = self._current_publish_target()
+        selected_targets = {(item.data(QtCore.Qt.UserRole) or {}).get('cast_key') or
+                            (item.data(QtCore.Qt.UserRole) or {}).get('target') or item.text()
+                            for item in self.publish_target_list.selectedItems()}
         targets: list[tuple[str, dict]] = []
         if publish_type in {"animation_cache", "animation_alembic"} and identity:
             cast_data = self.service.load_cast(identity)
@@ -2829,34 +2862,35 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 data["cast_key"] = cast_key
                 targets.append((cast_key, data))
         elif publish_type == "camera" and identity:
-            names = {}
             if self.is_maya_session:
                 try:
-                    from smartlib.dcc.maya.shot_scene_data import list_scene_cameras
-
-                    for name in list_scene_cameras():
-                        names[self._data_target_token(name)] = str(name)
-                except Exception:
-                    pass
-            for row in self.service.list_shot_scene_publish_versions(identity, "camera"):
-                parts = row.name.split("/")
-                if len(parts) > 1:
-                    names.setdefault(parts[1], parts[1])
-            targets = [(name, {"target": value}) for name, value in sorted(names.items())]
+                    from smartlib.dcc.maya.shot_publish_sources import camera_sources
+                    targets = [(('Primary — ' if row['role'] == 'primary' else '') + row['node'].rsplit('|', 1)[-1], row)
+                               for row in camera_sources()]
+                except Exception as exc:
+                    self.status_label.setText(str(exc))
         elif publish_type == "animation_package":
             targets = [("main", {"target": "main"})]
         elif publish_type == "placements":
-            targets = [("main", {"target": "main"})]
+            if self.active_sequence_identity is not None:
+                targets = [('main', {'target': 'main'})]
+            elif self.is_maya_session:
+                try:
+                    from smartlib.dcc.maya.shot_publish_sources import placement_sources
+                    targets = [(row['label'], row) for row in placement_sources()]
+                except Exception as exc:
+                    self.status_label.setText(str(exc))
         elif publish_type == "set_dress":
-            rows = (
-                self.service.list_sequence_set_dress_publish_versions(sequence_identity)
-                if sequence_identity
-                else self.service.list_set_dress_publish_versions(identity)
-                if identity
-                else []
-            )
-            names = sorted({row.name.split("/", 1)[-1] for row in rows})
-            targets = [(name, {"target": name}) for name in names]
+            if self.active_sequence_identity is not None:
+                names = sorted({row.name.split('/', 1)[-1] for row in
+                    self.service.list_sequence_set_dress_publish_versions(self.active_sequence_identity)})
+                targets = [(name, {'target': name}) for name in names]
+            elif self.is_maya_session:
+                try:
+                    from smartlib.dcc.maya.shot_publish_sources import setdress_sources
+                    targets = [(row['label'] + (' (muted)' if row['muted'] else ''), row) for row in setdress_sources()]
+                except Exception as exc:
+                    self.status_label.setText(str(exc))
         elif publish_type == "preview_render" and identity:
             departments = {
                 self.work_dept_combo.currentText().strip() or "default"
@@ -2886,6 +2920,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             self.publish_target_list.setCurrentItem(selected)
         elif self.publish_target_list.count():
             self.publish_target_list.setCurrentRow(0)
+        for index in range(self.publish_target_list.count()):
+            item = self.publish_target_list.item(index)
+            data = item.data(QtCore.Qt.UserRole) or {}
+            if (data.get('cast_key') or data.get('target') or item.text()) in selected_targets:
+                item.setSelected(True)
         self.publish_target_list.blockSignals(False)
 
     def _publish_rows(self):
@@ -2928,11 +2967,30 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
 
     def populate_publish_tree(self) -> None:
         if hasattr(self, 'publish_details_stack'):
+            self.publish_target_widget.setVisible(self._current_publish_type() != 'assets')
+            if self._current_publish_type() == 'assets':
+                self.publish_details_stack.setCurrentWidget(self.assets_publish_panel)
+                self.assets_publish_panel.set_context(self.active_shot_identity or self.current_identity())
+                return
+            if self._current_publish_type() == 'camera':
+                self.publish_details_stack.setCurrentIndex(2)
+                self.camera_publish_panel.set_targets(
+                    self.active_shot_identity or self.current_identity(),
+                    [(item.data(QtCore.Qt.UserRole) or {})['target'] for item in self.publish_target_list.selectedItems()])
+                return
+            if self._current_publish_type() in ('placements', 'set_dress') and self.active_sequence_identity is None:
+                self.publish_details_stack.setCurrentWidget(self.layout_publish_panel)
+                self.layout_publish_panel.set_sources(
+                    self.active_shot_identity or self.current_identity(), self._current_publish_type(),
+                    [(item.data(QtCore.Qt.UserRole) or {})['target'] for item in self.publish_target_list.selectedItems()])
+                return
             inline_animation = self._current_publish_type() == 'animation_cache'
             self.publish_details_stack.setCurrentIndex(1 if inline_animation else 0)
             if inline_animation:
-                self.animation_publish_panel.set_context(
-                    self.active_shot_identity or self.current_identity(), self._current_publish_target())
+                targets = [(item.data(QtCore.Qt.UserRole) or {}).get('cast_key', item.text())
+                           for item in self.publish_target_list.selectedItems()]
+                self.animation_publish_panel.set_targets(
+                    self.active_shot_identity or self.current_identity(), targets)
                 return
         self.publish_tree.clear()
         rows = self._publish_rows()
@@ -3114,7 +3172,8 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             targets = []
         identity = self.active_shot_identity or self.current_identity()
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
-        targets_by_token = {self._data_target_token(target): target for target in targets}
+        scene_tokens = {self._data_target_token(target) for target in targets}
+        targets = list(dict.fromkeys(targets))
         if identity:
             rows = self.service.list_shot_data_versions(identity)
         elif sequence_identity:
@@ -3127,10 +3186,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         for row in rows:
             parts = str(row.name or "").split("/")
             if len(parts) > 1 and parts[0] == data_type:
-                targets_by_token.setdefault(parts[1], parts[1])
-        for target in sorted(targets_by_token.values(), key=lambda value: str(value).lower()):
+                if parts[1] not in scene_tokens and parts[1] not in targets:
+                    targets.append(parts[1])
+        for target in sorted(targets, key=lambda value: str(value).lower()):
             display_name = str(target).rsplit("|", 1)[-1]
+            if sum(str(value).rsplit('|', 1)[-1] == display_name for value in targets) > 1:
+                display_name = str(target)
             item = QtWidgets.QListWidgetItem(display_name)
+            item.setToolTip(str(target))
             item.setData(QtCore.Qt.UserRole, {"target": str(target)})
             self.data_cast_list.addItem(item)
             if str(target) == current:
@@ -5448,7 +5511,9 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self._apply_scene_component_data("camera")
 
     def publish_camera_data(self) -> None:
-        self._publish_scene_component_data("camera")
+        self.camera_publish_panel.set_context(
+            self.active_shot_identity or self.current_identity(), self._current_publish_target())
+        self.camera_publish_panel.publish()
 
     def publish_review_camera_rules(self) -> None:
         """Publish rules for every enabled published Review Layer."""

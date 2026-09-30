@@ -9,6 +9,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from smartlib.apps.review_build_manager.window import ReviewBuildManagerWindow, QtWidgets, QtCore
 from smartlib.apps.review_build_manager.service import ReviewBuildManagerService
+from smartlib.apps.review_build_manager.input_tree import InputTree
 from smartlib.apps.shot_manager import ShotIdentity
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.core.camera_package import SCHEMA
@@ -77,7 +78,10 @@ def test_data_tree_and_build_version_combo(tmp_path):
             self.status_row = SimpleNamespace(identity=identity)
             self.build_content_settings = {}
             self._planned_snapshots = {}
-            self.build_contents_table = QtWidgets.QTableWidget(0, 10, self)
+            self._build_versions = {}
+            self._build_use = {}
+            self._build_plan_cache = {}
+            self.build_contents_table = InputTree(10, self)
             self.build_contents_group = QtWidgets.QGroupBox(self)
             self.contents_summary_label = QtWidgets.QLabel(self)
             self.mode_combo = QtWidgets.QComboBox(self)
@@ -86,6 +90,8 @@ def test_data_tree_and_build_version_combo(tmp_path):
             self.input_context_combo.addItem('WORK')
             self.input_representation_combo = QtWidgets.QComboBox(self)
             self.input_representation_combo.addItem('project', 'project')
+        def _settings(self):
+            return SimpleNamespace(setValue=lambda *args: None)
         def _selected_status(self):
             return self.status_row
         def closeEvent(self, event):
@@ -108,7 +114,8 @@ def test_data_tree_and_build_version_combo(tmp_path):
     combo.setCurrentIndex(old_index)
     combo.activated.emit(old_index)
     assert build.build_contents_table.cellWidget(index, 6).currentData() == str(first)
-    snapshot = build._planned_snapshots[identity.shot]
+    assert not build._planned_snapshots
+    snapshot = {'inputs': list(build._build_versions[identity.shot].values())}
     construct = build._apply_planned_snapshot_to_construct(manager.shots.resolved_construct(identity), snapshot)
     selected = next(c for c in construct['components'] if (c.get('source') or {}).get('camera_package'))
     assert selected['path'] == str(first) and selected['version'] == 'v001'
@@ -119,7 +126,7 @@ def test_data_tree_and_build_version_combo(tmp_path):
     stale = BuildHarness()
     stale._planned_snapshots[identity.shot] = {"inputs": [{
         "type": "camera",
-        "name": snapshot["inputs"][index]["name"],
+        "name": snapshot["inputs"][0]["name"],
         "enabled": True,
         "version": "v999",
         "path": str(second.parent.parent / "v999" / "camera.json"),
@@ -128,6 +135,7 @@ def test_data_tree_and_build_version_combo(tmp_path):
     stale_camera = stale.current_build_content_rows[index]
     assert stale_camera["build_version"] == second.parent.name
     assert stale_camera["component"]["path"] == str(second)
-    assert "using Latest" in stale_camera["note"]
+    # A stale Planned selection must not affect scene Build's input selection.
+    assert stale_camera['component']['path'] == str(second)
     for widget in (data, build, reopened, stale):
         widget.close()

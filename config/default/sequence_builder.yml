@@ -12,7 +12,11 @@ recipes:
   Mocap Only:
     version: v001
     inputs:
+      - editorial
       - mocap
+      - cast
+      - storyreel
+      - audio
   Mocap + Virtual Camera:
     version: v001
     inputs:

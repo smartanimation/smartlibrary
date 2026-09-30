@@ -1,5 +1,13 @@
 # Smart Set Dress
 
+Build restoration first matches the original reference UUID. If rebuilding has
+recreated that reference, it requires both the asset source-node UUID and the
+complete namespaced reference-relative hierarchy to match a unique node. Added
+Build wrapper groups are allowed; ambiguous matches, namespace changes, or changed
+source UUIDs are not guessed from leaf names. Existing layer JSON remains usable.
+Enabled Construct Set Dress inputs that are missing, or changes that cannot be
+applied (including locked attributes), fail Build rather than silently succeeding.
+
 Smart Set Dress records changed Maya plugs as ordered, non-destructive JSON
 layers. The top layer has override priority.
 
@@ -38,7 +46,13 @@ transformable prims on every MayaUSD ProxyShape are inspected.
 7. Name each layer (for example `Desk_set` or `Chair`), choose its
    `shot` or `sequence` scope, then click **Save Layers**.
 
-**Save Layers** writes each nonempty layer to its own named working file.
+**Save Layers** creates an immutable Data Version (`v001`, `v002`, ...) for each
+nonempty layer, using the common shot/sequence Data Resolver:
+`data/setdress/<layer>/main/v###/<layer>.setdress.json`.
+It also updates each named working file for autosave/recovery compatibility.
+Shot Manager lists all saved Data Versions; its Publish workflow owns publication.
+Routine autosaves do not create Versions. Same-name/different-ID layers require
+explicit confirmation to continue the saved identity, or cancellation and renaming.
 The read-only **Layer** field reflects the selection; there is no shared
 `main` package name to enter. **Publish Layer** is temporarily hidden from
 the UI (the publishing backend remains available). **History** operates on
@@ -48,7 +62,7 @@ other layers in the scene. Empty placeholder layers are not exported.
 Layer filenames are sanitized using the existing package naming rules.
 Names that resolve to the same filename (including case-only differences)
 are rejected before saving; a different layer ID cannot overwrite an existing
-file just by reusing its name.
+file just by reusing its name without explicit identity-adoption confirmation.
 
 While Record is active, a red banner displays **RECORDING** and the destination
 layer name, the window title includes **RECORDING**, and **Stop & Capture** is
@@ -103,7 +117,7 @@ The default working-data locations are:
 - Shot: `<shot_root>/data/setdress/<layer>.setdress.json`
 - Sequence: `<sequence_root>/data/setdress/<layer>.setdress.json`
 
-**Publish Layer** validates and saves the selected layer, then creates an
+The hidden legacy **Publish Layer** backend validates and saves the selected layer, then creates an
 immutable version independent of every other layer:
 
 - Shot: `<shot_root>/publish/setdress/<layer>/v###/<layer>.setdress.json`

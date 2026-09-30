@@ -11,22 +11,36 @@ SCHEMA = "smartpipeline.primary_camera.v1"
 IMPORT_NAMESPACE = "smartPrimary"
 
 
-def collect(primary, frame_range, cmds):
+def collect(primary, frame_range, cmds, *, motion_mode='animated', sample_frame=None, role='primary'):
     primary, shape = co.camera_nodes(primary, cmds)
-    if cmds.objExists(primary + "." + co.OWNER_ATTR):
+    if role not in ('primary', 'derived'):
+        raise ValueError('Invalid camera role')
+    if role == 'primary' and cmds.objExists(primary + "." + co.OWNER_ATTR):
         raise ValueError("Primary cannot be a derived Review camera.")
     co._check_supported(cmds, shape)
     start, end = (int(value) for value in frame_range)
     if end < start:
         raise ValueError("Primary Camera frame range is invalid.")
+    if motion_mode not in ('animated', 'static'):
+        raise ValueError('Invalid camera motion mode: ' + motion_mode)
+    motion = dict(mode=motion_mode, animation_required=motion_mode != 'static')
+    if motion_mode == 'static':
+        from .camera_portable import bake_primary
+        sample_frame = start if sample_frame is None else int(sample_frame)
+        motion['sample_frame'] = sample_frame
+        # Freeze before native export too, so Maya / FBX / USD agree.
+        primary, shape = bake_primary(dict(primary_path=primary, frame_range=[start, end],
+            camera_motion=motion), cmds, camera_name='static_primary#')
+        primary = cmds.ls(primary, long=True)[0]
     nodes = camera_native.dependencies(primary, cmds)
     return {
         "schema": SCHEMA,
-        "role": "primary",
+        "role": role,
         "camera": primary.rsplit("|", 1)[-1].split(":")[-1],
         "primary_path": primary,
         "dependency_nodes": nodes,
         "frame_range": [start, end],
+        "camera_motion": motion,
         "units": {
             unit: cmds.currentUnit(query=True, **{unit: True})
             for unit in ("time", "linear", "angle")
@@ -43,7 +57,8 @@ def export_native(payload, directory, cmds):
     return camera_native.export_native(payload, directory, cmds)
 
 
-def restore_with_root(data, *, cmds, provenance="", frame_offset=0.0):
+def restore_with_root(data, *, cmds, provenance="", frame_offset=0.0,
+                      namespace=IMPORT_NAMESPACE, root_name=':smartPrimaryPublish'):
     if data.get("schema") != SCHEMA:
         raise ValueError("Unsupported Primary Camera schema.")
     if frame_offset:
@@ -55,18 +70,18 @@ def restore_with_root(data, *, cmds, provenance="", frame_offset=0.0):
     path = Path(provenance).parent / filename
     if not filename or Path(filename).name != filename or not path.is_file():
         raise FileNotFoundError("Primary Camera native file is missing: " + str(path))
-    if cmds.namespace(exists=IMPORT_NAMESPACE):
-        raise ValueError("Primary Camera namespace is occupied: " + IMPORT_NAMESPACE)
-    if cmds.objExists(":smartPrimaryPublish"):
+    if cmds.namespace(exists=namespace):
+        raise ValueError("Primary Camera namespace is occupied: " + namespace)
+    if cmds.objExists(root_name):
         raise ValueError("A Primary Camera Publish is already active in this scene.")
     imported = cmds.file(
-        str(path), i=True, type="mayaAscii", namespace=IMPORT_NAMESPACE,
+        str(path), i=True, type="mayaAscii", namespace=namespace,
         mergeNamespacesOnClash=False, returnNewNodes=True, executeScriptNodes=False,
     )
     original = str(data.get("primary_path") or "")
     expected = (
-        "|" + "|".join(IMPORT_NAMESPACE + ":" + part for part in original.split("|") if part)
-        if original.startswith("|") else IMPORT_NAMESPACE + ":" + original
+        "|" + "|".join(namespace + ":" + part for part in original.split("|") if part)
+        if original.startswith("|") else namespace + ":" + original
     )
     primary, _shape = co.camera_nodes(expected, cmds)
     if primary not in (cmds.ls(imported, long=True) or []):
@@ -78,7 +93,7 @@ def restore_with_root(data, *, cmds, provenance="", frame_offset=0.0):
         if cmds.objectType(node, isAType="dagNode")
         and not cmds.listRelatives(node, parent=True, fullPath=True)
     ]
-    root = cmds.group(empty=True, name=":smartPrimaryPublish")
+    root = cmds.group(empty=True, name=root_name)
     for node in roots:
         cmds.parent(node, root, relative=True)
     primary = cmds.ls(primary_uuid, long=True)[0]
@@ -88,7 +103,31 @@ def restore_with_root(data, *, cmds, provenance="", frame_offset=0.0):
 
 
 def restore(data, *, cmds, provenance="", frame_offset=0.0):
+    if data.get('role') == 'derived':
+        return _restore_derived(data, cmds=cmds, provenance=provenance, frame_offset=frame_offset)
     root, _primary = restore_with_root(
         data, cmds=cmds, provenance=provenance, frame_offset=frame_offset
     )
     return root
+
+
+def _restore_derived(data, *, cmds, provenance, frame_offset):
+    """Sample the pinned native dependency graph without retaining another Primary."""
+    import re
+    from .camera_portable import bake_primary
+    name = str((data.get('camera_settings') or {}).get('target') or data.get('target') or '')
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+        raise ValueError('Invalid derived Camera target: ' + name)
+    if cmds.objExists(name):
+        raise ValueError('Derived Camera already exists: ' + name)
+    namespace = 'smartDerived_' + name
+    root, camera = restore_with_root(data, cmds=cmds, provenance=provenance,
+        frame_offset=frame_offset, namespace=namespace, root_name=':smartDerivedSource_' + name)
+    try:
+        baked, _shape = bake_primary(dict(data, primary_path=camera), cmds, camera_name=name)
+    finally:
+        cmds.delete(root)
+        cmds.namespace(removeNamespace=namespace, deleteNamespaceContent=True)
+    co._string_attr(cmds, baked, 'smartCameraRole', 'derived')
+    co._string_attr(cmds, baked, 'smartCameraPublishSource', str(provenance))
+    return baked

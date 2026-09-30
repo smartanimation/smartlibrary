@@ -19,8 +19,8 @@ class Paths:
     def shots_root(self):
         return self.root / "identities"
 
-    def shot_review_movie_dir(self, ep, seq, shot, task):
-        return self.root / "custom_movies" / shot / task
+    def shot_review_movie_dir(self, ep, seq, shot, task, *, legacy=False):
+        return self.root / ("legacy_movies" if legacy else "custom_movies") / shot / task
 
     def shot_review_output_root(self, ep, seq, shot, task, profile):
         return self.root / "custom_submissions" / shot / profile
@@ -250,3 +250,15 @@ def test_multiple_sequences_selection_filter_and_rv_order(tmp_path):
     assert not filter_catalog(rows, sequence=set())
     assert len(filter_catalog(rows, sequence={"s027", "s029"})) == 4
     browser.close()
+
+
+def test_working_movies_keep_legacy_read_compatibility(tmp_path):
+    paths = Paths(tmp_path)
+    current = movie(paths, 'v002_t01')
+    old = paths.shot_review_movie_dir('ep02', 's027', 'c001', 'anim', legacy=True) / 'show_compTemp_v001_t01.mov'
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b'old movie')
+    rows, errors = scan_catalog(paths, ['anim'], 'working')
+    assert not errors
+    assert {row.movie for row in rows} == {str(current), str(old)}
+    assert old.read_bytes() == b'old movie'

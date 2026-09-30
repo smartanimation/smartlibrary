@@ -42,7 +42,7 @@ def _config(config_dir: Path, project_root: Path) -> ProjectConfig:
     return ProjectConfig(config_dir)
 
 
-def test_plan_resolves_inputs_and_selects_latest_camera_take(tmp_path: Path) -> None:
+def test_plan_does_not_select_unassigned_camera_folders(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     service = SmartSequenceBuilderService(_config(tmp_path / "config", project_root))
     sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
@@ -67,10 +67,11 @@ def test_plan_resolves_inputs_and_selects_latest_camera_take(tmp_path: Path) -> 
 
     assert plan.frame_start == 1001
     assert plan.frame_end == 1200
-    assert plan.virtual_camera_take == "take30"
+    assert plan.virtual_camera_take == ""
     assert plan.can_build
     camera = next(item for item in plan.inputs if item.key == "virtual_camera")
-    assert [item.key for item in camera.children] == ["take06", "take30"]
+    assert [item.key for item in camera.children] == ["sh010", "sh020"]
+    assert all(item.state == "MISSING" for item in camera.children)
 
 
 def test_plan_blocks_missing_required_mocap(tmp_path: Path) -> None:
@@ -241,3 +242,51 @@ def test_sequence_audio_uses_latest_manifest_version(tmp_path: Path) -> None:
     plan = service.plan("ep02", "s027")
     audio = next(item for item in plan.inputs if item.key == "audio")
     assert Path(audio.path) == audio_root / "v005" / "ep02_s027.wav"
+
+
+def test_editorial_uses_latest_published_version(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    service = SmartSequenceBuilderService(_config(tmp_path / "config", project_root))
+    sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
+    _json(sequence_root / "sequence.json", {
+        "episode": "ep02", "sequence": "s027", "shots": [],
+    })
+    _json(sequence_root / "cast.json", {"cast": {}})
+    editorial_root = service.shots.paths.editorial_sequence_publish_root("ep02", "s027")
+    editorial_path = editorial_root / "v007" / "metadata" / "editorial.json"
+    _json(editorial_path, {"version": "v007"})
+    _json(
+        editorial_root / "latest.json",
+        {"version": "v007", "path": "v007/metadata/editorial.json"},
+    )
+
+    plan = service.plan("ep02", "s027")
+    editorial = next(item for item in plan.inputs if item.key == "editorial")
+
+    assert editorial.version == "v007"
+    assert Path(editorial.path) == editorial_path
+
+
+def test_light_data_is_hidden_until_a_publish_exists(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    service = SmartSequenceBuilderService(_config(tmp_path / "config", project_root))
+    sequence_root = project_root / "production" / "sequences" / "ep02" / "s027"
+    _json(sequence_root / "sequence.json", {
+        "episode": "ep02", "sequence": "s027", "shots": [],
+    })
+    _json(sequence_root / "cast.json", {"cast": {}})
+
+    unpublished = service.plan("ep02", "s027")
+    assert "light" not in {item.key for item in unpublished.inputs}
+
+    light_root = (
+        service.shots.sequence_workspace_root("ep02", "s027")
+        / "layout" / "data" / "light" / "directionalLight1"
+    )
+    _json(light_root / "v003" / "light.json", {"type": "light"})
+    _json(light_root / "latest.json", {"version": "v003"})
+
+    published = service.plan("ep02", "s027")
+    light = next(item for item in published.inputs if item.key == "light")
+    assert light.version == "v003"
+    assert light.state == "READY"

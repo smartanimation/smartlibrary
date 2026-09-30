@@ -112,6 +112,39 @@ def shot_data_icon_path(data_type: str, size: int = 28) -> Path | None:
     return path if path.is_file() else None
 
 
+def shot_publish_type_icon_path(publish_type: str, size: int = 28) -> Path | None:
+    """Resolve a Shot Manager Publish Type icon."""
+
+    normalized_type = str(publish_type or "").strip().lower()
+    if normalized_type == "camera":
+        return shot_data_icon_path("camera", size=28)
+    if normalized_type in {"placements", "placement"}:
+        return build_content_icon_path("placement", size=24)
+    if normalized_type in {"set_dress", "set dress"}:
+        return shot_data_icon_path("set_dress_data", size=28)
+    if normalized_type in {"preview_render", "preview render"}:
+        return shot_data_icon_path("playblast_settings", size=28)
+    if normalized_type in {"assets", "asset", "cast"}:
+        return tool_icon_path("smart_casting", size=20)
+    icon_name = {
+        "animation": "animation",
+        "animation_cache": "animation",
+    }.get(normalized_type)
+    if not icon_name:
+        return None
+    variant = "28" if int(size) == 28 else "master"
+    path = (
+        pipeline_root()
+        / "resources"
+        / "icons"
+        / "shot_manager"
+        / "publish_types"
+        / variant
+        / f"{icon_name}.png"
+    )
+    return path if path.is_file() else None
+
+
 def build_content_icon_path(component_type: str, size: int = 24) -> Path | None:
     """Resolve a Review Build Manager Build Contents type icon."""
 

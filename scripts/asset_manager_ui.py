@@ -185,6 +185,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.studio_delivery_tab.status.setText("Cancel the FBX export before closing Asset Manager.")
             event.ignore()
             return
+        if getattr(self, "retarget_tab", None) and not self.retarget_tab.can_close():
+            event.ignore()
+            return
         self._window_settings().setValue(self.SETTINGS_GEOMETRY_KEY, self.saveGeometry())
         self._save_window_state()
         super().closeEvent(event)
@@ -928,6 +931,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         from smartlib.apps.asset_manager.studio_delivery_ui import StudioDeliveryTab
         self.studio_delivery_tab = StudioDeliveryTab(self.manager.config_dir, self)
         self.detail_tabs.addTab(self.studio_delivery_tab, "Studio Delivery")
+        from smartlib.apps.retarget_setup.asset_tab import RetargetTab
+        self.retarget_tab = RetargetTab(self.manager, self)
+        self.detail_tabs.addTab(self.retarget_tab, "Retarget")
 
         self.publish_list = QtWidgets.QListWidget()
         self.publish_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -1583,6 +1589,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._update_dependency_label(asset)
         self._update_detail_asset_info(asset)
         self.studio_delivery_tab.set_identity(self._asset_context_identity(asset) if asset else None)
+        self.retarget_tab.set_asset(asset)
         if not asset:
             self.work_list.setSortingEnabled(True)
             self.work_list.sortItems(2, QtCore.Qt.DescendingOrder)
@@ -2243,7 +2250,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         if not asset:
             self.status_label.setText("Select an asset first")
             return
-        if not self._save_modified_maya_scene("Release & Pack" if asset.category == "environment" else "registering the current scene"):
+        if not self._save_modified_maya_scene("registering or releasing the current scene"):
             return
         try:
             import maya.cmds as cmds
@@ -2270,7 +2277,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                     f"Current scene: {scene_path}"
                 ) from exc
 
-            comment = self._ask_comment("Release & Pack Comment" if asset.category == "environment" else "USD Current Scene Comment")
+            comment = self._ask_comment("Context Source / Release Comment")
             if comment is None:
                 return
 
@@ -4331,30 +4338,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         return fallback if fallback.exists() else None
 
     def _open_retarget_setup(self) -> None:
-        _ensure_smartlib_on_path()
-        from smartlib.apps.retarget_setup.window import RetargetWindow
-
-        asset = self._current_asset()
-        if asset and asset.category.lower() not in {"ch", "cha", "character", "characters"}:
-            self.status_label.setText("Select a character for Retarget Setup")
-            return
-        windows = getattr(self, "_retarget_windows", {})
-        key = str(asset.root) if asset else ""
-        window = windows.get(key)
-        if window is None:
-            window = RetargetWindow(self.manager, asset, parent=self)
-            window.setWindowFlags(window.windowFlags() | QtCore.Qt.Window)
-            windows[key] = window
-            self._retarget_windows = windows
-        elif asset is not None and window.process is None:
-            for index in range(window.characters.count()):
-                candidate = window.characters.itemData(index)
-                if candidate.root == asset.root:
-                    window.characters.setCurrentIndex(index)
-                    break
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        self.retarget_tab.set_asset(self._current_asset())
+        self.detail_tabs.setCurrentWidget(self.retarget_tab)
+        self.retarget_tab.activate()
 
     def _publish_selected_work(self, _checked: bool = False, *, force_usd: bool = False) -> None:
         asset = self._current_asset()

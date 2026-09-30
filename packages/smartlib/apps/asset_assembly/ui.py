@@ -5,14 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-from smartlib.apps.common.asset_cards import (
-    asset_card_text,
-    asset_icon,
-    asset_tooltip,
-    configure_asset_card_list,
-)
 from smartlib.core.config_loader import ProjectConfig
-from smartlib.core.path_resolver import configured_project_paths
 
 
 def _qt_modules():
@@ -115,10 +108,6 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
         self.place_tree.setIndentation(10)
 
         self.assembly_tabs = QtWidgets.QTabWidget()
-        assembly_panel = QtWidgets.QWidget()
-        assembly_layout = QtWidgets.QVBoxLayout(assembly_panel)
-        assembly_layout.setContentsMargins(4, 4, 4, 4)
-        assembly_layout.setSpacing(4)
         self.component_table = QtWidgets.QTableWidget(0, 7)
         self.component_table.setHorizontalHeaderLabels(["Target", "Asset", "Category", "Group", "Variant", "USD Mode", "Locator"])
         self.component_table.horizontalHeader().setStretchLastSection(True)
@@ -126,63 +115,18 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
         self.component_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.component_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.component_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        asset_browser_header = QtWidgets.QHBoxLayout()
-        asset_browser_header.setContentsMargins(0, 0, 0, 0)
-        asset_browser_header.setSpacing(6)
-        self.place_asset_search_edit = QtWidgets.QLineEdit()
-        self.place_asset_search_edit.setPlaceholderText("Search BP published asset")
-        self.place_asset_search_edit.setClearButtonEnabled(True)
-        self.place_scene_assets_only_check = QtWidgets.QCheckBox("Scene assets only")
-        self.place_usd_mode_combo = QtWidgets.QComboBox()
-        self.place_usd_mode_combo.addItems(["Reference", "Instance"])
-        self.refresh_place_assets_btn = QtWidgets.QPushButton("Refresh Assets")
-        asset_browser_header.addWidget(self.place_asset_search_edit, 1)
-        asset_browser_header.addWidget(self.place_scene_assets_only_check)
-        asset_browser_header.addWidget(QtWidgets.QLabel("USD Mode"))
-        asset_browser_header.addWidget(self.place_usd_mode_combo)
-        asset_browser_header.addWidget(self.refresh_place_assets_btn)
-        self.place_asset_list = QtWidgets.QListWidget()
-        self.place_asset_list.setMinimumHeight(130)
-        configure_asset_card_list(self.place_asset_list, QtCore, QtWidgets, compact=True)
-        self.place_asset_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.place_asset_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        action_layout = QtWidgets.QHBoxLayout()
-        self.place_asset_to_locator_btn = QtWidgets.QPushButton("Place Asset To LOC")
-        self.replace_selected_node_btn = QtWidgets.QPushButton("Replace Selected Node")
-        self.duplicate_placement_btn = QtWidgets.QPushButton("Duplicate Placement")
-        self.replace_asset_btn = QtWidgets.QPushButton("Replace Asset")
-        self.set_variant_btn = QtWidgets.QPushButton("Set Variant")
-        self.place_asset_to_locator_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton))
-        self.duplicate_placement_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogNewFolder))
-        self.replace_asset_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload))
-        self.set_variant_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView))
-        self.place_asset_to_locator_btn.setStyleSheet("QPushButton { background-color:#2d5d86; color:white; font-weight:bold; }")
-        self.replace_selected_node_btn.setStyleSheet("QPushButton { background-color:#2d5d86; color:white; font-weight:bold; }")
-        action_layout.addWidget(self.refresh_btn)
-        action_layout.addWidget(self.create_loc_btn)
-        action_layout.addWidget(self.match_transform_btn)
-        action_layout.addWidget(self.restore_saved_btn)
-        action_layout.addWidget(self.register_selected_btn)
-        action_layout.addStretch(1)
-        action_layout.addWidget(self.place_asset_to_locator_btn)
-        action_layout.addWidget(self.replace_selected_node_btn)
-        action_layout.addWidget(self.duplicate_placement_btn)
-        action_layout.addWidget(self.replace_asset_btn)
-        action_layout.addWidget(self.set_variant_btn)
         self.detail_table = QtWidgets.QTableWidget(0, 2)
         self.detail_table.setHorizontalHeaderLabels(["Key", "Value"])
-        self.detail_table.horizontalHeader().setStretchLastSection(True)
-        self.detail_table.verticalHeader().setVisible(False)
-        self.detail_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        placement_hint = QtWidgets.QLabel("Place published assets back into the scene, then edit placement asset and variant.")
-        placement_hint.setStyleSheet("QLabel { color: #9f9f9f; }")
-        assembly_layout.addWidget(placement_hint)
-        assembly_layout.addLayout(asset_browser_header)
-        assembly_layout.addWidget(self.place_asset_list)
-        assembly_layout.addLayout(action_layout)
         self.extract_panel = self._build_extract_tab()
         self.assembly_tabs.addTab(self.extract_panel, "Extract / Publish")
-        self.assembly_tabs.addTab(assembly_panel, "Place Asset")
+        from .place_panel import PlaceAssetPanel
+        self.place_panel = PlaceAssetPanel(self.project_config, self)
+        self.place_panel.extract_requested.connect(
+            lambda: self.assembly_tabs.setCurrentWidget(self.extract_panel))
+        self.assembly_tabs.addTab(self.place_panel, "Place Asset")
+        self.assembly_tabs.currentChanged.connect(
+            lambda index: self.place_panel.refresh()
+            if self.assembly_tabs.widget(index) is self.place_panel else None)
 
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setWordWrap(False)
@@ -197,17 +141,7 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
         self.restore_saved_btn.clicked.connect(self.restore_saved_locators)
         self.register_selected_btn.clicked.connect(self.register_selected)
         self.refresh_btn.clicked.connect(self.refresh)
-        self.duplicate_placement_btn.clicked.connect(self.duplicate_placement)
-        self.replace_asset_btn.clicked.connect(self.replace_asset)
-        self.set_variant_btn.clicked.connect(self.set_variant)
         self.component_table.itemSelectionChanged.connect(self.populate_detail)
-        self.place_asset_search_edit.textChanged.connect(self.populate_place_asset_list)
-        self.place_scene_assets_only_check.toggled.connect(self.populate_place_asset_list)
-        self.refresh_place_assets_btn.clicked.connect(self.populate_place_asset_list)
-        self.place_asset_list.itemClicked.connect(self.apply_place_asset_selection)
-        self.place_asset_list.customContextMenuRequested.connect(self.show_place_asset_menu)
-        self.place_asset_to_locator_btn.clicked.connect(self.place_asset_on_selected_locator)
-        self.replace_selected_node_btn.clicked.connect(self.replace_selected_node_with_place_asset)
         self.place_tree.itemSelectionChanged.connect(self.select_component_from_place_tree)
         self.place_tree.itemChanged.connect(self.rename_place_tree_item)
 
@@ -357,7 +291,8 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
             self.components = []
             self.status_label.setText(str(exc))
         self.populate_components()
-        self.populate_place_asset_list()
+        self.place_panel.reload_assets()
+        self.place_panel.refresh()
 
     def _populate_context_fields(self) -> None:
         if not self.context:
@@ -392,184 +327,6 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
             self.place_tree.addTopLevelItem(tree_item)
         self.component_table.resizeColumnsToContents()
         self.component_table.horizontalHeader().setStretchLastSection(True)
-
-    def populate_place_asset_list(self) -> None:
-        if not getattr(self, "place_asset_list", None):
-            return
-        query = self.place_asset_search_edit.text().strip().lower()
-        scene_only = self.place_scene_assets_only_check.isChecked()
-        scene_keys = {
-            (
-                str(component.category or "").lower(),
-                str(component.group or "").lower(),
-                str(component.asset or "").lower(),
-            )
-            for component in getattr(self, "components", [])
-        }
-        self.place_asset_list.clear()
-        for asset_info in self._bp_published_assets():
-            key = (
-                asset_info["category"].lower(),
-                asset_info["group"].lower(),
-                asset_info["asset"].lower(),
-            )
-            label = asset_card_text(
-                asset=asset_info["asset"],
-                category=asset_info["category"],
-                group=asset_info["group"],
-                variant=asset_info["variant"],
-                status=asset_info.get("status", ""),
-                asset_type=asset_info["category"],
-            )
-            if query and query not in label.lower():
-                continue
-            if scene_only and key not in scene_keys:
-                continue
-            item = QtWidgets.QListWidgetItem(label)
-            item.setData(QtCore.Qt.UserRole, asset_info)
-            item.setToolTip(
-                asset_tooltip(
-                    asset=asset_info["asset"],
-                    category=asset_info["category"],
-                    group=asset_info["group"],
-                    variant=asset_info["variant"],
-                    status=asset_info.get("status", ""),
-                    extra={"publish": asset_info.get("publish", "")},
-                )
-            )
-            item.setIcon(asset_icon(QtCore, QtGui, thumbnail=asset_info.get("thumbnail", ""), label=asset_info["asset"]))
-            self.place_asset_list.addItem(item)
-        if self.place_asset_list.count() == 0:
-            item = QtWidgets.QListWidgetItem("No BP published assets")
-            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsSelectable)
-            self.place_asset_list.addItem(item)
-
-    def apply_place_asset_selection(self, item) -> None:
-        asset_info = item.data(QtCore.Qt.UserRole) if item else None
-        if not isinstance(asset_info, dict):
-            return
-        component = self._selected_component()
-        if component:
-            self.status_label.setText(f"Selected asset for {component.locator}: {asset_info['asset']}")
-            return
-        self.extract_category_edit.setText(asset_info["category"])
-        self.extract_group_edit.setText(asset_info["group"])
-        self.extract_asset_edit.setText(asset_info["asset"])
-        self.extract_variant_edit.setText(asset_info["variant"])
-        self._update_extract_path_label()
-        self.status_label.setText(f"Selected asset: {asset_info['asset']}")
-
-    def show_place_asset_menu(self, pos) -> None:
-        item = self.place_asset_list.itemAt(pos)
-        if item:
-            self.place_asset_list.setCurrentItem(item)
-        asset_info = item.data(QtCore.Qt.UserRole) if item else None
-        if not isinstance(asset_info, dict):
-            return
-        menu = QtWidgets.QMenu(self)
-        capture_action = menu.addAction("Capture Viewport Thumbnail")
-        global_pos = self.place_asset_list.mapToGlobal(pos)
-        action = menu.exec_(global_pos) if hasattr(menu, "exec_") else menu.exec(global_pos)
-        if action == capture_action:
-            self.capture_selected_asset_thumbnail(asset_info)
-
-    def capture_selected_asset_thumbnail(self, asset_info: dict) -> None:
-        try:
-            from smartlib.dcc.maya import asset_assembly
-
-            path = asset_assembly.capture_asset_viewport_thumbnail(
-                self.project_config,
-                category=asset_info["category"],
-                group=asset_info["group"],
-                asset=asset_info["asset"],
-                variant=asset_info.get("variant", "default"),
-            )
-            self.status_label.setText(f"Updated thumbnail: {asset_info['asset']}")
-            self.populate_place_asset_list()
-            self._select_place_asset_card(asset_info)
-            QtWidgets.QMessageBox.information(self, "Capture Viewport Thumbnail", f"Updated thumbnail:\n{path}")
-        except Exception as exc:
-            self.status_label.setText(str(exc))
-            QtWidgets.QMessageBox.critical(self, "Capture Viewport Thumbnail Failed", str(exc))
-
-    def place_asset_on_selected_locator(self) -> None:
-        asset_info = self._selected_place_asset_info()
-        if not asset_info:
-            self.status_label.setText("Select a BP published asset first.")
-            return
-        locator = self._selected_locator()
-        if not locator:
-            self.status_label.setText("Select a place_LOC.")
-            return
-        usd_mode = self.place_usd_mode_combo.currentText().strip().lower() or "reference"
-        try:
-            from smartlib.dcc.maya import asset_assembly
-
-            component = asset_assembly.place_published_asset_at_locator(
-                self.project_config,
-                locator,
-                category=asset_info["category"],
-                group=asset_info["group"],
-                asset=asset_info["asset"],
-                variant=asset_info["variant"],
-                usd_mode=usd_mode,
-            )
-            self.status_label.setText(f"Placed {component.asset} to {component.locator} ({component.usd_mode})")
-            self.refresh()
-            self._select_locator_in_views(component.locator)
-        except Exception as exc:
-            self.status_label.setText(str(exc))
-            QtWidgets.QMessageBox.critical(self, "Place Asset To LOC Failed", str(exc))
-
-    def replace_selected_node_with_place_asset(self) -> None:
-        asset_info = self._selected_place_asset_info()
-        if not asset_info:
-            self.status_label.setText("Select a BP published asset first.")
-            return
-        usd_mode = self.place_usd_mode_combo.currentText().strip().lower() or "reference"
-        try:
-            from smartlib.dcc.maya import asset_assembly
-
-            component = asset_assembly.place_published_asset_at_selection(
-                self.project_config,
-                category=asset_info["category"],
-                group=asset_info["group"],
-                asset=asset_info["asset"],
-                variant=asset_info["variant"],
-                usd_mode=usd_mode,
-            )
-            self.status_label.setText(
-                f"Replaced selected node with {component.asset} ({getattr(component, 'usd_mode', usd_mode)})"
-            )
-            self.refresh()
-            for table_row in range(self.component_table.rowCount()):
-                item = self.component_table.item(table_row, 6)
-                if item and item.text() == component.locator:
-                    self.component_table.selectRow(table_row)
-                    break
-        except Exception as exc:
-            self.status_label.setText(str(exc))
-            QtWidgets.QMessageBox.critical(self, "Replace Selected Node Failed", str(exc))
-
-    def _selected_place_asset_info(self) -> dict | None:
-        item = self.place_asset_list.currentItem()
-        data = item.data(QtCore.Qt.UserRole) if item else None
-        return data if isinstance(data, dict) else None
-
-    def _select_place_asset_card(self, asset_info: dict) -> None:
-        for index in range(self.place_asset_list.count()):
-            item = self.place_asset_list.item(index)
-            data = item.data(QtCore.Qt.UserRole) if item else None
-            if not isinstance(data, dict):
-                continue
-            if (
-                data.get("category") == asset_info.get("category")
-                and data.get("group") == asset_info.get("group")
-                and data.get("asset") == asset_info.get("asset")
-                and data.get("variant") == asset_info.get("variant")
-            ):
-                self.place_asset_list.setCurrentItem(item)
-                return
 
     def populate_detail(self) -> None:
         component = self._selected_component()
@@ -1057,72 +814,6 @@ class AssetAssemblyWindow(QtWidgets.QMainWindow):
         except Exception:
             return []
         return []
-
-    def _bp_published_assets(self) -> list[dict[str, str]]:
-        root = Path(self.project_config.project_root or "")
-        assets_root = configured_project_paths(
-            root, self.project_config
-        ).assets_root()
-        if not assets_root.exists():
-            return []
-        rows: list[dict[str, str]] = []
-        for category_dir in sorted(path for path in assets_root.iterdir() if path.is_dir()):
-            group_dir = category_dir / "bp"
-            if not group_dir.exists():
-                continue
-            for asset_dir in sorted(path for path in group_dir.iterdir() if path.is_dir()):
-                variant_dirs = self._asset_variant_dirs(asset_dir)
-                for variant_dir in variant_dirs:
-                    publish_path = self._published_asset_path(variant_dir, asset_dir.name)
-                    if not publish_path:
-                        continue
-                    thumbnail = asset_dir / "thumbnail.jpg"
-                    rows.append(
-                        {
-                            "category": category_dir.name,
-                            "group": "bp",
-                            "asset": asset_dir.name,
-                            "variant": variant_dir.name if variant_dir != asset_dir else "default",
-                            "publish": str(publish_path),
-                            "thumbnail": str(thumbnail) if thumbnail.exists() else "",
-                        }
-                    )
-        return rows
-
-    @staticmethod
-    def _asset_variant_dirs(asset_dir: Path) -> list[Path]:
-        variants = sorted(
-            path
-            for path in asset_dir.iterdir()
-            if path.is_dir() and ((path / "variant.json").exists() or path.name == "default")
-        )
-        default = asset_dir / "default"
-        if default.exists() and default not in variants:
-            variants.insert(0, default)
-        return variants or [asset_dir]
-
-    @staticmethod
-    def _published_asset_path(variant_dir: Path, asset_name: str) -> Path | None:
-        candidates = [
-            variant_dir / "publish" / "usd" / "latest.json",
-            variant_dir / "publish" / "model" / "proxy" / "latest.json",
-            variant_dir / "publish" / "model" / "render" / "latest.json",
-        ]
-        for latest in candidates:
-            if latest.exists():
-                return latest
-        direct_candidates = [
-            variant_dir / "publish" / "usd",
-            variant_dir / "publish" / "model" / "proxy",
-            variant_dir / "publish" / "model" / "render",
-        ]
-        for base in direct_candidates:
-            if not base.exists():
-                continue
-            for path in base.rglob("*.usd"):
-                if path.name in {f"{asset_name}.usd", "model.usd"}:
-                    return path
-        return None
 
     def _update_extract_path_label(self) -> None:
         asset = self.extract_asset_edit.text().strip()

@@ -71,7 +71,7 @@ def test_target_change_clears_inputs_and_restores_draft(panel):
     assert (widget.start_frame.value(), widget.end_frame.value()) == (300, 400)
 
 
-def test_publish_exports_current_data_before_plan(panel, monkeypatch):
+def test_publish_queues_saved_scene_without_gui_curve_export(panel, monkeypatch):
     widget, identity, versions = panel
     widget.rig_version.setCurrentIndex(1)
     widget.range_mode.setCurrentIndex(1)
@@ -80,20 +80,26 @@ def test_publish_exports_current_data_before_plan(panel, monkeypatch):
     captured = []
     monkeypatch.setattr(widget, 'export_current_data', lambda bounds: captured.append(bounds) or versions[0].path)
     widget.data_published.connect(lambda path: captured.append(path))
-    def plan(ident, rows, **kwargs):
-        calls.append((ident, rows, kwargs))
-        return {'frozen': True}
-    monkeypatch.setattr(widget.service, 'plan', plan)
-    monkeypatch.setattr(widget, 'start_worker', lambda value: calls.append(value))
+    from smartlib.dcc.maya import publish_scene_input
+    from smartlib.apps.review_build_manager import publish_queue
+    from types import SimpleNamespace
+    monkeypatch.setattr(publish_scene_input, 'capture_saved_scene', lambda *a: {'fixed': True})
+    monkeypatch.setattr(widget.service.shots, 'load_cast', lambda _: {'cast': {'Hero': {'asset': 'Hero'}}})
+    class Queue:
+        jobs = {'job': {'state': 'QUEUED'}}
+        changed = SimpleNamespace(connect=lambda fn: None)
+        def submit(self, ident, **kwargs):
+            calls.append((ident, kwargs))
+            return 'job'
+    monkeypatch.setattr(publish_queue, 'get_queue', lambda _: Queue())
     widget.publish()
     assert calls[0][0] == identity
-    assert captured == [[300, 411], versions[0].path]
-    assert calls[0][1][0]['source'] == versions[0].path
-    assert calls[0][1][0]['rig_context'] == 'ANIM'
-    assert calls[0][1][0]['rig'] == str(Path(versions[1].path).with_name('rig.ma'))
-    assert calls[0][1][0]['sculpt'] is None
-    assert calls[0][2]['frame_range'] == [300, 411]
-    assert calls[1] == {'frozen': True}
+    assert captured == []
+    assert calls[0][1]['scene_input'] == {'fixed': True}
+    assert calls[0][1]['scene_options']['rig_context'] == 'ANIM'
+    assert calls[0][1]['scene_options']['rig']['path'] == Path(versions[1].path).with_name('rig.ma').as_posix()
+    assert calls[0][1]['scene_options']['sculpt'] is None
+    assert calls[0][1]['frame_range'] == [300, 411]
 
 
 def test_same_selection_does_not_rescan(panel, monkeypatch):
@@ -119,15 +125,16 @@ def test_no_export_on_selection_or_outside_maya(panel, monkeypatch):
     widget.publish()
 
 
-def test_data_retained_and_reported_after_usd_failure(panel, monkeypatch):
+def test_save_gate_failure_does_not_capture_data(panel, monkeypatch):
     widget, _, versions = panel
+    monkeypatch.setattr(widget.service.shots, 'load_cast', lambda _: {'cast': {'Hero': {'asset': 'Hero'}}})
     monkeypatch.setattr(widget, 'export_current_data', lambda bounds: versions[0].path)
+    from smartlib.dcc.maya import publish_scene_input
     def fail(*a, **k):
-        raise ValueError('Incompatible Rig')
-    monkeypatch.setattr(widget.service, 'plan', fail)
+        raise ValueError('Save the Maya scene')
+    monkeypatch.setattr(publish_scene_input, 'capture_saved_scene', fail)
     widget.publish()
-    assert 'Incompatible Rig' in widget.status.toPlainText()
-    assert versions[0].path in widget.status.toPlainText()
+    assert 'Save the Maya scene' in widget.status.toPlainText()
     assert Path(versions[0].path).is_file()
 
 

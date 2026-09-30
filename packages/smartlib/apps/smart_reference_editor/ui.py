@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from copy import copy
 from collections import Counter
 from pathlib import Path
 
@@ -24,6 +25,9 @@ class ReferenceEditorWindow(QtWidgets.QMainWindow):
         config = ProjectConfig(Path(config_dir or os.environ.get('PROJECT_CONFIG_DIR') or default_config_dir()))
         self.service = service or ReferenceEditorService(config)
         self.scanned = None
+        self.cast_items = []
+        self.cast_choices = {}
+        self.cast_overrides = {}
         self.differences, self.references, self.targets = [], [], []
         self.setWindowTitle('Smart Reference Editor')
         self.resize(1180, 720)
@@ -55,7 +59,7 @@ class ReferenceEditorWindow(QtWidgets.QMainWindow):
         layout.addLayout(context)
         self.tabs = QtWidgets.QTabWidget()
         layout.addWidget(self.tabs, 1)
-        self.cast_table, cast_layout = self.make_tab('Casting Sync', ['Select', 'Status', 'Asset / Variant / Namespace', 'Target (Context / Version)'])
+        self.cast_table, cast_layout = self.make_tab('Casting Sync', ['Select', 'Status', 'Asset / Variant / Namespace', 'Context', 'Version'])
         cast_controls = QtWidgets.QHBoxLayout()
         self.changes_only = QtWidgets.QCheckBox('Changes only')
         self.changes_only.setChecked(False)
@@ -136,6 +140,9 @@ class ReferenceEditorWindow(QtWidgets.QMainWindow):
 
     def invalidate(self, *_):
         self.scanned = None
+        self.cast_items = []
+        self.cast_choices = {}
+        self.cast_overrides = {}
         self.cast_table.setRowCount(0)
         self.relink_table.setRowCount(0)
         self.differences, self.references, self.targets = [], [], []
@@ -211,13 +218,23 @@ class ReferenceEditorWindow(QtWidgets.QMainWindow):
         self.info_tabs.setTabText(1, f'Warnings ({len(warnings)})')
 
     def refresh_cast(self):
+        saved_overrides = dict(self.cast_overrides)
         self.invalidate()
         try:
             items = self.service.preview(self.identity(), self.department.currentText())
             self.scanned = snapshot(self.cmds)
             self.show_scan_warnings()
             occupied = [str(ns).strip(':') for ns in (self.cmds.namespaceInfo(':', listOnlyNamespaces=True, recurse=True) or [])]
-            self.differences = compare_cast(items, self.scanned[1], occupied)
+            self.cast_items = list(items)
+            self.cast_occupied = occupied
+            for item in self.cast_items:
+                key = self.cast_item_key(item)
+                choices = self.service.cast_target_choices(item)
+                self.cast_choices[key] = choices
+                target = saved_overrides.get(key)
+                if target and any(target == entry['path'] for entries in choices.values() for entry in entries):
+                    self.cast_overrides[key] = target
+            self.differences = compare_cast(self.selected_cast_items(), self.scanned[1], occupied)
             self.cast_table.setRowCount(len(self.differences))
             colors = {'Added': '#65c798', 'Changed': '#e1b965', 'Conflict': '#ed8f86', 'Unresolved': '#e1b965'}
             for row, diff in enumerate(self.differences):
@@ -225,14 +242,93 @@ class ReferenceEditorWindow(QtWidgets.QMainWindow):
                 status = self.cell(self.cast_table, row, 1, diff.status)
                 status.setForeground(QtGui.QColor(colors.get(diff.status, '#aab4bf')))
                 self.cell(self.cast_table, row, 2, f'{diff.asset} / {diff.variant} / {diff.namespace}' if diff.cast_key else diff.namespace)
-                context, version = AssetPublishResolver.context_version_from_publish_path(diff.target)
-                self.cell(self.cast_table, row, 3, f'{context} / {version}' if version else '—')
-            for column, width in [(0, 55), (1, 120), (2, 440), (3, 220)]:
+                if row < len(self.cast_items):
+                    self.create_target_combos(row, diff)
+                else:
+                    self.cell(self.cast_table, row, 3, '—')
+                    self.cell(self.cast_table, row, 4, '—')
+            for column, width in [(0, 55), (1, 120), (2, 400), (3, 160), (4, 140)]:
                 self.cast_table.setColumnWidth(column, width)
             self.filter_cast()
             self.apply_button.setEnabled(True)
         except Exception as exc:
             self.fail(exc)
+
+    @staticmethod
+    def cast_item_key(item):
+        return tuple(str(getattr(item, name, '') or '') for name in
+                     ('cast_key', 'asset', 'variant', 'namespace', 'variant_root'))
+
+    def selected_cast_items(self, items=None):
+        result = []
+        for item in (self.cast_items if items is None else items):
+            key = self.cast_item_key(item)
+            target = self.cast_overrides.get(key)
+            if key in self.cast_overrides:
+                item = copy(item)
+                # BuildPreviewItem is frozen; copy without modifying the source snapshot.
+                object.__setattr__(item, 'publish_path', target)
+                object.__setattr__(item, 'status', 'resolved' if target else 'missing')
+                object.__setattr__(item, 'message', '')
+            result.append(item)
+        return result
+
+    def create_target_combos(self, row, diff):
+        choices = self.cast_choices[self.cast_item_key(self.cast_items[row])]
+        context_combo = QtWidgets.QComboBox()
+        version_combo = QtWidgets.QComboBox()
+        for context in choices:
+            context_combo.addItem(context)
+        selected_context = next((context for context, entries in choices.items()
+                                 if any(entry['path'] == diff.target for entry in entries)), None)
+        if selected_context is None:
+            context_combo.insertItem(0, 'Choose context…')
+            context_combo.setCurrentIndex(0)
+        else:
+            context_combo.setCurrentText(selected_context)
+        enabled = bool(choices) and diff.status not in {'Conflict', 'Unreadable'}
+        context_combo.setEnabled(enabled)
+        version_combo.setEnabled(enabled)
+        self.cast_table.setCellWidget(row, 3, context_combo)
+        self.cast_table.setCellWidget(row, 4, version_combo)
+        self.populate_versions(row, diff.target)
+        context_combo.currentIndexChanged.connect(lambda _, r=row: self.context_changed(r))
+        version_combo.currentIndexChanged.connect(lambda _, r=row: self.target_changed(r))
+
+    def populate_versions(self, row, selected_path=''):
+        context = self.cast_table.cellWidget(row, 3).currentText()
+        choices = self.cast_choices[self.cast_item_key(self.cast_items[row])]
+        combo = self.cast_table.cellWidget(row, 4)
+        combo.blockSignals(True)
+        combo.clear()
+        for entry in choices.get(context, []):
+            combo.addItem(entry['version'], entry['path'])
+            combo.setItemData(combo.count() - 1, entry['path'], QtCore.Qt.ToolTipRole)
+        index = combo.findData(selected_path)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def context_changed(self, row):
+        self.populate_versions(row)
+        self.target_changed(row)
+
+    def target_changed(self, row):
+        target = self.cast_table.cellWidget(row, 4).currentData()
+        key = self.cast_item_key(self.cast_items[row])
+        # Empty selections are explicit unresolved choices, never the previous target.
+        self.cast_overrides[key] = target or ''
+        self.differences = compare_cast(self.selected_cast_items(), self.scanned[1], self.cast_occupied)
+        diff = self.differences[row]
+        if not target:
+            from dataclasses import replace
+            diff = replace(diff, target='', status='Unresolved', message='Choose a published Context and Version.')
+            self.differences[row] = diff
+        self.cell(self.cast_table, row, 1, diff.status)
+        self.checkbox(self.cast_table, row, diff.status in {'Added', 'Changed'}, diff.status in {'Added', 'Changed'})
+        self.cast_table.selectRow(row)
+        self.filter_cast()
+        self.show_detail()
 
     def filter_cast(self, *_):
         visible = []
@@ -346,7 +442,17 @@ class ReferenceEditorWindow(QtWidgets.QMainWindow):
             if review.exec_() != QtWidgets.QMessageBox.Apply:
                 return
             if self.tabs.currentIndex() == 0:
-                fresh = compare_cast(self.service.preview(self.identity(), self.department.currentText()), self.scanned[1])
+                fresh_items = list(self.service.preview(self.identity(), self.department.currentText()))
+                original = {self.cast_item_key(item): item for item in self.cast_items}
+                for item in fresh_items:
+                    key = self.cast_item_key(item)
+                    if key in self.cast_overrides:
+                        if key not in original or item.publish_path != original[key].publish_path:
+                            raise RuntimeError('Casting changed after comparison. Refresh before applying.')
+                        choices = self.service.cast_target_choices(item)
+                        if not any(entry['path'] == self.cast_overrides[key] for entries in choices.values() for entry in entries):
+                            raise RuntimeError('Selected publish is no longer available. Refresh before applying.')
+                fresh = compare_cast(self.selected_cast_items(fresh_items), self.scanned[1], self.cast_occupied)
                 for op in operations:
                     if not any(d.namespace == op.namespace and d.target == op.target and d.status == ('Added' if op.kind == 'add' else 'Changed') for d in fresh):
                         raise RuntimeError('Casting changed after comparison. Refresh before applying.')

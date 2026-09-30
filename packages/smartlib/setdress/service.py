@@ -31,6 +31,10 @@ class SetDressVersion:
     latest: bool = False
 
 
+class LayerIdentityConflict(ValueError):
+    """Explicit consent is required to continue a same-name saved layer."""
+
+
 class SetDressPublishService:
     """Project-path, validation and immutable publish operations for Set Dress."""
 
@@ -75,10 +79,12 @@ class SetDressPublishService:
             raise ValueError("Shot is required for a shot Set Dress package.")
         return self.paths.shot_root(identity.episode, identity.sequence, identity.shot) / "data" / "setdress" / filename
 
-    def save_layers(self, package, identity: SetDressIdentity) -> dict[str, Path]:
+    def save_layers(self, package, identity: SetDressIdentity, *, versioned=True,
+                    adopt_existing=False) -> dict[str, Path]:
         """Save nonempty layers independently; preflight all filename collisions."""
         exports = []
         destinations = set()
+        adoptions = []
         for layer in package.layers:
             if not layer.changes:
                 continue
@@ -90,8 +96,41 @@ class SetDressPublishService:
             if path.is_file():
                 existing = load_package(path)
                 if not any(item.id == layer.id for item in existing.layers):
-                    raise ValueError(f"Another saved layer already uses the name: {layer.name}")
+                    if not adopt_existing or len(existing.layers) != 1:
+                        raise LayerIdentityConflict(f"Another saved layer already uses the name: {layer.name}")
+                    adoptions.append((layer, existing.layers[0].id))
             exports.append((layer.id, path, layer_package(package, layer)))
+        if adoptions:
+            for layer, saved_id in adoptions:
+                layer.id = saved_id
+            return self.save_layers(package, identity, versioned=versioned)
+        if versioned:
+            for _layer_id, _path, exported in exports:
+                layer = exported.layers[0]
+                name = _token(layer.name)
+                args = (identity.episode, identity.sequence)
+                if layer.scope == 'sequence':
+                    base = self.paths.sequence_data_dir(*args, 'setdress', name, 'main')
+                else:
+                    base = self.paths.shot_data_dir(*args, identity.shot, 'setdress', name, 'main')
+                # Reserve exclusively; concurrent saves must never overwrite a Version.
+                while True:
+                    version = _next_version(base)
+                    directory = self.paths.artifact_file(base, version)
+                    try:
+                        directory.mkdir(parents=True, exist_ok=False)
+                        break
+                    except FileExistsError:
+                        continue
+                output = self.paths.artifact_file(directory, name + '.setdress.json')
+                save_package(exported, output)
+                write_json(self.paths.artifact_file(directory, 'data.json'), dict(
+                    data_type='setdress', target=name, subset='main', scope=layer.scope,
+                    version=version, layer_id=layer.id, files={'setdress': output.name},
+                    comment='Saved from Set Dress Manager'))
+                write_json(self.paths.artifact_file(base, 'latest.json'), dict(
+                    version=version, path=f'{version}/{output.name}'))
+                _update_versions(self.paths.artifact_file(base, 'versions.json'), version)
         for _layer_id, path, exported in exports:
             save_package(exported, path)
         return {layer_id: path for layer_id, path, _exported in exports}

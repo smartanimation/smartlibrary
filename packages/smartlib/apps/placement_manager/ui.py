@@ -161,10 +161,8 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
 
         bottom_layout = QtWidgets.QHBoxLayout()
         self.export_btn = QtWidgets.QPushButton("Export Metadata")
-        self.publish_btn = QtWidgets.QPushButton("Publish Placement")
         self.status_label = QtWidgets.QLabel("")
         bottom_layout.addWidget(self.export_btn)
-        bottom_layout.addWidget(self.publish_btn)
         bottom_layout.addWidget(self.status_label, 1)
         root_layout.addLayout(bottom_layout)
 
@@ -178,7 +176,6 @@ class SmartMakerWindow(QtWidgets.QMainWindow):
         self.parent_btn.clicked.connect(self.parent_placements)
         self.delete_btn.clicked.connect(self.delete_placements)
         self.export_btn.clicked.connect(self.export_metadata)
-        self.publish_btn.clicked.connect(self.publish_placement)
         self.placement_tree.itemChanged.connect(self.rename_placement_item)
 
     def _build_assets_tab(self) -> None:

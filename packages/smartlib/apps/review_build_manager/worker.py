@@ -163,6 +163,15 @@ def _preferred_camera(cameras: list[str]) -> str:
 
 def _restored_primary_camera(cmds, cameras: list[str]) -> str:
     """Resolve the Camera Package Primary by UUID/path, then scene ownership."""
+    published_primaries = [
+        camera for camera in cameras
+        if cmds.objExists(f"{camera}.smartCameraRole")
+        and cmds.getAttr(f"{camera}.smartCameraRole") == "primary"
+    ]
+    if len(published_primaries) == 1:
+        return published_primaries[0]
+    if len(published_primaries) > 1:
+        raise RuntimeError("Multiple published Primary cameras were found in the review scene.")
     plug = ":smartCameraPlayblastInfo.settingsJson"
     if cmds.objExists(plug):
         try:
@@ -182,6 +191,9 @@ def _restored_primary_camera(cmds, cameras: list[str]) -> str:
         roots = [item for item in cameras if primary_camera(item, cmds) == item]
         if len(roots) == 1:
             return roots[0]
+        preferred = _preferred_camera(cameras)
+        if preferred:
+            return primary_camera(preferred, cmds)
     except Exception:
         pass
     return _preferred_camera(cameras)
@@ -1148,6 +1160,10 @@ def _run_scene_construction(
     except (TypeError, ValueError):
         construct_diff = []
     _write_status(status_path, state="BUILDING", progress=10, task="Resolve Stage Inputs")
+    from smartlib.review.input_dependencies import effective_components
+    construct_data['components'] = effective_components(
+        construct_data.get('components') or [], shot_service.load_cast(identity).get('cast', {}),
+    )
     preview = shot_service.build_preview(
         identity,
         department=plan.department,
@@ -1283,6 +1299,8 @@ def _run_scene_construction(
         planned_snapshot = dict(planned_snapshot)
         planned_snapshot["inputs"] = [r for r in planned_snapshot.get("inputs", [])
             if r.get("type") not in {"rig", "animation_curve", "usd"}] + composition_rows
+    if not review_requested and construct_data.get('review_layers_input'):
+        planned_snapshot = dict(planned_snapshot, inputs=[construct_data['review_layers_input']])
     layer_definition, layer_definition_path = manager.planned_layer_definition(
         identity, plan.department, planned_snapshot)
     assembly_definition = manager.assembly_definition(identity)
@@ -1326,7 +1344,10 @@ def _run_scene_construction(
         if dynamic_layers
         else definition_layers
     )
-    review_display_layers = create_review_display_layers(review_contract)
+    use_review_layers = bool(construct_data.get('use_review_layers', True))
+    review_display_layers = (
+        create_review_display_layers(review_contract) if use_review_layers else {}
+    )
     try:
         referenced = list(dict.fromkeys([
             *referenced,
@@ -1746,10 +1767,10 @@ def _run_scene_construction(
             overlay_data = {}
             if internal_review:
                 _write_status(status_path, state="BUILDING", progress=94,
-                              task="Generate Review Layer Overlay")
-                primary_camera = specs[0]["camera"]
+                              task="Generate Primary Camera Overlay")
+                primary_camera = _restored_primary_camera(cmds, cameras)
                 if not primary_camera:
-                    raise RuntimeError("Review Layer camera was not found for Internal Review.")
+                    raise RuntimeError("Primary camera was not found for Internal Review.")
                 overlay_data = _collect_primary_review_overlay(
                     cmds, camera=primary_camera, start=start, end=end,
                     width=width, height=height,
@@ -1817,8 +1838,9 @@ def _run_scene_construction(
                 plan.department, args.delivery_profile, delivery_profile
             )
             review_build_take = "t001"
+            review_build_version = workflow.next_review_build_version(plan.department)
             review_build_dir = workflow.review_build_dir(
-                plan.department, review_version, review_build_take
+                plan.department, review_build_version, review_build_take
             )
             fps = float(shot_data.get("fps") or shot_service.project_fps)
             handle_data = editorial.get("handles") or {}
@@ -1900,6 +1922,8 @@ def _run_scene_construction(
                     "thumbnail_source": "review_clean.mov",
                 },
                 "review_build": str(review_build_dir / "review_build_manifest.json"),
+                "review_build_version": review_build_version,
+                "review_build_take": review_build_take,
                 "job_id": job_id,
             }
             review_build_manifest = {
@@ -1919,7 +1943,7 @@ def _run_scene_construction(
             overlay_ass = Path(overlay_path).with_suffix(".ass") if overlay_path else None
             review_build_dir = workflow.preserve_review_build(
                 department=plan.department,
-                version=review_version,
+                version=review_build_version,
                 take=review_build_take,
                 clean_movie=clean_review_movie,
                 overlay_json=overlay_path or None,
@@ -1935,6 +1959,7 @@ def _run_scene_construction(
                     "sequence": identity.sequence,
                     "shot": identity.shot,
                     "department": plan.department,
+                    "task": plan.task,
                     "frame_range": [start, end],
                     "content_frame_range": [start, end],
                     "movie_frame_count": max(1, end - start + 1),
@@ -1959,9 +1984,11 @@ def _run_scene_construction(
             })
             from smartlib.core.metadata import write_json
             write_json(review_output_dir / "job.json", job_data)
-            review_movie = next(
-                path for path in submitted_dir.glob("review.*")
-                if path.suffix.lower() in {".mov", ".mp4"}
+            submitted_metadata = json.loads(
+                (submitted_dir / "review.json").read_text(encoding="utf-8-sig")
+            )
+            review_movie = manager.shots.paths.artifact_file(
+                submitted_dir, submitted_metadata["movie"]
             )
             review_plan = {
                 "schema": "smartpipeline.construct_review_build.v1",
@@ -2033,12 +2060,14 @@ def _run_scene_construction(
     if not canonical_reused:
         write_json(manifest_path, manifest)
         write_json(build_root / "validation.json", validation)
+    if review_requested and (not review_movie or not Path(review_movie).is_file()):
+        raise RuntimeError("Review Submit did not produce a movie; scene Build alone is not completion.")
     _write_status(
         status_path,
         state="COMPLETE",
         progress=100,
-        task="Snapshot Internal Review Complete" if composition_snapshot else "Construct Validated",
-        message=str(review_movie) if composition_snapshot and review_movie else str(scene_path),
+        task="Review Submit Complete" if review_requested else "Scene Build Complete",
+        message=str(review_movie) if review_requested else str(scene_path),
     )
     print(
         json.dumps(
@@ -2082,6 +2111,8 @@ def _run_sequence_construction(
         raise RuntimeError(f"Sequence recipe validation failed: {errors}")
     _write_status(status_path, state="BUILDING", progress=12, task="Resolve Sequence Inputs")
     preview = shot_service.build_sequence_preview(identity)
+    from smartlib.retarget.scene_build import retarget_cast_preview
+    preview = retarget_cast_preview(preview, recipe_plan.inputs)
     missing = [row for row in preview if row.required and row.status != "resolved"]
     if missing:
         raise RuntimeError(
@@ -2110,15 +2141,23 @@ def _run_sequence_construction(
             editorial = dict(sequence_data.get("editorial") or {})
             editorial.update({"cut_in": min(starts), "cut_out": max(ends)})
             staged_sequence_data["editorial"] = editorial
+    from smartlib.dcc.maya.sequence_inputs import camera_input_paths
+
     referenced = stage_sequence_layout_from_preview(
         resolved,
         staged_sequence_data,
         project_root=manager.project_config.project_root,
         shot_names=selected_shots,
+        camera_inputs=camera_input_paths(recipe_plan.inputs),
     )
     enabled_recipe_inputs = {
         item.key for item in recipe_plan.inputs if item.enabled
     }
+    from smartlib.dcc.maya.sequence_inputs import apply_sequence_inputs
+
+    referenced.extend(apply_sequence_inputs(recipe_plan.inputs, shot_names=selected_shots, include_camera=False,
+                                            frame_range=(recipe_plan.frame_start, recipe_plan.frame_end),
+                                            require_retarget=True))
     audio_input = next(
         (
             item

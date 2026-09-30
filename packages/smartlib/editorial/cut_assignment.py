@@ -31,6 +31,21 @@ def default_assignments(events, shots):
     return rows
 
 
+def restore_assignment_rows(defaults, saved, *, editorial=False):
+    """Restore mappings without letting stale Maya values override Editorial mode."""
+    matches = bool(saved) and [r.get("signature") for r in saved.get("rows", [])] == [
+        r["signature"] for r in defaults
+    ]
+    rows = [{**default, **row} for default, row in zip(defaults, saved["rows"])] if matches else [
+        dict(row) for row in defaults
+    ]
+    if editorial:
+        for row, default in zip(rows, defaults):
+            row["maya_in"] = default["record_in"]
+            row["maya_out"] = default["record_out"]
+    return rows, matches
+
+
 def compile_assignments(events, plan):
     """Validate before any publish; all ranges are inclusive and offline is baked."""
     if plan.get("schema") != "smartpipeline.cut_assignment.v1":

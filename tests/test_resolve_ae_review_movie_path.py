@@ -55,7 +55,7 @@ def test_resolve_ae_review_movie_path_uses_project_paths(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     expected_dir = (
         project_root
-        / "workspace/cg/shots/ep02/s027/c001/review/anim/mov"
+        / "workspace/cg/shots/ep02/s027/c001/review/anim/compTemp/mov"
     )
     assert payload["directory"] == expected_dir.as_posix()
     assert payload["path"] == (expected_dir / filename).as_posix()

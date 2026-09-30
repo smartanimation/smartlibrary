@@ -372,8 +372,12 @@ def main() -> None:
     args = parser.parse_args()
     profile = load_retarget_profile(args.profile)
     load_plugins(profile)
-    samples, report, solver_samples = sample_mcr(profile)
-    report.update(apply_to_animation_rig(profile, samples, solver_samples, args.output))
+    if profile.get("input_mode") == "mcr_to_anim":
+        from smartlib.dcc.maya.mcr_to_anim import bake_received_mcr
+        report = bake_received_mcr(profile, args.output)
+    else:
+        samples, report, solver_samples = sample_mcr(profile)
+        report.update(apply_to_animation_rig(profile, samples, solver_samples, args.output))
     if args.report:
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as stream:

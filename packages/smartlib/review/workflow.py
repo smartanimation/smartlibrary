@@ -328,6 +328,15 @@ class ReviewWorkflowService:
             return resolved
         return self.workspace_shot_root / "review" / "review_build" / version / take
 
+    def next_review_build_version(self, department: str) -> str:
+        """Number builds from their resolved storage, independently of submissions.
+
+        Departments sharing a build root share its version history. Include
+        incomplete version directories too: existing artifacts are never reused.
+        """
+        root = self.review_build_dir(department, "v001", "t001").parent.parent
+        return format_version(next_version(_versions(root)))
+
     def preserve_review_build(
         self, *, department: str, version: str, take: str,
         clean_movie: str | Path, overlay_json: str | Path | None,
@@ -842,6 +851,11 @@ class ReviewWorkflowService:
         temporary.mkdir(parents=True)
         import shutil
         movie_name = f"review{movie.suffix.lower()}"
+        if self.paths is not None and self.identity is not None:
+            movie_name = self.paths.shot_review_movie_filename(
+                *self.identity, department,
+                str(review_data.get("task") or "preComp"), version, movie.suffix,
+            )
         shutil.copy2(movie, temporary / movie_name)
         report = Path(report) if report else None
         if not report or not report.is_file():

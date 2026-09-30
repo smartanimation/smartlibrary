@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages"))
 
 
-def main(snapshot):
+def main(snapshot, config_dir=None):
     import maya.standalone
 
     maya.standalone.initialize(name="python")
@@ -17,6 +17,12 @@ def main(snapshot):
 
     snapshot = Path(snapshot).resolve()
     try:
+        if config_dir:
+            from smartlib.core.config_loader import ProjectConfig
+            from smartlib.core.maya_runtime import software_config_name
+            from smartlib.apps.review_build_manager.worker import _load_build_plugins
+            config = ProjectConfig(config_dir)
+            _load_build_plugins(cmds, config, 'WORK STAGE', software_config_name(config))
         payload = json.loads(snapshot.read_text(encoding="utf-8-sig"))
         native = snapshot.parent / (payload.get("files") or {}).get("ma", "")
         if not native.is_file():
@@ -35,6 +41,6 @@ def main(snapshot):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: mayapy camera_portable_worker.py CAMERA_JSON")
-    raise SystemExit(main(sys.argv[1]))
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit("Usage: mayapy camera_portable_worker.py CAMERA_JSON [CONFIG_DIR]")
+    raise SystemExit(main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None))

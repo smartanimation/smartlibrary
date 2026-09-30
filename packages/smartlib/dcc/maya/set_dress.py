@@ -422,7 +422,7 @@ def apply_changes(changes: Iterable[Change], *, use_after: bool = True, cmds=Non
             node = _resolve_node(cmds, change.node_id, change.node)
             plug = f"{node}.{change.attribute}" if node else ""
             if not plug or not cmds.objExists(plug):
-                warnings.append(f"Missing: {change.node}.{change.attribute}")
+                warnings.append(f"Missing or ambiguous: {change.node}.{change.attribute}")
                 continue
             try:
                 if cmds.getAttr(plug, lock=True):
@@ -583,6 +583,14 @@ def _node_id(cmds, node: str) -> str:
     try:
         values = cmds.ls(node, uuid=True) or []
         if values:
+            try:
+                if cmds.referenceQuery(node, isNodeReferenced=True):
+                    reference = cmds.referenceQuery(node, referenceNode=True)
+                    reference_ids = cmds.ls(reference, uuid=True) or []
+                    if reference_ids:
+                        return 'maya-reference:' + str(reference_ids[0]) + ':' + str(values[0])
+            except (AttributeError, RuntimeError):
+                pass
             return str(values[0])
     except Exception:
         pass
@@ -591,13 +599,42 @@ def _node_id(cmds, node: str) -> str:
 
 def _resolve_node(cmds, node_id: str, fallback: str) -> str:
     try:
+        if node_id.startswith('maya-reference:'):
+            _, reference_id, source_id = node_id.split(':', 2)
+            nodes = cmds.ls(source_id, long=True) or []
+            matches = []
+            for node in nodes:
+                if cmds.referenceQuery(node, isNodeReferenced=True):
+                    reference = cmds.referenceQuery(node, referenceNode=True)
+                    if (cmds.ls(reference, uuid=True) or []) == [reference_id]:
+                        matches.append(node)
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                return ''
+            # Rebuilding creates a new reference node UUID. Retain the asset's
+            # source UUID AND the full namespaced reference-relative hierarchy;
+            # neither a bare leaf name nor a UUID shared by another cast is safe.
+            parts = [part for part in fallback.split('|') if part]
+            first = next((i for i, part in enumerate(parts) if ':' in part), None)
+            if first is None:
+                return ''
+            relative = '|' + '|'.join(parts[first:])
+            candidates = []
+            for node in nodes:
+                if not cmds.referenceQuery(node, isNodeReferenced=True):
+                    continue
+                if str(node).endswith(relative):
+                    candidates.append(str(node))
+            return candidates[0] if len(candidates) == 1 else ''
         # Maya accepts a UUID as an ls argument. The uuid flag itself changes
         # the return type to UUID strings and must not be used for resolution.
         nodes = cmds.ls(node_id, long=True) or []
-        if nodes:
+        if len(nodes) == 1:
             return str(nodes[0])
     except Exception:
-        pass
+        if node_id.startswith('maya-reference:'):
+            return ''
     return fallback if cmds.objExists(fallback) else ""
 
 

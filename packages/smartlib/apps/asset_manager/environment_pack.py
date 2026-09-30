@@ -12,6 +12,19 @@ from smartlib.core.usd_settings import usd_settings
 SCHEMA = 'smartpipeline.asset_usd_entry.v1'
 
 
+def release_quality(assembly):
+    """USD quality is independent of the user-facing Context/subset name."""
+    profile = assembly.quality_profile.lower()
+    asset_class = assembly.manifest.get('context', {}).get('asset_class')
+    if assembly.context_name != 'asset':
+        return None
+    if asset_class == 'environment':
+        return {'proxy': 'proxy', 'rend': 'render', 'render': 'render'}.get(profile)
+    if asset_class == 'prop':
+        return {'lo': 'proxy', 'rend': 'render', 'render': 'render'}.get(profile)
+    return None
+
+
 def digest(path):
     h = hashlib.sha256()
     with Path(path).open('rb') as stream:
@@ -68,21 +81,21 @@ def _write_entry(path, name, members, settings, default_variant, default_quality
 
 def release_input_error(assembly):
     """Return a blocking reason shared by the UI and Pack execution."""
-    quality = assembly.quality_profile.lower()
-    if quality not in {'proxy', 'render'}:
-        return ('Environment quality must be proxy or render.')
+    quality = release_quality(assembly)
+    if quality is None:
+        return 'Release Pack requires Environment PROXY/REND or Prop LO/REND.'
     if assembly.errors or (assembly.manifest.get('source_policy') == 'current_scene' or any(e.publish_type == 'current_scene' for e in assembly.entries)):
-        return ('Environment Pack requires published Release inputs. Publish the source scene in the Publish tab, then click Context > Assemble.')
+        return ('Asset Pack requires published Release inputs. Use Release & Pack, or publish the source scene then click Context > Assemble.')
     entries = [e for e in assembly.entries if e.status in {'RESOLVED', 'FALLBACK'}]
     if len(entries) != 1:
-        return ('Environment Pack currently requires one complete model or assembly Release.')
+        return ('Asset Pack requires one complete model or assembly Release.')
     entry = entries[0]
     release_maya = Path(entry.files.get('mb') or entry.files.get('ma') or '')
     release_usd = Path(entry.files.get('usd') or entry.files.get('usdc') or entry.files.get('usda') or '')
     if not release_maya.is_file() or not release_usd.is_file():
         return ('Release must contain both Maya and USD files.')
     if release_maya.suffix != '.mb':
-        return ('This environment Pack requires a .mb Release; save and release the Maya scene as binary.')
+        return ('This Asset Pack requires a .mb Release; save and release the Maya scene as binary.')
     return ''
 
 
@@ -101,7 +114,8 @@ def pack_environment(service, assembly):
     from smartlib.apps.asset_manager.context import PackedAssetContext
     paths = service.paths
     identity = assembly.identity
-    quality = assembly.quality_profile.lower()
+    quality = release_quality(assembly)
+    subset = assembly.quality_profile.lower()
     error = release_input_error(assembly)
     if error:
         raise ValueError(error)
@@ -139,17 +153,17 @@ def pack_environment(service, assembly):
         if old.get('release_hashes') == release_hashes and (not direct_release or old.get('release_files') == {'maya': str(release_maya), 'usd': str(release_usd)}):
             raise ValueError('This Release is already packed.')
         if direct_release:
-            destination = paths.asset_publish_version_dir(identity, 'asset', quality, entry.version)
+            destination = paths.asset_publish_version_dir(identity, 'asset', subset, entry.version)
             record = read_json(paths.artifact_file(destination, 'publish.json'), {}) or {}
             if record.get('status') != 'complete' or record.get('release_hashes') != release_hashes:
                 raise ValueError('Release is incomplete or modified; create a new Release.')
             version = entry.version
             scene, payload = release_maya, release_usd
         else:
-            pack_root = paths.asset_publish_dir(identity, 'asset', quality)
+            pack_root = paths.asset_publish_dir(identity, 'asset', subset)
             pack_root.mkdir(parents=True, exist_ok=True)
             version = next_version(pack_root)
-            destination = paths.asset_publish_version_dir(identity, 'asset', quality, version)
+            destination = paths.asset_publish_version_dir(identity, 'asset', subset, version)
             # Version reservation is serialized by the asset-wide lock.
             destination.mkdir()
             scene = paths.artifact_file(destination, f'{identity.name}_{identity.variant}.mb')
@@ -170,7 +184,7 @@ def pack_environment(service, assembly):
             inspect_usd(payload, settings)
             if digest(release_maya) != release_hashes['maya'] or digest(release_usd) != release_hashes['usd']:
                 raise ValueError('Release changed while packing.')
-        member = {'pack_version': version, 'release_version': entry.version,
+        member = {'pack_version': version, 'release_version': entry.version, 'context': subset,
                   'release_hashes': release_hashes, 'release_files': {'maya': str(release_maya), 'usd': str(release_usd)},
                   'default_prim': default_prim,
                   'maya': {'path':str(scene),'sha256':digest(scene)},
@@ -190,7 +204,7 @@ def pack_environment(service, assembly):
             publish_json = paths.artifact_file(destination, 'publish.json')
         else:
             build_manifest = write_json(paths.artifact_file(destination, 'build_manifest.json'), assembly.manifest)
-            record = {'asset':identity.name,'variant':identity.variant,'publish_type':'asset','subset':quality,
+            record = {'asset':identity.name,'variant':identity.variant,'publish_type':'asset','subset':subset,
                       'version':version,'context':assembly.manifest['context'],
                       'files':{'mb':scene.name,'usd':payload.name,'build_manifest':build_manifest.name},
                       'composition':{'mode':'release_pack','usd_pack_revision':service.USD_PACK_REVISION},

@@ -1,11 +1,11 @@
 """Shared current-scene ATOM Data publication for Data and USD Publish."""
 
 
-def publish_current_animation_data(shots, identity, *, target, frame_range=None, comment=''):
+def publish_current_animation_data(shots, identity, *, target, frame_range=None, comment='', cast_entry=None):
     import maya.cmds as cmds
     from smartlib.dcc.maya.animation_curves import export_animation_atom_for_cast
 
-    cast = (shots.load_cast(identity).get('cast') or {}).get(target)
+    cast = cast_entry if cast_entry is not None else (shots.load_cast(identity).get('cast') or {}).get(target)
     if not cast:
         raise ValueError(f'Cast was not found: {target}')
     bounds = tuple(frame_range or shots.shot_frame_range(identity))

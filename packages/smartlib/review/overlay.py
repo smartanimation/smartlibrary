@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 
@@ -30,9 +31,14 @@ def write_review_overlay_ass(overlay: dict, path: str | Path) -> Path:
     static_end = _ass_time(duration)
     source = Path(str(overlay.get("source_file") or "")).name
     top_left = f"{overlay.get('project', '')}  {overlay.get('shot', '')}"
+    created_at = str(overlay.get("created_at") or "")
+    try:
+        display_date = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%Y/%m/%d")
+    except ValueError:
+        display_date = created_at
     top_right = (
         f"{overlay.get('department', '')} / {overlay.get('task', '')}"
-        f"\n{overlay.get('created_at', '')}"
+        f"\n{display_date}"
     )
     bottom_left = source
     events = [
@@ -50,7 +56,7 @@ def write_review_overlay_ass(overlay: dict, path: str | Path) -> Path:
         horizontal = float(last.get("horizontal_fov_deg") or 0)
         vertical = float(last.get("vertical_fov_deg") or 0)
         camera_text = f"{camera}  {focal:.2f} mm  FOV {horizontal:.2f} x {vertical:.2f} deg"
-        frame_text = f"FRAME {frame}"
+        frame_text = f"{frame:04d} [{start:04d}-{end:04d}]"
         event_start = _ass_time(index / fps)
         event_end = _ass_time((index + 1) / fps)
         events.extend([

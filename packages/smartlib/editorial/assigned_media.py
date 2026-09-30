@@ -8,11 +8,31 @@ from smartlib.core.metadata import read_json, write_json
 
 
 def probe_movie(service, movie):
-    result = subprocess.run([
-        str(service._ffmpeg_path().with_name("ffprobe.exe")), "-v", "error",
-        "-show_streams", "-show_format", "-of", "json", str(movie),
-    ], check=True, capture_output=True, text=True)
-    data = json.loads(result.stdout)
+    try:
+        result = subprocess.run([
+            str(service._ffmpeg_path().with_name("ffprobe.exe")), "-v", "error",
+            "-show_streams", "-show_format", "-of", "json", str(movie),
+        ], check=False, capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as exc:
+        raise ValueError(f"Could not start ffprobe for {movie}: {exc}") from exc
+    # ffprobe emits UTF-8. Capture bytes so Windows' locale decoder cannot
+    # fail in a subprocess reader thread and leave stdout as None.
+    output = result.stdout
+    detail = result.stderr or b""
+    if isinstance(detail, bytes):
+        detail = detail.decode("utf-8", errors="replace")
+    if result.returncode != 0 or not output:
+        reason = str(detail).strip() or "No JSON output was returned."
+        raise ValueError(f"ffprobe failed for {movie} (exit {result.returncode}): {reason}")
+    try:
+        if isinstance(output, bytes):
+            output = output.decode("utf-8-sig")
+        data = json.loads(output)
+    except (UnicodeError, ValueError, TypeError) as exc:
+        raise ValueError(f"ffprobe returned invalid UTF-8 JSON for {movie}: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("streams"), list):
+        raise ValueError(f"ffprobe returned no stream information for {movie}")
     video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
     if not video:
         raise ValueError("Offline movie has no video stream")

@@ -1765,9 +1765,79 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
         plugins_layout.addWidget(plugin_note)
         self.software_editor_tabs.addTab(plugins_page, "Build Plugin Profiles")
 
+        postopen_page = QtWidgets.QWidget()
+        postopen_layout = QtWidgets.QVBoxLayout(postopen_page)
+        note = QtWidgets.QLabel(
+            "Maya: run after opening a scene, in the order below.\n"
+            "Files are relative to production/settings/tools/maya/postopen.\n"
+            "Use run(context), or a regular Python script. Errors stop the remaining scripts."
+        )
+        note.setWordWrap(True)
+        postopen_layout.addWidget(note)
+        self.postopen_list = QtWidgets.QListWidget()
+        self.postopen_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        postopen_layout.addWidget(self.postopen_list)
+        postopen_buttons = QtWidgets.QHBoxLayout()
+        for label, callback in (("+ File", self.add_postopen_file),
+                                ("- Remove", self.remove_postopen_file),
+                                ("Up", lambda: self.move_postopen_file(-1)),
+                                ("Down", lambda: self.move_postopen_file(1))):
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(callback)
+            postopen_buttons.addWidget(button)
+        postopen_layout.addLayout(postopen_buttons)
+        self.software_editor_tabs.addTab(postopen_page, "Postopen Scripts")
+
         layout.addLayout(left_layout, 1)
         layout.addWidget(self.software_editor_tabs, 2)
         return page
+
+    def add_postopen_file(self):
+        from pathlib import Path
+        from smartlib.core.config_loader import ProjectConfig
+        from smartlib.core.path_resolver import configured_project_paths
+        current = self.selected_list.currentItem()
+        if current is None:
+            return
+        config = self.software_configs.get(current.text(), {})
+        source = source_software_id(current.text(), config).lower()
+        if not source.startswith("maya"):
+            QtWidgets.QMessageBox.warning(self, "Postopen", "Postopen currently supports Maya only.")
+            return
+        project_root = self._template_project_root()
+        if not project_root:
+            QtWidgets.QMessageBox.warning(self, "Postopen", "Set the project name and root first.")
+            return
+        project_config = ProjectConfig(os.path.join(PROJECTS_ROOT, self.name_input.text().strip()))
+        paths = configured_project_paths(project_root, project_config)
+        directory = paths.software_postopen_dir("maya").resolve()
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Register Postopen Scripts", str(directory), "Python scripts (*.py)"
+        )
+        existing = {self.postopen_list.item(i).text() for i in range(self.postopen_list.count())}
+        for filename in files:
+            try:
+                reference = Path(filename).resolve().relative_to(directory).as_posix()
+                paths.software_postopen_script("maya", reference)
+            except ValueError:
+                QtWidgets.QMessageBox.warning(self, "Postopen", f"Choose a Python file inside:\n{directory}")
+                continue
+            if reference not in existing:
+                self.postopen_list.addItem(reference)
+                existing.add(reference)
+
+    def remove_postopen_file(self):
+        row = self.postopen_list.currentRow()
+        if row >= 0:
+            self.postopen_list.takeItem(row)
+
+    def move_postopen_file(self, offset):
+        row = self.postopen_list.currentRow()
+        target = row + offset
+        if row >= 0 and 0 <= target < self.postopen_list.count():
+            item = self.postopen_list.takeItem(row)
+            self.postopen_list.insertItem(target, item)
+            self.postopen_list.setCurrentRow(target)
 
     def _add_item_with_icon(self, list_widget, sid, icon_name, exe_path=""):
         """アイコン名がなければ実行ファイルからアイコンを抽出してアイテムを追加"""
@@ -1800,6 +1870,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             self.software_settings_table.setRowCount(0)
             self.env_tree.clear()
             self.plugin_profile_table.setRowCount(0)
+            self.postopen_list.clear()
             return
 
         soft_id = current.text()
@@ -3257,7 +3328,7 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
             value_item = self.software_settings_table.item(row, 2)
             key = key_item.text().strip() if key_item else ""
             value = value_item.text() if value_item else ""
-            if key and key not in {"env_vars", "paths", "plugin_profiles"}:
+            if key and key not in {"env_vars", "paths", "plugin_profiles", "postopen_scripts"}:
                 setting_type = key_item.data(QtCore.Qt.ItemDataRole.UserRole)
                 if setting_type == "env_var":
                     env_vars[key] = value
@@ -3286,11 +3357,16 @@ class ConfigCreatorApp(QtWidgets.QMainWindow):
                 "optional": self._comma_values(optional_item.text() if optional_item else ""),
             }
         self.software_configs[soft_id]['plugin_profiles'] = plugin_profiles
+        self.software_configs[soft_id]['postopen_scripts'] = [
+            self.postopen_list.item(i).text() for i in range(self.postopen_list.count())
+        ]
 
     def _populate_tree(self, conf):
         self.software_settings_table.setRowCount(0)
+        self.postopen_list.clear()
+        self.postopen_list.addItems(conf.get("postopen_scripts") or [])
         for key, value in conf.items():
-            if key in {"env_vars", "paths", "plugin_profiles"}:
+            if key in {"env_vars", "paths", "plugin_profiles", "postopen_scripts"}:
                 continue
             self._append_software_setting_row(
                 key, self._format_setting_value(value), "setting"

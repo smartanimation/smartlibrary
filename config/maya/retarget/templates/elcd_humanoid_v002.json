@@ -1,0 +1,485 @@
+{
+  "maya_version": "2024",
+  "time_unit": "film",
+  "required_plugins": [
+    "I:/ELCD/lib/tools/py3/dlas-maya-plug-ins/2024/clgIKNode.mll"
+  ],
+  "input_mode": "mcr_to_anim",
+  "reference_frame": 0,
+  "mappings": [
+    {
+      "source": "MC_Hips",
+      "target": "A_C_hip",
+      "method": "parent",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_Pelvis",
+      "target": "A_C_pelvis",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_Spine",
+      "target": "A_C_spineA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_Spine1",
+      "target": "A_C_spineB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_Spine2",
+      "target": "A_C_spineC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_Neck",
+      "target": "A_C_neckA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_Neck1",
+      "target": "A_C_neckB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_Head",
+      "target": "A_C_head",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftShoulder",
+      "target": "A_L_clvcl",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftShoulder1",
+      "target": "A_L_shldr",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftArm",
+      "target": "A_L_upArm",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftForeArm",
+      "target": "A_L_lowArm",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHand",
+      "target": "A_L_wrist",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftUpLeg",
+      "target": "A_L_upLeg",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftLeg",
+      "target": "A_L_lowLeg",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftFoot",
+      "target": "A_L_ankle",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftFoot1",
+      "target": "A_L_arch",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftToeBase",
+      "target": "A_L_toe",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandIndex1",
+      "target": "A_L_forFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandIndex2",
+      "target": "A_L_forFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandIndex3",
+      "target": "A_L_forFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandIndex4",
+      "target": "A_L_forFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandMiddle1",
+      "target": "A_L_midFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandMiddle2",
+      "target": "A_L_midFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandMiddle3",
+      "target": "A_L_midFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandMiddle4",
+      "target": "A_L_midFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandRing1",
+      "target": "A_L_rngFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandRing2",
+      "target": "A_L_rngFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandRing3",
+      "target": "A_L_rngFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandRing4",
+      "target": "A_L_rngFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandPinky1",
+      "target": "A_L_pnkFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandPinky2",
+      "target": "A_L_pnkFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandPinky3",
+      "target": "A_L_pnkFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandPinky4",
+      "target": "A_L_pnkFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandThumb1",
+      "target": "A_L_tmbFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandThumb2",
+      "target": "A_L_tmbFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_LeftHandThumb3",
+      "target": "A_L_tmbFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightShoulder",
+      "target": "A_R_clvcl",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightShoulder1",
+      "target": "A_R_shldr",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightArm",
+      "target": "A_R_upArm",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightForeArm",
+      "target": "A_R_lowArm",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHand",
+      "target": "A_R_wrist",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightUpLeg",
+      "target": "A_R_upLeg",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightLeg",
+      "target": "A_R_lowLeg",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightFoot",
+      "target": "A_R_ankle",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightFoot1",
+      "target": "A_R_arch",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightToeBase",
+      "target": "A_R_toe",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandIndex1",
+      "target": "A_R_forFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandIndex2",
+      "target": "A_R_forFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandIndex3",
+      "target": "A_R_forFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandIndex4",
+      "target": "A_R_forFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandMiddle1",
+      "target": "A_R_midFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandMiddle2",
+      "target": "A_R_midFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandMiddle3",
+      "target": "A_R_midFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandMiddle4",
+      "target": "A_R_midFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandRing1",
+      "target": "A_R_rngFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandRing2",
+      "target": "A_R_rngFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandRing3",
+      "target": "A_R_rngFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandRing4",
+      "target": "A_R_rngFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandPinky1",
+      "target": "A_R_pnkFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandPinky2",
+      "target": "A_R_pnkFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandPinky3",
+      "target": "A_R_pnkFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandPinky4",
+      "target": "A_R_pnkFingerD",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandThumb1",
+      "target": "A_R_tmbFingerA",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandThumb2",
+      "target": "A_R_tmbFingerB",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    },
+    {
+      "source": "MC_RightHandThumb3",
+      "target": "A_R_tmbFingerC",
+      "method": "orient",
+      "maintain_offset": false,
+      "enabled": true
+    }
+  ],
+  "rig_settings": {
+    "CTL_L_arm.enable": 0,
+    "CTL_R_arm.enable": 0,
+    "CTL_L_foot.enable": 0,
+    "CTL_R_foot.enable": 0,
+    "CTL_C_spine.enable": 0
+  },
+  "schema_version": 1,
+  "profile_kind": "project_template",
+  "template_id": "elcd_humanoid",
+  "template_version": "v002",
+  "retarget_method": "fullbody_fk"
+}

@@ -254,7 +254,7 @@ def test_project_paths_resolve_review_artifacts_under_workspace(tmp_path):
     ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/review/review_build/v003/t004"
     assert paths.shot_review_movie_dir(
         "ep02", "s027", "c001", "anim"
-    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/review/anim/mov"
+    ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/review/anim/compTemp/mov"
     assert paths.shot_review_output_root(
         "ep02", "s027", "c001", "anim", "internal"
     ) == tmp_path / "workspace/cg/shots/ep02/s027/c001/output/review/internal"
@@ -512,3 +512,19 @@ def test_config_creator_exposes_and_preserves_all_path_template_domains(tmp_path
     }
     assert set(split["templates_assets.yml"]) == {"asset_publish_root"}
     assert set(split["templates_assemblies.yml"]) == {"assembly_work_root"}
+
+
+def test_working_movie_kinds_new_old_and_default_templates(tmp_path):
+    import pytest
+    for template in (None, '{project_root}/review/{department}/mov',
+                     '{project_root}/review/{department}/{review_kind}/mov'):
+        templates = {'shot_review_root': '{project_root}/review'}
+        if template:
+            templates['shot_review_movie'] = template
+        paths = ProjectPaths(tmp_path, templates=templates)
+        args = ('ep02', 's027', 'c001', 'anim')
+        assert paths.shot_review_movie_dir(*args) == tmp_path / 'review/anim/compTemp/mov'
+        assert paths.shot_review_movie_dir(*args, review_kind='usd') == tmp_path / 'review/anim/usd/mov'
+        assert paths.shot_review_movie_dir(*args, legacy=True) == tmp_path / 'review/anim/mov'
+        with pytest.raises(ValueError, match='Unsupported'):
+            paths.shot_review_movie_dir(*args, review_kind='../bad')

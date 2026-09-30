@@ -31,6 +31,9 @@ def _install_smart_menu() -> None:
 
     from smartlib.dcc.maya import smart_menu
 
+    from smartlib.dcc.maya import postopen
+    postopen.install()
+
     importlib.reload(smart_menu)
     smart_menu.install()
 
@@ -45,4 +48,3 @@ def _deferred_install() -> None:
 
 
 _deferred_install()
-

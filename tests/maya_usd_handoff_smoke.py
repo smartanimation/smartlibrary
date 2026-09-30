@@ -87,7 +87,23 @@ def main():
         assert abs(UsdGeom.XformCache(1).GetLocalToWorldTransform(mesh).ExtractTranslation()[0]) < 1e-4
         selection = service.plan(identity, [dict(kind='animation', target='Hero',
             source=str(captured_again), rig=str(rig))], frame_range=[1, 3], fps=24)
-        published = service.publish(identity, selection, animation_exporter=export_animation)
+        from smartlib.apps.review_build_manager.publish_queue import PublishQueue, QtCore
+        import os
+        os.environ['SMARTPIPELINE_MAYAPY'] = sys.executable
+        app = QtCore.QCoreApplication.instance() or QtCore.QCoreApplication([])
+        queue = PublishQueue(service.shots, app)
+        job_id = queue.submit(identity, kind='animation_usd', plan=selection)
+        loop = QtCore.QEventLoop()
+        queue.changed.connect(lambda key: loop.quit() if key == job_id and
+            queue.jobs[key]['state'] in ('COMPLETE', 'FAILED') else None)
+        timeout = QtCore.QTimer()
+        timeout.setSingleShot(True)
+        timeout.timeout.connect(loop.quit)
+        timeout.start(60000)
+        loop.exec_()
+        timeout.stop()
+        assert queue.jobs[job_id]['state'] == 'COMPLETE', queue.jobs[job_id]
+        published = queue.jobs[job_id]['message']
         assert service.load_handoff(published)['approval'] == 'not_reviewed'
         print('PASS: Constraint -> ATOM -> fixed Rig -> USD; source unchanged. ' + str(output))
     finally:

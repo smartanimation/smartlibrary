@@ -56,7 +56,22 @@ class AssetPublishResolver:
             )
         return result
 
-    def resolve_usd_entry(self, identity: AssetIdentity, *, quality: str = "proxy", version: str = "latest", release_path: str | Path | None = None) -> dict:
+    def list_usd_versions(self, identity: AssetIdentity) -> list[str]:
+        """Discover completed common entries for this variant; no USD load."""
+        from smartlib.apps.asset_manager.context import AssetContextService
+        paths = AssetContextService(self.project_config).paths
+        result = []
+        for directory in paths.asset_usd_root(identity).glob('v*'):
+            if not directory.is_dir() or not VERSION_RE.fullmatch(directory.name):
+                continue
+            data = read_json(paths.artifact_file(directory, 'manifest.json'), {}) or {}
+            if (data.get('schema') == 'smartpipeline.asset_usd_entry.v1'
+                    and data.get('status') == 'complete'
+                    and any(data.get('members', {}).get(identity.variant, {}).get(q) for q in ('proxy', 'render'))):
+                result.append(directory.name)
+        return sorted(result, key=lambda value: int(value[1:]), reverse=True)
+
+    def resolve_usd_entry(self, identity: AssetIdentity, *, quality: str | None = "proxy", version: str = "latest", release_path: str | Path | None = None) -> dict:
         """Resolve a fixed entrypoint plus explicit USD variant selections."""
         from smartlib.apps.asset_manager.context import AssetContextService
         paths = AssetContextService(self.project_config).paths
@@ -71,10 +86,12 @@ class AssetPublishResolver:
                 record = read_json(paths.artifact_file(candidate, "manifest.json"), {}) or {}
                 if record.get("schema") != "smartpipeline.asset_usd_entry.v1" or record.get("status") != "complete":
                     continue
-                member = record.get("members", {}).get(identity.variant, {}).get(quality, {})
+                qualities = record.get("members", {}).get(identity.variant, {})
+                selected_quality = quality or ('proxy' if 'proxy' in qualities else 'render')
+                member = qualities.get(selected_quality, {})
                 maya_path = member.get("maya", {}).get("path")
                 if maya_path and Path(maya_path).resolve() == selected:
-                    return self.resolve_usd_entry(identity, quality=quality, version=candidate.name, release_path=release_path)
+                    return self.resolve_usd_entry(identity, quality=selected_quality, version=candidate.name, release_path=release_path)
             raise ValueError(f"No completed USD Pack references selected Release: {release_path}. Pack this Release or select another published Release.")
         if version == "latest":
             version = str((read_json(paths.artifact_file(root, "latest.json"), {}) or {}).get("version") or "")
@@ -84,7 +101,9 @@ class AssetPublishResolver:
         manifest = read_json(paths.artifact_file(directory, "manifest.json"), {}) or {}
         if manifest.get("schema") != "smartpipeline.asset_usd_entry.v1" or manifest.get("status") != "complete":
             raise ValueError("Incomplete common USD entrypoint.")
-        member = manifest.get("members", {}).get(identity.variant, {}).get(quality)
+        qualities = manifest.get("members", {}).get(identity.variant, {})
+        quality = quality or ('proxy' if 'proxy' in qualities else 'render')
+        member = qualities.get(quality)
         if not member:
             raise ValueError(f"USD entrypoint has no {identity.variant}/{quality} selection.")
         if release_path is not None and Path(member["maya"]["path"]).resolve() != Path(release_path).resolve():
@@ -98,7 +117,9 @@ class AssetPublishResolver:
             raise FileNotFoundError(entrypoint)
         return {"path": str(entrypoint), "version": version,
                 "variant_selections": {"variant": identity.variant, "quality": quality},
-                "prim_path": "/" + identity.name, "pack_version": member["pack_version"]}
+                "prim_path": "/" + identity.name, "pack_version": member["pack_version"],
+                "usd_dependencies": [dict(value["usd"]) for qualities in manifest["members"].values()
+                                     for value in qualities.values()]}
 
     def rule_for(self, consumer: str, department: str) -> AssetResolverRule | None:
         consumer = str(consumer or "shot").strip().lower()
@@ -215,6 +236,14 @@ class AssetPublishResolver:
             version,
             normalized_formats,
         )
+
+    def list_published_contexts(self, variant_root):
+        """Enumerate published Maya contexts using the existing packed asset root."""
+        root = Path(variant_root) / "publish" / "asset"
+        if not root.is_dir():
+            return []
+        return sorted(directory.name for directory in root.iterdir()
+                      if directory.is_dir() and self.list_context_versions(variant_root, directory.name))
 
     def list_context_versions(self, variant_root, context, *, formats=("ma", "mb"), publish_root=None):
         """List concrete published files using the same context mapping as resolve."""

@@ -237,3 +237,21 @@ def test_unreadable_reference_namespace_not_classified_as_added(scene_files):
     _, new = scene_files
     ref = Reference('heroRN', 'hero', '', error='No associated file')
     assert compare_cast([item(new)], [ref])[0].status == 'Unreadable'
+
+
+def test_published_context_choices_only_include_maya_versions(tmp_path):
+    from smartlib.core.asset_publish_resolver import AssetPublishResolver
+    from smartlib.core.config_loader import ProjectConfig
+    root = tmp_path / 'variant'
+    for context, version, filename in [('anim', 'v002', 'Hero.mb'), ('anim', 'v010', 'Hero.ma'), ('proxy', 'v001', 'Hero.ma'), ('empty', 'v001', 'notes.txt')]:
+        path = root / 'publish' / 'asset' / context / version / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    resolver = AssetPublishResolver(ProjectConfig(tmp_path / 'config'))
+    assert resolver.list_published_contexts(root) == ['anim', 'proxy']
+    service = ReferenceEditorService.__new__(ReferenceEditorService)
+    service.resolver = resolver
+    choices = service.cast_target_choices(item('', variant_root=str(root), status='missing'))
+    assert [row['version'] for row in choices['anim']] == ['v010', 'v002']
+    from pathlib import Path
+    assert all(Path(row['path']).is_file() for rows in choices.values() for row in rows)

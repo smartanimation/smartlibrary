@@ -1,4 +1,6 @@
 import json
+import sys
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +8,38 @@ import pytest
 from smartlib.core.config_loader import ProjectConfig
 from smartlib.dcc.resolve import export_timeline_csv as exporter
 from test_resolve_editorial_stage import _write_config
+
+
+@pytest.mark.parametrize("timeline_start", [0, 278, 86400])
+def test_aaf_relative_markers_do_not_subtract_timeline_start(tmp_path, monkeypatch, timeline_start):
+    source_clip = type("SourceClip", (), {})
+    components = []
+    for duration in (134, 220, 191):
+        clip = source_clip()
+        clip.length = duration
+        clip.start = 75
+        components.append(clip)
+    sequence = type("Sequence", (), {})()
+    sequence.components = components
+    sequence.length = 545
+    slot = SimpleNamespace(media_kind="picture", segment=sequence)
+    aaf_file = SimpleNamespace(content=SimpleNamespace(toplevel=lambda: [SimpleNamespace(slots=[slot])]))
+    monkeypatch.setitem(sys.modules, "aaf2", SimpleNamespace(open=lambda *a: nullcontext(aaf_file)))
+    markers = exporter._parse_aaf_markers(tmp_path / "edit.aaf")
+    assert [m["start"] for m in markers] == [0, 134, 354]
+    assert all(m["frame_space"] == "relative" for m in markers)
+    created = []
+    timeline = SimpleNamespace(
+        GetStartFrame=lambda: timeline_start,
+        AddMarker=lambda *args: created.append(args) or True,
+        GetMarkers=lambda: {args[0]: {"name": args[2]} for args in created},
+    )
+    monkeypatch.setattr(exporter, "_current_timeline", lambda *_: timeline)
+    assert exporter._add_reference_markers(None, markers, "s027", "c", 1, 1, 3) == 3
+    assert [args[0] for args in created] == [0, 134, 354]
+    assert [timeline_start + args[0] for args in created] == [
+        timeline_start, timeline_start + 134, timeline_start + 354,
+    ]
 
 
 XML = '''<xmeml><sequence><rate><timebase>24</timebase></rate><media>

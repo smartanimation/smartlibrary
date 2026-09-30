@@ -75,11 +75,25 @@ class RetargetService:
 
     def template_profile(self):
         templates = sorted(self.paths.retarget_library("templates").glob("*_v*.json"))
-        template = templates[-1] if templates else Path(__file__).resolve().parents[4] / "config" / "maya" / "retarget" / "templates" / "elcd_humanoid_v001.json"
+        template = templates[-1] if templates else Path(__file__).resolve().parents[4] / "config" / "maya" / "retarget" / "templates" / "elcd_humanoid_v002.json"
         profile = load_retarget_profile(template)
         profile["template"] = {"id": profile.get("template_id", template.stem), "version": profile.get("template_version", "v001")}
         profile.pop("asset", None)
         return self.clean(profile)
+
+    def common_test_motion(self):
+        root = self.paths.retarget_library("test_motion")
+        manifest = read(root / "manifest.json")
+        filename = str(manifest.get("file") or "")
+        if not filename or Path(filename).name != filename or "/" in filename or chr(92) in filename:
+            raise ValueError("Common test motion manifest must name one FBX file")
+        motion = root / filename
+        frames = manifest.get("frame_range")
+        if not motion.is_file() or motion.suffix.lower() != ".fbx":
+            raise ValueError(f"Common test FBX is missing: {motion}")
+        if not isinstance(frames, list) or len(frames) != 2 or not all(isinstance(v, int) for v in frames) or frames[1] < frames[0]:
+            raise ValueError("Common test motion frame range is invalid")
+        return {"path": str(motion), "frame_range": frames, "time_unit": manifest.get("time_unit", "")}
 
     def new_profile(self):
         profile = self.template_profile()
@@ -140,10 +154,14 @@ class RetargetService:
     def validate(self, profile):
         profile = self.clean(profile)
         errors = []
-        for key in ("source_skeleton", "transfer_nodes", "time_unit"):
+        direct = profile.get("input_mode") == "mcr_to_anim"
+        if direct:
+            from smartlib.retarget.direct import validate_mappings
+            errors.extend(validate_mappings(profile))
+        for key in (("time_unit",) if direct else ("source_skeleton", "transfer_nodes", "time_unit")):
             if not profile.get(key):
                 errors.append(f"Missing setting: {key}")
-        for key in ("mcr_scene", "animation_rig_scene"):
+        for key in (("animation_rig_scene",) if direct else ("mcr_scene", "animation_rig_scene")):
             if not profile.get(key) or not Path(profile[key]).is_file():
                 errors.append(f"Missing rig: {key}")
         for plugin in profile.get("required_plugins", []):
@@ -153,7 +171,8 @@ class RetargetService:
 
     def fingerprint(self, profile):
         profile = self.clean(profile)
-        dependencies = [file_stamp(profile[key]) for key in ("mcr_scene", "animation_rig_scene")]
+        keys = ("animation_rig_scene",) if profile.get("input_mode") == "mcr_to_anim" else ("mcr_scene", "animation_rig_scene")
+        dependencies = [file_stamp(profile[key]) for key in keys]
         dependencies.extend(file_stamp(p) for p in profile.get("required_plugins", []))
         return hashlib.sha256(json.dumps([profile, dependencies], sort_keys=True).encode()).hexdigest()
 
@@ -180,7 +199,7 @@ class RetargetService:
         write(self.path("data", filename="latest.json"), {"version": version, "profile": target.relative_to(self.path("data")).as_posix()})
         return target
 
-    def prepare_test(self, profile, motion, start, end):
+    def prepare_test(self, profile, motion, start, end, data_path=None):
         errors = self.validate(profile)
         if errors:
             raise ValueError("\n".join(errors))
@@ -189,19 +208,72 @@ class RetargetService:
             raise ValueError("Select a received or standard motion FBX")
         if end < start:
             raise ValueError("End frame must be >= start frame")
-        run_id = uuid.uuid4().hex
         profile = self.clean(profile)
+        fingerprint = self.fingerprint(profile)
+        motion_stamp = file_stamp(motion)
+        source_data = None
+        if data_path is not None:
+            entry = next((row for row in self.history("data")
+                          if not row["legacy"] and row["profile"].resolve() == Path(data_path).resolve()), None)
+            if not entry or entry["manifest"].get("fingerprint") != fingerprint:
+                raise ValueError("Save the current settings as a Data Version before testing")
+            if self.fingerprint(self.import_profile(data_path)) != fingerprint:
+                raise ValueError("Saved Data settings differ from the test settings")
+            source_data = {"version": entry["version"], "path": str(entry["profile"])}
+        # Keep run_id as the storage key for existing UUID-based test manifests.
+        # New runs reserve a directory atomically, just like Data / Publish.
+        run_id = self.reserve("test")
         payload = {**profile, "mocap_fbx": motion.resolve().as_posix(), "frame_range": [start, end]}
-        job = {"run_id": run_id, "fingerprint": self.fingerprint(profile), "motion": file_stamp(motion), "frame_range": [start, end], "status": "running", "reviewed": False}
+        job = {"run_id": run_id, "version": run_id, "created_at": timestamp(), "fingerprint": fingerprint, "motion": motion_stamp, "frame_range": [start, end], "status": "running", "reviewed": False,
+               "result_file": "result.ma" if profile.get("input_mode") == "mcr_to_anim" else "result.mb"}
+        if source_data:
+            project = str(getattr(self.config, "project_name", "") or self.paths.project_root.name)
+            filename = f"{project}_{self.identity.name}_retarget_test_data-{source_data['version']}"
+            # A filename is passed back through the common Resolver for validation.
+            job["result_file"] = filename + (".ma" if profile.get("input_mode") == "mcr_to_anim" else ".mb")
+            self.path("test", run_id, job["result_file"])
+            job["source_data"] = source_data
         write(self.path("test", run_id, "profile.json"), payload)
         write(self.path("test", run_id, "test.json"), job)
         return job
+
+    def test_history(self):
+        """List numbered runs first; retain timestamp-sorted legacy runs."""
+        result = []
+        for folder in self.path("test").iterdir() if self.path("test").is_dir() else ():
+            manifest = folder / "test.json"
+            if not folder.is_dir() or not manifest.is_file():
+                continue
+            try:
+                job = read(manifest)
+                if job.get("run_id") != folder.name:
+                    continue
+                self.path("test", folder.name, job.get("result_file", "result.mb"))
+                result.append(job)
+            except (OSError, ValueError, TypeError):
+                continue
+        return sorted(result, key=lambda job: (
+            job["run_id"].startswith("v") and job["run_id"][1:].isdigit(),
+            int(job["run_id"][1:]) if job["run_id"].startswith("v") and job["run_id"][1:].isdigit() else 0,
+            job.get("created_at") or job.get("completed_at") or ""), reverse=True)
+
+    def restore_test(self, run_id):
+        job = read(self.path("test", run_id, "test.json"))
+        if job.get("run_id") != run_id:
+            raise ValueError("Test identity mismatch")
+        profile = self.import_profile(self.path("test", run_id, "profile.json"))
+        data = job.get("source_data", {}).get("path")
+        # Older runs did not store source_data; match a saved Data snapshot.
+        if not data:
+            data = next((str(row["profile"]) for row in self.history("data")
+                         if not row["legacy"] and row["manifest"].get("fingerprint") == job.get("fingerprint")), None)
+        return profile, job, Path(data) if data else None
 
     def complete_test(self, job, exit_code):
         job = read(self.path("test", job["run_id"], "test.json"))
         report_path = self.path("test", job["run_id"], "report.json")
         report = read(report_path) if report_path.is_file() else {}
-        output = self.path("test", job["run_id"], "result.mb")
+        output = self.path("test", job["run_id"], job.get("result_file", "result.mb"))
         # Locked channels are intentionally not keyed; unclassified skips remain failures.
         unexpected = set(report.get("skipped_plugs", [])) - set(report.get("locked_plugs", []))
         passed = (exit_code == 0 and output.is_file() and report.get("keyed_plugs", 0) > 0

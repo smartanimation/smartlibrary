@@ -35,7 +35,8 @@ def test_build_contents_exposes_review_layers_version(tmp_path: Path) -> None:
     assert row["latest"] == "v004"
     assert row["official"] == "v004"
     assert row["state"] == "READY"
-    assert row["allow_disable"] is False
+    assert row["allow_disable"] is True
+    assert row['required'] is False
     assert row["component"]["path"] == str(layer_path)
 
 

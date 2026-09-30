@@ -34,8 +34,10 @@ def test_layers_save_and_publish_independently(tmp_path):
     assert set(visible_work_packages(legacy.parent.glob("*.setdress.json"))) == set(paths.values())
     from smartlib.apps.shot_manager.service import ShotManagerService
     manager = object.__new__(ShotManagerService)
+    manager.paths = service.paths
     manager.shot_data_root = lambda _identity: legacy.parent.parent
     rows = manager.list_set_dress_data(identity)
+    assert all(row.version == 'v001' and row.latest for row in rows)
     assert {row.name for row in rows} == {"set_dress_data/Desk_set", "set_dress_data/Chair"}
     assert legacy.is_file()  # Migration does not erase the original bundle.
     composed = compose_packages([load_package(paths[chair.id]), saved_desk])
@@ -132,6 +134,79 @@ def test_publish_versions_and_latest(tmp_path):
         ("v002", True, "second"),
         ("v001", False, "first"),
     ]
+
+
+def test_save_data_versions_and_autosave(tmp_path):
+    service = SetDressPublishService(Config(tmp_path))
+    identity = SetDressIdentity('ep001', 'sq010', 'sh020')
+    layer = SetDressLayer(name='desk', changes=[Change('a', 'desk', 'translateX', 0, 1)])
+    package = SetDressPackage(layers=[layer])
+    base = service.paths.shot_data_dir('ep001', 'sq010', 'sh020', 'setdress', 'desk', 'main')
+    service.save_layers(package, identity)
+    first = base / 'v001' / 'desk.setdress.json'
+    original = first.read_bytes()
+    layer.changes = [Change('a', 'desk', 'translateX', 0, 5)]
+    service.save_layers(package, identity, versioned=False)
+    assert not (base / 'v002').exists()
+    service.save_layers(package, identity)
+    assert first.read_bytes() == original
+    assert load_package(base / 'v002' / 'desk.setdress.json').layers[0].changes[0].after == 5
+    assert json.loads((base / 'latest.json').read_text())['version'] == 'v002'
+    from smartlib.apps.shot_manager.service import ShotManagerService
+    manager = object.__new__(ShotManagerService)
+    manager.paths = service.paths
+    manager.shot_data_root = lambda _: service.paths.shot_data_root('ep001', 'sq010', 'sh020')
+    rows = manager.list_set_dress_data(identity)
+    assert [(r.version, r.latest) for r in rows] == [('v002', True), ('v001', False)]
+
+
+def test_same_name_requires_explicit_identity_adoption(tmp_path):
+    from smartlib.setdress.service import LayerIdentityConflict
+    service = SetDressPublishService(Config(tmp_path))
+    identity = SetDressIdentity('ep001', 'sq010', 'sh020')
+    old = SetDressLayer(name='chair', changes=[Change('a', 'chair', 'translateX', 0, 1)])
+    service.save_layers(SetDressPackage(layers=[old]), identity)
+    new = SetDressLayer(name='chair', changes=[Change('a', 'chair', 'translateX', 0, 3)])
+    package = SetDressPackage(layers=[new])
+    with pytest.raises(LayerIdentityConflict):
+        service.save_layers(package, identity)
+    assert new.id != old.id
+    service.save_layers(package, identity, adopt_existing=True)
+    assert new.id == old.id
+    base = service.paths.shot_data_dir('ep001', 'sq010', 'sh020', 'setdress', 'chair', 'main')
+    assert (base / 'v002' / 'data.json').is_file()
+
+
+def test_sequence_save_versions(tmp_path):
+    service = SetDressPublishService(Config(tmp_path))
+    identity = SetDressIdentity('ep001', 'sq010', 'sh020')
+    layer = SetDressLayer(name='desk', scope='sequence', changes=[Change('a', 'desk', 'translateX', 0, 1)])
+    package = SetDressPackage(layers=[layer])
+    service.save_layers(package, identity)
+    service.save_layers(package, identity)
+    base = service.paths.sequence_data_dir('ep001', 'sq010', 'setdress', 'desk', 'main')
+    assert (base / 'v001' / 'desk.setdress.json').is_file()
+    assert (base / 'v002' / 'desk.setdress.json').is_file()
+
+
+def test_renamed_data_does_not_duplicate_latest_build_input(tmp_path):
+    import os
+    from smartlib.apps.shot_manager.service import ShotManagerService
+    service = SetDressPublishService(Config(tmp_path))
+    identity = SetDressIdentity('ep001', 'sq010', 'sh020')
+    layer = SetDressLayer(name='old', changes=[Change('a', 'desk', 'translateX', 0, 1)])
+    package = SetDressPackage(layers=[layer])
+    service.save_layers(package, identity)
+    old = service.paths.shot_data_version_dir('ep001', 'sq010', 'sh020', 'setdress', 'old', 'main', 'v001') / 'old.setdress.json'
+    os.utime(old, (1, 1))
+    layer.name = 'new'
+    service.save_layers(package, identity)
+    manager = object.__new__(ShotManagerService)
+    manager.paths = service.paths
+    manager.shot_data_root = lambda _: service.paths.shot_data_root('ep001', 'sq010', 'sh020')
+    rows = manager.list_set_dress_data(identity)
+    assert len(rows) == 2
+    assert [r.name for r in rows if r.latest] == ['set_dress_data/new']
 
 
 def test_copy_to_shot_creates_next_version_and_retargets_context(tmp_path):

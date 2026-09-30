@@ -38,3 +38,12 @@ def test_update_publish_records_failure_without_exchange_files(tmp_path):
     assert data["portable_export"]["status"] == "failed"
     assert data["portable_export"]["error"] == "USD unavailable"
     assert "files" not in data
+
+
+def test_static_motion_is_recorded_in_publish_receipt(tmp_path):
+    motion = dict(mode='static', animation_required=False, sample_frame=12)
+    snapshot = tmp_path / 'camera.json'
+    snapshot.write_text(json.dumps(dict(camera_motion=motion)), encoding='utf8')
+    (tmp_path / 'publish.json').write_text('{}', encoding='utf8')
+    camera_portable.update_publish(snapshot, status='complete')
+    assert json.loads((tmp_path / 'publish.json').read_text())['camera_motion'] == motion
