@@ -15,7 +15,7 @@ def assembly_for_release(assembly, directory, record):
                               str(directory), record['absolute_files'],
                               latest_version=record['version'], comment=record.get('comment', ''))
     manifest = dict(assembly.manifest)
-    manifest.update(source_policy='asset_release', source_scene=record.get('source_scene', ''),
+    manifest.update(source_policy='preview_release' if record.get('schema') == 'smartpipeline.preview_release.v1' else 'asset_release', source_scene=record.get('source_scene', ''),
                     resolved_representations=[asdict(entry)], validation={'status': 'OK', 'errors': []})
     manifest.pop('component_replacements', None)
     if record.get('component_replacements'):
@@ -23,7 +23,7 @@ def assembly_for_release(assembly, directory, record):
     return replace(assembly, entries=[entry], errors=[], manifest=manifest)
 
 
-def latest_release(service, assembly):
+def latest_release(service, assembly, *, preview_only=False):
     root = service.paths.asset_publish_dir(assembly.identity, 'asset', assembly.quality_profile.lower())
     versions = sorted((p for p in root.glob('v*') if p.is_dir() and p.name[1:].isdigit()),
                       key=lambda p: int(p.name[1:]), reverse=True)
@@ -31,7 +31,8 @@ def latest_release(service, assembly):
         if service.paths.artifact_file(directory, '_building').exists():
             continue
         record = read_json(service.paths.artifact_file(directory, 'publish.json'), {}) or {}
-        if record.get('schema') == 'smartpipeline.environment_release.v1' and record.get('status') == 'complete':
+        schemas = {'smartpipeline.preview_release.v1'} if preview_only else {'smartpipeline.environment_release.v1', 'smartpipeline.preview_release.v1'}
+        if record.get('schema') in schemas and record.get('status') == 'complete':
             return assembly_for_release(assembly, directory, record)
     return assembly
 

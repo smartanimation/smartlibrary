@@ -89,8 +89,8 @@ class AssetPublishResolver:
                 qualities = record.get("members", {}).get(identity.variant, {})
                 selected_quality = quality or ('proxy' if 'proxy' in qualities else 'render')
                 member = qualities.get(selected_quality, {})
-                maya_path = member.get("maya", {}).get("path")
-                if maya_path and Path(maya_path).resolve() == selected:
+                release_paths = [member.get(key, {}).get("path") for key in ('maya', 'usd')]
+                if any(path and Path(path).resolve() == selected for path in release_paths):
                     return self.resolve_usd_entry(identity, quality=selected_quality, version=candidate.name, release_path=release_path)
             raise ValueError(f"No completed USD Pack references selected Release: {release_path}. Pack this Release or select another published Release.")
         if version == "latest":
@@ -106,20 +106,26 @@ class AssetPublishResolver:
         member = qualities.get(quality)
         if not member:
             raise ValueError(f"USD entrypoint has no {identity.variant}/{quality} selection.")
-        if release_path is not None and Path(member["maya"]["path"]).resolve() != Path(release_path).resolve():
+        if release_path is not None and not any(
+            member.get(key, {}).get('path') and Path(member[key]['path']).resolve() == Path(release_path).resolve()
+            for key in ('maya', 'usd')):
             raise ValueError(f"USD Pack {version} does not reference selected Release: {release_path}")
         from smartlib.apps.asset_manager.environment_pack import digest
-        for key in ("maya", "usd"):
+        for key in (["maya", "usd"] if "maya" in member else ["usd"]):
             if digest(member[key]["path"]) != member[key]["sha256"]:
                 raise ValueError("Pack dependency was modified.")
+        for ref in member.get('dependencies', []):
+            if digest(ref['path']) != ref['sha256']:
+                raise ValueError('Release dependency was modified: ' + ref['path'])
         entrypoint = paths.artifact_file(directory, identity.name + ".usda")
         if not entrypoint.is_file():
             raise FileNotFoundError(entrypoint)
         return {"path": str(entrypoint), "version": version,
                 "variant_selections": {"variant": identity.variant, "quality": quality},
                 "prim_path": "/" + identity.name, "pack_version": member["pack_version"],
-                "usd_dependencies": [dict(value["usd"]) for qualities in manifest["members"].values()
-                                     for value in qualities.values()]}
+                "usd_dependencies": [dict(ref) for qualities in manifest["members"].values()
+                                     for value in qualities.values()
+                                     for ref in [value['usd'], *value.get('dependencies', [])]]}
 
     def rule_for(self, consumer: str, department: str) -> AssetResolverRule | None:
         consumer = str(consumer or "shot").strip().lower()

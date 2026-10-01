@@ -26,6 +26,8 @@ def panel(service, tmp_path, monkeypatch):
             'rig_dependencies': [{'path': str(rig)}]})
         versions.append(SimpleNamespace(name='data/animation/Hero/curves', version=version, path=str(source)))
     from smartlib.apps.shot_manager.usd_handoff import UsdHandoffService
+    from smartlib.apps.shot_manager import cast_release
+    monkeypatch.setattr(cast_release, 'cast_product', lambda *a: {'path': str(versions[0].path), 'sha256': 'cast-pin'})
     monkeypatch.setattr(UsdHandoffService, 'animation_rig_versions', lambda self, identity, target:
         {'ANIM': [{'version': v.version, 'path': str(Path(v.path).with_name('rig.ma'))} for v in versions],
          'REND': []} if target == 'Hero' else {})

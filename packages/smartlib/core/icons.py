@@ -98,6 +98,34 @@ def asset_category_icon_path(category: str, size: int = 20) -> Path | None:
     return path if path.is_file() else None
 
 
+def asset_publish_type_icon_path(publish_type: str, size: int = 24) -> Path | None:
+    """Resolve an Asset Manager Publish Type icon."""
+
+    normalized_type = str(publish_type or "").strip().lower()
+    if normalized_type == "rig":
+        return build_content_icon_path("rig", size=24)
+    icon_name = {
+        "geometry": "geometry",
+        "geo": "geometry",
+        "look": "look",
+        "texture": "texture",
+        "groom": "groom",
+    }.get(normalized_type)
+    if not icon_name:
+        return None
+    variant = "24" if int(size) == 24 else "master"
+    path = (
+        pipeline_root()
+        / "resources"
+        / "icons"
+        / "asset_manager"
+        / "publish_types"
+        / variant
+        / f"{icon_name}.png"
+    )
+    return path if path.is_file() else None
+
+
 def shot_data_icon_path(data_type: str, size: int = 28) -> Path | None:
     """Resolve a Shot Manager Data-type icon through the canonical root."""
 

@@ -47,7 +47,8 @@ def inspect_usd(path, settings):
         raise ValueError('USD must explicitly author metersPerUnit and upAxis: ' + str(path))
     if abs(UsdGeom.GetStageMetersPerUnit(stage) - settings['meters_per_unit']) > 1e-12 or str(UsdGeom.GetStageUpAxis(stage)) != settings['up_axis']:
         raise ValueError('USD conventions differ from the project: ' + str(path))
-    _, _, missing = UsdUtils.ComputeAllDependencies(str(path))
+    from smartlib.core.udim import usd_dependencies
+    _, _, missing = usd_dependencies(path)
     if missing:
         raise ValueError('Unresolved USD dependencies: ' + ', '.join(missing))
     return str(stage.GetDefaultPrim().GetPath())
@@ -57,6 +58,7 @@ def _write_entry(path, name, members, settings, default_variant, default_quality
     from pxr import Usd, UsdGeom
     stage = Usd.Stage.CreateNew(str(path))
     root = UsdGeom.Xform.Define(stage, '/' + name).GetPrim()
+    root.ClearTypeName()
     stage.SetDefaultPrim(root)
     UsdGeom.SetStageMetersPerUnit(stage, settings['meters_per_unit'])
     UsdGeom.SetStageUpAxis(stage, settings['up_axis'])
@@ -70,6 +72,7 @@ def _write_entry(path, name, members, settings, default_variant, default_quality
                 qualities.AddVariant(quality)
                 qualities.SetVariantSelection(quality)
                 with qualities.GetVariantEditContext():
+                    root.SetTypeName(member.get('root_type', 'Xform'))
                     relative = os.path.relpath(member['usd']['path'], path.parent).replace('\\', '/')
                     root.GetPayloads().AddPayload(relative, member['default_prim'])
             qualities.SetVariantSelection('proxy' if 'proxy' in members[variant] else sorted(members[variant])[0])
@@ -81,6 +84,8 @@ def _write_entry(path, name, members, settings, default_variant, default_quality
 
 def release_input_error(assembly):
     """Return a blocking reason shared by the UI and Pack execution."""
+    if assembly.manifest.get('source_policy') == 'preview_release':
+        return ''
     quality = release_quality(assembly)
     if quality is None:
         return 'Release Pack requires Environment PROXY/REND or Prop LO/REND.'
@@ -112,6 +117,8 @@ def pack_environment(service, assembly):
     """Copy a fixed Release into a Pack, then publish a new common entry version."""
     from pxr import Sdf, UsdUtils
     from smartlib.apps.asset_manager.context import PackedAssetContext
+    if assembly.manifest.get('source_policy') == 'preview_release':
+        raise ValueError('This USD Release is already packed. Use Release USD to select new inputs.')
     paths = service.paths
     identity = assembly.identity
     quality = release_quality(assembly)
@@ -145,7 +152,7 @@ def pack_environment(service, assembly):
         for by_quality in members.values():
             for member in by_quality.values():
                 inspect_usd(member['usd']['path'], settings)
-                for key in ('maya','usd'):
+                for key in (k for k in ('maya','usd') if k in member):
                     if digest(member[key]['path']) != member[key]['sha256']:
                         raise ValueError('Previously published Pack was modified: ' + member[key]['path'])
         old = members.get(identity.variant, {}).get(quality, {})

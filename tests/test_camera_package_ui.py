@@ -114,6 +114,7 @@ def test_data_tree_and_build_version_combo(tmp_path):
     combo.setCurrentIndex(old_index)
     combo.activated.emit(old_index)
     assert build.build_contents_table.cellWidget(index, 6).currentData() == str(first)
+    assert build.build_contents_table.item(index, 7).text() == 'v002'
     assert not build._planned_snapshots
     snapshot = {'inputs': list(build._build_versions[identity.shot].values())}
     construct = build._apply_planned_snapshot_to_construct(manager.shots.resolved_construct(identity), snapshot)

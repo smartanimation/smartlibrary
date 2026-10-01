@@ -40,6 +40,40 @@ Saveはプレビュー済みの選択のみ受け付け、Product manifestの変
 
 対応入力はShot Managerの`smartpipeline.usd_handoff_composition.v1`とProduct manifest。
 任意のUSDレイヤー編集、FX/Lighting、マテリアル編集は対象外。
+
+Preview Lookの接続はサービスAPI `UsdHandoffService.adopt_preview_look`から利用できる。
+既存Animation ProductとLook USD、明示したMesh対応表から新しいProductバージョンを作り、
+deform本体は再出力しない。このProductを選ぶと通常のプレビュー／保存でLookを合成する。
+現段階ではLook選択UIとDCCのLook Publish UIは未実装。
+LookにはdefaultPrim、その下のLooks ScopeとUsdPreviewSurface Material、Meshへの割り当て、
+customLayerDataの`preview_meshes`（Look側Mesh絶対Prim Path→`mesh_fingerprint`）を要求する。
+対応先の面接続・頂点数・UVを検証し、LookとTextureの固定バージョンおよびハッシュを保持する。
+初期対応はMesh全体への割り当てのみで、面単位Subsetは拒否する。
+
+### Preview LookのPublish検証
+
+`PreviewPublishService`は既存Resolverの`publish/texture/{subset}`、
+`publish/model/{subset}`、`publish/look/{subset}`へ新規バージョンを作る。
+受領Textureは名前と内容を保持してコピーし、Geometryは`geo.usd`、Lookは`look.usd`とする。
+Look Publishには確認用の`preview.usda`（geo＋look）も含める。
+`scripts/publish_preview_look.py`はmayapy／hythonから実行する共通USDオーサリング用CLI。
+`--dcc`、`--config`、`--category`、`--asset`、`--geometry-manifest`、
+`--texture-manifest`、`--recipe`、`--staging-dir`を指定する。`PYTHONPATH`にpackagesを含める。
+recipeはmaterials（Texture・UVオフセット・色空間）とbindings（Mesh Prim Path→Material ID）を持つ。
+既存Lookのpublish.jsonをrecipeとして指定することもできる。
+任意のMaya shader／Karma shaderの自動変換ではなく、両DCCのUSD実行環境で同じ
+UsdPreviewSurface契約を直接作成する。最終レンダラーとREND Publishは入力にしない。
+
+2026-10-01のELCD DLI検証では、受領vendor v002のsourceimagesをTexture low v001、
+受領Mayaシーンのcache_geo_setをGeometry model/low v001として使用した。
+Maya Lookはlow v001、Houdini Lookはlow v003（v002は先行実行分）で、
+ep02/s027/c001の既存Composition v017を基準にMaya版v018／Houdini版v019を作成した。
+元deformはAnimation Product v006を保持し、Look採用Receiptをv007／v008へ分けた。
+66 MeshすべてのトポロジーとUVが適合し、全Meshのマテリアル割り当てを確認した。
+Storm比較はAsset 960×720、ShotのPrimary Cameraフレーム278を960×540、
+DLI単体のフレーム345を960×720で実施。Shot画像は完全一致、Asset／DLI単体は
+各1ピクセルのRGB差のみだった（最大差はそれぞれ3／13、8bit）。
+これは今回の固定入力・描画条件での結果であり、任意のDCCマテリアルの互換性保証ではない。
 切り替えは非同期で自動更新するが、大きなUSDや依存チェックには読み込み時間がかかる。固定FPSでの再生速度は保証しない。
 
 ## 検証
@@ -88,3 +122,38 @@ AE仮組み動画は`review/{department}/compTemp/mov`へ分離する。既存�
 `tests/test_usd_review_export.py`で保存先、重複しない採番、依存改変拒否、カメラ検証を確認する。描画はUSDランタイムによる実出力で別途確認する。
 
 カメラの子行は`smartCam_CHA (primary_cam.usd)`のようにターゲット名と実ファイル名を併記する。カメラ選択欄とHUDにもターゲット名を表示する。Layer / Targetのチェックやバージョン変更時は描画状態を再作成してプレビューを更新し、現在フレームと選択カメラ（新しい構成に存在する場合）を維持する。
+# Cast-owned Asset Release and Animation
+
+New Cast publishes select Quality (`proxy` for this implementation) and a fixed
+USD Release. The displayed Release version is the variant Release version, not
+the common Asset entry version. Registration pins the Release receipt, geometry,
+look, rig and texture dependencies. Existing background Packs remain available
+as explicitly labelled Legacy Packs.
+
+Animation Publish uses that fixed Cast receipt. The independent Static Rig picker
+is no longer used by the new UI workflow. Maya Rig Context still selects the Maya
+rig used to rebuild and evaluate the saved animation data. USD skeletal output is
+compared against that evaluated deformation; unsupported results retain the deform
+cache fallback. The selected Release is also the source of the default Preview Look.
+
+In composition, animated Casts have one geometry provider at
+`/Shot/Assets/{cast}`. Cast loads the Asset payload; Animation contributes the sparse
+animation reference and binding at the same path. The standalone Animation entry
+also composes the fixed Asset for validation. For deform fallback only, Animation
+supplies geometry and Cast contributes identity metadata. No second mesh hierarchy
+is loaded. Static Casts use their Asset
+payload. Older independent animation products remain readable in their old paths.
+
+Smart Composition has three columns: Target, Version and Latest. Asset dependency
+rows show Geometry and Rig as read-only references and Look as an editable version
+choice (including Off). `Look *` denotes an override. Legacy data displays its
+actual recorded dependencies rather than pretending to use a newly published
+Release. The parent version selector is the Shot Cast product version; the USD
+Release child identifies its Asset Quality and Release version.
+
+Changing a Cast Release invalidates its previously verified linked Animation.
+Cast publication retains the old immutable product but leaves that Animation out
+of the new composition until it is republished. Other Casts are retained. Manually
+combining a different Release with an old linked Animation is rejected. Existing
+published files are never rewritten. Final rendering, high silhouettes and Shot
+Sculpt expansion are outside this change.

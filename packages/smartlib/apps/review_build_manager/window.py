@@ -426,7 +426,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         contents_layout.addLayout(contents_tools)
         self.build_contents_table = InputTree(10)
         self.build_contents_table.setHorizontalHeaderLabels(
-            ["Use", "Type", "Name", "Category", "Variant", "Context", "Build Version", "Last Review Version", "State", "Note"]
+            ["Use", "Type", "Name", "Category", "Variant", "Context", "Build Version", "Latest", "State", "Note"]
         )
         self.build_contents_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.build_contents_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -1169,36 +1169,13 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
             for entry in getattr(self, "_build_versions", {}).get(
                 self._planned_snapshot_key(identity), {}).values()
         }
-        latest_review_snapshot = getattr(self.service, "latest_review_snapshot", None)
-        review_department = (
-            self.department_combo.currentText()
-            if hasattr(self, "department_combo") else "anim"
-        )
-        review_delivery_profile = (
-            self.delivery_profile_combo.currentText()
-            if hasattr(self, "delivery_profile_combo") else "internal"
-        )
-        reviewed_snapshot = (
-            latest_review_snapshot(
-                identity,
-                review_department,
-                review_delivery_profile or "internal",
-            )
-            if callable(latest_review_snapshot) else {}
-        )
-        reviewed_inputs = {
-            (str(entry.get("type") or ""), str(entry.get("name") or "")): dict(entry)
-            for entry in (reviewed_snapshot.get("inputs") or [])
-        }
         for data in rows:
             key = (
                 str(data.get("type") or ""),
                 str(data.get("cast_key") or data.get("name") or ""),
             )
             data["build_version"] = str(data.get("latest") or data.get("official") or "")
-            data["last_review_version"] = str(
-                (reviewed_inputs.get(key) or {}).get("version") or ""
-            )
+            data["latest_version"] = latest_input_version(data)
             component = data.get("component")
             latest_camera = next(
                 (option for option in (data.get("camera_versions") or []) if option.get("latest")),
@@ -1316,7 +1293,7 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
                 context_item = QtWidgets.QTableWidgetItem("-")
                 context_item.setTextAlignment(QtCore.Qt.AlignCenter)
                 self.build_contents_table.setItem(row, 5, context_item)
-            for column, key in ((6, "build_version"), (7, "last_review_version"), (8, "state"), (9, "note")):
+            for column, key in ((6, "build_version"), (7, "latest_version"), (8, "state"), (9, "note")):
                 item = QtWidgets.QTableWidgetItem(str(data[key]))
                 if column == 8:
                     item.setForeground(
@@ -1696,10 +1673,10 @@ class ReviewBuildManagerWindow(CompositionSnapshotMixin, QtWidgets.QMainWindow):
         if not component_path or not Path(component_path).exists():
             return "MISSING"
         build_version = str(data.get("build_version") or data.get("latest") or "")
-        reviewed_version = str(data.get("last_review_version") or "")
+        latest_version = latest_input_version(data)
         return (
             "UPDATE AVAILABLE"
-            if reviewed_version and build_version and build_version != reviewed_version
+            if latest_version not in {"", "-"} and build_version and build_version != latest_version
             else "READY"
         )
 

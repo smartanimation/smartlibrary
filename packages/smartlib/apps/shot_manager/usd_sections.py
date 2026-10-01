@@ -17,8 +17,15 @@ def section_definition(kind, products, plan):
     # Layout order is significant when several products author the same property.
     if kind != 'layout':
         members.sort(key=lambda row: row['target'])
-    return dict(kind=kind, members=members,
-                **{key: plan[key] for key in ('frame_range', 'fps', 'usd')})
+    result = dict(kind=kind, members=members,
+                  **{key: plan[key] for key in ('frame_range', 'fps', 'usd')})
+    if any(member.get('inputs', {}).get('preview_look') for member in members):
+        # Older Look merges masked referenced SkelBindingAPI with an explicit
+        # apiSchemas list. Keep those snapshots immutable, but never reuse them.
+        result['preview_look_merge_version'] = 2
+    if kind == 'animation':
+        result['skel_extents_version'] = 1
+    return result
 
 
 def signature(definition):
@@ -54,6 +61,8 @@ def build_sections(service, identity, directory, products, plan):
         # Do not reuse a layer if validation authored different opinions.
         # Anonymous sublayer IDs are process-specific; only authored opinions enter the signature.
         opinions = None
+        if kind in ('assets', 'animation'):
+            opinions = stages[kind].GetRootLayer().ExportToString()
         if kind == 'layout':
             opinions = {}
             for key, stage in stages.items():

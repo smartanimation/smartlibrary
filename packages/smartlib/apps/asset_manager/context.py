@@ -272,7 +272,8 @@ class AssetContextService:
         if self.is_environment_release_pack(assembled):
             from .environment_release import latest_release
             return latest_release(self, assembled)
-        return assembled
+        from .environment_release import latest_release
+        return latest_release(self, assembled, preview_only=True)
 
     def pack(
         self,
@@ -753,6 +754,8 @@ class AssetContextService:
         return release_quality(assembly) is not None
 
     def has_pack_changes(self, assembly: AssetContextAssembly) -> bool:
+        if assembly.manifest.get('source_policy') == 'preview_release':
+            return False
         if self.is_environment_release_pack(assembly):
             from .environment_pack import digest, release_quality
             if assembly.manifest.get("source_policy") == "asset_release":

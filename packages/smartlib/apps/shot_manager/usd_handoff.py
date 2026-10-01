@@ -28,6 +28,35 @@ def composition_errors(stage):
 
 
 class UsdHandoffService(AnimationCompositionService):
+    def skel_versions(self, identity, target):
+        """Fixed static Rig USD packages for this cast, independent of Maya Context."""
+        from smartlib.core.path_resolver import AssetIdentity
+        cast = (self.shots.load_cast(identity).get('cast') or {}).get(target)
+        if not cast:
+            return []
+        root = self.shots.find_asset_root(cast.get('asset', ''))
+        if not root:
+            return []
+        metadata = read_json(self.paths.artifact_file(root, 'asset.json'), {})
+        asset = AssetIdentity(metadata.get('category') or cast.get('category', ''),
+            metadata.get('group') or cast.get('group', 'main'), cast['asset'], cast.get('variant') or 'default')
+        directory = self.paths.asset_publish_dir(asset, 'rig', '')
+        result = []
+        for manifest in directory.glob('*/v*/publish.json'):
+            record = read_json(manifest, {})
+            if record.get('status') != 'published' or record.get('usd_skel', {}).get('schema') != 'smartpipeline.usd_skel.v2':
+                continue
+            if not re.fullmatch(r'v[0-9]{3,}', record.get('version', '')):
+                continue
+            if any(record.get(key) != value for key, value in dict(asset=asset.name,
+                    category=asset.category, group=asset.group, variant=asset.variant).items()):
+                continue
+            expected = self.paths.artifact_file(self.paths.asset_publish_version_dir(
+                asset, 'rig', record.get('subset', ''), record.get('version', '')), 'publish.json')
+            if expected.resolve() == manifest.resolve():
+                result.append(dict(label=record['subset'] + ' / ' + record['version'], path=str(manifest)))
+        return sorted(result, key=lambda r: (r['label'].split(' / ')[0], -int(r['label'].split(' / v')[1])))
+
     def animation_rig_versions(self, identity, target):
         """Published asset contexts for one cast, using existing resolvers."""
         from smartlib.apps.asset_manager.context import AssetContextService
@@ -128,6 +157,14 @@ class UsdHandoffService(AnimationCompositionService):
                 if row.get('camera_role') == 'derived' and not row.get('primary_source'):
                     raise ValueError('Derived Camera requires a fixed Primary source')
             if kind == 'assets':
+                if row.get('asset_release'):
+                    release_record = read_json(self.check(row['asset_release']), {})
+                    if release_record.get('status') != 'complete' or release_record.get('schema') != 'smartpipeline.preview_release.v1':
+                        raise ValueError('Cast requires a completed Asset USD Release')
+                    if self.pin(release_record['absolute_files']['usd']) != self.pin(row['source']):
+                        raise ValueError('Cast USD differs from its Release')
+                    for dependency in release_record.get('dependencies', []):
+                        self.check(dependency)
                 provider = row.get('geometry_source', 'asset')
                 if provider not in ('asset', 'animation', 'none'):
                     raise ValueError('Invalid Asset Geometry Source')
@@ -158,6 +195,27 @@ class UsdHandoffService(AnimationCompositionService):
                         raise ValueError('Placement requires an Asset target')
                     validate_placement(item['data'], result['frame_range'])
             if kind == "animation":
+                if row.get('cast_asset'):
+                    from .cast_release import animation_asset
+                    cast, release = animation_asset(self, identity, target, row['cast_asset'])
+                    row['asset_release'] = cast['inputs']['asset_release']
+                    row['skel'] = release.get('rig', {}).get('path')
+                if row.get('skel'):
+                    row['skel'] = self.pin(row['skel'])
+                    if not any(self.pin(v['path']) == row['skel'] for v in self.skel_versions(identity, target)):
+                        raise ValueError('Static Rig USD belongs to another cast or is not published')
+                    receipt = self.check(row['skel'])
+                    record = read_json(receipt, {})
+                    row['skel_entry'] = self.pin(self.paths.artifact_file(receipt.parent, record['usd_skel']['entry']))
+                    if row.get('cast_asset'):
+                        row['skel_entry'] = cast['entrypoint']
+                    from smartlib.core.udim import usd_dependencies
+                    layers, assets, unresolved = usd_dependencies(row['skel_entry']['path'])
+                    if unresolved:
+                        raise ValueError('Static Rig USD has unresolved dependencies')
+                    row['skel_dependencies'] = [self.pin(p) for p in sorted(
+                        {l.realPath for l in layers if not l.anonymous} | set(map(str, assets)))]
+                    row['skeleton_set'] = self.config.usd_skel_contract.get('skeleton_set', 'skel_export_set')
                 row["rig"] = self.pin(row["rig"])
                 row["sculpt"] = self.pin(row["sculpt"]) if row.get("sculpt") else None
                 data = read_json(row["source"]["path"], {})
@@ -197,10 +255,14 @@ class UsdHandoffService(AnimationCompositionService):
         raw = []
         for row in plan["rows"]:
             item = deepcopy(row)
-            for key in ("source", "rig", "sculpt", "payload"):
+            for key in ("source", "rig", "sculpt", "payload", "skel"):
                 if item.get(key):
                     item[key] = str(self.check(item[key]))
             item.pop("payload", None)
+            for ref in item.pop('skel_dependencies', []):
+                self.check(ref)
+            item.pop('skel_entry', None)
+            item.pop('skeleton_set', None)
             raw.append(item)
         if self.plan(identity, raw, frame_range=plan["frame_range"], fps=plan["fps"],
                      replace_assets=plan.get('replace_assets', False)) != plan:
@@ -233,6 +295,12 @@ class UsdHandoffService(AnimationCompositionService):
         for ref in base['products']:
             product = self.load_handoff(self.check(ref))
             key = (product['kind'], product['target'])
+            if plan.get('replace_assets') and product['kind'] == 'animation' and product.get('inputs', {}).get('cast_asset'):
+                replacement = next((r for r in plan['rows'] if r['target'] == product['target']), {})
+                if replacement.get('asset_release') != product['inputs'].get('asset_release'):
+                    # Keep the immutable old Animation product, but do not apply it
+                    # to an unverified replacement Release in the new composition.
+                    continue
             if (key in replaced or (replace_camera and product['kind'] == 'camera')
                     or (plan.get('replace_assets') and product['kind'] == 'assets')):
                 continue
@@ -262,11 +330,52 @@ class UsdHandoffService(AnimationCompositionService):
                 from smartlib.dcc.maya.animation_build import validate_deform_usd
                 validate_deform_usd(path)
                 self.validate_plan(plan, identity)
-                published = self._file(directory, 'deform.usdc')
-                shutil.copy2(path, published)
-                if file_hash(path) != file_hash(published):
-                    raise ValueError('USD copy checksum mismatch')
+                validation = data['validation']
+                data['usd_kind'] = validation.get('representation', 'deform')
+                if data['usd_kind'] == 'usd_skel_animation':
+                    comparison = validation.get('comparison', {})
+                    if not comparison.get('ok') or comparison.get('frames_checked') != int(plan['frame_range'][1] - plan['frame_range'][0] + 1):
+                        raise ValueError('Skeletal publish requires full-frame deformation verification')
+                    from smartlib.core.skel_animation import compose_animation
+                    animation = self._file(directory, 'animation.usd')
+                    source_animation = Path(validation['animation'])
+                    if source_animation.resolve().parent != workspace.resolve():
+                        raise ValueError('Animation export is outside the build workspace')
+                    shutil.copy2(source_animation, animation)
+                    if file_hash(source_animation) != file_hash(animation):
+                        raise ValueError('Animation copy checksum mismatch')
+                    published = self._file(directory, 'animation_asset.usda')
+                    compose_animation(published, animation, self.check(row['skel_entry']),
+                        validation['bindings'], plan['frame_range'], plan['fps'])
+                    data['animation_layer'] = self.pin(animation)
+                    validation.pop('animation', None)
+                else:
+                    published = self._file(directory, 'deform.usdc')
+                    shutil.copy2(path, published)
+                    if file_hash(path) != file_hash(published):
+                        raise ValueError('USD copy checksum mismatch')
                 data["entrypoint"] = self.pin(published)
+                if row.get('cast_asset'):
+                    from .cast_release import animation_asset
+                    from smartlib.apps.smart_composition.looks import look_options
+                    _, release = animation_asset(self, identity, target, row['cast_asset'])
+                    if release.get('look'):
+                        look_record = read_json(self.check(release['look']), {})
+                        data['inputs'] = deepcopy(data['inputs'])
+                        data['inputs']['preview_look'] = look_options(self, data, look_record['artifacts']['usd']['path'])
+                if base_composition:
+                    previous = self.load_handoff(self.check(base_composition))
+                    for ref in previous['products']:
+                        old = self.load_handoff(self.check(ref))
+                        look = old.get('inputs', {}).get('preview_look')
+                        if old['kind'] == kind and old['target'] == target and look:
+                            from smartlib.apps.smart_composition.looks import look_options
+                            try:
+                                data['inputs'] = deepcopy(data['inputs'])
+                                data['inputs']['preview_look'] = look_options(self, data, self.check(look['layer']))
+                            except ValueError as exc:
+                                data['look_warning'] = 'Previous Look was not compatible: ' + str(exc)
+                            break
             elif kind in {"assets", "camera"}:
                 data["entrypoint"] = row["source"]
             else:
@@ -354,7 +463,11 @@ class UsdHandoffService(AnimationCompositionService):
                 raise ValueError('Select one version per Section')
             kinds.add(data['kind'])
             members = [self.load_handoff(self.check(p)) for p in data['products']]
-            if section_definition(data['kind'], members, data) != data['definition']:
+            expected_definition = section_definition(data['kind'], members, data)
+            for policy in ('skel_extents_version', 'preview_look_merge_version'):
+                if policy not in data['definition']:
+                    expected_definition.pop(policy, None)
+            if expected_definition != data['definition']:
                 raise ValueError('Section product receipts no longer match its definition')
             refs.append(ref)
             products.extend(p['path'] for p in data['products'])
@@ -401,6 +514,39 @@ class UsdHandoffService(AnimationCompositionService):
                       layers={k: self.pin(v) for k, v in paths.items()}, entrypoint=self.pin(paths['shot']))
         manifest = self._file(directory, 'manifest.json')
         self._commit(manifest, result)
+        return manifest
+
+    def adopt_preview_look(self, identity, product_manifest, look_path, mesh_map):
+        """Create a new Animation product receipt; keep the existing deform fixed."""
+        previous = self.pin(product_manifest)
+        data = deepcopy(self.load_handoff(self.check(previous)))
+        expected = dict(zip(('episode', 'sequence', 'shot'), self._identity(identity)))
+        if data.get('schema') != PRODUCT or data.get('kind') not in ('animation', 'assets') or data['shot'] != expected:
+            raise ValueError('Select an Animation USD product for this shot')
+        from pxr import Usd
+        from smartlib.core.preview_look import apply_preview_look
+        dependencies = []
+        look = None
+        if look_path:
+            look = self.pin(look_path)
+            geometry = Usd.Stage.Open(str(self.check(data['entrypoint'])))
+            scratch = Usd.Stage.CreateInMemory()
+            assets = apply_preview_look(scratch, '/Preview', geometry, self.check(look), mesh_map)
+            dependencies = [self.pin(path) for path in assets]
+            data['inputs']['preview_look'] = dict(layer=look, mesh_map=dict(mesh_map), dependencies=dependencies)
+            data['inputs'].pop('preview_look_disabled', None)
+        else:
+            data['inputs'].pop('preview_look', None)
+            data['inputs']['preview_look_disabled'] = True
+        data['inputs']['previous_product'] = previous
+        data['dependencies'] = list({r['path']: r for r in data.get('dependencies', []) + [previous] + ([look] if look else []) + dependencies}.values())
+        for ref in data['dependencies']:
+            self.check(ref)
+        version, directory = self._reserve(self.paths.usd_handoff_dir(
+            *self._identity(identity), data['kind'], data['target']))
+        data.update(version=version, created_at=datetime.now(timezone.utc).isoformat())
+        manifest = self._file(directory, 'manifest.json')
+        self._commit(manifest, data)
         return manifest
 
     def select_products(self, identity, manifests):
@@ -489,9 +635,19 @@ def compose_layers(paths, products, plan, service, *, in_memory=False):
     placement_targets = set()
     placed_targets = set()
     animation_targets = {p['target'] for p in products if p['kind'] == 'animation'}
+    skeletal_overrides = {p['target']: p for p in products if p['kind'] == 'animation'
+                          and p.get('inputs', {}).get('cast_asset') and p.get('animation_layer')
+                          and p.get('usd_kind') == 'usd_skel_animation'}
+    cast_releases = {p['target']: p for p in products if p['kind'] == 'assets' and p.get('inputs', {}).get('asset_release')}
+    for product in products:
+        if product['kind'] == 'animation' and product.get('inputs', {}).get('cast_asset'):
+            cast = cast_releases.get(product['target'])
+            if not cast or cast['inputs']['asset_release'] != product['inputs']['asset_release']:
+                raise ValueError(product['target'] + ': Cast Release differs from verified Animation; republish Animation against this Cast')
     for product in products:
         if (product['kind'] == 'assets' and product['target'] in animation_targets
-                and product.get('inputs', {}).get('geometry_source', 'asset') == 'asset'):
+                and product.get('inputs', {}).get('geometry_source', 'asset') == 'asset'
+                and not product.get('inputs', {}).get('asset_release')):
             raise ValueError('Duplicate geometry provider for ' + product['target'] +
                              ': choose Animation USD / Metadata only for its Asset registration')
     stages = {}
@@ -527,7 +683,8 @@ def compose_layers(paths, products, plan, service, *, in_memory=False):
                 dependencies[product['entrypoint']['path']] = product['entrypoint']
                 info['usd_path'] = str(source)
             prim.SetCustomDataByKey('smartpipeline', info)
-            if options.get('geometry_source', 'asset') != 'asset':
+            if options.get('geometry_source', 'asset') != 'asset' or (options.get('asset_release')
+                    and product['target'] in animation_targets and product['target'] not in skeletal_overrides):
                 # Inventory only: no reference/payload, even with Stage.LoadAll.
                 continue
         source = service.check(product["entrypoint"])
@@ -549,7 +706,8 @@ def compose_layers(paths, products, plan, service, *, in_memory=False):
                          or src_stage.GetStartTimeCode() > plan['frame_range'][0]
                          or src_stage.GetEndTimeCode() < plan['frame_range'][1]):
             raise ValueError(f'Animated USD timing/range mismatch: {source}')
-        layers, assets, unresolved = UsdUtils.ComputeAllDependencies(Sdf.AssetPath(str(source)))
+        from smartlib.core.udim import usd_dependencies
+        layers, assets, unresolved = usd_dependencies(source)
         if unresolved:
             raise ValueError(f'Unresolved USD dependencies: {unresolved}')
         for asset in assets:
@@ -561,6 +719,8 @@ def compose_layers(paths, products, plan, service, *, in_memory=False):
                 ref = service.pin(layer.realPath)
                 dependencies[ref["path"]] = ref
         parent = {"animation": "Animation", "camera": "Camera", "assets": "Assets"}[kind]
+        if kind == 'animation' and options.get('cast_asset'):
+            parent = 'Assets'
         target = f"/Shot/{parent}/{product['target']}"
         stage = stages[kind]
         for root in roots:
@@ -576,7 +736,18 @@ def compose_layers(paths, products, plan, service, *, in_memory=False):
                     from .placement_motion import author_placement
                     author_placement(prim, options['placement'])
             else:
-                prim.GetReferences().AddReference(str(source), root.GetPath())
+                if kind == 'animation' and product['target'] in skeletal_overrides:
+                    animation_source = service.check(product['animation_layer'])
+                    dependencies[product['animation_layer']['path']] = product['animation_layer']
+                    prim.GetReferences().AddReference(str(animation_source), root.GetPath())
+                    prim.SetTypeName(root.GetTypeName())
+                    from pxr import UsdSkel
+                    for binding in product['validation']['bindings']:
+                        skeleton = Sdf.Path(binding['target_skeleton']).ReplacePrefix(root.GetPath(), Sdf.Path(dest))
+                        animation = Sdf.Path(binding['animation_source']).ReplacePrefix(root.GetPath(), Sdf.Path(dest))
+                        UsdSkel.BindingAPI.Apply(stage.OverridePrim(skeleton)).CreateAnimationSourceRel().SetTargets([animation])
+                else:
+                    prim.GetReferences().AddReference(str(source), root.GetPath())
                 if kind == 'camera':
                     prim.SetCustomDataByKey('smartpipeline:camera_role', options.get('camera_role', 'primary'))
                     if options.get('camera_settings'):
@@ -584,9 +755,34 @@ def compose_layers(paths, products, plan, service, *, in_memory=False):
                         prim.SetCustomDataByKey('smartpipeline:camera_settings', json.dumps(options['camera_settings']))
         if composition_errors(stage):
             raise ValueError(f"USD reference errors: {source}")
+        if options.get('preview_look'):
+            if kind not in ('animation', 'assets') or len(roots) != 1:
+                raise ValueError('Preview Look requires a single-root Animation product')
+            from smartlib.core.preview_look import apply_preview_look
+            look = options['preview_look']
+            look_path = service.check(look['layer'])
+            dependencies[look['layer']['path']] = look['layer']
+            for ref in look['dependencies']:
+                service.check(ref)
+                dependencies[ref['path']] = ref
+            assets = apply_preview_look(stage, target, src_stage, look_path, look['mesh_map'])
+            if {service.pin(p)['path'] for p in assets} != {r['path'] for r in look['dependencies']}:
+                raise ValueError('Preview Look texture dependencies changed')
+        if options.get('preview_look_disabled'):
+            from pxr import UsdShade
+            for mesh in src_stage.Traverse():
+                if mesh.IsA(UsdGeom.Mesh):
+                    destination = mesh.GetPath().ReplacePrefix(roots[0].GetPath(), Sdf.Path(target))
+                    prim = stage.OverridePrim(destination)
+                    UsdShade.MaterialBindingAPI.Apply(prim).UnbindAllBindings()
+                    prim.CreateRelationship('material:binding').SetTargets([])
     shot = stages["shot"]
     shot.GetRootLayer().subLayerPaths = [stages[k].GetRootLayer().identifier if in_memory else paths[k].name
         for k in ("animation", "layout", "camera", "assets")]
+    if animation_targets:
+        from smartlib.core.skel_extents import author_skel_extents
+        with Usd.EditContext(shot, stages['animation'].GetRootLayer()):
+            author_skel_extents(shot, plan['frame_range'])
     layouts = [p for p in products if p['kind'] == 'layout']
     layouts.sort(key=lambda p: (p.get('inputs', {}).get('layout_type') == 'placement',
                                p.get('inputs', {}).get('layer_order', 0)))

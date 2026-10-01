@@ -6,6 +6,45 @@ from smartlib.apps.smart_composition.service import CompositionSession
 from smartlib.core.metadata import read_json
 
 
+def test_late_look_preview_save_reopen_and_disable(service, tmp_path):
+    from pxr import UsdShade
+    from smartlib.core.metadata import write_json
+    from test_preview_look import fixture_files
+    svc, identity = service
+    geo, look = fixture_files(tmp_path)
+    version, directory = svc._reserve(svc.paths.usd_handoff_dir(*svc._identity(identity), 'animation', 'DLI'))
+    product = svc._file(directory, 'manifest.json')
+    write_json(product, dict(schema='smartpipeline.usd_handoff_product.v1', status='published',
+        kind='animation', target='DLI', version=version, shot=dict(episode='ep01',sequence='sq01',shot='sh001'),
+        frame_range=[1,2], fps=24, usd=dict(meters_per_unit=.01,up_axis='Y'), inputs={}, dependencies=[],
+        entrypoint=svc.pin(geo.GetRootLayer().identifier)))
+    original = product.read_bytes()
+    deform = Path(geo.GetRootLayer().identifier).read_bytes()
+    composition = svc.compose_products(identity, [product])
+    session = CompositionSession(svc.shots, composition)
+    selected = list(session.initial.values())
+    looks = {selected[0]: look.GetRootLayer().identifier}
+    stage, _ = session.preview(selected, looks)
+    assert UsdShade.MaterialBindingAPI(stage.GetPrimAtPath('/Shot/Animation/DLI/body')).ComputeBoundMaterial()[0]
+    assert product.read_bytes() == original
+    with pytest.raises(ValueError, match='Look selection'):
+        session.save(selected, {})
+    saved = session.save(selected, looks)
+    reopened = CompositionSession(svc.shots, saved)
+    new_products = list(reopened.initial.values())
+    stage, _ = reopened.preview(new_products)
+    assert UsdShade.MaterialBindingAPI(stage.GetPrimAtPath('/Shot/Animation/DLI/body')).ComputeBoundMaterial()[0]
+    off = {new_products[0]: ''}
+    stage, _ = reopened.preview(new_products, off)
+    assert not UsdShade.MaterialBindingAPI(stage.GetPrimAtPath('/Shot/Animation/DLI/body')).ComputeBoundMaterial()[0]
+    disabled = reopened.save(new_products, off)
+    final = CompositionSession(svc.shots, disabled)
+    stage, _ = final.preview(list(final.initial.values()))
+    assert not UsdShade.MaterialBindingAPI(stage.GetPrimAtPath('/Shot/Animation/DLI/body')).ComputeBoundMaterial()[0]
+    assert product.read_bytes() == original
+    assert Path(geo.GetRootLayer().identifier).read_bytes() == deform
+
+
 def test_preview_switch_save_and_source_immutable(service, tmp_path):
     from pxr import Usd, UsdGeom
     svc, identity = service

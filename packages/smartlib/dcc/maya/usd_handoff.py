@@ -6,7 +6,7 @@ from pathlib import Path
 from smartlib.core.metadata import read_json, write_json
 
 
-def export_animation(row, plan, output):
+def export_animation(row, plan, output, *, paths=None):
     import maya.cmds as cmds
     import maya.api.OpenMaya as om
     from smartlib.dcc.maya.animation_curves import (
@@ -59,8 +59,34 @@ def export_animation(row, plan, output):
         from smartlib.dcc.maya.shot_sculpt import apply_to_usd
         apply_to_usd(output, read_json(row['sculpt']['path'], {}),
                      curve_sha256=row['source']['sha256'], frame_range=plan['frame_range'])
-    return {'ok': True, 'source': 'fixed_data_rebuild', 'constraint_channels': len(mapped),
-            'sculpt': row.get('sculpt'), 'sample_by': 1.0}
+    result = {'ok': True, 'source': 'fixed_data_rebuild', 'constraint_channels': len(mapped),
+              'sculpt': row.get('sculpt'), 'sample_by': 1.0, 'representation': 'deform'}
+    if row.get('skel') and not row.get('sculpt'):
+        try:
+            from smartlib.dcc.maya.animation_curves import rebase_skel_animation_to_asset, validate_skel_animation_compatibility
+            from smartlib.core.skel_animation import compose_animation, compare_deformation
+            if paths is None:
+                raise ValueError('Project Path Resolver is required for skeletal export')
+            animation = paths.artifact_file(output.parent, output.stem + '.animation.usd')
+            entry = paths.artifact_file(output.parent, output.stem + '.skel.usda')
+            exported = export_animation_geometry_cache(namespace=namespace, output_dir=output.parent,
+                frame_range=tuple(plan['frame_range']), formats=('usd',),
+                skeleton_set=row.get('skeleton_set', 'skel_export_set'), resolved_files={'usd': animation})
+            rig = row['skel_entry']['path']
+            bindings = rebase_skel_animation_to_asset(rig, animation, exported['skeleton_bindings'])
+            compatibility = validate_skel_animation_compatibility(rig, animation, bindings)
+            if not compatibility['ok']:
+                raise ValueError('; '.join(compatibility['errors']))
+            compose_animation(entry, animation, rig, bindings, plan['frame_range'], plan['fps'])
+            comparison = compare_deformation(entry, output, plan['frame_range'], namespace=namespace)
+            result.update(representation='usd_skel_animation', animation=str(animation),
+                          bindings=bindings, comparison=comparison)
+        except Exception as exc:
+            result['fallback_reason'] = str(exc)
+    else:
+        result['fallback_reason'] = 'Shot Sculpt selected' if row.get('sculpt') else 'No static Rig USD selected'
+    print('USD representation: ' + result['representation'] + '\n' + result.get('fallback_reason', ''), flush=True)
+    return result
 
 
 def main():
@@ -85,7 +111,8 @@ def main():
         print('USD Build plugins: ' + json.dumps(plugin_report), flush=True)
         plan = read_json(args.plan, {})
         identity = ShotIdentity(**plan['shot'])
-        result = service.publish(identity, plan, animation_exporter=export_animation)
+        result = service.publish(identity, plan, animation_exporter=lambda row, plan, path:
+                                 export_animation(row, plan, path, paths=service.paths))
         write_json(args.result, {'ok': True, 'manifest': str(result),
             'maya_config': maya_config, 'plugins': plugin_report})
     except Exception as exc:

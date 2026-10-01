@@ -16,12 +16,23 @@ class AssetsPublishService(UsdHandoffService):
                 metadata.get('group') or cast.get('group', 'main'), cast.get('asset', ''),
                 cast.get('variant') or 'default')
             row = dict(target=target, asset=asset, versions=[], error='')
+            row['releases'] = []
             category = asset.category.casefold()
             row['geometry_source'] = 'animation' if category in ('ch', 'character', 'characters') else 'asset'
             try:
                 if not asset.name or not asset.category:
                     raise ValueError('Cast Asset identity is incomplete')
                 row['versions'] = self.shots.asset_publish_resolver.list_usd_versions(asset)
+                for version in row['versions']:
+                    shared = read_json(self.paths.artifact_file(self.paths.asset_usd_version_dir(asset, version), 'manifest.json'), {})
+                    member = shared.get('members', {}).get(asset.variant, {}).get('proxy')
+                    if not member:
+                        continue
+                    receipt = self.paths.artifact_file(self.paths.asset_publish_version_dir(asset, 'asset', member['context'], member['pack_version']), 'publish.json')
+                    if read_json(receipt, {}).get('schema') == 'smartpipeline.preview_release.v1':
+                        row['releases'].append(dict(version=version, label=member['pack_version'], quality='proxy'))
+                    else:
+                        row['releases'].append(dict(version=version, label=member['pack_version'] + ' (Legacy Pack)', quality='proxy'))
             except (OSError, ValueError, KeyError) as exc:
                 row['error'] = str(exc)
             result.append(row)
@@ -36,7 +47,7 @@ class AssetsPublishService(UsdHandoffService):
             dependencies = []
             if version:
                 resolved = self.shots.asset_publish_resolver.resolve_usd_entry(
-                    asset, version=version, quality=None)
+                    asset, version=version, quality=selection.get('quality'))
                 source = resolved['path']
                 for ref in resolved.get('usd_dependencies', []):
                     pinned = self.pin(ref['path'])
@@ -47,9 +58,23 @@ class AssetsPublishService(UsdHandoffService):
                 raise ValueError(selection['target'] + ': select a published Asset USD Version')
             info = asdict(asset)
             info['usd_version'] = version or ''
+            release = None
+            if selection.get('quality'):
+                quality = selection['quality']
+                shared = read_json(self.paths.artifact_file(self.paths.asset_usd_version_dir(asset, version), 'manifest.json'), {})
+                member = shared['members'][asset.variant][quality]
+                source = member['usd']['path']
+                release_path = self.paths.artifact_file(
+                    self.paths.asset_publish_version_dir(asset, 'asset', member['context'], member['pack_version']), 'publish.json')
+                release_record = read_json(release_path, {})
+                if release_record.get('schema') == 'smartpipeline.preview_release.v1' and release_record.get('status') == 'complete':
+                    release = self.pin(release_path)
+                else:
+                    source = resolved['path']
+                info.update(quality=quality, release_version=member['pack_version'])
             rows.append(dict(kind='assets', target=selection['target'], source=source,
-                geometry_source=selection['geometry_source'], registration=info,
-                asset_dependencies=dependencies))
+                geometry_source='asset' if release else selection['geometry_source'], registration=info,
+                asset_dependencies=dependencies, **({'asset_release': release} if release else {})))
         timing = {}
         if base:
             snapshot = self.load_handoff(self.check(base))
@@ -58,6 +83,6 @@ class AssetsPublishService(UsdHandoffService):
         _, retained = self.composition_inputs(identity, plan, base)
         animated = {p['target'] for p in retained if p['kind'] == 'animation'}
         for row in rows:
-            if row['target'] in animated and row['geometry_source'] == 'asset':
+            if row['target'] in animated and row['geometry_source'] == 'asset' and not row.get('asset_release'):
                 raise ValueError(row['target'] + ': duplicate geometry; choose Animation USD')
         return plan

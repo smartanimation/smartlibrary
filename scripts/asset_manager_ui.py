@@ -172,6 +172,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
             self.restoreGeometry(geometry)
 
     def closeEvent(self, event) -> None:
+        worker = getattr(getattr(self, 'texture_data_panel', None), 'worker', None)
+        if worker is not None and worker.isRunning():
+            event.ignore()
+            return
         if self.metadata_panel.drafts:
             answer = QtWidgets.QMessageBox.question(
                 self, "Unsaved Metadata", "Discard unsaved metadata changes?",
@@ -625,13 +629,17 @@ class AssetManagerWindow(QtWidgets.QDialog):
         publish_header = QtWidgets.QHBoxLayout()
         publish_header.setContentsMargins(0, 0, 0, 0)
         publish_header.setSpacing(4)
-        publish_header.addWidget(QtWidgets.QLabel("USD Asset Publish"))
+        publish_header.addWidget(QtWidgets.QLabel("Asset Publish"))
         publish_header.addStretch(1)
         self.refresh_publish_btn = QtWidgets.QPushButton("Refresh")
+        self.publish_texture_btn = QtWidgets.QPushButton("Texture Data…")
+        self.publish_texture_btn.setStyleSheet(blue_button_style)
+        self.publish_texture_btn.setToolTip("Manage Texture Data and publish selected files")
+        self.publish_texture_btn.setVisible(False)
         self.publish_geometry_usd_btn = QtWidgets.QPushButton("Publish Geometry USD")
         self.publish_geometry_usd_btn.setStyleSheet(blue_button_style)
         self.publish_geometry_usd_btn.setToolTip(
-            "Publish the current model subset and always include model.usd"
+            "Publish cache_geo_set from a saved Maya scene as geo.usd"
         )
         self.publish_selected_btn = QtWidgets.QPushButton("Publish Selected")
         self.publish_selected_btn.setStyleSheet(blue_button_style)
@@ -640,6 +648,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.open_retarget_setup_btn.clicked.connect(self._open_retarget_setup)
         publish_header.addWidget(self.open_retarget_setup_btn)
         publish_header.addWidget(self.refresh_publish_btn)
+        publish_header.addWidget(self.publish_texture_btn)
         publish_header.addWidget(self.publish_geometry_usd_btn)
         publish_header.addWidget(self.publish_selected_btn)
         publish_tab_layout.addLayout(publish_header)
@@ -647,15 +656,22 @@ class AssetManagerWindow(QtWidgets.QDialog):
         publish_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.asset_publish_type_list = QtWidgets.QListWidget()
         self.asset_publish_type_list.setFixedWidth(132)
+        self.asset_publish_type_list.setIconSize(QtCore.QSize(24, 24))
         self.asset_publish_type_list.setStyleSheet("QListWidget::item { height: 26px; }")
+        from smartlib.core.icons import asset_publish_type_icon_path
+
         for label, key in (
             ("Geometry", "geometry"),
             ("Rig", "rig"),
             ("Look", "look"),
+            ("Texture", "texture"),
             ("Groom", "groom"),
         ):
             item = QtWidgets.QListWidgetItem(label)
             item.setData(QtCore.Qt.UserRole, key)
+            icon_path = asset_publish_type_icon_path(key, 24)
+            if icon_path:
+                item.setIcon(QtGui.QIcon(str(icon_path)))
             self.asset_publish_type_list.addItem(item)
         self.asset_publish_type_list.setCurrentRow(0)
         publish_splitter.addWidget(self.asset_publish_type_list)
@@ -679,10 +695,17 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.asset_publish_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         publish_results_layout.addWidget(self.asset_publish_tree, 1)
         publish_splitter.addWidget(publish_results_panel)
+        _ensure_smartlib_on_path()
+        from smartlib.apps.asset_manager.current_preview_ui import CurrentScenePublishPanel
+        from smartlib.core.config_loader import ProjectConfig
+        self.current_preview_panel = CurrentScenePublishPanel(ProjectConfig(self.manager.config_dir), self)
+        self.current_preview_panel.published.connect(self._current_preview_published)
+        self.current_preview_panel.previewReady.connect(self._open_current_usd_check)
+        publish_splitter.addWidget(self.current_preview_panel)
         publish_splitter.setStretchFactor(0, 0)
         publish_splitter.setStretchFactor(1, 1)
         publish_splitter.setCollapsible(0, False)
-        publish_splitter.setSizes([132, 900])
+        publish_splitter.setSizes([132, 600, 300])
         publish_tab_layout.addWidget(publish_splitter, 1)
         self.detail_tabs.addTab(publish_tab, "Publish")
 
@@ -726,6 +749,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.data_browser_splitter.addWidget(self.data_type_list)
         self.data_browser_splitter.addWidget(self.data_target_list)
         self.data_browser_splitter.addWidget(self.data_list)
+        _ensure_smartlib_on_path()
+        from smartlib.apps.asset_manager.texture_data_ui import TextureDataPanel
+        from smartlib.core.config_loader import ProjectConfig
+        self.texture_data_panel = TextureDataPanel(ProjectConfig(self.manager.config_dir), self)
+        self.texture_data_panel.hide()
+        self.texture_data_panel.published.connect(self._populate_asset_publish_tree)
+        self.data_browser_splitter.addWidget(self.texture_data_panel)
         self.data_browser_splitter.setStretchFactor(0, 0)
         self.data_browser_splitter.setStretchFactor(1, 0)
         self.data_browser_splitter.setStretchFactor(2, 1)
@@ -816,6 +846,19 @@ class AssetManagerWindow(QtWidgets.QDialog):
         preview_layout = QtWidgets.QVBoxLayout(preview_tab)
         preview_layout.setContentsMargins(4, 4, 4, 4)
         preview_layout.setSpacing(4)
+        usd_check_row = QtWidgets.QHBoxLayout()
+        self.usd_check_kind = QtWidgets.QComboBox()
+        self.usd_check_kind.addItem('Geometry + Look', 'look')
+        self.usd_check_kind.addItem('Geometry only', 'geometry')
+        self.usd_check_kind.addItem('Static Rig USD', 'rig')
+        self.usd_check_btn = QtWidgets.QPushButton('Check current scene in usdview')
+        self.usd_check_btn.clicked.connect(self._check_current_usd)
+        usd_check_row.addWidget(self.usd_check_kind)
+        usd_check_row.addWidget(self.usd_check_btn)
+        preview_layout.addLayout(usd_check_row)
+        self.usd_check_status = QtWidgets.QLabel('Temporary USD check before Publish. Uses dependencies selected in the Publish panel.')
+        self.usd_check_status.setWordWrap(True)
+        preview_layout.addWidget(self.usd_check_status)
         self.preview_list = QtWidgets.QTableWidget(0, 5)
         self.preview_list.setHorizontalHeaderLabels(["Version", "Type", "Updated", "Views", "review.json"])
         self.preview_list.horizontalHeader().setStretchLastSection(True)
@@ -926,6 +969,14 @@ class AssetManagerWindow(QtWidgets.QDialog):
         )
         context_main_layout.addWidget(self.context_pack_tree, 1)
         self.detail_tabs.addTab(context_tab, "Context")
+        from smartlib.apps.asset_manager.preview_release_ui import PreviewReleasePanel
+        from smartlib.core.config_loader import ProjectConfig
+        self.usd_release_panel = PreviewReleasePanel(ProjectConfig(self.manager.config_dir), parent=self)
+        self.usd_release_panel.open_preview = self._open_current_usd_check
+        self.usd_release_panel.published.connect(
+            lambda path: self.status_label.setText(f'USD Release completed: {path}'))
+        self.detail_tabs.addTab(self.usd_release_panel, "USD Release")
+
 
         _ensure_smartlib_on_path()
         from smartlib.apps.asset_manager.studio_delivery_ui import StudioDeliveryTab
@@ -965,6 +1016,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.dept_list.currentRowChanged.connect(self._on_department_list_changed)
         self.variant_list.currentRowChanged.connect(lambda _row: self._show_current_asset())
         self.detail_tabs.currentChanged.connect(lambda _index: self._update_selected_file_info())
+        self.detail_tabs.currentChanged.connect(lambda _index: self._refresh_usd_release())
         self.asset_list.customContextMenuRequested.connect(self._show_asset_context_menu)
         self.asset_table.customContextMenuRequested.connect(self._show_asset_context_menu)
         self.work_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -984,9 +1036,10 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.open_scene_btn.clicked.connect(self._open_selected_scene)
         self.save_scene_btn.clicked.connect(self._save_scene)
         self.refresh_publish_btn.clicked.connect(self._populate_asset_publish_tree)
+        self.publish_texture_btn.clicked.connect(self._publish_textures)
         self.publish_selected_btn.clicked.connect(self._publish_selected_work)
         self.publish_geometry_usd_btn.clicked.connect(
-            lambda: self._publish_selected_work(force_usd=True)
+            lambda: self._publish_maya_preview('geometry')
         )
         self.asset_publish_type_list.currentRowChanged.connect(self._on_publish_type_changed)
         self.staging_btn.clicked.connect(self._stage_work_scene)
@@ -1650,6 +1703,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         self._populate_data_tree(asset)
         self._populate_construct_tree(asset)
+        self._refresh_usd_release()
         self._update_data_watcher(asset)
         self._populate_preview_list(asset)
         self._populate_context_profiles()
@@ -1687,12 +1741,28 @@ class AssetManagerWindow(QtWidgets.QDialog):
 
         type_item = self.asset_publish_type_list.currentItem()
         publish_type = str(type_item.data(QtCore.Qt.UserRole) or "geometry") if type_item else "geometry"
+        if publish_type == "texture":
+            from smartlib.apps.asset_manager.preview_publish import PreviewPublishService
+            from smartlib.apps.asset_manager.texture_publish_tree import populate_texture_tree
+            from smartlib.core.config_loader import ProjectConfig
+            from smartlib.core.path_resolver import AssetIdentity
+            populate_texture_tree(tree, PreviewPublishService(ProjectConfig(self.manager.config_dir)),
+                AssetIdentity(asset.category, asset.group, asset.name, self._current_asset_variant()))
+            self._update_publish_selected_state()
+            return
+        tree.setHeaderLabels(["Name", "Component", "Representation", "Official", "Latest", "State", "Updated", "Comment"])
         variant = self._current_asset_variant()
         roots = []
-        variant_publish = asset.variant_root(variant) / "publish"
+        if publish_type == "texture":
+            service, _ = _asset_service(self.manager.config_dir)
+            from smartlib.core.path_resolver import AssetIdentity
+            variant_publish = service.paths.asset_publish_root(
+                AssetIdentity(asset.category, asset.group, asset.name, variant))
+        else:
+            variant_publish = asset.variant_root(variant) / "publish"
         if variant_publish.exists():
             roots.append(variant_publish)
-        if asset.publish_dir.exists() and asset.publish_dir not in roots:
+        if publish_type != "texture" and asset.publish_dir.exists() and asset.publish_dir not in roots:
             roots.append(asset.publish_dir)
 
         branches = []
@@ -1717,7 +1787,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
             versions_data = self._read_json_for_table(branch / "versions.json")
             official = self._official_publish_version(versions_data)
             versions = sorted(
-                (path for path in branch.iterdir() if path.is_dir() and re.fullmatch(r"v\d+", path.name)),
+                (path for path in branch.iterdir() if path.is_dir() and re.fullmatch(r"v\d+", path.name)
+                 and (publish_type != "texture" or
+                      (self._read_json_for_table(path / "publish.json") or {}).get("status") == "published")),
                 key=lambda path: int(path.name[1:]),
                 reverse=True,
             )
@@ -1754,24 +1826,81 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self._update_publish_selected_state()
 
     def _update_publish_selected_state(self) -> None:
+        panel = getattr(self, 'current_preview_panel', None)
+        if panel is not None:
+            kind = self._selected_publish_type()
+            panel.setVisible(kind in ('geometry', 'look', 'rig'))
+            asset = self._current_asset()
+            if asset and kind in ('geometry', 'look', 'rig'):
+                from smartlib.core.path_resolver import AssetIdentity
+                panel.configure(AssetIdentity(asset.category, asset.group, asset.name,
+                    self._current_asset_variant()), kind, self._current_variant() or 'low')
+        is_texture = self._selected_publish_type() == "texture"
+        texture_button = getattr(self, "publish_texture_btn", None)
+        if texture_button is not None:
+            texture_button.setVisible(is_texture)
+            texture_button.setEnabled(bool(self._current_asset()))
         button = getattr(self, "publish_selected_btn", None)
         if button is not None:
-            source_path, source_kind = self._publish_source_path()
+            button.setVisible(not is_texture)
+            source_path, source_kind = (None, "") if is_texture else self._publish_source_path()
             button.setText("Publish Selected")
             button.setEnabled(bool(self._current_asset() and source_path))
             if source_path:
                 button.setToolTip(f"Publish current {source_kind} scene: {Path(source_path).name}")
             else:
                 button.setToolTip("Open a saved asset work scene before publishing")
+            if self._selected_publish_type() == 'look':
+                button.setText('Publish Preview Look…')
+                button.setEnabled(bool(self._current_asset()))
+                button.setToolTip('Publish Maya Lambert/file assignments as UsdPreviewSurface')
         usd_button = getattr(self, "publish_geometry_usd_btn", None)
         if usd_button is not None:
             is_geometry = self._selected_publish_type() == "geometry"
             usd_button.setVisible(is_geometry)
-            usd_button.setEnabled(bool(is_geometry and self._current_asset() and source_path))
+            usd_button.setEnabled(bool(is_geometry and self._current_asset()))
+
+    def _publish_maya_preview(self, kind):
+        asset = self._current_asset()
+        if not asset:
+            return
+        from smartlib.core.path_resolver import AssetIdentity
+        self.current_preview_panel.configure(AssetIdentity(asset.category, asset.group, asset.name,
+            self._current_asset_variant()), kind, self._current_variant() or 'low')
+        self.current_preview_panel.execute()
+
+    def _current_preview_published(self, manifest):
+        self._populate_asset_publish_tree()
+        self.status_label.setText(f'Published: {manifest}')
+
+    def _check_current_usd(self):
+        asset = self._current_asset()
+        if not asset:
+            self.usd_check_status.setText('Select an Asset first')
+            return
+        from smartlib.core.path_resolver import AssetIdentity
+        self.current_preview_panel.configure(AssetIdentity(asset.category, asset.group, asset.name,
+            self._current_asset_variant()), self.usd_check_kind.currentData(), self._current_variant() or 'low')
+        self.current_preview_panel.execute(preview=True)
+        self.usd_check_status.setText(self.current_preview_panel.status.text())
+
+    def _open_current_usd_check(self, path):
+        usdview = resolve_usdview_path(self.manager)
+        if not usdview:
+            raise RuntimeError('Configure tools.usdview.path to open the USD check')
+        launch_usdview(usdview, Path(path))
+        self.usd_check_status.setText(f'Unpublished USD check: {path}')
 
     def _on_publish_type_changed(self, _row: int = -1) -> None:
         self._populate_asset_publish_tree()
         self._update_publish_selected_state()
+
+    def _publish_textures(self) -> None:
+        self.detail_tabs.setCurrentWidget(self.data_tab)
+        for row in range(self.data_type_list.count()):
+            if self.data_type_list.item(row).data(QtCore.Qt.UserRole) == 'texture':
+                self.data_type_list.setCurrentRow(row)
+                break
 
     def _publish_source_path(self) -> tuple[str | None, str]:
         current_scene = current_dcc_scene_path()
@@ -2245,6 +2374,13 @@ class AssetManagerWindow(QtWidgets.QDialog):
             variant=self._current_asset_variant() if asset.uses_variant_structure(self._current_asset_variant()) else "default",
         )
 
+    def _refresh_usd_release(self):
+        panel = getattr(self, 'usd_release_panel', None)
+        if panel is None:
+            return
+        asset = self._current_asset()
+        panel.configure(self._asset_context_identity(asset) if asset else None)
+
     def _use_current_scene_as_assembly(self) -> None:
         asset = self._current_asset()
         if not asset:
@@ -2425,10 +2561,11 @@ class AssetManagerWindow(QtWidgets.QDialog):
         )
         from smartlib.apps.asset_manager.context import AssetContextService
         environment_pack = AssetContextService.is_environment_release_pack(assembly)
-        self.context_use_scene_btn.setText("Release & Pack" if environment_pack else "USD Current Scene")
+        self.context_use_scene_btn.setVisible(not environment_pack)
+        self.context_use_scene_btn.setText("USD Current Scene")
         self.context_use_scene_btn.setEnabled(True)
         self.context_use_scene_btn.setToolTip(
-            "Release the saved scene as Maya and USD, then create a common USD Pack."
+            "Release published Geometry + Look as a fixed USD composition."
             if environment_pack else "Register the saved Maya scene as the Context source."
         )
         from smartlib.apps.asset_manager.environment_pack import release_input_error
@@ -2888,7 +3025,7 @@ class AssetManagerWindow(QtWidgets.QDialog):
                 self._data_catalog.setdefault(data_type, {}).setdefault(target, []).append(path)
 
         preferred = {"assembly": 0, "geo": 1, "guide": 2, "rig": 3, "skin": 4}
-        known_types = ["assembly", "geo", "guide", "rig", "skin"]
+        known_types = ["assembly", "geo", "guide", "rig", "skin", "texture"]
         data_types = sorted(
             set(known_types) | set(self._data_catalog),
             key=lambda value: (preferred.get(value.lower(), 100), value.lower()),
@@ -3001,6 +3138,18 @@ class AssetManagerWindow(QtWidgets.QDialog):
         current = self.data_type_list.currentItem()
         data_type = str(current.data(QtCore.Qt.UserRole) or "") if current else ""
         self._update_data_action_visibility(data_type)
+        is_texture = data_type == 'texture'
+        self.texture_data_panel.setVisible(is_texture)
+        self.data_target_list.setVisible(not is_texture)
+        self.data_list.setVisible(not is_texture)
+        self.data_browser_splitter.setSizes([130, 0, 0, 900] if is_texture else [130, 170, 620, 0])
+        if is_texture:
+            from smartlib.core.path_resolver import AssetIdentity
+            asset = self._current_asset()
+            self.texture_data_panel.set_identity(AssetIdentity(asset.category, asset.group, asset.name,
+                self._current_asset_variant()) if asset else None)
+            self.data_browser_splitter.setStretchFactor(3, 1)
+            return
         export_type_index = self.data_type_combo.findData(data_type)
         if export_type_index >= 0:
             self.data_type_combo.setCurrentIndex(export_type_index)
@@ -4343,6 +4492,9 @@ class AssetManagerWindow(QtWidgets.QDialog):
         self.retarget_tab.activate()
 
     def _publish_selected_work(self, _checked: bool = False, *, force_usd: bool = False) -> None:
+        if self._selected_publish_type() in ('geometry', 'look') or force_usd:
+            self._publish_maya_preview('geometry' if force_usd else self._selected_publish_type())
+            return
         asset = self._current_asset()
         source_path, source_kind = self._publish_source_path()
         if not asset:
@@ -6591,7 +6743,7 @@ def publish_work_outputs(
                     rig_metadata,
                     overwrite=overwrite,
                 )
-                target = usd_skel_outputs["rig_usd"]
+                target = usd_skel_outputs["entry_usd"]
             elif publish_format in {"ma", "mb"} and parsed.get("department") != "model":
                 # Rig/look/groom scene publishes are complete DCC snapshots. They
                 # do not have a single asset top node that can safely represent
@@ -6610,7 +6762,7 @@ def publish_work_outputs(
             if rig_metadata is not None:
                 write_rig_publish_metadata(target.parent, rig_metadata)
         if usd_skel_outputs:
-            for key in ("skeleton_usd", "skin_usd", "validation"):
+            for key in ("geometry_usd", "rig_usd", "validation"):
                 output = usd_skel_outputs[key]
                 if output not in published:
                     published.append(output)
@@ -6681,16 +6833,18 @@ def augment_usd_skel_publish_record(outputs: dict[str, Path], rig_metadata: dict
     version_dir = outputs["rig_usd"].parent
     publish_path = version_dir / "publish.json"
     record = read_json_file(publish_path, {}) or {}
-    record.setdefault("files", {})["usd"] = outputs["rig_usd"].name
+    record.setdefault("files", {})["usd"] = outputs["entry_usd"].name
+    record["files"]["geometry_usd"] = outputs["geometry_usd"].name
+    record["files"]["rig_usd"] = outputs["rig_usd"].name
     record["usd_skel"] = {
-        "schema": "smartpipeline.usd_skel.v1",
+        "schema": "smartpipeline.usd_skel.v2",
         "root_joint": rig_metadata.get("root_joint", ""),
         "root_joints": (
             read_json_file(outputs["validation"], {}).get("root_joints", [])
         ),
         "rig": outputs["rig_usd"].name,
-        "skeleton": outputs["skeleton_usd"].name,
-        "skin": outputs["skin_usd"].name,
+        "geometry": outputs["geometry_usd"].name,
+        "entry": outputs["entry_usd"].name,
         "validation": outputs["validation"].name,
     }
     write_json_file(publish_path, record)

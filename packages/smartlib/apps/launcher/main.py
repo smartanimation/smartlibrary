@@ -12,6 +12,10 @@ from smartlib.apps.launcher.project_config_transfer import (
     import_project_config,
     inspect_project_config_archive,
 )
+from smartlib.apps.launcher.after_effects_compat import (
+    detect_camera_raw_issue,
+    disable_camera_raw_elevated,
+)
 from smartlib.core.icons import tool_icon_path, tool_ico_path
 
 # --- パス設定 ---
@@ -90,6 +94,64 @@ def is_after_effects_software(soft_id, exe_path):
     name = str(soft_id or "").lower()
     exe_name = os.path.basename(str(exe_path or "")).lower()
     return "aftereffects" in name or name.startswith("ae") or exe_name.startswith("afterfx")
+
+
+def remediate_after_effects_launch(parent, soft_id, exe_path):
+    """Repair the known AE 2024/Camera Raw crash before starting AfterFX."""
+    issue = detect_camera_raw_issue(soft_id, exe_path)
+    if issue is None:
+        return True
+
+    plugin_version = (
+        ".".join(str(part) for part in issue.plugin_version[:2])
+        if issue.plugin_version
+        else "unknown"
+    )
+    message = (
+        f"Camera Raw {plugin_version} contains a component known to crash "
+        "After Effects 2024.\n\n"
+        "Disable this Camera Raw plug-in and continue launching After Effects?\n"
+        "The original file will be preserved with a .disabled name. "
+        "Windows will ask for administrator approval."
+    )
+    answer = QtWidgets.QMessageBox.question(
+        parent,
+        "After Effects 2024 Compatibility",
+        message,
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        QtWidgets.QMessageBox.Yes,
+    )
+    if answer != QtWidgets.QMessageBox.Yes:
+        return False
+    try:
+        repaired = disable_camera_raw_elevated(issue)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1223:
+            QtWidgets.QMessageBox.information(
+                parent,
+                "After Effects 2024 Compatibility",
+                "Administrator approval was cancelled. After Effects was not started.",
+            )
+        else:
+            QtWidgets.QMessageBox.critical(
+                parent,
+                "After Effects 2024 Compatibility",
+                f"Camera Raw could not be disabled:\n{exc}",
+            )
+        return False
+    if not repaired:
+        QtWidgets.QMessageBox.critical(
+            parent,
+            "After Effects 2024 Compatibility",
+            "Camera Raw could not be disabled. After Effects was not started.",
+        )
+        return False
+    QtWidgets.QMessageBox.information(
+        parent,
+        "After Effects 2024 Compatibility",
+        f"Camera Raw {plugin_version} was disabled safely. After Effects will now start.",
+    )
+    return True
 
 
 def is_openrv_software(soft_id):
@@ -784,6 +846,8 @@ class SmartLauncher(QtWidgets.QMainWindow):
         is_batch = exe_p.lower().endswith(('.bat', '.cmd'))
         maya_safe = is_maya_software(soft_id, exe_p)
         after_effects = is_after_effects_software(soft_id, exe_p)
+        if after_effects and not remediate_after_effects_launch(self, soft_id, exe_p):
+            return
         full_env = os.environ.copy()
         full_env["SMARTLIBRARY_ROOT"] = CURRENT_DIR
         full_env["SMARTPIPELINE_ROOT"] = CURRENT_DIR

@@ -3700,6 +3700,9 @@ class ShotManagerService:
             versions = sorted(path for path in base_dir.glob("v[0-9]*") if path.is_dir())
             candidate = versions[-1] / "rig.usd" if versions else Path()
             version = versions[-1].name if versions else ""
+        split_record = read_json(candidate.parent / 'publish.json', {}) or {}
+        if (split_record.get('usd_skel') or {}).get('schema') == 'smartpipeline.usd_skel.v2':
+            candidate = self.paths.artifact_file(candidate.parent, split_record['usd_skel']['entry'])
         if not candidate.is_file() or candidate.suffix.lower() not in {".usd", ".usda", ".usdc"}:
             return {}
         publish_data = read_json(candidate.parent / "publish.json", {}) or {}

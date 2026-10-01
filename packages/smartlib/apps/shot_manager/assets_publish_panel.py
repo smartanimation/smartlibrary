@@ -17,7 +17,7 @@ class AssetsPublishPanel(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         self.context_label = QtWidgets.QLabel('Assets - Cast Registration')
         layout.addWidget(self.context_label)
-        hint = QtWidgets.QLabel('Register Cast metadata. Asset USD supplies static geometry; Animation USD supplies animated geometry. Load / quality settings belong to Smart Composition.')
+        hint = QtWidgets.QLabel('Pin an Asset USD Release for each Cast. Animation uses this Release; Geometry, Look and Rig are fixed by the Release.')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.editor = QtWidgets.QWidget()
@@ -40,8 +40,8 @@ class AssetsPublishPanel(QtWidgets.QWidget):
         self.placement_check.setToolTip('Asset USD targets require one attached placement each. Animation USD is not transformed again.')
         editor_layout.addWidget(self.placement_check)
         self.table = QtWidgets.QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(['Include', 'Cast', 'Asset / Variant', 'Geometry Source',
-                                             'Asset USD', 'Assets Layer', 'State'])
+        self.table.setHorizontalHeaderLabels(['Include', 'Cast', 'Asset / Variant', 'Quality',
+                                             'USD Release', 'Assets Layer', 'State'])
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -50,7 +50,7 @@ class AssetsPublishPanel(QtWidgets.QWidget):
         editor_layout.addWidget(self.table, 1)
         self.summary = QtWidgets.QLabel()
         editor_layout.addWidget(self.summary)
-        hint = QtWidgets.QLabel('This replaces the Assets registration in a new composition. Unchecked entries are removed from Assets only; Camera, Animation and Set Dress products are retained. Metadata only never adds a mesh reference.')
+        hint = QtWidgets.QLabel('Cast pins the Release used by Animation. Changing that Release requires a new Animation publish; other Casts and cameras are retained.')
         hint.setWordWrap(True)
         editor_layout.addWidget(hint)
         layout.addWidget(self.editor, 1)
@@ -126,15 +126,12 @@ class AssetsPublishPanel(QtWidgets.QWidget):
                 asset = row['asset']
                 self.table.setItem(index, 2, QtWidgets.QTableWidgetItem(asset.name + ' / ' + asset.variant))
                 source = QtWidgets.QComboBox()
-                for label, value in [('Asset USD', 'asset'), ('Animation USD', 'animation'), ('Metadata only', 'none')]:
-                    source.addItem(label, value)
-                default_source = 'animation' if row['target'] in animated else row['geometry_source']
-                source.setCurrentIndex(source.findData(prior.get('geometry_source', default_source)))
+                source.addItem('proxy', 'proxy')
                 self.table.setCellWidget(index, 3, source)
                 version = QtWidgets.QComboBox()
-                for value in row['versions']:
-                    version.addItem(value, value)
-                version.addItem('None - identity only', None)
+                for value in row.get('releases', []):
+                    version.addItem(value['label'], value['version'])
+                version.addItem('Select Release', None)
                 previous = prior.get('registration', {}).get('usd_version')
                 if previous:
                     selected = version.findData(previous)
@@ -160,18 +157,15 @@ class AssetsPublishPanel(QtWidgets.QWidget):
 
     def update_summary(self, *_):
         self.table.blockSignals(True)
-        included = payloads = 0
+        included = 0
         for index, row in enumerate(self._rows):
             selected = self.table.item(index, 0).checkState() == QtCore.Qt.Checked
-            geometry = row['source_combo'].currentData() == 'asset'
             included += int(selected)
-            payloads += int(selected and geometry)
-            self.table.item(index, 5).setText('Payload' if geometry else 'Metadata only')
-            state = row['error'] or ('Missing USD' if geometry and not row['version_combo'].currentData()
-                                    else 'Selected' if geometry else 'Metadata only')
+            self.table.item(index, 5).setText('Asset Release')
+            state = row['error'] or ('Select Release' if not row['version_combo'].currentData() else 'Selected')
             self.table.item(index, 6).setText(state if selected else 'Excluded')
         self.table.blockSignals(False)
-        self.summary.setText(f'{included} registered / {payloads} payloads / {included - payloads} metadata only')
+        self.summary.setText(f'{included} Casts selected')
 
     def selection(self):
         result = []
@@ -179,7 +173,7 @@ class AssetsPublishPanel(QtWidgets.QWidget):
             if self.table.item(index, 0).checkState() != QtCore.Qt.Checked:
                 continue
             result.append(dict(target=row['target'], asset=row['asset'],
-                geometry_source=row['source_combo'].currentData(), version=row['version_combo'].currentData()))
+                geometry_source='asset', quality=row['source_combo'].currentData(), version=row['version_combo'].currentData()))
         return result
 
     def prepare(self):

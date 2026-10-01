@@ -61,6 +61,12 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self.source_hint = QtWidgets.QLabel()
         self.source_hint.setWordWrap(True)
         grid.addWidget(self.source_hint, 3, 0, 1, 3)
+        self.skel_version = QtWidgets.QComboBox()
+        self.skel_version.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.skel_version.setMinimumContentsLength(16)
+        grid.addWidget(QtWidgets.QLabel('Asset USD source'), 4, 0)
+        grid.addWidget(self.skel_version, 4, 1, 1, 2)
+        self.skel_version.setToolTip('Compare joint animation with evaluated Maya deformation at every frame. Fall back to deform cache if it differs.')
         layout.addWidget(self.source_group)
         from .animation_batch_settings import AnimationBatchSettings
         self.batch_settings = AnimationBatchSettings(self)
@@ -76,7 +82,7 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self.usd_check.setEnabled(False)
         self.abc_check = QtWidgets.QCheckBox('Alembic (Geometry Cache)')
         for widget, tip in [
-            (self.usd_check, 'This Data rebuild publishes final-deform USD.'),
+            (self.usd_check, 'Verified UsdSkel Animation when a static Rig USD is selected; otherwise final-deform USD.'),
             (self.abc_check, 'Not yet supported by the Data-driven USD worker.'),
         ]:
             widget.setToolTip(tip)
@@ -101,7 +107,7 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self.strip_namespaces.setEnabled(False)
         self.strip_namespaces.setToolTip('Namespaces are retained to preserve Data and Sculpt prim mappings.')
         output.addWidget(self.strip_namespaces, 5, 0, 1, 4)
-        self.output_hint = QtWidgets.QLabel('Animation Curves are always published to Data first. USD is rebuilt from that new Version.')
+        self.output_hint = QtWidgets.QLabel('Curve Data → rebuild → compare every frame. Matching Rig USD: animation.usd; unsupported deformation: deform.usdc. The result and fallback reason appear in the job log.')
         self.output_hint.setWordWrap(True)
         output.addWidget(self.output_hint, 6, 0, 1, 4)
         layout.addWidget(self.output_group)
@@ -121,12 +127,15 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self.compose_btn = QtWidgets.QPushButton('Compose Existing…')
         self.compose_btn.clicked.connect(self.compose)
         actions.addWidget(self.compose_btn)
+        self.composition_btn = QtWidgets.QPushButton('Open Smart Composition')
+        self.composition_btn.clicked.connect(self.open_composition)
         actions.addStretch(1)
         self.publish_btn = QtWidgets.QPushButton('Publish Animation USD')
         self.publish_btn.setEnabled(False)
         self.publish_btn.clicked.connect(self.publish)
         actions.addWidget(self.publish_btn)
         layout.addLayout(actions)
+        layout.addWidget(self.composition_btn)
         self.rig_context.currentIndexChanged.connect(self._populate_rig_versions)
         self.rig_version.currentIndexChanged.connect(self._update_ready)
         self.range_mode.currentIndexChanged.connect(self._range_changed)
@@ -140,7 +149,7 @@ class AnimationPublishPanel(QtWidgets.QWidget):
     def _remember(self):
         if self._key:
             self._drafts[self._key] = (self.rig_context.currentText(), self.rig_version.currentData(),
-                self.sculpt_version.currentData(), self.range_mode.currentIndex(), self.start_frame.value(), self.end_frame.value())
+                self.sculpt_version.currentData(), self.range_mode.currentIndex(), self.start_frame.value(), self.end_frame.value(), self.skel_version.currentData())
 
     def set_targets(self, identity, targets, *, force=False):
         targets = tuple(dict.fromkeys(t for t in targets if t))
@@ -153,7 +162,7 @@ class AnimationPublishPanel(QtWidgets.QWidget):
             for row in self.batch_settings.selections():
                 key = (self.identity.episode, self.identity.sequence, self.identity.shot, row['target'])
                 self._drafts[key] = (row['rig_context'], row['rig'], row['sculpt'],
-                    self.range_mode.currentIndex(), self.start_frame.value(), self.end_frame.value())
+                    self.range_mode.currentIndex(), self.start_frame.value(), self.end_frame.value(), row.get('skel'))
             self._key = None  # hidden single-target controls must not overwrite batch choices
         else:
             self._remember()
@@ -196,10 +205,17 @@ class AnimationPublishPanel(QtWidgets.QWidget):
         self.rig_context.blockSignals(False)
         self._populate_rig_versions()
         self._populate_sculpt_versions()
+        self.skel_version.clear()
+        self.skel_version.addItem('From published Cast (Auto / deform fallback)', None)
+        self.skel_version.setEnabled(False)
         self.range_mode.setCurrentIndex(0)
         self._range_changed()
         draft = self._drafts.get(key)
         if draft:
+            if len(draft) > 6:
+                index = self.skel_version.findData(draft[6])
+                if index >= 0:
+                    self.skel_version.setCurrentIndex(index)
             self.rig_context.setCurrentText(draft[0])
             for widget, value in zip((self.rig_version, self.sculpt_version), draft[1:3]):
                 index = widget.findData(value)
@@ -269,16 +285,23 @@ class AnimationPublishPanel(QtWidgets.QWidget):
                 raise ValueError('End frame must not precede Start frame')
             selections = self.batch_settings.selections() if len(self._targets) > 1 else [
                 dict(target=self.target, rig=self.rig_version.currentData(),
-                     rig_context=self.rig_context.currentText(), sculpt=self.sculpt_version.currentData())]
+                     rig_context=self.rig_context.currentText(), sculpt=self.sculpt_version.currentData(), skel=self.skel_version.currentData())]
             if not self.identity or not selections or any(not r['target'] or not r['rig'] for r in selections):
                 raise ValueError('Select a shot, cast and published Rig version for every target')
             cast_data = self.service.shots.load_cast(self.identity).get('cast') or {}
             options = []
+            from .cast_release import cast_product
+            compositions = self.service.composition_versions(self.identity)
+            base = self.service.pin(compositions[0]['path']) if compositions else None
             for row in selections:
                 cast = cast_data.get(row['target'])
                 if not cast:
                     raise ValueError('Cast was not found: ' + row['target'])
+                fixed_cast = cast_product(self.service, self.identity, row['target'], base)
+                if not fixed_cast:
+                    raise ValueError(row['target'] + ': publish Cast with an Asset USD Release first')
                 options.append(dict(target=row['target'], rig=self.service.pin(row['rig']),
+                    cast_asset=fixed_cast, skel=None,
                     rig_context=row['rig_context'], sculpt=self.service.pin(row['sculpt']) if row['sculpt'] else None,
                     cast=cast))
             self.publish_btn.setEnabled(False)
@@ -329,6 +352,25 @@ class AnimationPublishPanel(QtWidgets.QWidget):
     def show_queue(self):
         from smartlib.apps.review_build_manager.publish_queue import show_queue
         show_queue(self.service.shots)
+
+    def open_composition(self):
+        try:
+            import os, subprocess
+            if not self.identity:
+                raise ValueError('Select a Shot')
+            versions = self.service.composition_versions(self.identity)
+            if not versions:
+                raise ValueError('No published Composition for this Shot')
+            self.service.load_handoff(versions[0]['path'])
+            launcher = Path(__file__).resolve().parents[4] / 'tools' / 'usd' / 'usdpython.bat'
+            env = os.environ.copy()
+            env['PYTHONPATH'] = str(Path(__file__).resolve().parents[3]) + os.pathsep + env.get('PYTHONPATH', '')
+            subprocess.Popen([os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/s', '/c',
+                subprocess.list2cmdline([str(launcher), '-m', 'smartlib.apps.smart_composition.main',
+                    '--config', str(self.service.config.config_dir), versions[0]['path']])],
+                env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except Exception as exc:
+            self.status.setPlainText(str(exc))
 
     @QtCore.Slot(str)
     def _queue_changed(self, job_id):

@@ -12,6 +12,13 @@ def reference_text(data, manifest=''):
     entry = data.get('entrypoint') or {}
     if entry.get('path'):
         lines.extend(['', 'USD: ' + entry['path']])
+    validation = data.get('validation') or {}
+    if data.get('usd_kind') or validation.get('representation'):
+        lines.append('Representation: ' + str(data.get('usd_kind') or validation['representation']))
+    if validation.get('fallback_reason'):
+        lines.append('Deform fallback: ' + validation['fallback_reason'])
+    if data.get('look_warning'):
+        lines.append(data['look_warning'])
     def collect(value, label):
         if isinstance(value, dict):
             if 'path' in value:

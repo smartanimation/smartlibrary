@@ -461,7 +461,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.export_camera_btn = QtWidgets.QPushButton("Export Camera")
         self.apply_camera_btn = QtWidgets.QPushButton("Apply Camera")
         self.publish_camera_btn = QtWidgets.QPushButton("Publish Primary Camera")
-        self.publish_preview_render_btn = QtWidgets.QPushButton("Publish Preview Render")
+        self.publish_preview_render_btn = QtWidgets.QPushButton("Publish Playblast Settings")
         self.apply_set_dress_btn = QtWidgets.QPushButton("Apply Set Dress")
         self.data_type_list = QtWidgets.QListWidget()
         self.data_cast_list = QtWidgets.QListWidget()
@@ -693,7 +693,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         self.export_camera_btn.clicked.connect(self.export_camera_data)
         self.apply_camera_btn.clicked.connect(self.apply_camera_data)
         self.publish_camera_btn.clicked.connect(self.publish_camera_data)
-        self.publish_preview_render_btn.clicked.connect(self.publish_preview_render)
+        self.publish_preview_render_btn.clicked.connect(self.publish_playblast_settings)
         self.apply_set_dress_btn.clicked.connect(self.apply_set_dress)
         self.open_preview_rv_btn.clicked.connect(self.open_selected_preview_in_rv)
         self.generate_review_btn.clicked.connect(self.open_generate_review)
@@ -1087,12 +1087,6 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             if icon_path:
                 light_item.setIcon(QtGui.QIcon(str(icon_path)))
             self.data_type_list.addItem(light_item)
-            playblast_item = QtWidgets.QListWidgetItem("Playblast Settings")
-            playblast_item.setData(QtCore.Qt.UserRole, "render_manifest")
-            icon_path = shot_data_icon_path("render_manifest", 28)
-            if icon_path:
-                playblast_item.setIcon(QtGui.QIcon(str(icon_path)))
-            self.data_type_list.addItem(playblast_item)
             placement_item = QtWidgets.QListWidgetItem("Placement")
             placement_item.setData(QtCore.Qt.UserRole, "placement")
             icon_path = shot_data_icon_path("placement", 28)
@@ -1189,11 +1183,11 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             ("Cast", "assets"),
             ("Placements", "placements"),
             ("Set Dress", "set_dress"),
-            ("Preview Render", "preview_render"),
+            ("Playblast Settings", "render_manifest"),
         ):
             item = QtWidgets.QListWidgetItem(label)
             item.setData(QtCore.Qt.UserRole, key)
-            icon_path = shot_publish_type_icon_path(key, 28)
+            icon_path = shot_publish_type_icon_path('preview_render' if key == 'render_manifest' else key, 28)
             if icon_path:
                 item.setIcon(QtGui.QIcon(str(icon_path)))
             self.publish_type_list.addItem(item)
@@ -2595,7 +2589,6 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             ("animation", "Animation Curves"),
             ("camera", "Camera"),
             ("light", "Light"),
-            ("render_manifest", "Render Manifest"),
             ("placement", "Placement"),
             ("review_layers", "Review Layers"),
             ("set_dress", "Set Dress"),
@@ -2833,7 +2826,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         )
         self.apply_set_dress_btn.setVisible(publish_type == "set_dress")
         self.publish_preview_render_btn.setVisible(
-            publish_type == "preview_render"
+            publish_type == "render_manifest"
         )
         labels = {
             "camera": "Camera :",
@@ -2842,7 +2835,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             "animation_package": "Package :",
             "placements": "Target :",
             "set_dress": "Package :",
-            "preview_render": "Department :",
+            "render_manifest": "Department :",
         }
         self.publish_target_label.setText(labels.get(publish_type, "Target :"))
 
@@ -2891,17 +2884,16 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                     targets = [(row['label'] + (' (muted)' if row['muted'] else ''), row) for row in setdress_sources()]
                 except Exception as exc:
                     self.status_label.setText(str(exc))
-        elif publish_type == "preview_render" and identity:
+        elif publish_type == "render_manifest" and (identity or sequence_identity):
             departments = {
                 self.work_dept_combo.currentText().strip() or "default"
             }
-            for row in self.service.list_shot_data_versions(identity):
+            settings_rows = (self.service.list_sequence_data_versions(sequence_identity,
+                department=self.work_dept_combo.currentText().strip() or 'layout') if sequence_identity
+                else self.service.list_shot_data_versions(identity))
+            for row in settings_rows:
                 parts = row.name.split("/")
                 if parts and parts[0] == "render_manifest" and len(parts) > 1:
-                    departments.add(parts[1])
-            for row in self.service.list_preview_render_versions(identity):
-                parts = row.name.split("/")
-                if len(parts) > 1:
                     departments.add(parts[1])
             targets = [
                 (department, {"target": department})
@@ -2958,11 +2950,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 if identity
                 else []
             )
-        if publish_type == "preview_render" and identity:
-            return self.service.list_preview_render_versions(
-                identity,
-                department="",
-            )
+        if publish_type == "render_manifest":
+            from dataclasses import replace
+            department = self._current_publish_target() or self.work_dept_combo.currentText().strip() or 'layout'
+            rows = (self.service.list_sequence_data_versions(sequence_identity, department=department)
+                    if sequence_identity else self.service.list_shot_data_versions(identity))
+            return [replace(row, path=str(self.service.paths.artifact_file(row.path, 'render_manifest.json')))
+                    for row in rows if row.name.startswith('render_manifest/')
+                    and (not department or row.name.split('/')[1] == department)]
         return []
 
     def populate_publish_tree(self) -> None:
@@ -3034,7 +3029,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             return parts[1]
         if publish_type == "animation_cache" and len(parts) >= 3:
             return parts[2]
-        if publish_type == "preview_render" and len(parts) >= 2:
+        if publish_type == "render_manifest" and len(parts) >= 2:
             return parts[1]
         if publish_type == "set_dress" and parts:
             return parts[-1]
@@ -3047,7 +3042,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
             "animation_package": "PACKAGE READY",
             "placements": "PLACEMENT READY",
             "set_dress": "SET DRESS READY",
-            "preview_render": "MANIFEST READY",
+            "render_manifest": "MANIFEST READY",
         }.get(self._current_publish_type(), "PUBLISHED")
 
     def _publish_tree_frame_range(self, path: Path) -> str:
@@ -5601,7 +5596,14 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
                 self, "Review Camera Rules Publish Failed", str(exc)
             )
 
-    def _export_scene_component_data(self, data_type: str) -> None:
+    def publish_playblast_settings(self) -> None:
+        targets = [(item.data(QtCore.Qt.UserRole) or {}).get('target', item.text())
+                   for item in self.publish_target_list.selectedItems()]
+        self._export_scene_component_data('render_manifest', targets=targets)
+        self._populate_publish_targets()
+        self.populate_publish_tree()
+
+    def _export_scene_component_data(self, data_type: str, *, targets=None) -> None:
         identity = self.active_shot_identity or self.current_identity()
         sequence_identity = self.active_sequence_identity or self.current_sequence_identity()
         title = str(data_type).replace("_", " ").title()
@@ -5611,7 +5613,7 @@ class ShotManagerWindow(QtWidgets.QMainWindow):
         if not self.is_maya_session:
             QtWidgets.QMessageBox.information(self, f"Export {title}", "Available inside Maya.")
             return
-        targets = self._selected_data_targets()
+        targets = self._selected_data_targets() if targets is None else targets
         if not targets:
             QtWidgets.QMessageBox.warning(
                 self, f"Export {title}", f"Select one or more {title} targets first."

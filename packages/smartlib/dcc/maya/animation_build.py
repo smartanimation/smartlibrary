@@ -44,7 +44,7 @@ def validate_look_usd(path, prim_path, variants):
         if isinstance(spec, Sdf.PrimSpec):
             if spec.typeName not in {"", "Scope", "Material", "Shader", "NodeGraph", "GeomSubset"}:
                 errors.append(str(spec_path))
-            if spec.referenceList.GetAppliedItems() or spec.payloadList.GetAppliedItems():
+            if spec.referenceList.GetAddedOrExplicitItems() or spec.payloadList.GetAddedOrExplicitItems():
                 errors.append(str(spec_path))
             if spec.HasInfo("active") or spec.HasInfo("instanceable"):
                 errors.append(str(spec_path))
@@ -63,11 +63,17 @@ def validate_look_usd(path, prim_path, variants):
             raise ValueError(f"Unknown Look variant: {name}={value}")
         vset.SetVariantSelection(value)
     # Texture inputs must also resolve to immutable Production files (checked by service).
+    from smartlib.core.udim import validate_tile_contract
+    validate_tile_contract(stage.GetRootLayer())
     assets = []
     for p in stage.Traverse():
         for attr in p.GetAttributes():
             value = attr.Get()
             if isinstance(value, Sdf.AssetPath) and value.path:
+                if '<UDIM>' in value.path:
+                    from smartlib.core.udim import asset_files
+                    assets.extend(asset_files(value.path, stage.GetRootLayer()))
+                    continue
                 resolved = value.resolvedPath
                 if not resolved:
                     raise ValueError(f"Unresolved Look asset: {value.path}")

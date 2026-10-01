@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from typing import Any, Iterable
@@ -11,6 +12,7 @@ def publish_usd_skel_package(
     rig_metadata: dict[str, Any],
     contract: dict[str, str],
     overwrite: bool = False,
+    paths=None,
 ) -> dict[str, Path]:
     """Publish a Maya rig as a validated USD Skel package."""
 
@@ -18,51 +20,55 @@ def publish_usd_skel_package(
     version_path = Path(version_dir)
     version_path.mkdir(parents=True, exist_ok=True)
     validation, export_data = validate_usd_skel_scene(rig_metadata=rig_metadata, contract=contract)
-    validation_path = version_path / "validation.json"
+    if paths is None:
+        from smartlib.core.config_loader import current_project_config
+        from smartlib.apps.asset_manager.service import AssetManagerService
+        config = current_project_config()
+        if config is None:
+            raise RuntimeError('Project Path Resolver is required for USD Skel Publish')
+        paths = AssetManagerService(config).paths
+    validation_path = paths.artifact_file(version_path, 'validation.json')
     _write_json(validation_path, validation)
-    issues = validation.get("issues") or []
+    issues = validation.get('issues') or []
     if issues:
-        raise RuntimeError("USD Skel validation failed:\n- " + "\n- ".join(issues))
-
-    root_joint = export_data["root_joint"]
-    root_joints = export_data["root_joints"]
-    geometry_members = export_data["geometry_members"]
-    skeleton_members = export_data["skeleton_members"]
-
+        raise RuntimeError('USD Skel validation failed:\n- ' + '\n- '.join(issues))
     outputs = {
-        "rig_usd": version_path / "rig.usd",
-        "skeleton_usd": version_path / "skeleton.usd",
-        "skin_usd": version_path / "skin.usd",
-        "validation": validation_path,
+        'geometry_usd': paths.artifact_file(version_path, 'geo.usd'),
+        'rig_usd': paths.artifact_file(version_path, 'rig.usd'),
+        'entry_usd': paths.artifact_file(version_path, 'usdSkel.usd'),
+        'validation': validation_path,
     }
     existing = [path for key, path in outputs.items() if key != "validation" and path.exists()]
     if existing and not overwrite:
         raise FileExistsError("USD Skel output already exists: " + ", ".join(path.name for path in existing))
 
     _ensure_maya_usd_plugin(cmds)
-    # Export only skeleton hierarchies that actually deform publish geometry.
-    # Selecting every skel_export_set member can leak guide/face/test skeletons
-    # that have no binding relationship to cache_geo_set.
-    skeleton_selection = _ordered_unique(root_joints)
-    skin_selection = _ordered_unique([*root_joints, *geometry_members])
-    root_prim = _usd_identifier(str(rig_metadata.get("asset") or "Asset"))
-    _export_usd(
-        cmds, outputs["skeleton_usd"], skeleton_selection,
-        export_skin=False, root_prim=root_prim,
-    )
-    _export_usd(
-        cmds, outputs["skin_usd"], skin_selection,
-        export_skin=True, root_prim=root_prim,
-    )
-    _export_usd(
-        cmds, outputs["rig_usd"], skin_selection,
-        export_skin=True, root_prim=root_prim,
-    )
-    expected_skinned_mesh_count = len(_skinned_mesh_shapes(cmds, geometry_members))
-    published_validation = _validate_published_usd(
-        outputs["rig_usd"],
-        expected_skinned_mesh_count=expected_skinned_mesh_count,
-    )
+    import tempfile
+    from smartlib.core.skel_layers import split_skel_layers
+    # Export once, then separate the exact bind geometry and deformation opinions.
+    with tempfile.TemporaryDirectory(prefix='smart-skel-export-') as folder:
+        combined = Path(folder) / 'combined.usd'
+        with _geometry_outside_joint_hierarchy(cmds, export_data) as members:
+            _export_usd(cmds, combined, members,
+                export_skin=True, root_prim=_usd_identifier(str(rig_metadata.get('asset') or 'Asset')),
+                shading_mode='none')
+        expected = len(_skinned_mesh_shapes(cmds, export_data['geometry_members']))
+        source_validation = _validate_published_usd(combined, expected_skinned_mesh_count=expected)
+        if source_validation['issues']:
+            validation.update(status='ERROR', published_usd=source_validation)
+            _write_json(validation_path, validation)
+            raise RuntimeError('USD Skel export is incomplete: ' + '; '.join(source_validation['issues']))
+        from pxr import Usd
+        source_stage = Usd.Stage.Open(str(combined))
+        if not source_stage.GetDefaultPrim():
+            roots = list(source_stage.GetPseudoRoot().GetChildren())
+            if len(roots) != 1:
+                raise RuntimeError('USD Skel export requires one common root')
+            source_stage.SetDefaultPrim(roots[0])
+            source_stage.GetRootLayer().Save()
+        validation['layers'] = split_skel_layers(combined,
+            geometry_path=outputs['geometry_usd'], rig_path=outputs['rig_usd'], entry_path=outputs['entry_usd'])
+    published_validation = _validate_published_usd(outputs['entry_usd'], expected_skinned_mesh_count=expected)
     validation["published_usd"] = published_validation
     validation["status"] = "PASS" if published_validation["status"] == "PASS" else "ERROR"
     validation["issues"].extend(published_validation["issues"])
@@ -73,6 +79,55 @@ def publish_usd_skel_package(
             + "\n- ".join(published_validation["issues"])
         )
     return outputs
+
+
+@contextmanager
+def _geometry_outside_joint_hierarchy(cmds, data):
+    """Maya USD prunes meshes below driver joints. Restore temporary parenting."""
+    roots = data['root_joints']
+    geometry = []
+    for node in data['geometry_members']:
+        if cmds.nodeType(node) == 'mesh':
+            node = cmds.listRelatives(node, parent=True, fullPath=True)[0]
+        geometry.append(node)
+    geometry = [n for n in _ordered_unique(geometry)
+                if not any(n.startswith(p + '|') for p in geometry if p != n)]
+    affected = {node for node in geometry
+                if any(cmds.nodeType('|'.join(node.split('|')[:i])) == 'joint'
+                       for i in range(2, len(node.split('|'))))}
+    if not affected:
+        yield roots + geometry
+        return
+    import os
+    parent = '|'.join(os.path.commonprefix([p.split('|') for p in roots + geometry]))
+    if not parent or cmds.nodeType(parent) == 'joint':
+        raise RuntimeError('USD Skel requires a common transform above geometry and joints')
+    for node in affected:
+        destination = parent + '|' + node.rsplit('|', 1)[-1]
+        if cmds.objExists(destination):
+            raise RuntimeError('USD export would rename an existing node: ' + destination)
+    moved = []
+    selection = cmds.ls(selection=True, long=True) or []
+    modified = cmds.file(query=True, modified=True)
+    try:
+        export_geometry = []
+        for node in geometry:
+            ancestor = node.rsplit('|', 1)[0]
+            if node in affected:
+                matrix = cmds.xform(node, query=True, matrix=True, objectSpace=True)
+                current = cmds.parent(node, parent, absolute=True)[0]
+                current = cmds.ls(current, long=True)[0]
+                moved.append((current, ancestor, matrix))
+                export_geometry.append(current)
+            else:
+                export_geometry.append(node)
+        yield roots + export_geometry
+    finally:
+        for current, ancestor, matrix in reversed(moved):
+            restored = cmds.parent(current, ancestor, absolute=True)[0]
+            cmds.xform(restored, matrix=matrix, objectSpace=True)
+        cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
+        cmds.file(modified=modified)
 
 
 def validate_usd_skel_scene(
@@ -298,6 +353,7 @@ def _export_usd(
     *,
     export_skin: bool,
     root_prim: str,
+    shading_mode: str | None = None,
 ) -> None:
     previous = cmds.ls(selection=True, long=True) or []
     try:
@@ -317,6 +373,8 @@ def _export_usd(
             "rootPrim": root_prim,
             "rootPrimType": "Xform",
         }
+        if shading_mode is not None:
+            kwargs['shadingMode'] = shading_mode
         try:
             cmds.mayaUSDExport(**kwargs)
         except (TypeError, RuntimeError) as exc:
@@ -375,6 +433,7 @@ def _validate_published_usd(
     weighted_meshes: list[str] = []
     missing: list[str] = []
     targets: set[str] = set()
+    invalid_geometry: list[str] = []
     for prim in stage.Traverse():
         if prim.IsA(UsdSkel.Skeleton):
             skeletons.append(str(prim.GetPath()))
@@ -382,6 +441,13 @@ def _validate_published_usd(
             continue
         prim_path = str(prim.GetPath())
         meshes.append(prim_path)
+        mesh = UsdGeom.Mesh(prim)
+        points = mesh.GetPointsAttr().Get()
+        counts = mesh.GetFaceVertexCountsAttr().Get()
+        faces = mesh.GetFaceVertexIndicesAttr().Get()
+        if (not points or not counts or not faces or sum(counts) != len(faces)
+                or min(faces) < 0 or max(faces) >= len(points)):
+            invalid_geometry.append(prim_path)
         binding = UsdSkel.BindingAPI(prim)
         skeleton_targets = [str(item) for item in binding.GetSkeletonRel().GetTargets()]
         indices = binding.GetJointIndicesPrimvar()
@@ -395,6 +461,8 @@ def _validate_published_usd(
             missing.append(prim_path)
 
     issues: list[str] = []
+    if invalid_geometry:
+        issues.append('Missing or invalid mesh points/topology: ' + ', '.join(invalid_geometry))
     if not skeletons:
         issues.append("No UsdSkel Skeleton prims were exported.")
     if not meshes:

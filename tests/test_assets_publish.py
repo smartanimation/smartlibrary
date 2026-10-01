@@ -196,11 +196,14 @@ def test_panel_no_load_policy_and_queues_snapshot(service, monkeypatch):
     panel = AssetsPublishPanel(svc.shots)
     monkeypatch.setattr(panel.service, 'cast_entries', lambda _: [
         dict(target='Hero', asset=AssetIdentity('CH', 'main', 'Hero'), versions=[],
-             error='', geometry_source='animation')])
+             releases=[dict(label='v002', version='v003')], error='', geometry_source='asset')])
     monkeypatch.setattr(svc.shots, 'shot_frame_range', lambda _: [1, 2])
     panel.set_context(identity)
     assert panel.table.rowCount() == 1
-    assert panel.table.item(0, 5).text() == 'Metadata only'
+    assert panel.table.item(0, 5).text() == 'Asset Release'
+    assert panel.selection()[0]['quality'] == 'proxy'
+    assert panel.selection()[0]['version'] == 'v003'
+    monkeypatch.setattr(panel.service, 'registration_plan', lambda *a: {'rows': [{'source': 'pinned-release'}]})
     assert not any('Department' in label.text() for label in panel.findChildren(QtWidgets.QLabel))
     calls = []
     class Queue(QtCore.QObject):
@@ -213,7 +216,7 @@ def test_panel_no_load_policy_and_queues_snapshot(service, monkeypatch):
     monkeypatch.setattr(publish_queue, 'get_queue', lambda _: q)
     panel.publish()
     assert panel._busy and calls[0][1]['kind'] == 'assets_usd'
-    assert calls[0][1]['plan']['rows'][0]['source'] is None
+    assert calls[0][1]['plan']['rows'][0]['source'] == 'pinned-release'
     q.jobs['PUB-test'] = dict(state='COMPLETE', task='Complete', message='manifest', stderr='')
     q.changed.emit('PUB-test')
     assert not panel._busy

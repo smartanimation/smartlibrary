@@ -131,7 +131,7 @@ def test_ui_blocks_invalid_environment_release(service, invalid):
     exec(compile(ast.Module(body=[method], type_ignores=[]), '<ui-method>', 'exec'), namespace)
     state = {}
     def button(key):
-        return SimpleNamespace(setEnabled=lambda enabled: state.update({key: enabled}), setToolTip=lambda text: None, setText=lambda text: None)
+        return SimpleNamespace(setEnabled=lambda enabled: state.update({key: enabled}), setToolTip=lambda text: None, setText=lambda text: None, setVisible=lambda visible: None)
     ui = SimpleNamespace(
         _context_official_versions=lambda *args: {},
         _populate_context_entries=lambda *args, **kwargs: None,

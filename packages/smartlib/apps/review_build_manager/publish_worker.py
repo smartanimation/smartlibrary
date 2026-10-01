@@ -95,6 +95,8 @@ def run(request_path, expected_hash):
                     print('Animation Data published: ' + str(source), flush=True)
                     rows.append(dict(kind='animation', target=item['target'], source=str(source),
                         rig=str(service.check(item['rig'])), rig_context=item['rig_context'],
+                        skel=str(service.check(item['skel'])) if item.get('skel') else None,
+                        **({'cast_asset': item['cast_asset']} if item.get('cast_asset') else {}),
                         sculpt=str(service.check(item['sculpt'])) if item.get('sculpt') else None))
                 request['plan'] = service.plan(identity, rows, frame_range=request['frame_range'])
             elif request['kind'] == 'primary_camera_usd':
@@ -122,7 +124,7 @@ def run(request_path, expected_hash):
             progress(20, 'Rebuild fixed Animation Data / export USD')
             def exporter(row, plan, path):
                 print('Export Animation USD: ' + row['target'], flush=True)
-                receipt = export_animation(row, plan, path)
+                receipt = export_animation(row, plan, path, paths=service.paths)
                 if request.get('scene_input'):
                     validate_scene_input(request['scene_input'])
                 progress(80, 'Validate USD / compose shot')

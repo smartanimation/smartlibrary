@@ -1,5 +1,6 @@
 """Resolver-backed discovery and non-destructive USD previews."""
 import re
+from copy import deepcopy
 from pathlib import Path
 
 from smartlib.apps.shot_manager import ShotIdentity
@@ -63,11 +64,30 @@ class CompositionSession:
                 raise ValueError(f'Original product is missing from discovery: {path}')
         return result
 
-    def preview(self, manifests):
+    def preview(self, manifests, looks=None):
+        self.preview_refs = None
+        self.preview_looks = dict(looks or {})
+        self.look_refs = []
         section_refs = None
         if self.section_mode:
             section_refs, manifests = self.handoff.section_products(self.identity, manifests)
         refs, products, plan, _ = self.handoff.select_products(self.identity, manifests)
+        products = deepcopy(products)
+        from .looks import look_options
+        for ref, product in zip(refs, products):
+            if ref['path'] not in self.preview_looks:
+                continue
+            if product['kind'] not in ('animation', 'assets'):
+                raise ValueError('Look overrides require Animation or Asset products')
+            path = self.preview_looks[ref['path']]
+            if path:
+                options = look_options(self.handoff, product, path)
+                product['inputs']['preview_look'] = options
+                product['inputs'].pop('preview_look_disabled', None)
+                self.look_refs.extend([options['layer'], *options['dependencies']])
+            else:
+                product['inputs'].pop('preview_look', None)
+                product['inputs']['preview_look_disabled'] = True
         stage, layers, deps = compose_layers(
             dict.fromkeys(('shot', 'animation', 'camera', 'assets', 'layout')),
             products, plan, self.handoff, in_memory=True)
@@ -76,11 +96,27 @@ class CompositionSession:
         self.preview_refs = section_refs if self.section_mode else refs
         return stage, layers
 
-    def save(self, manifests):
+    def save(self, manifests, looks=None):
+        if dict(looks or {}) != getattr(self, 'preview_looks', {}):
+            raise ValueError('Preview this Look selection before saving')
         if self.preview_refs is None or sorted(str(p) for p in manifests) != sorted(r['path'] for r in self.preview_refs):
             raise ValueError('Preview this selection before saving')
         for ref in self.preview_refs:
             self.handoff.check(ref)
         if self.section_mode:
             _, manifests = self.handoff.section_products(self.identity, manifests)
-        return self.handoff.compose_products(self.identity, manifests)
+        for ref in getattr(self, 'look_refs', []):
+            self.handoff.check(ref)
+        from .looks import look_options
+        updated = []
+        for manifest in manifests:
+            product = self.handoff.load_handoff(manifest)
+            if manifest in (looks or {}):
+                selected = looks[manifest]
+                from .looks import selected_look
+                current = selected_look(product)
+                if selected != current:
+                    mapping = look_options(self.handoff, product, selected)['mesh_map'] if selected else {}
+                    manifest = str(self.handoff.adopt_preview_look(self.identity, manifest, selected, mapping))
+            updated.append(manifest)
+        return self.handoff.compose_products(self.identity, updated)

@@ -94,6 +94,8 @@ class CompositionWindow(QtWidgets.QMainWindow):
         self.tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.tree.setColumnWidth(1, 95)
         self.tree.setColumnWidth(2, 65)
+        self.tree.setColumnWidth(3, 140)
+        self.tree.setColumnWidth(4, 110)
         self.tree.itemChanged.connect(self.schedule_preview)
         left_layout.addWidget(self.tree)
         self.tree.currentItemChanged.connect(self.show_reference_details)
@@ -155,7 +157,7 @@ class CompositionWindow(QtWidgets.QMainWindow):
         timeline.addWidget(fit)
         viewport_layout.addLayout(timeline)
         split.addWidget(right)
-        split.setSizes([430, 930])
+        split.setSizes([620, 740])
         bottom = QtWidgets.QHBoxLayout()
         self.status = QtWidgets.QPlainTextEdit('Ready')
         self.status.setReadOnly(True)
@@ -292,8 +294,9 @@ class CompositionWindow(QtWidgets.QMainWindow):
         def loaded(result):
             self.session, versions = result
             self.section_choices = {kind: ref['path'] for kind, ref in self.session.snapshot.get('sections', {}).items()}
-            self.saved_selection = tuple(sorted(self.session.initial.values()))
+            self.look_rows = {}
             self.populate(versions, self.session.initial)
+            self.saved_selection = self.state()
             self.source_label.setText(str(self.session.source))
             self.sync_loaded_shot()
             self.preview_selection = None
@@ -303,6 +306,14 @@ class CompositionWindow(QtWidgets.QMainWindow):
     def selection(self):
         return tuple(sorted(combo.currentData() for item, combo, key in self.rows
             if item.checkState(0) == QtCore.Qt.Checked))
+
+    def look_selection(self):
+        selected = set(self.selection())
+        return {path: combo.currentData() or '' for path, combo in getattr(self, 'look_rows', {}).items()
+                if path in selected}
+
+    def state(self):
+        return self.selection(), tuple(sorted(self.look_selection().items()))
 
     def selected_map(self):
         return {key: combo.currentData() for item, combo, key in self.rows
@@ -314,10 +325,13 @@ class CompositionWindow(QtWidgets.QMainWindow):
                 'sections': session.handoff.section_versions(session.identity)}
 
     def populate(self, versions, selected):
+        self.preserved_looks = {path: combo.currentData() for path, combo in getattr(self, 'look_rows', {}).items()}
+        self.look_rows = {}
         self.available = versions
         blocked = self.tree.blockSignals(True)
         try:
             self.tree.clear()
+            self._asset_detail_virtual = []
             self.rows = []
             self.section_rows = {}
             kinds = sorted(set(k[0] for k in versions['products']) | set(versions['sections']))
@@ -364,6 +378,7 @@ class CompositionWindow(QtWidgets.QMainWindow):
                     self.rows.append((child, child_combo, key))
                     self.update_reference_row(child, child_combo)
                     child_combo.currentIndexChanged.connect(lambda _index, row=child, c=child_combo: self.reference_changed(row, c))
+            self.rebuild_asset_details()
             self.tree.expandAll()
             self.update_section_labels()
         finally:
@@ -436,7 +451,7 @@ class CompositionWindow(QtWidgets.QMainWindow):
             data = read_json(self.session.paths.project_dependency(path), {})
             usd = (data.get('entrypoint') or {}).get('path', '')
             filename = Path(usd).name if usd else data.get('target', '')
-            if data.get('kind') == 'camera' or filename in {'deform.usdc', 'deform.usda'}:
+            if data.get('kind') == 'camera' or filename in {'deform.usdc', 'deform.usda', 'animation_asset.usda'}:
                 filename = f"{data['target']} ({filename})"
             item.setText(0, filename)
             details = reference_text(data, path)
@@ -446,8 +461,13 @@ class CompositionWindow(QtWidgets.QMainWindow):
         finally:
             self.tree.blockSignals(blocked)
 
+    def rebuild_asset_details(self):
+        from .asset_details import rebuild
+        rebuild(self)
+
     def reference_changed(self, item, combo):
         self.update_reference_row(item, combo)
+        self.rebuild_asset_details()
         self.tree.setCurrentItem(item)
         self.show_reference_details(item)
         self.schedule_preview()
@@ -462,11 +482,14 @@ class CompositionWindow(QtWidgets.QMainWindow):
         if self.session:
             def reset_rows(versions):
                 self.section_choices = {kind: ref['path'] for kind, ref in self.session.snapshot.get('sections', {}).items()}
+                self.look_rows = {}
                 self.populate(versions, self.session.initial)
                 self.schedule_preview()
             self.run_job(lambda: self.available_versions(self.session), reset_rows, 'Restoring saved selection…')
 
     def schedule_preview(self, *args):
+        if args and isinstance(args[0], QtWidgets.QTreeWidgetItem):
+            self.rebuild_asset_details()
         self.update_section_labels()
         self.save_btn.setEnabled(False)
         self.status.setPlainText('Selection changed — updating preview…')
@@ -479,6 +502,8 @@ class CompositionWindow(QtWidgets.QMainWindow):
             self.debounce.start()
             return
         selected = self.selection()
+        looks = self.look_selection()
+        state = self.state()
         if not selected:
             self.preview_selection = None
             self.view.makeCurrent()
@@ -489,7 +514,7 @@ class CompositionWindow(QtWidgets.QMainWindow):
             self.status.setPlainText('Select at least one published product.')
             return
         def display(result):
-            if selected != self.selection():
+            if state != self.state():
                 self.schedule_preview()
                 return
             stage, self.preview_layers = result
@@ -519,10 +544,10 @@ class CompositionWindow(QtWidgets.QMainWindow):
             self.camera.blockSignals(False)
             self.set_camera()
             self.view.updateView(resetCam=first, forceComputeBBox=True)
-            self.preview_selection = selected
+            self.preview_selection = state
             self.save_btn.setEnabled(True)
             self.status.setPlainText('Preview updated. Save creates a new composition version.')
-        self.run_job(lambda: self.session.preview(selected), display, 'Composing preview…')
+        self.run_job(lambda: self.session.preview(selected, looks), display, 'Composing preview…')
 
     def run_job(self, operation, callback, message, on_error=None):
         if self.job:
@@ -552,7 +577,7 @@ class CompositionWindow(QtWidgets.QMainWindow):
                 self.preview_selection = None
                 self.status.setPlainText('Error: ' + str(exc))
             if not self.job:
-                self.save_btn.setEnabled(self.preview_selection == self.selection() and bool(self.selection()))
+                self.save_btn.setEnabled(self.preview_selection == self.state() and bool(self.selection()))
             self.sync_browser_controls()
             job.deleteLater()
         job.finished.connect(done)
@@ -560,18 +585,22 @@ class CompositionWindow(QtWidgets.QMainWindow):
 
     def save(self):
         selected = self.selection()
-        if self.preview_selection != selected or not selected:
+        looks = self.look_selection()
+        if self.preview_selection != self.state() or not selected:
             return
         def publish():
-            manifest = self.session.save(selected)
+            manifest = self.session.save(selected, looks)
             session = CompositionSession(self.session.handoff.shots, manifest)
             session.preview_refs = self.session.preview_refs
             return session, self.available_versions(session)
         def saved(result):
             self.session, versions = result
             self.section_choices = {kind: ref['path'] for kind, ref in self.session.snapshot.get('sections', {}).items()}
+            self.look_rows = {}
             self.populate(versions, self.session.initial)
-            self.saved_selection = self.selection()
+            self.saved_selection = self.state()
+            self.preview_selection = None
+            self.debounce.start()
             self.source_label.setText(str(self.session.source))
             self.sync_loaded_shot()
             self.status.setPlainText('Saved new composition: ' + str(self.session.source))
@@ -580,10 +609,10 @@ class CompositionWindow(QtWidgets.QMainWindow):
     def export_movie(self):
         if self.job or self.export_process:
             return
-        if not self.session or not self.model.stage or self.preview_selection != self.selection():
+        if not self.session or not self.model.stage or self.preview_selection != self.state():
             self.status.setPlainText('Open a composition and wait for its preview before exporting.')
             return
-        if self.selection() != self.saved_selection:
+        if self.state() != self.saved_selection:
             self.status.setPlainText('Save New Composition before exporting the modified selection.')
             return
         camera = self.camera.currentData()
@@ -715,7 +744,7 @@ class CompositionWindow(QtWidgets.QMainWindow):
         self.slider.setValue(self.slider.minimum() if value > self.slider.maximum() else value)
 
     def discard_ok(self):
-        if self.session and self.selection() != self.saved_selection:
+        if self.session and self.state() != self.saved_selection:
             return QtWidgets.QMessageBox.question(self, 'Unsaved selection',
                 'Discard the unsaved layer selection?', QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                 QtWidgets.QMessageBox.No) == QtWidgets.QMessageBox.Yes

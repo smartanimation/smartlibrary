@@ -9,8 +9,8 @@ class AnimationBatchSettings(QtWidgets.QGroupBox):
     def __init__(self, parent=None):
         super().__init__('Selected Characters - Source Versions', parent)
         layout = QtWidgets.QVBoxLayout(self)
-        self.table = QtWidgets.QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(['Cast', 'Rig Context', 'Rig Version', 'Shot Sculpt'])
+        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(['Cast', 'Rig Context', 'Rig Version', 'Shot Sculpt', 'Cast Asset Release'])
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         layout.addWidget(self.table)
@@ -28,6 +28,10 @@ class AnimationBatchSettings(QtWidgets.QGroupBox):
             self.table.insertRow(index)
             self.table.setItem(index, 0, QtWidgets.QTableWidgetItem(target))
             context, version, sculpt = (QtWidgets.QComboBox() for _ in range(3))
+            skel = QtWidgets.QComboBox()
+            skel.addItem('From published Cast', None)
+            skel.setEnabled(False)
+            skel.currentIndexChanged.connect(lambda *_: self.changed.emit())
             context.addItems(sorted(rigs, key=lambda name: (name.lower() != 'anim', name)))
             sculpt.addItem('None (optional)', None)
             root = service.paths.shot_data_dir(identity.episode, identity.sequence,
@@ -47,16 +51,20 @@ class AnimationBatchSettings(QtWidgets.QGroupBox):
             refresh()
             draft = drafts.get((identity.episode, identity.sequence, identity.shot, target))
             if draft:
+                if len(draft) > 6:
+                    selected = skel.findData(draft[6])
+                    if selected >= 0:
+                        skel.setCurrentIndex(selected)
                 context.setCurrentText(draft[0])
                 for widget, value in ((version, draft[1]), (sculpt, draft[2])):
                     selected = widget.findData(value)
                     if selected >= 0:
                         widget.setCurrentIndex(selected)
-            for col, widget in enumerate((context, version, sculpt), 1):
+            for col, widget in enumerate((context, version, sculpt, skel), 1):
                 self.table.setCellWidget(index, col, widget)
-            self.rows.append((target, context, version, sculpt))
+            self.rows.append((target, context, version, sculpt, skel))
         self.changed.emit()
 
     def selections(self):
-        return [dict(target=t, rig=v.currentData(), rig_context=c.currentText(), sculpt=s.currentData())
-                for t, c, v, s in self.rows]
+        return [dict(target=t, rig=v.currentData(), rig_context=c.currentText(), sculpt=s.currentData(), skel=k.currentData())
+                for t, c, v, s, k in self.rows]
